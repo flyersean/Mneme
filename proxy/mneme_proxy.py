@@ -28,7 +28,7 @@ import requests
 
 # ─── Config ────────────────────────────────────────────────────
 OLLAMA_URL  = "http://localhost:11434"
-MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k")
+MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k:latest")
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
@@ -1094,6 +1094,18 @@ if FLASK_OK:
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }) + "\n\n"
             
+            # Stream thinking as reasoning if present
+            thinking = result.get("thinking", "")
+            if thinking:
+                thinking_chunk = 16
+                for i in range(0, len(thinking), thinking_chunk):
+                    piece = thinking[i:i + thinking_chunk]
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
+                    }) + "\n\n"
+            
             # If model returned tool_calls, emit them as deltas (OpenAI-style)
             if tool_calls:
                 for i, tc in enumerate(tool_calls):
@@ -1125,6 +1137,18 @@ if FLASK_OK:
                 }) + "\n\n"
                 yield "data: [DONE]\n\n"
                 return
+            
+            # Stream thinking as reasoning if present
+            thinking = result.get("thinking", "")
+            if thinking:
+                thinking_chunk = 16
+                for i in range(0, len(thinking), thinking_chunk):
+                    piece = thinking[i:i + thinking_chunk]
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
+                    }) + "\n\n"
             
             # Stream content in chunks
             chunk_size = 16
