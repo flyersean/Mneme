@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mneme — one-command setup
 # Run on any Linux pod with Ollama already installed and running.
+# Usage: curl -fsSL <url> | bash
 set -e
 
 echo ""
@@ -27,15 +28,27 @@ fi
 echo ""
 echo "→ Available Ollama models:"
 echo ""
-mapfile -t MODELS < <(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED")
-for i in "${!MODELS[@]}"; do
-    printf "  %d) %s\n" "$((i+1))" "${MODELS[$i]}"
+
+# Build a simple numbered list, skipping the embed model
+MODELS=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED")
+I=1
+echo "$MODELS" | while read -r M; do
+    printf "  %d) %s\n" "$I" "$M"
+    I=$((I+1))
 done
 
-echo ""
-read -p "→ Which model to use? [1] " CHOICE < /dev/tty
-CHOICE="${CHOICE:-1}"
-BACKEND="${MODELS[$((CHOICE-1))]}"
+# Pick first model by default, or prompt
+BACKEND=$(echo "$MODELS" | head -1)
+COUNT=$(echo "$MODELS" | wc -l)
+
+if [ "$COUNT" -gt 1 ]; then
+    echo ""
+    printf "→ Which model? [1-%d, default 1] " "$COUNT"
+    read CHOICE < /dev/tty 2>/dev/null || CHOICE="1"
+    CHOICE="${CHOICE:-1}"
+    BACKEND=$(echo "$MODELS" | sed -n "${CHOICE}p")
+fi
+
 echo ""
 echo "→ Using: $BACKEND"
 
