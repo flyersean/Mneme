@@ -33,7 +33,7 @@ for i in "${!MODELS[@]}"; do
 done
 
 echo ""
-read -p "→ Which model to use? [1] " CHOICE
+read -p "→ Which model to use? [1] " CHOICE < /dev/tty
 CHOICE="${CHOICE:-1}"
 BACKEND="${MODELS[$((CHOICE-1))]}"
 echo ""
