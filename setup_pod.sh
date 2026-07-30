@@ -79,6 +79,8 @@ fi
 echo "→ Downloading proxy..."
 mkdir -p /workspace/proxy /workspace/mneme_chunks
 curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
+# Strip :latest suffix to avoid doubling
+BACKEND=$(echo "$BACKEND" | sed 's|:latest$||')
 sed -i "s|fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k|$BACKEND|" /workspace/proxy/mneme_proxy.py
 
 # ── Start ──
