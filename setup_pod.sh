@@ -1,7 +1,8 @@
 #!/bin/bash
 # Mneme — one-command setup
-# Run on any Linux pod with Ollama already installed and running.
+# Run on any Linux pod with Ollama already installed.
 # Usage: curl -fsSL <url> | bash
+#   or:  curl -fsSL <url> | bash -s -- my-model:latest
 set -e
 
 echo ""
@@ -24,40 +25,24 @@ else
     ollama pull "$EMBED"
 fi
 
-# ── Detect Ollama models ──
-echo ""
-echo "→ Available Ollama models:"
-echo ""
-
-# Build a simple numbered list, skipping the embed model
-MODELS=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED")
-I=1
-echo "$MODELS" | while read -r M; do
-    printf "  %d) %s\n" "$I" "$M"
-    I=$((I+1))
-done
-
-# Pick first model by default, or prompt
-BACKEND=$(echo "$MODELS" | head -1)
-COUNT=$(echo "$MODELS" | wc -l)
-
-if [ "$COUNT" -gt 1 ]; then
-    echo ""
-    printf "→ Which model? [1-%d, default 1] " "$COUNT"
-    read CHOICE < /dev/tty 2>/dev/null || CHOICE="1"
-    CHOICE="${CHOICE:-1}"
-    BACKEND=$(echo "$MODELS" | sed -n "${CHOICE}p")
+# ── Detect backend model ──
+if [ -n "$1" ]; then
+    BACKEND="$1"
+    echo "→ Using specified model: $BACKEND"
+else
+    echo "→ Detecting available models..."
+    BACKEND=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED" | head -1)
+    if [ -z "$BACKEND" ]; then
+        echo "!!! No Ollama models found. Pull one first: ollama pull <model>"
+        exit 1
+    fi
+    echo "→ Using: $BACKEND (pass a model name to override)"
 fi
-
-echo ""
-echo "→ Using: $BACKEND"
 
 # ── Proxy code ──
 echo "→ Downloading proxy..."
 mkdir -p /workspace/proxy /workspace/mneme_chunks
 curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
-
-# Patch model name
 sed -i "s|fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k|$BACKEND|" /workspace/proxy/mneme_proxy.py
 
 # ── Start ──
