@@ -26,17 +26,53 @@ else
 fi
 
 # ── Detect backend model ──
+echo "→ Detecting available models..."
+ALL_MODELS=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED")
+
+if [ -z "$ALL_MODELS" ]; then
+    echo "!!! No Ollama models found. Pull one first: ollama pull <model>"
+    exit 1
+fi
+
 if [ -n "$1" ]; then
     BACKEND="$1"
     echo "→ Using specified model: $BACKEND"
 else
-    echo "→ Detecting available models..."
-    BACKEND=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED" | head -1)
-    if [ -z "$BACKEND" ]; then
-        echo "!!! No Ollama models found. Pull one first: ollama pull <model>"
-        exit 1
+    # Read available models into a bash array
+    OLDIFS="$IFS"; IFS=$'\n'; MODELS=($ALL_MODELS); IFS="$OLDIFS"
+    
+    if [ ${#MODELS[@]} -eq 1 ]; then
+        BACKEND="${MODELS[0]}"
+        echo "→ Only one model found, using: $BACKEND"
+    else
+        echo ""
+        echo "  Available models:"
+        for i in "${!MODELS[@]}"; do
+            printf "    %d) %s\n" "$((i+1))" "${MODELS[$i]}"
+        done
+        echo ""
+        
+        # Try to read from terminal; fall back to model 1 if no TTY
+        if [ -t 0 ]; then
+            # stdin is a terminal — read normally
+            read -p "  Choose [1]: " CHOICE
+        elif [ -e /dev/tty ]; then
+            # piped input — read from controlling terminal
+            read -p "  Choose [1]: " CHOICE < /dev/tty
+        else
+            # no TTY available (Docker without -it) — default to first
+            echo "  (no interactive terminal — using model 1)"
+            CHOICE="1"
+        fi
+        
+        CHOICE="${CHOICE:-1}"
+        if [ "$CHOICE" -ge 1 ] 2>/dev/null && [ "$CHOICE" -le "${#MODELS[@]}" ] 2>/dev/null; then
+            BACKEND="${MODELS[$((CHOICE-1))]}"
+        else
+            BACKEND="${MODELS[0]}"
+        fi
+        echo "→ Using: $BACKEND"
     fi
-    echo "→ Using: $BACKEND (pass a model name to override)"
 fi
 
 # ── Proxy code ──
