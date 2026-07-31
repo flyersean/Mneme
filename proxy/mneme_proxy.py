@@ -280,10 +280,18 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
     
+    # Trim to last MAX_HISTORY_MESSAGES, but always keep the system prompt (first message if system role)
+    trimmed = list(messages)
+    if len(trimmed) > MAX_HISTORY_MESSAGES:
+        first = trimmed[0] if trimmed[0].get("role") == "system" else None
+        rest = [m for m in trimmed if m.get("role") != "system"] if first else trimmed
+        trimmed = rest[-(MAX_HISTORY_MESSAGES - (1 if first else 0)):]
+        if first:
+            trimmed.insert(0, first)
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
-    msgs.extend(messages)
+    msgs.extend(trimmed)
     
     payload = {
         "model": MODEL, "stream": False, "messages": msgs,
@@ -315,8 +323,15 @@ def query_model(messages: list, system: str = None, temperature: float = None,
 def query_model_stream(messages: list, tools: list = None):
     """Generator: yields Ollama SSE chunks as they arrive.
     Each chunk is a dict ready for json.dumps."""
+    trimmed = list(messages)
+    if len(trimmed) > MAX_HISTORY_MESSAGES:
+        first = trimmed[0] if trimmed[0].get("role") == "system" else None
+        rest = [m for m in trimmed if m.get("role") != "system"] if first else trimmed
+        trimmed = rest[-(MAX_HISTORY_MESSAGES - (1 if first else 0)):]
+        if first:
+            trimmed.insert(0, first)
     msgs = []
-    msgs.extend(messages)
+    msgs.extend(trimmed)
 
     payload = {
         "model": MODEL, "stream": True, "messages": msgs,
