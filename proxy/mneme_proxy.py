@@ -398,7 +398,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
-        "SELECT chunk_id, topic_label, messages, thinking, strategy, "
+        "SELECT chunk_id, topic_label, messages, thinking, strategy, created_at, "
         "grade, consensus, outcome, problem_type FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
@@ -409,7 +409,7 @@ def load_chunk(chunk_id: str) -> Optional[dict]:
         "messages": json.loads(row[2]), "thinking": row[3],
         "strategy": row[4], "grade": row[5],
         "consensus": row[6], "outcome": row[7],
-        "problem_type": row[8],
+        "problem_type": row[8], "created_at": row[9],
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -456,8 +456,9 @@ def generate_strategy(messages: list, outcome: str) -> str:
 
 # ─── Routing ───────────────────────────────────────────────────
 
-def route_query(query: str, top_k: int = 3) -> List[str]:
-    """Two-pass dedup: best per topic, then fill remaining."""
+def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
+    """Two-pass dedup: best per topic, then fill remaining.
+    Returns (score, cid) tuples if with_scores=True, else cid strings."""
     q_vec = embed(query)
     scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
     if not scored:
@@ -466,25 +467,24 @@ def route_query(query: str, top_k: int = 3) -> List[str]:
     # Grade-aware sort
     scored.sort(key=lambda x: (-grade_priority(x[1]), -x[0]))
     
-    # Pass 1: best chunk per topic
+    # Pass 1: best chunk per topic — store (score, cid) tuples
     results = []
     seen = set()
     for score, cid in scored:
-        # Topic extracted by stripping version suffix
         topic = re.sub(r'_v\d+$', '', cid)
         if topic not in seen:
-            results.append(cid)
+            results.append((score, cid))
             seen.add(topic)
             if len(results) >= top_k:
-                return results
+                return [r[1] for r in results] if not with_scores else results
     
     # Pass 2: fill remaining
     for score, cid in scored:
-        if cid not in results:
-            results.append(cid)
+        if cid not in [r[1] for r in results]:
+            results.append((score, cid))
             if len(results) >= top_k:
                 break
-    return results
+    return [r[1] for r in results] if not with_scores else results
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -564,21 +564,55 @@ def build_context(query: str) -> Tuple[str, str]:
     # Trim to token budget — preserves high-grade, drops low-grade
     trimmed = _trim_chunks(ordered, MAX_INJECTED_TOKENS)
     
-    # Build raw chunk text
+    # Get relevance scores for all chunks
+    all_scored = route_query(query, top_k=max(len(trimmed), 1), with_scores=True) if trimmed else []
+    score_map = {cid: score for score, cid in all_scored}
+    max_score = max(score_map.values()) if score_map else 1.0
+    
+    # Build chunk text with rich headers
+    now = datetime.now(timezone.utc)
     parts = []
     ptype = "other"
+    seen_topics = {}
+    
     for cid in trimmed:
         chunk = load_chunk(cid)
         if not chunk:
             continue
         ptype = chunk.get("problem_type", "other")
+        topic = chunk.get("topic_label", "unknown")
+        created = chunk.get("created_at", "")
+        score = score_map.get(cid, 0.5)
+        relevance_pct = int((score / max_score) * 100) if max_score > 0 else 50
+        
+        # Recency
+        try:
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            delta = now - created_dt
+            if delta.days == 0: recency = "today"
+            elif delta.days == 1: recency = "yesterday"
+            elif delta.days < 7: recency = f"{delta.days}d ago"
+            elif delta.days < 30: recency = f"{delta.days // 7}w ago"
+            else: recency = f"{delta.days // 30}mo ago"
+        except:
+            recency = "unknown"
+        
+        # Messages
         msg_text = "\n".join(
-            f"{m['role']}: {m['content'][:300]}" 
+            f"{m['role']}: {m['content'][:300]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
             msg_text += f"\n[learned strategy: {chunk['strategy']}]"
-        parts.append(msg_text)
+        
+        header = f"--- CONVERSATION: {topic} ({recency}, {relevance_pct}% relevant, id:{cid}) ---"
+        
+        # Cross-conversation synthesis: merge same topic
+        if topic in seen_topics:
+            parts[seen_topics[topic]] += "\n  ...(same topic)...\n" + header + "\n" + msg_text
+        else:
+            seen_topics[topic] = len(parts)
+            parts.append(header + "\n" + msg_text)
     
     if not parts:
         return "", ptype
@@ -1140,9 +1174,11 @@ if FLASK_OK:
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None):
         """Stream directly from Ollama — no buffering. Memory injection runs first."""
-        # Run memory injection / classification (process_chat does this)
-        import threading
-        threading.Thread(target=process_chat, args=(messages,), kwargs={"tools": tools}, daemon=True).start()
+        # Run memory injection / classification synchronously
+        try:
+            process_chat(messages, tools=tools)
+        except Exception as e:
+            print(f"  [WARN] Memory injection failed: {e}", flush=True)
         
         # Build final messages with system prompt preserved + memory injected
         user_msg = messages[-1]["content"] if messages else ""
