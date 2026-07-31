@@ -32,9 +32,7 @@ MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncen
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
-# Ollama context config — large budgets for thinking + memory injection
-OLLAMA_CTX     = 32768   # full context window
-OLLAMA_PREDICT = 16384   # thinking + response budget
+# Ollama config — let the model use its defaults
 OLLAMA_TEMP    = 0.3
 
 # ─── Multi-pass compression config ───
@@ -279,7 +277,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}."""
     if temperature is None: temperature = OLLAMA_TEMP
-    if max_tokens is None: max_tokens = OLLAMA_PREDICT
+    if max_tokens is None: max_tokens = -1  # let Ollama decide
     
     msgs = []
     if system:
@@ -290,8 +288,6 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         "model": MODEL, "stream": False, "messages": msgs,
         "options": {
             "temperature": temperature,
-            "num_predict": max_tokens,
-            "num_ctx": OLLAMA_CTX,
         }
     }
     if tools:
@@ -312,6 +308,67 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     if not result["content"] and not result["tool_calls"]:
         print(f"  [WARN] Empty content from Ollama. done_reason={result['done_reason']} eval_count={result['eval_count']}", flush=True)
     return result
+
+
+# ─── Native streaming query (SSE passthrough from Ollama) ─────
+def query_model_stream(messages: list, tools: list = None):
+    """Generator: yields Ollama SSE chunks as they arrive.
+    Each chunk is a dict ready for json.dumps."""
+    msgs = []
+    msgs.extend(messages)
+
+    payload = {
+        "model": MODEL, "stream": True, "messages": msgs,
+        "options": {"temperature": OLLAMA_TEMP}
+    }
+    if tools:
+        payload["tools"] = tools
+
+    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300, stream=True)
+    cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+    yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+           "model": FAKE_MODEL_ID,
+           "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
+
+    for line in r.iter_lines():
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "error" in d:
+            print(f"  [ERROR] Ollama streaming: {d['error']}", flush=True)
+            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                   "model": FAKE_MODEL_ID,
+                   "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}]}
+            yield None  # DONE signal
+            return
+
+        if d.get("done"):
+            break
+
+        msg = d.get("message", {})
+        content = msg.get("content", "")
+        thinking = msg.get("thinking", "")
+
+        if thinking:
+            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                   "model": FAKE_MODEL_ID,
+                   "choices": [{"index": 0, "delta": {"reasoning": thinking, "role": "assistant"}, "finish_reason": None}]}
+        if content:
+            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                   "model": FAKE_MODEL_ID,
+                   "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}
+
+    yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+           "model": FAKE_MODEL_ID,
+           "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    yield None  # DONE signal
+
+
+
 
 # ─── Chunk Storage ─────────────────────────────────────────────
 
@@ -926,8 +983,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if SAVE_TRIGGER in user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
         messages[-1]["content"] = user_msg
-        n = archive_staging()
-        print(f"  [SAVE] Triggered by user — archived {n} chunk(s)", flush=True)
+        threading.Thread(target=archive_staging, daemon=True).start()
+        print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
     msg_tools = tools
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
@@ -1082,93 +1139,60 @@ if FLASK_OK:
     
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None):
-        result = process_chat(messages, tools=tools)
-        content = result["content"]
-        tool_calls = result.get("tool_calls", [])
-        cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        """Stream directly from Ollama — no buffering. Memory injection runs first."""
+        # Run memory injection / classification (process_chat does this)
+        import threading
+        threading.Thread(target=process_chat, args=(messages,), kwargs={"tools": tools}, daemon=True).start()
         
+        # Build final messages with system prompt preserved + memory injected
+        user_msg = messages[-1]["content"] if messages else ""
+        
+        # Strip save trigger
+        SAVE_TRIGGER = "<<SAVE>>"
+        if SAVE_TRIGGER in user_msg:
+            user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
+            messages[-1]["content"] = user_msg
+            threading.Thread(target=archive_staging, daemon=True).start()
+        
+        # Convert OpenAI tool_calls inbound
+        for m in messages:
+            for tc in m.get("tool_calls", []):
+                fn = tc.get("function", {})
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        fn["arguments"] = json.loads(args)
+                    except:
+                        pass
+        
+        # Build system prompt
+        hermes_system = ""
+        user_messages = messages
+        if messages and messages[0].get("role") == "system":
+            hermes_system = messages[0]["content"]
+            user_messages = messages[1:]
+        
+        context, _ = build_context(user_msg)
+        prefix = hermes_system
+        if prefix:
+            prefix += "\n\n" + SYSTEM_PROMPT
+        else:
+            prefix = SYSTEM_PROMPT
+        if context:
+            prefix += "\n\n" + context
+        
+        full_msgs = [{"role": "system", "content": prefix}] + user_messages
+        
+        # Compress large tool outputs
+        full_msgs = compress_large_tool_results(full_msgs)
+        
+        # Stream directly from Ollama
         def generate():
-            # Send role first
-            yield "data: " + json.dumps({
-                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                "model": FAKE_MODEL_ID,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-            }) + "\n\n"
-            
-            # Stream thinking as reasoning if present
-            thinking = result.get("thinking", "")
-            if thinking:
-                thinking_chunk = 16
-                for i in range(0, len(thinking), thinking_chunk):
-                    piece = thinking[i:i + thinking_chunk]
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
-                    }) + "\n\n"
-            
-            # If model returned tool_calls, emit them as deltas (OpenAI-style)
-            if tool_calls:
-                for i, tc in enumerate(tool_calls):
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {
-                                "tool_calls": [{
-                                    "index": i,
-                                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
-                                    "type": tc.get("type", "function"),
-                                    "function": {
-                                        "name": tc.get("function", {}).get("name", ""),
-                                        "arguments": json.dumps(tc.get("function", {}).get("arguments", {})) if isinstance(tc.get("function", {}).get("arguments"), dict) else tc.get("function", {}).get("arguments", ""),
-                                    },
-                                }]
-                            },
-                            "finish_reason": None,
-                        }],
-                    }) + "\n\n"
-                # Done with tool_calls finish reason
-                yield "data: " + json.dumps({
-                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                    "model": FAKE_MODEL_ID,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-                    "usage": {"completion_tokens": result.get("eval_count", 0)},
-                }) + "\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            
-            # Stream thinking as reasoning if present
-            thinking = result.get("thinking", "")
-            if thinking:
-                thinking_chunk = 16
-                for i in range(0, len(thinking), thinking_chunk):
-                    piece = thinking[i:i + thinking_chunk]
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
-                    }) + "\n\n"
-            
-            # Stream content in chunks
-            chunk_size = 16
-            for i in range(0, len(content), chunk_size):
-                piece = content[i:i + chunk_size]
-                yield "data: " + json.dumps({
-                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                    "model": FAKE_MODEL_ID,
-                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
-                }) + "\n\n"
-            
-            # Done
-            yield "data: " + json.dumps({
-                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                "model": FAKE_MODEL_ID,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {"completion_tokens": result.get("eval_count", 0)},
-            }) + "\n\n"
-            yield "data: [DONE]\n\n"
+            for chunk in query_model_stream(full_msgs, tools=tools):
+                if chunk is None:
+                    yield "data: [DONE]\n\n"
+                else:
+                    yield "data: " + json.dumps(chunk) + "\n\n"
         
         return Response(
             stream_with_context(generate()),
