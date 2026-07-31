@@ -1,8 +1,7 @@
 #!/bin/bash
 # Mneme — one-command setup
-# Run on any Linux pod with Ollama already installed.
-# Usage: curl -fsSL <url> | bash
-#   or:  curl -fsSL <url> | bash -s -- my-model:latest
+# Run on any Linux pod with Ollama already installed and running.
+# Usage: curl -fsSL <url> | bash [-s model_name]
 set -e
 
 echo ""
@@ -12,15 +11,35 @@ echo "  ║  Conversational memory proxy     ║"
 echo "  ╚══════════════════════════════════╝"
 echo ""
 
+# ── Prerequisites ──
+if ! command -v python3 &>/dev/null; then
+    echo "!!! python3 not found. Install it: apt install python3"
+    exit 1
+fi
+
+if ! command -v pip &>/dev/null && ! command -v pip3 &>/dev/null; then
+    echo "!!! pip not found. Install it: apt install python3-pip"
+    exit 1
+fi
+
+if ! command -v ollama &>/dev/null; then
+    echo "!!! ollama not found. Install it: curl -fsSL https://ollama.com/install.sh | sh"
+    exit 1
+fi
+
+if ! curl -s http://localhost:11434/api/tags &>/dev/null; then
+    echo "!!! Ollama not running. Start it: ollama serve"
+    exit 1
+fi
+
 # ── Dependencies ──
 echo "→ Installing Python dependencies..."
-pip install flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3 || {
-    echo "→ pip install failed, trying pip3..."
-    pip3 install flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3 || {
-        echo "!!! Failed to install Python dependencies. Install pip first: apt install python3-pip"
-        exit 1
-    }
-}
+PIP=$(command -v pip || command -v pip3)
+$PIP install flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    echo "!!! pip install failed."
+    exit 1
+fi
 
 # ── Embed model ──
 EMBED="snowflake-arctic-embed2"
@@ -44,7 +63,6 @@ if [ -n "$1" ]; then
     BACKEND="$1"
     echo "→ Using specified model: $BACKEND"
 else
-    # Read available models into a bash array
     OLDIFS="$IFS"; IFS=$'\n'; MODELS=($ALL_MODELS); IFS="$OLDIFS"
     
     if [ ${#MODELS[@]} -eq 1 ]; then
@@ -58,15 +76,11 @@ else
         done
         echo ""
         
-        # Try to read from terminal; fall back to model 1 if no TTY
         if [ -t 0 ]; then
-            # stdin is a terminal — read normally
             read -p "  Choose [1]: " CHOICE
         elif [ -e /dev/tty ]; then
-            # piped input — read from controlling terminal
             read -p "  Choose [1]: " CHOICE < /dev/tty
         else
-            # no TTY available (Docker without -it) — default to first
             echo "  (no interactive terminal — using model 1)"
             CHOICE="1"
         fi
@@ -82,10 +96,18 @@ else
 fi
 
 # ── Proxy code ──
-echo "→ Downloading proxy..."
+echo "→ Downloading proxy with cache buster..."
 mkdir -p /workspace/proxy /workspace/mneme_chunks
-curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
-# Strip :latest suffix to avoid doubling
+curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_proxy.py?$(date +%s)" -o /workspace/proxy/mneme_proxy.py
+
+# Verify syntax
+if ! python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())" 2>/dev/null; then
+    echo "!!! Downloaded proxy has syntax errors. Trying backup commit..."
+    curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/daf0aed/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
+    python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())"
+fi
+
+# Patch model name
 BACKEND=$(echo "$BACKEND" | sed 's|:latest$||')
 sed -i "s|fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k|$BACKEND|" /workspace/proxy/mneme_proxy.py
 
