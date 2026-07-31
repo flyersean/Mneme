@@ -1015,13 +1015,7 @@ if FLASK_OK:
     def chat_completions():
         data = request.get_json(force=True)
         stream = data.get("stream", False)
-        tools = data.get("tools", [])
-        if tools:
-            import json as _json
-            with open('/tmp/jan_tools.log', 'a') as _f:
-                _f.write(_json.dumps({'stream': stream, 'tool_count': len(tools), 'tool_names': [t.get("function",{}).get("name","?") for t in tools]}) + '
-')
-                _f.flush()
+
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
         
