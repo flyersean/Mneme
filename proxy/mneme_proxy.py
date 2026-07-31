@@ -216,6 +216,8 @@ def embed(text: str) -> np.ndarray:
       A zero vector simply won't match anything in FAISS — the chunk is
       still stored in SQLite and can be re-embedded later.
     """
+    if not text or not text.strip():
+        return np.zeros(DIM, dtype=np.float32)
     try:
         chunks = chunk_text(text)
         if len(chunks) == 1:
@@ -456,7 +458,7 @@ def generate_strategy(messages: list, outcome: str) -> str:
 
 # ─── Routing ───────────────────────────────────────────────────
 
-def route_query(query: str, top_k: int = 3) -> List[str]:
+def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     """Two-pass dedup: best per topic, then fill remaining."""
     q_vec = embed(query)
     scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
@@ -541,6 +543,8 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
     return selected
 
 def build_context(query: str) -> Tuple[str, str]:
+    if not query or not query.strip():
+        return "", "other"  # empty query — skip injection
     """Build injected memory context with hard token cap.
     
     1. Route query → top-3 matching chunk IDs
