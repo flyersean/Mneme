@@ -32,3 +32,10 @@ Tested with Qwen3.6 35B + Hermes agent. All core features functional.
   re-fetch/re-analyze the image on demand. Images themselves aren't
   embedded (arctic-embed2 is text-only) but the conversation text about
   them is fully searchable.
+
+## Known issues (dev branch)
+
+- **`<<SAVE>>` timeout on large conversations**: At ~46 messages / ~30K tokens,
+  the save command hits HTTP 500 after ~86s. Likely model token limit or VRAM
+  ceiling. Occurs on Qwen3.6 35B with large tool outputs in context.
+  Not seen on short conversations. Does not affect normal recall.
