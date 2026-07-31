@@ -450,7 +450,7 @@ def classify_chunk(messages: list) -> dict:
 def generate_strategy(messages: list, outcome: str) -> str:
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = "\n".join(f"{m['role']}: {m['content'][:300]}" for m in messages[-6:])
+    text = "\n".join(f"{m['role']}: {_extract_text(m['content'])[:300]}" for m in messages[-6:])
     prompt = (
         f"The outcome was {outcome}. Generate a brief strategy (1-3 sentences) "
         f"that would help you succeed next time on a similar problem.\n\n{text}"
@@ -530,7 +530,7 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
         if not chunk:
             continue
         text = "\n".join(
-            f"{m['role']}: {m['content'][:300]}"
+            f"{m['role']}: {_extract_text(m['content'])[:300]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -603,7 +603,7 @@ def build_context(query: str) -> Tuple[str, str]:
         
         # Messages
         msg_text = "\n".join(
-            f"{m['role']}: {m['content'][:300]}"
+            f"{m['role']}: {_extract_text(m['content'])[:300]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
