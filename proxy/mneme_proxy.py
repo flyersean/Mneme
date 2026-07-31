@@ -28,7 +28,7 @@ import requests
 
 # ─── Config ────────────────────────────────────────────────────
 OLLAMA_URL  = "http://localhost:11434"
-MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-262k:latest")
+MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
@@ -1015,6 +1015,13 @@ if FLASK_OK:
     def chat_completions():
         data = request.get_json(force=True)
         stream = data.get("stream", False)
+        tools = data.get("tools", [])
+        if tools:
+            import json as _json
+            with open('/tmp/jan_tools.log', 'a') as _f:
+                _f.write(_json.dumps({'stream': stream, 'tool_count': len(tools), 'tool_names': [t.get("function",{}).get("name","?") for t in tools]}) + '
+')
+                _f.flush()
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
         
