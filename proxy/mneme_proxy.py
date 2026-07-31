@@ -558,6 +558,22 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
     
     return selected
 
+def _extract_text(content) -> str:
+    """Extract text from message content (str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "image_url":
+                    parts.append("[IMAGE: " + block.get("image_url", {}).get("url", "unknown") + "]")
+        return "\n".join(parts)
+    return str(content)
+
+
 def build_context(query: str) -> Tuple[str, str]:
     if not query or not query.strip():
         return "", "other"  # empty query — skip injection
