@@ -50,6 +50,15 @@ else
     ollama pull "$EMBED"
 fi
 
+# ── Classifier model (tiny, for topic classification) ──
+CLASSIFIER="qwen3:0.5b"
+if ollama list | grep -q "$CLASSIFIER"; then
+    echo "→ Classifier model '$CLASSIFIER' already present"
+else
+    echo "→ Pulling classifier model '$CLASSIFIER'..."
+    ollama pull "$CLASSIFIER"
+fi
+
 # ── Detect backend model ──
 echo "→ Detecting available models..."
 ALL_MODELS=$(ollama list | tail -n +2 | awk '{print $1}' | grep -v "$EMBED")
