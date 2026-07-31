@@ -35,8 +35,8 @@ fi
 # ── Dependencies ──
 echo "→ Installing Python dependencies..."
 PIP=$(command -v pip || command -v pip3)
-$PIP install --ignore-installed flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
+$PIP install --ignore-installed flask flask-cors faiss-cpu numpy requests 2>&1
+if [ $? -ne 0 ]; then
     echo "!!! pip install failed."
     exit 1
 fi
@@ -103,7 +103,7 @@ curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_p
 # Verify syntax
 if ! python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())" 2>/dev/null; then
     echo "!!! Downloaded proxy has syntax errors. Trying backup commit..."
-    curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/daf0aed/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
+    curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/8a4f462/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
     python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())"
 fi
 
