@@ -36,6 +36,8 @@ DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 OLLAMA_TEMP    = 0.3
 
 # ─── Multi-pass compression config ───
+CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels
+MAX_HISTORY_MESSAGES = 16  # trim conversation to keep predict budget free
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
