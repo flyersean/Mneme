@@ -35,6 +35,9 @@ DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 # Ollama config — let the model use its defaults
 OLLAMA_TEMP    = 0.3
 
+# Classification uses a small model to avoid VRAM contention
+CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels (400MB)
+
 # ─── Multi-pass compression config ───
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
@@ -274,7 +277,8 @@ MEMORY_DISCLAIMER = (
 )
 
 def query_model(messages: list, system: str = None, temperature: float = None,
-                max_tokens: int = None, tools: list = None) -> dict:
+                max_tokens: int = None, tools: list = None,
+                model: str = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}."""
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
@@ -285,7 +289,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     msgs.extend(messages)
     
     payload = {
-        "model": MODEL, "stream": False, "messages": msgs,
+        "model": model or MODEL, "stream": False, "messages": msgs,
         "options": {
             "temperature": temperature,
         }
@@ -1052,6 +1056,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if result["content"]:
         staging.add("assistant", result["content"])
     
+    # Archive in background (avoids VRAM contention with active chat)
     if staging.should_flush():
         threading.Thread(target=archive_staging, daemon=True).start()
     

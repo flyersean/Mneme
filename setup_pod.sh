@@ -51,7 +51,7 @@ else
 fi
 
 # ── Classifier model (tiny, for topic classification) ──
-CLASSIFIER="qwen3:0.5b"
+CLASSIFIER="qwen:0.5b"
 if ollama list | grep -q "$CLASSIFIER"; then
     echo "→ Classifier model '$CLASSIFIER' already present"
 else
