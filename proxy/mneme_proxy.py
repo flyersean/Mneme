@@ -37,7 +37,7 @@ OLLAMA_TEMP    = 0.3
 
 # ─── Multi-pass compression config ───
 CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels
-MAX_HISTORY_MESSAGES = 16  # trim conversation to keep predict budget free
+MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
@@ -604,6 +604,20 @@ def build_context(query: str) -> Tuple[str, str]:
         return "", ptype
     
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
+    
+    # Scan for structured chunk references in all archived conversations and surface them
+    struct_refs = set()
+    for cid in trimmed:
+        chunk = load_chunk(cid)
+        if chunk:
+            for m in chunk.get("messages", []):
+                text = _extract_text(m.get("content", ""))
+                import re as _sre
+                found = _sre.findall(r'\[chunk-[a-f0-9]+:\s*\d+[^\]]*\]', text)
+                struct_refs.update(found)
+    if struct_refs:
+        context += "\n\n--- STORED RAW DATA (retrievable with <<DETAIL>>) ---\n"
+        context += "\n".join(f"  {r}" for r in struct_refs)
     used_tokens = _estimate_tokens(context)
     
     # Add strategies for this problem type (separate from chunk budget)
