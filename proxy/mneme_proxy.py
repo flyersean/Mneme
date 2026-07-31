@@ -35,9 +35,6 @@ DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 # Ollama config — let the model use its defaults
 OLLAMA_TEMP    = 0.3
 
-# Classification uses a small model to avoid VRAM contention
-CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels (400MB)
-
 # ─── Multi-pass compression config ───
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
@@ -277,8 +274,7 @@ MEMORY_DISCLAIMER = (
 )
 
 def query_model(messages: list, system: str = None, temperature: float = None,
-                max_tokens: int = None, tools: list = None,
-                model: str = None) -> dict:
+                max_tokens: int = None, tools: list = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}."""
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
@@ -289,7 +285,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     msgs.extend(messages)
     
     payload = {
-        "model": model or MODEL, "stream": False, "messages": msgs,
+        "model": MODEL, "stream": False, "messages": msgs,
         "options": {
             "temperature": temperature,
         }
@@ -402,7 +398,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
-        "SELECT chunk_id, topic_label, messages, thinking, strategy, created_at, "
+        "SELECT chunk_id, topic_label, messages, thinking, strategy, "
         "grade, consensus, outcome, problem_type FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
@@ -413,7 +409,7 @@ def load_chunk(chunk_id: str) -> Optional[dict]:
         "messages": json.loads(row[2]), "thinking": row[3],
         "strategy": row[4], "grade": row[5],
         "consensus": row[6], "outcome": row[7],
-        "problem_type": row[8], "created_at": row[9],
+        "problem_type": row[8],
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -450,7 +446,7 @@ def classify_chunk(messages: list) -> dict:
 def generate_strategy(messages: list, outcome: str) -> str:
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = "\n".join(f"{m['role']}: {_extract_text(m['content'])[:300]}" for m in messages[-6:])
+    text = "\n".join(f"{m['role']}: {m['content'][:300]}" for m in messages[-6:])
     prompt = (
         f"The outcome was {outcome}. Generate a brief strategy (1-3 sentences) "
         f"that would help you succeed next time on a similar problem.\n\n{text}"
@@ -460,9 +456,8 @@ def generate_strategy(messages: list, outcome: str) -> str:
 
 # ─── Routing ───────────────────────────────────────────────────
 
-def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """Two-pass dedup: best per topic, then fill remaining.
-    Returns (score, cid) tuples if with_scores=True, else cid strings."""
+def route_query(query: str, top_k: int = 3) -> List[str]:
+    """Two-pass dedup: best per topic, then fill remaining."""
     q_vec = embed(query)
     scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
     if not scored:
@@ -471,24 +466,25 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     # Grade-aware sort
     scored.sort(key=lambda x: (-grade_priority(x[1]), -x[0]))
     
-    # Pass 1: best chunk per topic — store (score, cid) tuples
+    # Pass 1: best chunk per topic
     results = []
     seen = set()
     for score, cid in scored:
+        # Topic extracted by stripping version suffix
         topic = re.sub(r'_v\d+$', '', cid)
         if topic not in seen:
-            results.append((score, cid))
+            results.append(cid)
             seen.add(topic)
             if len(results) >= top_k:
-                return [r[1] for r in results] if not with_scores else results
+                return results
     
     # Pass 2: fill remaining
     for score, cid in scored:
-        if cid not in [r[1] for r in results]:
-            results.append((score, cid))
+        if cid not in results:
+            results.append(cid)
             if len(results) >= top_k:
                 break
-    return [r[1] for r in results] if not with_scores else results
+    return results
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -530,7 +526,7 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
         if not chunk:
             continue
         text = "\n".join(
-            f"{m['role']}: {_extract_text(m['content'])[:300]}"
+            f"{m['role']}: {m['content'][:300]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -568,55 +564,21 @@ def build_context(query: str) -> Tuple[str, str]:
     # Trim to token budget — preserves high-grade, drops low-grade
     trimmed = _trim_chunks(ordered, MAX_INJECTED_TOKENS)
     
-    # Get relevance scores for all chunks
-    all_scored = route_query(query, top_k=max(len(trimmed), 1), with_scores=True) if trimmed else []
-    score_map = {cid: score for score, cid in all_scored}
-    max_score = max(score_map.values()) if score_map else 1.0
-    
-    # Build chunk text with rich headers
-    now = datetime.now(timezone.utc)
+    # Build raw chunk text
     parts = []
     ptype = "other"
-    seen_topics = {}
-    
     for cid in trimmed:
         chunk = load_chunk(cid)
         if not chunk:
             continue
         ptype = chunk.get("problem_type", "other")
-        topic = chunk.get("topic_label", "unknown")
-        created = chunk.get("created_at", "")
-        score = score_map.get(cid, 0.5)
-        relevance_pct = int((score / max_score) * 100) if max_score > 0 else 50
-        
-        # Recency
-        try:
-            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            delta = now - created_dt
-            if delta.days == 0: recency = "today"
-            elif delta.days == 1: recency = "yesterday"
-            elif delta.days < 7: recency = f"{delta.days}d ago"
-            elif delta.days < 30: recency = f"{delta.days // 7}w ago"
-            else: recency = f"{delta.days // 30}mo ago"
-        except:
-            recency = "unknown"
-        
-        # Messages
         msg_text = "\n".join(
-            f"{m['role']}: {_extract_text(m['content'])[:300]}"
+            f"{m['role']}: {m['content'][:300]}" 
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
             msg_text += f"\n[learned strategy: {chunk['strategy']}]"
-        
-        header = f"--- CONVERSATION: {topic} ({recency}, {relevance_pct}% relevant, id:{cid}) ---"
-        
-        # Cross-conversation synthesis: merge same topic
-        if topic in seen_topics:
-            parts[seen_topics[topic]] += "\n  ...(same topic)...\n" + header + "\n" + msg_text
-        else:
-            seen_topics[topic] = len(parts)
-            parts.append(header + "\n" + msg_text)
+        parts.append(msg_text)
     
     if not parts:
         return "", ptype
@@ -1014,11 +976,15 @@ def compress_large_tool_results(messages: list) -> list:
 # ─── Chat Processing ───────────────────────────────────────────
 
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
-    user_msg = messages[-1]["content"] if messages else ""
+    # Extract query from last USER message, not last message (which may be tool output)
+    user_msg = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            user_msg = m["content"]
+            break
     
     # ── Save trigger: <<SAVE>> forces archive ──
     SAVE_TRIGGER = "<<SAVE>>"
-DETAIL_TAG = "<<DETAIL"
     if SAVE_TRIGGER in user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
         messages[-1]["content"] = user_msg
@@ -1042,27 +1008,7 @@ DETAIL_TAG = "<<DETAIL"
     messages = compress_large_tool_results(messages)
     
     # Build injected memory
-    # Check for <<DETAIL>> requests in previous assistant messages
-    detail_ids = set()
-    for m in messages:
-        if m.get("role") == "assistant":
-            text = m.get("content", "")
-            if isinstance(text, str) and "<<DETAIL" in text:
-                import re
-                found = re.findall(r'<<DETAIL id:([^>]+)>>', text)
-                detail_ids.update(found)
-    detail_texts = []
-    for cid in detail_ids:
-        chunk = load_chunk(cid)
-        if chunk:
-            msgs = chunk.get("messages", [])
-            txt = "\\n".join(f"{m['role']}: {_extract_text(m['content'])[:500]}" for m in msgs)
-            detail_texts.append(f"--- REQUESTED: {chunk.get('topic_label',cid)} (id:{cid}) ---\\n{txt}")
-    extra = "\\n\\n".join(detail_texts) + "\\n\\n" if detail_texts else ""
-
     context, ptype = build_context(user_msg)
-    if extra:
-        context = extra + context
     
     # Construct prompt with memory + system prompt + live messages
     prefix = SYSTEM_PROMPT
@@ -1077,7 +1023,6 @@ DETAIL_TAG = "<<DETAIL"
     if result["content"]:
         staging.add("assistant", result["content"])
     
-    # Archive in background (avoids VRAM contention with active chat)
     if staging.should_flush():
         threading.Thread(target=archive_staging, daemon=True).start()
     
@@ -1199,63 +1144,93 @@ if FLASK_OK:
     
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None):
-        """Stream directly from Ollama — no buffering. Memory injection runs first."""
-        # Run memory injection / classification synchronously
-        try:
-            process_chat(messages, tools=tools)
-        except Exception as e:
-            print(f"  [WARN] Memory injection failed: {e}", flush=True)
+        result = process_chat(messages, tools=tools)
+        content = result["content"]
+        tool_calls = result.get("tool_calls", [])
+        cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         
-        # Build final messages with system prompt preserved + memory injected
-        user_msg = messages[-1]["content"] if messages else ""
-        
-        # Strip save trigger
-        SAVE_TRIGGER = "<<SAVE>>"
-DETAIL_TAG = "<<DETAIL"
-        if SAVE_TRIGGER in user_msg:
-            user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
-            messages[-1]["content"] = user_msg
-            threading.Thread(target=archive_staging, daemon=True).start()
-        
-        # Convert OpenAI tool_calls inbound
-        for m in messages:
-            for tc in m.get("tool_calls", []):
-                fn = tc.get("function", {})
-                args = fn.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        fn["arguments"] = json.loads(args)
-                    except:
-                        pass
-        
-        # Build system prompt
-        hermes_system = ""
-        user_messages = messages
-        if messages and messages[0].get("role") == "system":
-            hermes_system = messages[0]["content"]
-            user_messages = messages[1:]
-        
-        context, _ = build_context(user_msg)
-        prefix = hermes_system
-        if prefix:
-            prefix += "\n\n" + SYSTEM_PROMPT
-        else:
-            prefix = SYSTEM_PROMPT
-        if context:
-            prefix += "\n\n" + context
-        
-        full_msgs = [{"role": "system", "content": prefix}] + user_messages
-        
-        # Compress large tool outputs
-        full_msgs = compress_large_tool_results(full_msgs)
-        
-        # Stream directly from Ollama
         def generate():
-            for chunk in query_model_stream(full_msgs, tools=tools):
-                if chunk is None:
-                    yield "data: [DONE]\n\n"
-                else:
-                    yield "data: " + json.dumps(chunk) + "\n\n"
+            # Send role first
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                "model": FAKE_MODEL_ID,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }) + "\n\n"
+            
+            # Stream thinking as reasoning if present
+            thinking = result.get("thinking", "")
+            if thinking:
+                thinking_chunk = 16
+                for i in range(0, len(thinking), thinking_chunk):
+                    piece = thinking[i:i + thinking_chunk]
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
+                    }) + "\n\n"
+            
+            # If model returned tool_calls, emit them as deltas (OpenAI-style)
+            if tool_calls:
+                for i, tc in enumerate(tool_calls):
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": i,
+                                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+                                    "type": tc.get("type", "function"),
+                                    "function": {
+                                        "name": tc.get("function", {}).get("name", ""),
+                                        "arguments": json.dumps(tc.get("function", {}).get("arguments", {})) if isinstance(tc.get("function", {}).get("arguments"), dict) else tc.get("function", {}).get("arguments", ""),
+                                    },
+                                }]
+                            },
+                            "finish_reason": None,
+                        }],
+                    }) + "\n\n"
+                # Done with tool_calls finish reason
+                yield "data: " + json.dumps({
+                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                    "model": FAKE_MODEL_ID,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                    "usage": {"completion_tokens": result.get("eval_count", 0)},
+                }) + "\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            # Stream thinking as reasoning if present
+            thinking = result.get("thinking", "")
+            if thinking:
+                thinking_chunk = 16
+                for i in range(0, len(thinking), thinking_chunk):
+                    piece = thinking[i:i + thinking_chunk]
+                    yield "data: " + json.dumps({
+                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
+                    }) + "\n\n"
+            
+            # Stream content in chunks
+            chunk_size = 16
+            for i in range(0, len(content), chunk_size):
+                piece = content[i:i + chunk_size]
+                yield "data: " + json.dumps({
+                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                    "model": FAKE_MODEL_ID,
+                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                }) + "\n\n"
+            
+            # Done
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                "model": FAKE_MODEL_ID,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": result.get("eval_count", 0)},
+            }) + "\n\n"
+            yield "data: [DONE]\n\n"
         
         return Response(
             stream_with_context(generate()),

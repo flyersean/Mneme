@@ -39,3 +39,9 @@ Tested with Qwen3.6 35B + Hermes agent. All core features functional.
   the save command hits HTTP 500 after ~86s. Likely model token limit or VRAM
   ceiling. Occurs on Qwen3.6 35B with large tool outputs in context.
   Not seen on short conversations. Does not affect normal recall.
+
+- **Future test: small context models**: Test a model with a small native context window
+  (e.g., 8K or 32K) to verify Hermes/Custom provider respects the model's actual limit
+  vs the proxy's reported metadata. Currently the proxy reports no context size — Hermes
+  defaults to 256K for custom providers. May need to expose `context_length` in model
+  metadata or set `model.max_tokens` in Hermes config.
