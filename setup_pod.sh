@@ -14,7 +14,13 @@ echo ""
 
 # ── Dependencies ──
 echo "→ Installing Python dependencies..."
-pip install -q flask flask-cors faiss-cpu numpy requests 2>/dev/null || true
+pip install flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3 || {
+    echo "→ pip install failed, trying pip3..."
+    pip3 install flask flask-cors faiss-cpu numpy requests 2>&1 | tail -3 || {
+        echo "!!! Failed to install Python dependencies. Install pip first: apt install python3-pip"
+        exit 1
+    }
+}
 
 # ── Embed model ──
 EMBED="snowflake-arctic-embed2"
