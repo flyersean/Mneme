@@ -107,12 +107,12 @@ fi
 # ── Proxy code ──
 echo "→ Downloading proxy with cache buster..."
 mkdir -p /workspace/proxy /workspace/mneme_chunks
-curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/main/proxy/mneme_proxy.py?$(date +%s)" -o /workspace/proxy/mneme_proxy.py
+curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/dev/proxy/mneme_proxy.py?$(date +%s)" -o /workspace/proxy/mneme_proxy.py
 
 # Verify syntax
 if ! python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())" 2>/dev/null; then
     echo "!!! Downloaded proxy has syntax errors. Trying backup commit..."
-    curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/8a4f462/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
+    curl -fsSL "https://raw.githubusercontent.com/flyersean/Mneme/29b7ba1/proxy/mneme_proxy.py" -o /workspace/proxy/mneme_proxy.py
     python3 -c "import ast; ast.parse(open('/workspace/proxy/mneme_proxy.py').read())"
 fi
 

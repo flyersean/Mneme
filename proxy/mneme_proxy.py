@@ -1018,6 +1018,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # ── Save trigger: <<SAVE>> forces archive ──
     SAVE_TRIGGER = "<<SAVE>>"
+DETAIL_TAG = "<<DETAIL"
     if SAVE_TRIGGER in user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
         messages[-1]["content"] = user_msg
@@ -1041,7 +1042,27 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     messages = compress_large_tool_results(messages)
     
     # Build injected memory
+    # Check for <<DETAIL>> requests in previous assistant messages
+    detail_ids = set()
+    for m in messages:
+        if m.get("role") == "assistant":
+            text = m.get("content", "")
+            if isinstance(text, str) and "<<DETAIL" in text:
+                import re
+                found = re.findall(r'<<DETAIL id:([^>]+)>>', text)
+                detail_ids.update(found)
+    detail_texts = []
+    for cid in detail_ids:
+        chunk = load_chunk(cid)
+        if chunk:
+            msgs = chunk.get("messages", [])
+            txt = "\\n".join(f"{m['role']}: {_extract_text(m['content'])[:500]}" for m in msgs)
+            detail_texts.append(f"--- REQUESTED: {chunk.get('topic_label',cid)} (id:{cid}) ---\\n{txt}")
+    extra = "\\n\\n".join(detail_texts) + "\\n\\n" if detail_texts else ""
+
     context, ptype = build_context(user_msg)
+    if extra:
+        context = extra + context
     
     # Construct prompt with memory + system prompt + live messages
     prefix = SYSTEM_PROMPT
@@ -1190,6 +1211,7 @@ if FLASK_OK:
         
         # Strip save trigger
         SAVE_TRIGGER = "<<SAVE>>"
+DETAIL_TAG = "<<DETAIL"
         if SAVE_TRIGGER in user_msg:
             user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
             messages[-1]["content"] = user_msg
