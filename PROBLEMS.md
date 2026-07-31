@@ -22,4 +22,13 @@ Tested with Qwen3.6 35B + Hermes agent. All core features functional.
 
 ## Needed features
 
-None currently. See GitHub issues.
+- **Image input handling**: Multimodal messages with `image_url` content type
+  pass through to Ollama but the memory pipeline assumes string content.
+  `classify_chunk` and `build_context` need to handle list-typed content.
+
+  **Suggested approach:** Store image references in chunk metadata.
+  When `build_context` injects a chunk containing images, append
+  `[IMAGE: <url> — attached to conversation below]` so the model can
+  re-fetch/re-analyze the image on demand. Images themselves aren't
+  embedded (arctic-embed2 is text-only) but the conversation text about
+  them is fully searchable.
