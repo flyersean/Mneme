@@ -38,6 +38,7 @@ OLLAMA_TEMP    = 0.3
 # ─── Multi-pass compression config ───
 CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
+CHUNK_SIZE = 8000  # chars per chunk for large tool outputs
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
@@ -963,68 +964,84 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
 
 
 def compress_large_tool_results(messages: list) -> list:
-    """Scan messages for large tool results and route them based on classification.
-
-    TEXT       → model-compressed summary (lossy but adequate for prose)
-    STRUCTURED → stored as DB chunk, replaced with reference string
-    SHORT      → passed through unchanged
-
-    Returns a new list with large tool outputs replaced appropriately.
+    """Chunk large tool outputs for sequential reading.
+    
+    Large outputs are split into CHUNK_SIZE segments stored in a
+    per-session buffer. The first chunk is injected inline with a
+    [Chunk 1/N] marker. When the model replies "continue", the proxy
+    swaps in the next chunk on the subsequent request.
     """
-    compressed_msgs = []
-    compressions = 0
-    chunk_stores = 0
-
+    global _active_chunks, _chunk_buffer
+    _chunk_buffer = getattr(compress_large_tool_results, '_buffer', {})
+    _active_chunks = getattr(compress_large_tool_results, '_active', {})
+    
+    session_id = "default"
+    result = []
+    
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
-
-        # Check if this is a large tool result
+        
         if role == "tool" and isinstance(content, str) and len(content) > COMPRESS_THRESHOLD:
-            # Try to identify the tool name from the preceding assistant tool_calls
-            tool_name = "tool"
-            tool_call_id = msg.get("tool_call_id", "")
-            if tool_call_id:
-                for prev in reversed(compressed_msgs):
-                    for tc in prev.get("tool_calls", []):
-                        if tc.get("id") == tool_call_id:
-                            tool_name = tc.get("function", {}).get("name", "tool")
-                            break
-                    if tool_name != "tool":
-                        break
-
-            # Classify the output to determine routing
-            category = classify_tool_output(content, tool_name)
-
-            if category == "STRUCTURED":
-                # Store raw output as chunk, replace with reference
-                reference = store_tool_chunk(content, tool_name)
-                compressed_msgs.append({**msg, "content": reference})
-                chunk_stores += 1
-            elif category == "TEXT":
-                # Use existing compression path
-                compressed_content = compress_tool_output(content, tool_name)
-                compressed_msgs.append({**msg, "content": compressed_content})
-                compressions += 1
-            else:
-                # SHORT or fallback — pass through unchanged
-                compressed_msgs.append(msg)
+            # Split into chunks
+            chunks = [content[i:i+CHUNK_SIZE] for i in range(0, len(content), CHUNK_SIZE)]
+            total = len(chunks)
+            
+            # Store all chunks
+            _chunk_buffer[session_id] = chunks
+            _active_chunks[session_id] = 0  # current chunk index
+            
+            # Inject first chunk with marker
+            first = chunks[0]
+            marker = f"\n\n[Chunk 1/{total} — reply \"continue\" for next chunk]"
+            result.append({**msg, "content": first + marker})
         else:
-            compressed_msgs.append(msg)
-
-    if compressions or chunk_stores:
-        parts = []
-        if compressions:
-            parts.append(f"{compressions} compressed")
-        if chunk_stores:
-            parts.append(f"{chunk_stores} chunked")
-        print(f"  [ROUTE] Tool outputs: {', '.join(parts)} this turn", flush=True)
-
-    return compressed_msgs
+            result.append(msg)
+    
+    compress_large_tool_results._buffer = _chunk_buffer
+    compress_large_tool_results._active = _active_chunks
+    return result
 
 
-# ─── Chat Processing ───────────────────────────────────────────
-
+def _advance_chunk(messages: list) -> list:
+    """If the last user message is 'continue', swap in the next chunk."""
+    if not messages:
+        return messages
+    
+    last = messages[-1]
+    if last.get("role") != "user":
+        return messages
+    
+    text = last.get("content", "").strip().lower()
+    if text not in ("continue", "next", "more"):
+        return messages
+    
+    session_id = "default"
+    buf = getattr(compress_large_tool_results, '_buffer', {})
+    active = getattr(compress_large_tool_results, '_active', {})
+    
+    chunks = buf.get(session_id, [])
+    idx = active.get(session_id, 0) + 1
+    
+    if idx >= len(chunks):
+        # All chunks consumed — replace with completion marker
+        messages[-1]["content"] = "[All chunks read. Continue with your response.]"
+        if session_id in buf:
+            del buf[session_id]
+        if session_id in active:
+            del active[session_id]
+        return messages
+    
+    # Swap in next chunk
+    next_chunk = chunks[idx]
+    active[session_id] = idx
+    total = len(chunks)
+    marker = f"\n\n[Chunk {idx+1}/{total} — reply \"continue\" for next chunk]"
+    messages[-1]["content"] = next_chunk + marker
+    
+    compress_large_tool_results._buffer = buf
+    compress_large_tool_results._active = active
+    return messages
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from last USER message, not last message (which may be tool output)
     user_msg = ""
@@ -1056,6 +1073,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Multi-pass compression: replace large tool outputs with model summaries
     # This prevents the model from burning its entire predict budget on raw HTML/JSON
     messages = compress_large_tool_results(messages)
+    
+    # Advance chunked tool output if user said "continue"
+    messages = _advance_chunk(messages)
+    
+    # Advance chunked tool output if user said "continue"
+    messages = _advance_chunk(messages)
     
     # Build injected memory
     context, ptype = build_context(user_msg)
