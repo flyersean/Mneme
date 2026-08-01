@@ -1755,6 +1755,23 @@ if FLASK_OK:
         })
     
     # ── Health check ──
+    @app.route("/detail/<chunk_id>", methods=["GET"])
+    def detail_chunk(chunk_id):
+        chunk = load_chunk(chunk_id)
+        if not chunk:
+            return _cors_response({"error": "not found"}, status=404)
+        parts = []
+        for m in chunk.get("messages", []):
+            r = m["role"]
+            content = m["content"][:8000]
+            parts.append({"role": r, "content": content})
+        return _cors_response({
+            "chunk_id": chunk.get("chunk_id"),
+            "topic_label": chunk.get("topic_label"),
+            "messages": parts,
+        })
+
+
     @app.route("/health", methods=["GET"])
     def health():
         return _cors_response({
