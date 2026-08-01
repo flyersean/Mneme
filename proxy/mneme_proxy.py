@@ -49,7 +49,7 @@ STAGING_IDLE   = 120
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.15
+ROUTE_THRESHOLD    = 0.08
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
@@ -1298,6 +1298,25 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             user_msg = m["content"]
             break
     
+    # ── Detail: load full chunk if DETAIL tag found ──
+    import re as _detail_re
+    detail_match = _detail_re.search(r"<<DETAIL\s+id:([^>]+)>>", user_msg, _detail_re.IGNORECASE)
+    if detail_match:
+        chunk_id = detail_match.group(1).strip()
+        print(f"  [DETAIL] Loading chunk {chunk_id}", flush=True)
+        chunk = load_chunk(chunk_id)
+        if chunk:
+            parts = []
+            for m in chunk.get("messages", []):
+                r = m["role"]
+                c = m["content"][:8000]
+                parts.append(f"{r}: {c}")
+            full_text = "\n".join(parts)
+            print(f"  [DETAIL] Returned {len(full_text)} chars", flush=True)
+            return {"content": full_text[:20000], "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
+        else:
+            return {"content": f"Chunk {chunk_id} not found.", "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
+
     # ── Save trigger: <<SAVE>> forces archive ──
     SAVE_TRIGGER = "<<SAVE>>"
     if SAVE_TRIGGER in user_msg:
