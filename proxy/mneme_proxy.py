@@ -708,7 +708,7 @@ def archive_staging():
     # noise that drowns the actual conversation topic.
     SEMANTIC_ROLES = ("user", "assistant")
     user_text = " ".join(
-        m["content"][:300] for m in msgs if m["role"] in SEMANTIC_ROLES
+        m["content"][:5000] for m in msgs if m["role"] in SEMANTIC_ROLES
     )
 
     # If it's a long input, split into segments by user message boundary
@@ -783,14 +783,14 @@ def _archive_split(msgs):
     # If only one segment, fall back to single archive
     if len(segments) <= 1:
         user_text = " ".join(
-            m["content"][:300] for m in msgs if m["role"] in ("user", "assistant")
+            m["content"][:5000] for m in msgs if m["role"] in ("user", "assistant")
         )
         return _archive_single(msgs, user_text)
 
     archived = 0
     for i, seg in enumerate(segments):
         seg_text = " ".join(
-            m["content"][:300] for m in seg if m["role"] in ("user", "assistant")
+            m["content"][:5000] for m in seg if m["role"] in ("user", "assistant")
         )
         if not seg_text.strip():
             continue
