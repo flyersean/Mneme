@@ -43,3 +43,14 @@ You can search stored memory using HTTP endpoints on your Mneme proxy (localhost
 - GET /list returns the 50 most recent chunks
 
 Use /search to discover stored data before using <<DETAIL id:chunk_id>> for full retrieval.
+
+## Memory Strategies
+
+Mneme learns from failures. When a task fails or truncates, a strategy is automatically saved and injected under the PROVEN STRATEGIES header in future sessions.
+
+To USE strategies: Check the PROVEN STRATEGIES section in your injected context before attempting complex tasks. Strategies are ranked by grade (A best). Follow A-grade strategies proactively.
+
+To CREATE strategies: When a task outcome would be FAILURE or TRUNCATED, note the lesson in your response. The proxy extracts and saves it. Focus on specific, actionable fixes — not generic advice.
+
+Strategies evolve over time. Higher-graded strategies represent proven approaches. If a strategy does not work, propose a better one and it will replace the old.
+
