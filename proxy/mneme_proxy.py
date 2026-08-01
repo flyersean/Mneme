@@ -36,7 +36,7 @@ DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 OLLAMA_TEMP    = 0.3
 
 # ─── Multi-pass compression config ───
-CLASSIFY_MODEL = "qwen:0.5b"  # tiny model for topic labels
+# CLASSIFY_MODEL removed — using embedding-based classification
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
 CHUNK_SIZE = 8000  # chars per chunk for large tool outputs
 COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
@@ -441,37 +441,94 @@ CLASSIFY_PROMPT = (
     "Conversation:\n"
 )
 
+# Topic clusters for embedding-based classification
+TOPIC_CLUSTERS = {
+    "technology": "programming code software development debugging api github git server deployment infrastructure python javascript shell terminal command",
+    "memory_system": "memories memory retrieval injection context vector embedding FAISS database chunk storage proxy mneme session archive recall inject",
+    "configuration": "config configuration setup settings profile install environment variable hermes",
+    "web_content": "browser web page article wikipedia search reading extract navigate snapshot url fetch",
+    "debugging": "error crash bug fix debug traceback 500 exception failure broken troubleshoot diagnosis",
+    "data_analysis": "data statistics analysis numbers metrics counting spreadsheet table query",
+    "conversation": "chat conversation discussion talking question answer explaining clarifying planning brainstorming",
+    "olympics": "olympic games winter summer medal athlete sport competition milano cortina beijing",
+    "politics_news": "government border incident crisis migration policy president minister country international",
+    "sports": "sport football soccer team game match player champion league tournament score result",
+    "science": "science research physics chemistry biology experiment astronomy space rocket launch nasa",
+    "other": "uncategorized general topic miscellaneous"
+}
+
+# Pre-compute cluster embeddings at startup
+TOPIC_VECTORS = {}
+for label, desc in TOPIC_CLUSTERS.items():
+    try:
+        TOPIC_VECTORS[label] = embed(desc)
+    except Exception:
+        TOPIC_VECTORS[label] = None
+
+
 def classify_chunk(messages: list) -> dict:
-    text = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in messages[-6:])
-    prompt = CLASSIFY_PROMPT + text + "\n\nReply with ONLY the 3 lines."
-    r = query_model([{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2048)
-    c = r["content"]
-    if not c:
-        # Fallback: extract from thinking trace
-        c = r.get("thinking", "")
+    """Classify using embedding similarity against topic clusters.
+    No model call — pure vector math. Returns topic label + heuristics."""
+    # Build text from messages for embedding
+    text = " ".join(m["content"][:500] for m in messages if m["role"] in ("user", "assistant"))
     
-    label   = re.search(r'LABEL:\s*(.+?)(?:\n|$)', c, re.IGNORECASE)
-    outcome = re.search(r'OUTCOME:\s*(.+?)(?:\n|$)', c, re.IGNORECASE)
-    ptype   = re.search(r'TYPE:\s*(.+?)(?:\n|$)', c, re.IGNORECASE)
+    # Infer outcome heuristically from message content
+    outcome = "SUCCESS"
+    ptype = "other"
+    
+    full_text = " ".join(m["content"][:200] for m in messages)
+    lower = full_text.lower()
+    
+    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
+        outcome = "FAILURE"
+        ptype = "error"
+    elif any(w in lower for w in ("continue", "next chunk", "more chunks")):
+        outcome = "TRUNCATED"
+    elif any(w in lower for w in ("save", "archive", "memory", "store")):
+        ptype = "memory_operation"
+    elif any(w in lower for w in ("browser", "://", "page", "article", "wikipedia", "extract", "content")):
+        ptype = "web_retrieval"
+    elif any(w in lower for w in ("code", "function", "def ", "patch", "fix")):
+        ptype = "code"
+    
+    # Embedding-based topic: find nearest cluster
+    try:
+        vec = embed(text)
+        if vec is not None and vec.shape[0] > 0:
+            best_label = "other"
+            best_score = -2.0
+            for label, cvec in TOPIC_VECTORS.items():
+                if cvec is not None:
+                    score = np.dot(vec, cvec) / (np.linalg.norm(vec) * np.linalg.norm(cvec) + 1e-8)
+                    if score > best_score:
+                        best_score = score
+                        best_label = label
+            
+            # Generate readable topic label from best cluster + first words
+            first_words = " ".join(text.split()[:6])[:60]
+            topic_label = f"{best_label}: {first_words}" if best_label != "other" else first_words
+        else:
+            topic_label = "uncategorized"
+    except Exception:
+        topic_label = "uncategorized"
     
     return {
-        "topic_label": label.group(1).strip()[:80] if label else "uncategorized",
-        "outcome": outcome.group(1).strip() if outcome else "UNCERTAIN",
-        "problem_type": ptype.group(1).strip() if ptype else "other",
+        "topic_label": topic_label[:80],
+        "outcome": outcome,
+        "problem_type": ptype,
     }
 
 # ─── Strategy Generation ───────────────────────────────────────
 
 def generate_strategy(messages: list, outcome: str) -> str:
+    """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = "\n".join(f"{m['role']}: {m['content'][:300]}" for m in messages[-6:])
-    prompt = (
-        f"The outcome was {outcome}. Generate a brief strategy (1-3 sentences) "
-        f"that would help you succeed next time on a similar problem.\n\n{text}"
-    )
-    r = query_model([{"role": "user", "content": prompt}], temperature=0.5, max_tokens=2048)
-    return r["content"].strip()
+    text = " ".join(m["content"][:300] for m in messages[-3:] if m["role"] in ("user", "assistant"))
+    # Return structured strategy note for the model to learn from
+    if outcome == "FAILURE":
+        return f"FAILURE on: {text[:200]}. Retry with different approach."
+    return f"TRUNCATED on: {text[:200]}. Content too large — use chunked reading."
 
 # ─── Routing ───────────────────────────────────────────────────
 
