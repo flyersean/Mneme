@@ -1005,6 +1005,8 @@ def compress_large_tool_results(messages: list) -> list:
             first = chunks[0]
             marker = f"\n\n[Chunk 1/{total} — reply \"continue\" for next chunk]"
             result.append({**msg, "content": first + marker})
+            # Also stage full text for permanent archival with FAISS vector
+            staging.add("assistant", content)
         else:
             result.append(msg)
     
