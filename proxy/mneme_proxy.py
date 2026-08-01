@@ -49,7 +49,7 @@ STAGING_IDLE   = 120
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.3
+ROUTE_THRESHOLD    = 0.15
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
@@ -666,7 +666,9 @@ def build_context(query: str) -> Tuple[str, str]:
         if not chunk:
             continue
         ptype = chunk.get("problem_type", "other")
-        msg_text = "\n".join(
+        topic = chunk.get("topic_label", "unknown")
+        msg_text = f"--- {topic} (id:{cid}) ---\n"
+        msg_text += "\n".join(
             f"{m['role']}: {m['content'][:300]}" 
             for m in chunk.get("messages", [])
         )
@@ -846,13 +848,23 @@ def _merge_small_groups(groups: list) -> list:
 
 MAX_CHUNK_SIZE = 10000  # chars per chunk for embedding
 
+
+def _clean_content(text: str) -> str:
+    """Strip browser wrapper boilerplate to get real content for embedding."""
+    # browser_console/navigate output: remove ~600 chars of wrapper boilerplate
+    lower = text[:300].lower()
+    if "browser_console" in lower or "browser_navigate" in lower or "untrusted_tool_result" in lower:
+        return text[600:] if len(text) > 600 else text
+    return text
+
+
 def _archive_group(topic_label: str, msgs: list) -> int:
     """Archive a topic group, splitting if too large. Returns chunk count."""
     SEMANTIC_ROLES = ("user", "assistant")
     
-    # Build embedding text from semantic messages
+    # Build embedding text — strip browser wrapper noise for clean vectors
     user_text = " ".join(
-        m["content"][:5000] for m in msgs if m["role"] in SEMANTIC_ROLES
+        _clean_content(m["content"])[:5000] for m in msgs if m["role"] in SEMANTIC_ROLES
     )
     
     # If group is small enough, archive as single chunk
