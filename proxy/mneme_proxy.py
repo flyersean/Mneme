@@ -892,7 +892,7 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     # If group is small enough, archive as single chunk
     if len(user_text) <= MAX_CHUNK_SIZE:
         descriptive = _generate_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
-    return _archive_single_chunk(msgs, user_text, descriptive)
+        return _archive_single_chunk(msgs, user_text, descriptive)
     
     # Split into sibling chunks by MAX_CHUNK_SIZE
     total = 0
@@ -1192,8 +1192,45 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
 
 
 def compress_large_tool_results(messages: list) -> list:
-    """PASS-THROUGH: chunking disabled. Returns messages unchanged."""
-    return messages  # CHUNKING DISABLED
+    """Silently stage large tool outputs for archival.
+    
+    Splits outputs > COMPRESS_THRESHOLD chars into chunks and adds each
+    to the staging buffer. Model sees unchanged output — no chunk markers,
+    no "continue" loops. Useful flag prevents repeated staging of same content.
+    """
+    _staged_hashes = getattr(compress_large_tool_results, '_staged_hashes', set())
+    
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
+            continue
+        if not isinstance(content, str):
+            continue
+        
+        # Dedup: don't stage the same page twice in same session
+        import hashlib
+        h = hashlib.md5(content[:200].encode()).hexdigest()
+        if h in _staged_hashes:
+            continue
+        _staged_hashes.add(h)
+        
+        # Split into chunks and stage each
+        for i in range(0, len(content), CHUNK_SIZE):
+            chunk = content[i:i+CHUNK_SIZE]
+            staging.add("assistant", chunk)
+        
+        print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks", flush=True)
+        
+        # Trigger archive if buffer has substantial content
+        if staging.should_flush():
+            import threading
+            threading.Thread(target=archive_staging, daemon=True).start()
+            print(f"  [STAGE] Auto-flushed staging buffer", flush=True)
+    
+    compress_large_tool_results._staged_hashes = _staged_hashes
+    return messages  # unchanged — model sees full tool output
 
 
 # ─── ORIGINAL CHUNKING (disabled) ───
@@ -1372,7 +1409,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # ── Detail: load full chunk if DETAIL tag found ──
     import re as _detail_re
-    detail_match = _detail_re.search(r"<<DETAIL\s+id:([^>]+)>>", user_msg, _detail_re.IGNORECASE)
+    # Scan last message regardless of role (model may output DETAIL in response)
+    last_msg = messages[-1].get("content", "") if messages else ""
+    detail_match = _detail_re.search(r"<<DETAIL\s+id:([^>]+)>>", last_msg, _detail_re.IGNORECASE)
     if detail_match:
         chunk_id = detail_match.group(1).strip()
         print(f"  [DETAIL] Loading chunk {chunk_id}", flush=True)
