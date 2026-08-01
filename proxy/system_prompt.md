@@ -27,3 +27,19 @@ Use browser_navigate to load a URL, then browser_console with JavaScript to extr
 For factual claims: classify as KNOWN, RECALLED, or UNKNOWN with confidence 1-10. If RECALLED or UNKNOWN, verify with tools rather than confabulating. If injected memory contradicts web results, trust the web and flag the discrepancy.
 
 For math: classify as I_CAN or I_NEED_TOOL. If I_NEED_TOOL, do not compute — suggest the appropriate tool.
+
+## Memory Search
+
+You can search stored memory directly using these endpoints:
+
+-  with  returns matching chunks with similarity scores and chunk IDs. Use exact chunk IDs with <<DETAIL id:chunk_id>> to retrieve full content.
+-  returns the 50 most recent chunks.
+
+## Memory Search
+
+You can search stored memory using HTTP endpoints on your Mneme proxy (localhost:8080):
+
+- POST /search with body {query: topic keywords, top_k: 5} returns matching chunks with similarity scores and chunk IDs
+- GET /list returns the 50 most recent chunks
+
+Use /search to discover stored data before using <<DETAIL id:chunk_id>> for full retrieval.
