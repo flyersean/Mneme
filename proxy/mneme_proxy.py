@@ -978,11 +978,21 @@ def compress_large_tool_results(messages: list) -> list:
     session_id = "default"
     result = []
     
+    # Debug: log all message roles
+    for i, msg in enumerate(messages):
+        r = msg.get("role", "?")
+        c_len = len(msg.get("content", "")) if isinstance(msg.get("content", ""), str) else 0
+        if c_len > 1000:
+            print(f"  [CHUNK-DEBUG] msg[{i}] role={r} content_len={c_len}", flush=True)
+    
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
         
+        if role == "tool":
+            print(f"  [CHUNK-DEBUG] tool msg: type={type(content).__name__}, len={len(content) if hasattr(content, '__len__') else 'N/A'}", flush=True)
         if role == "tool" and isinstance(content, str) and len(content) > COMPRESS_THRESHOLD:
+            print(f"  [CHUNK] Splitting {role} output: {len(content)} chars into {int(len(content)/CHUNK_SIZE)+1} chunks", flush=True)
             # Split into chunks
             chunks = [content[i:i+CHUNK_SIZE] for i in range(0, len(content), CHUNK_SIZE)]
             total = len(chunks)
@@ -1042,6 +1052,39 @@ def _advance_chunk(messages: list) -> list:
     compress_large_tool_results._buffer = buf
     compress_large_tool_results._active = active
     return messages
+
+def _needs_chunk_loop(response_content: str) -> bool:
+    """Check if model response indicates it wants the next chunk."""
+    text = response_content.strip().lower()
+    return text in ("continue", "next", "more", "next chunk", "continue reading")
+
+
+def _model_loop_read_all(messages: list, tools: list = None) -> dict:
+    """Internal loop: feed chunks to model until all consumed.
+    
+    Keeps calling Ollama as long as the model says "continue" after
+    receiving a chunk. Returns the final non-continue result.
+    """
+    session_id = "default"
+    buf = getattr(compress_large_tool_results, '_buffer', {})
+    active = getattr(compress_large_tool_results, '_active', {})
+    
+    max_loops = 50
+    nchunks = len(buf.get("default", []))
+    print(f"  [LOOP] Model loop: {nchunks} chunks queued", flush=True)
+    for _ in range(max_loops):
+        result = query_model(messages, tools=tools)
+        content = result.get("content", "").strip()
+        
+        if not _needs_chunk_loop(content):
+            return result
+        
+        # Advance chunk and loop
+        _advance_chunk(messages)
+    
+    return {"content": "[Error: chunk loop exceeded 50 iterations]", 
+            "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from last USER message, not last message (which may be tool output)
     user_msg = ""
@@ -1090,7 +1133,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     full_msgs = [{"role": "system", "content": prefix}] + messages
     
-    result = query_model(full_msgs, tools=msg_tools)
+    # If chunks are pending, loop internally until all consumed
+    buf = getattr(compress_large_tool_results, '_buffer', {})
+    if buf.get("default"):
+        result = _model_loop_read_all(full_msgs, tools=msg_tools)
+    else:
+        result = query_model(full_msgs, tools=msg_tools)
     
     staging.add("user", user_msg)
     if result["content"]:
