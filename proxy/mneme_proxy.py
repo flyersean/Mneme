@@ -1765,6 +1765,28 @@ if FLASK_OK:
         })
 
     # ── Save: force-flush the staging buffer ──
+    @app.route("/search", methods=["POST"])
+    def search_memory():
+        data = request.get_json(force=True)
+        query = data.get("query", "")
+        top_k = data.get("top_k", 10)
+        vec = embed(query)
+        results = _cosine_search(vec, top_k, threshold=ROUTE_THRESHOLD)
+        chunks = []
+        for score, chunk_id in results:
+            row = db.execute("SELECT topic_label, grade, created_at, outcome FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
+            if row:
+                chunks.append({"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "similarity": round(score, 4)})
+        return _cors_response({"results": chunks})
+
+
+    @app.route("/list", methods=["GET"])
+    def list_chunks():
+        rows = db.execute("SELECT chunk_id, topic_label, grade, created_at, LENGTH(messages) as size FROM chunks ORDER BY created_at DESC LIMIT 50").fetchall()
+        chunks = [{"chunk_id": r[0], "topic_label": r[1], "grade": r[2], "created_at": r[3], "size_chars": r[4]} for r in rows]
+        return _cors_response({"chunks": chunks, "total": len(chunks)})
+
+
     @app.route("/save", methods=["POST"])
     def save():
         try:
