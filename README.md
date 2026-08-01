@@ -1,17 +1,12 @@
 # Mneme
 
-**Work in progress** — built by flyersean with DeepSeek and Kimi K3 (AI-assisted development).
-
-Conversational memory system for LLMs. Archives conversations, classifies them by
-topic, and injects relevant past context into future sessions. Works as a transparent
-proxy between your agent and Ollama.
+Conversational memory system for LLMs. Archives conversations, classifies them by topic, and injects relevant past context into future sessions. Transparent proxy between your agent and Ollama.
 
 Named after Mneme, the Greek muse of memory.
 
 ## Quick Start
 
 ```bash
-# Clone and run on any Linux pod with Ollama
 git clone https://github.com/flyersean/Mneme.git /tmp/mneme
 bash /tmp/mneme/setup_pod.sh
 ```
@@ -29,15 +24,18 @@ Agent (Hermes / any OpenAI client) → Mneme proxy (:8080) → Ollama (:11434)
 
 | Feature | Status |
 |---------|--------|
-| Tool calling (streaming + non-streaming) | ✓ |
-| Memory injection with FAISS routing | ✓ |
-| Classification (I_CAN/I_NEED_TOOL) | ✓ |
-| Hallucination guard (KNOWN/RECALLED/UNKNOWN) | ✓ |
+| Streaming + non-streaming tool calls | ✓ |
+| FAISS memory injection with routing | ✓ |
+| Silent page ingestion (auto-stage + save) | ✓ |
+| Topic-aware chunking (per-message classification) | ✓ |
+| Descriptive topic labels from content | ✓ |
+| Embedding-based classification (no model call) | ✓ |
 | Chunk+pool embedding (arctic-embed2) | ✓ |
-| Large output handling (TEXT/STRUCTURED/SHORT) | ✓ |
-| Force save (`POST /save` or `<<SAVE>>` in chat) | ✓ |
-| Per-message topic segmentation | ✓ |
+| `<<DETAIL id:chunk_id>>` retrieval | ✓ |
+| `<<SAVE>>` archive trigger | ✓ |
+| Force save (`POST /save`) | ✓ |
 | Multi-model support (same DB) | ✓ |
+| Sliding window (32 messages) | ✓ |
 
 ## Hermes Integration
 
@@ -52,10 +50,15 @@ memory:
   user_profile_enabled: false
 ```
 
+## Commands
+
+- `<<SAVE>>` — archive current conversation
+- `<<DETAIL id:chunk_id>>` — retrieve full stored chunk
+
 ## Dependencies
 
-- Ollama (any chat model + snowflake-arctic-embed2)
-- Python 3.11+, Flask, FAISS, SQLite
+- Ollama (chat model + snowflake-arctic-embed2)
+- Python 3.11+, Flask, FAISS, SQLite, NumPy
 
 ## License
 
