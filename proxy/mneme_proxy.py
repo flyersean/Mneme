@@ -748,52 +748,187 @@ class StagingBuffer:
 staging = StagingBuffer()
 
 def archive_staging():
-    """Flush the staging buffer into archived chunks.
+    """Flush the staging buffer into topic-split archived chunks.
 
-    Returns the number of chunks archived (0 if the buffer was empty).
-    When the combined text exceeds MAX_CHUNK_WORDS words, the buffer is split
-    into segments by user message and each segment is archived as its own
-    chunk with per-segment classification (fixes topic mixing).
+    Each topic group gets its own chunk. Within a topic, chunks are capped
+    at MAX_CHUNK_SIZE chars. Overflow gets versioned sibling chunks.
+
+    Returns the number of chunks archived.
     """
     msgs = staging.flush()
     if not msgs:
         return 0
 
-    # Build combined text from user + assistant messages for embedding.
-    # Skip role="tool" — tool output is raw data (file contents, command
-    # output), not semantic context, and it dominates the embedding with
-    # noise that drowns the actual conversation topic.
+    # Classify each message into a topic group
+    groups = _topic_split(msgs)
+    
+    total = 0
+    for topic_label, group_msgs in groups:
+        n = _archive_group(topic_label, group_msgs)
+        total += n
+    
+    print(f"  [ARCHIVE] {len(groups)} topics, {total} chunks total", flush=True)
+    return total
+
+
+def _classify_message(msg: dict) -> str:
+    """Classify a single message using embedding similarity to topic clusters."""
+    text = msg.get("content", "")
+    if not text or len(text) < 10:
+        return "other"
+    
+    try:
+        vec = embed(text[:2000])  # use first 2K chars for embedding
+        if vec is None or vec.shape[0] == 0:
+            return "other"
+        
+        best_label = "other"
+        best_score = -2.0
+        for label, cvec in TOPIC_VECTORS.items():
+            if cvec is not None:
+                score = np.dot(vec, cvec) / (np.linalg.norm(vec) * np.linalg.norm(cvec) + 1e-8)
+                if score > best_score:
+                    best_score = score
+                    best_label = label
+        
+        return best_label
+    except Exception:
+        return "other"
+
+
+def _topic_split(msgs: list) -> list:
+    """Split messages into topic groups. Returns [(topic_label, [msgs]), ...]."""
+    from itertools import groupby
+    
+    # Assign topic to each message
+    labeled = []
+    for m in msgs:
+        role = m.get("role", "")
+        if role in ("user", "assistant"):
+            topic = _classify_message(m)
+        else:
+            topic = "system"
+        labeled.append((topic, m))
+    
+    # Group consecutive messages with same topic
+    groups = []
+    for topic, group in groupby(labeled, key=lambda x: x[0]):
+        msgs_in_group = [g[1] for g in group]
+        groups.append((topic, msgs_in_group))
+    
+    # Merge small groups (< 3 messages) into neighbors if they share a broad category
+    merged = _merge_small_groups(groups)
+    
+    return merged
+
+
+def _merge_small_groups(groups: list) -> list:
+    """Merge tiny groups (1-2 msgs) into adjacent groups."""
+    if len(groups) <= 1:
+        return groups
+    
+    result = []
+    i = 0
+    while i < len(groups):
+        topic, msgs = groups[i]
+        if len(msgs) <= 2 and i + 1 < len(groups):
+            # Merge with next group
+            next_topic, next_msgs = groups[i + 1]
+            merged_topic = f"{topic}+{next_topic}"[:40]
+            merged_msgs = msgs + next_msgs
+            result.append((merged_topic, merged_msgs))
+            i += 2
+        else:
+            result.append((topic, msgs))
+            i += 1
+    return result
+
+
+MAX_CHUNK_SIZE = 10000  # chars per chunk for embedding
+
+def _archive_group(topic_label: str, msgs: list) -> int:
+    """Archive a topic group, splitting if too large. Returns chunk count."""
     SEMANTIC_ROLES = ("user", "assistant")
+    
+    # Build embedding text from semantic messages
     user_text = " ".join(
         m["content"][:5000] for m in msgs if m["role"] in SEMANTIC_ROLES
     )
+    
+    # If group is small enough, archive as single chunk
+    if len(user_text) <= MAX_CHUNK_SIZE:
+        return _archive_single_chunk(msgs, user_text, topic_label)
+    
+    # Split into sibling chunks by MAX_CHUNK_SIZE
+    total = 0
+    offset = 0
+    seq_base = db.execute(
+        "SELECT COUNT(*) FROM chunks WHERE topic_label LIKE ?", 
+        (f"{topic_label[:20]}%",)
+    ).fetchone()[0] + 1
+    
+    # Split by message boundary, not raw char offset
+    current = []
+    current_text = ""
+    
+    for m in msgs:
+        if m["role"] not in SEMANTIC_ROLES:
+            current.append(m)
+            continue
+        
+        frag = m["content"][:5000]
+        if current_text and len(current_text) + len(frag) > MAX_CHUNK_SIZE:
+            # Archive current batch
+            label = f"{topic_label[:20]}_p{seq_base}"
+            _archive_single_chunk(current, current_text, label)
+            total += 1
+            seq_base += 1
+            current = []
+            current_text = ""
+        
+        current.append(m)
+        current_text += " " + frag
+    
+    # Archive remaining
+    if current:
+        label = f"{topic_label[:20]}_p{seq_base}" if total > 0 else topic_label
+        _archive_single_chunk(current, current_text, label)
+        total += 1
+    
+    return total
 
-    # If it's a long input, split into segments by user message boundary
-    word_count = len(user_text.split())
-    if word_count > MAX_CHUNK_WORDS:
-        print(f"  [ARCHIVE] Long input ({word_count} words) — splitting into segments by user message", flush=True)
-        return _archive_split(msgs)
 
-    return _archive_single(msgs, user_text)
-
-
-def _archive_single(msgs, user_text):
-    """Archive a single chunk (normal case). Returns 1 on success."""
-    klass = classify_chunk(msgs)
-    topic = klass["topic_label"]
-    outcome = klass["outcome"]
-    ptype = klass["problem_type"]
-
+def _archive_single_chunk(msgs: list, user_text: str, topic_label: str) -> int:
+    """Archive one chunk. Returns 1 on success."""
+    # Determine outcome and problem type heuristically
+    full_text = " ".join(m["content"][:200] for m in msgs if m["role"] in ("user", "assistant"))
+    lower = full_text.lower()
+    
+    outcome = "SUCCESS"
+    ptype = "other"
+    
+    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
+        outcome = "FAILURE"
+        ptype = "error"
+    elif any(w in lower for w in ("continue", "next chunk", "more chunks")):
+        outcome = "TRUNCATED"
+    elif any(w in lower for w in ("save", "archive", "memory", "store")):
+        ptype = "memory_operation"
+    elif any(w in lower for w in ("browser", "http", "page", "article", "wikipedia", "extract")):
+        ptype = "web_retrieval"
+    elif any(w in lower for w in ("code", "function", "def ", "patch", "fix", "debug")):
+        ptype = "code"
+    
     strategy = generate_strategy(msgs, outcome)
     vec = embed(user_text)
-
-    row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic,)).fetchone()
+    
+    row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic_label,)).fetchone()
     seq = (row[0] if row else 0) + 1
-    chunk_id = f"{topic[:40]}_v{seq}"
-
-    save_chunk(chunk_id, topic, msgs, vec, strategy=strategy,
+    chunk_id = f"{topic_label[:40]}_v{seq}"
+    
+    save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy,
                outcome=outcome, problem_type=ptype)
-
+    
     if strategy and ptype != "other":
         sid = f"strat_{ptype}_{seq}_{int(time.time())}"
         db.execute(
@@ -802,12 +937,11 @@ def _archive_single(msgs, user_text):
              datetime.now(timezone.utc).isoformat())
         )
         db.commit()
-
-    print(f"  [ARCHIVE] {chunk_id} topic={topic} outcome={outcome} type={ptype}", flush=True)
+    
+    print(f"  [ARCHIVE] {chunk_id} topic={topic_label[:30]} outcome={outcome} type={ptype} ({len(user_text)} chars)", flush=True)
     return 1
 
 
-def _segment_by_user(msgs):
     """Split a message list into segments, each starting at a user message.
 
     Each segment is a list of messages: one user message plus all following
