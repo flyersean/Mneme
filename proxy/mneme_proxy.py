@@ -1231,8 +1231,14 @@ def compress_large_tool_results(messages: list) -> list:
             
             # Inject first chunk with marker
             first = chunks[0]
-            marker = f"\n\n[Chunk 1/{total} — reply \"continue\" for next chunk]"
-            result.append({**msg, "content": first + marker})
+            import hashlib, os as _os; hi = hashlib.md5(content[:200].encode()).hexdigest()[:8]; cd = "/tmp/mneme_chunks"; _os.makedirs(cd, exist_ok=True)
+            for ci, chunk in enumerate(chunks):
+                fp = f"{cd}/chunk_{hi}_{ci+1}of{total}.txt"
+                with open(fp, "w") as cf:
+                    cf.write(chunk)
+            print(f"  [CHUNK] Wrote {total} chunks to {cd}/chunk_{hi}_*.txt", flush=True)
+            hint = f"\n\n--- Page truncated. Read chunks with read_file: {cd}/chunk_{hi}_2of{total}.txt to {cd}/chunk_{hi}_{total}of{total}.txt ---"
+            result.append({**msg, "content": first + hint})
             # Also stage full text for permanent archival with FAISS vector
             staging.add("assistant", content)
         else:
