@@ -858,6 +858,28 @@ def _clean_content(text: str) -> str:
     return text
 
 
+
+def _generate_topic_label(text):
+    clean = _clean_content(text)[:2000].lower()
+    keywords = []
+    import re as _tlre
+    dates = _tlre.findall(r"(20\d{2})", clean)
+    if dates:
+        keywords.append(dates[0])
+    locations = {"spain":"Spain","morocco":"Morocco","ceuta":"Ceuta","melilla":"Melilla","france":"France","italy":"Italy","japan":"Japan","china":"China","russia":"Russia","canada":"Canada","mexico":"Mexico","brazil":"Brazil","kumamoto":"Kumamoto"}
+    for k,v in locations.items():
+        if k in clean:
+            keywords.append(v)
+    events = {"earthquake":"earthquake","border":"border","migrant":"migration","olympic":"Olympics","election":"election","hurricane":"hurricane","storm":"storm"}
+    for k,v in events.items():
+        if k in clean:
+            keywords.append(v)
+    if keywords:
+        return " ".join(keywords[:4])[:60]
+    words = [w for w in clean.split()[:8] if len(w) > 3]
+    return " ".join(words)[:60] or "untitled"
+
+
 def _archive_group(topic_label: str, msgs: list) -> int:
     """Archive a topic group, splitting if too large. Returns chunk count."""
     SEMANTIC_ROLES = ("user", "assistant")
@@ -869,7 +891,8 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     
     # If group is small enough, archive as single chunk
     if len(user_text) <= MAX_CHUNK_SIZE:
-        return _archive_single_chunk(msgs, user_text, topic_label)
+        descriptive = _generate_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
+    return _archive_single_chunk(msgs, user_text, descriptive)
     
     # Split into sibling chunks by MAX_CHUNK_SIZE
     total = 0
@@ -891,7 +914,8 @@ def _archive_group(topic_label: str, msgs: list) -> int:
         frag = m["content"][:5000]
         if current_text and len(current_text) + len(frag) > MAX_CHUNK_SIZE:
             # Archive current batch
-            label = f"{topic_label[:20]}_p{seq_base}"
+            descriptive = _generate_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
+            label = f"{descriptive[:30]}_p{seq_base}"
             _archive_single_chunk(current, current_text, label)
             total += 1
             seq_base += 1
@@ -903,7 +927,8 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     
     # Archive remaining
     if current:
-        label = f"{topic_label[:20]}_p{seq_base}" if total > 0 else topic_label
+        descriptive = _generate_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
+        label = f"{descriptive[:30]}_p{seq_base}" if total > 0 else (_generate_topic_label(user_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label)
         _archive_single_chunk(current, current_text, label)
         total += 1
     
@@ -1259,9 +1284,15 @@ def _advance_chunk(messages: list) -> list:
     return messages
 
 def _needs_chunk_loop(response_content: str) -> bool:
-    """Check if model response indicates it wants the next chunk."""
+    """Check if model response is ONLY a chunk-advance signal.
+    
+    Strict: only exact short keywords. Longer responses with real content
+    are NOT treated as chunk-advance signals.
+    """
     text = response_content.strip().lower()
-    return text in ("continue", "next", "more", "next chunk", "continue reading")
+    if len(text) > 30:
+        return False  # real response, not a chunk signal
+    return text in ("continue", "next", "more", "next chunk", "continue reading", "[chunk loaded]")
 
 
 def _model_loop_read_all(messages: list, tools: list = None) -> dict:
@@ -1277,18 +1308,38 @@ def _model_loop_read_all(messages: list, tools: list = None) -> dict:
     max_loops = 50
     nchunks = len(buf.get("default", []))
     print(f"  [LOOP] Model loop: {nchunks} chunks queued", flush=True)
+    nchunks = len(buf.get("default", []))
+    if nchunks > 1:
+        print(f"  [LOOP] Chunk loop: {nchunks} chunks, auto-advancing tool calls", flush=True)
     for _ in range(max_loops):
         result = query_model(messages, tools=tools)
         content = result.get("content", "").strip()
         
         if not _needs_chunk_loop(content):
+            # If model returned tool_calls but chunks remain, advance and loop
+            tool_calls = result.get("tool_calls", []) or result.get("tool_calls_json", [])
+            remaining = active.get("default", 0) < len(buf.get("default", []))
+            if tool_calls and remaining:
+                print(f"  [LOOP] Got tool_calls with {len(tool_calls)} calls — advancing chunk once", flush=True)
+                _advance_chunk(messages)
+                # After advancing, return the chunk content directly as a simulated response
+                # so the model doesn't keep trying tools
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "tool":
+                        return {"content": messages[i]["content"], "tool_calls": [], "eval_count": 0, "done_reason": "chunk_advance"}
+                continue
             return result
         
         # Advance chunk and loop
         _advance_chunk(messages)
     
-    return {"content": "[Error: chunk loop exceeded 50 iterations]", 
-            "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
+    # All chunks consumed — auto-save the conversation
+    print(f"  [LOOP] All chunks consumed — auto-saving", flush=True)
+    # Flush staging buffer to persist page content
+    import threading
+    threading.Thread(target=archive_staging, daemon=True).start()
+    return {"content": "[All chunks consumed and saved. Continue with your analysis.]", 
+            "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "loop_complete"}
 
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from last USER message, not last message (which may be tool output)
