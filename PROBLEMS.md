@@ -1,8 +1,8 @@
 # Mneme — Issue Tracker
 
-## Status: Working — silent page staging live (2026-08-01)
+## Status: Architecture redesign — dynamic topics + injection alignment
 
-dev-chunks branch. Tested with Qwen3.6 35B + Hermes agent.
+dev-chunks branch. Pod offline.
 
 ## ✓ Resolved
 
@@ -11,35 +11,61 @@ dev-chunks branch. Tested with Qwen3.6 35B + Hermes agent.
 - Embedding: arctic-embed2 1024-dim, chunk+pool
 - Hallucination guard: KNOWN/RECALLED/UNKNOWN
 - Force save: POST /save, <<SAVE>> chat trigger
-- Topic-aware archive engine: splits by message topic, caps at 10K
+- Topic-aware archive engine: splits by message topic
 - Embedding-based classification (no model call)
-- DB storage cap: 8000 chars per message
-- Embedding cap: 5000 chars per message
-- Silent page staging: large tool outputs auto-staged into chunks
-- Chunk IDs visible in injection headers (id:Topic_v1 format)
-- <<DETAIL id:chunk_id>> handler working
+- Silent page staging: large tool outputs auto-staged
+- <<DETAIL id:chunk_id>> handler
 - Descriptive topic labels from page content
 - 32-message sliding window
-- _archive_group indentation bug fixed
-- All three prompts aligned (SOUL.md, AGENTS.md, proxy system_prompt.md)
-- Pod restart script at /workspace/restart_proxy.sh (fuser installed)
-- Chunking disabled — model operates natively, proxy handles storage silently
+- All three prompts aligned
+- /search and /list endpoints
+- /detail/<chunk_id> endpoint
+- Memory Strategies instructions in system prompt
 
-## Active issues
+## Active — P0: Code review findings
 
-### P1: Page recall needs full-page saves
-Model reads pages but only 50K chars via browser_console .slice(0,50000).
-Pages > 50K lose content. Silent staging saves what's available but
-model needs to extract > 50K by using offset to get remaining text.
-Can be addressed by system prompt instruction to re-extract with offset.
+### 1. save_chunk drops messages (`messages[-6:]`)
+Line 401: Only saves last 6 messages per chunk. Multi-page archives silently lose content.
+Fix: Remove [-6:] cap or raise to 50.
 
-### P2: FAISS scaling
-IndexFlatIP is O(n). At ~10K+ chunks, switch to IndexIVFFlat.
-Current: ~40 chunks — not urgent.
+### 2. build_context injects 300 chars per message
+Line 672: `m["content"][:300]` — supposed to be 1500. Model sees 300-char snippets
+of 1500-char chunks. Huge blind spot for recall.
+Fix: Match chunk size (set to 300-500).
+
+### 3. _trim_chunks also uses 300-char truncation  
+Line 605: Token estimation uses truncated text — inaccurate budget.
+Fix: Match chunk size.
+
+### 4. Topic dedup regex broken
+`re.sub(r'_v\d+$', '', cid)` strips "v1" but not "p24" in "politics_news_p24_v1".
+Every chunk gets unique topic — dedup is useless.
+Fix: Strip internal numbering too, or use topic_label from DB directly.
+
+### 5. Fixed 12-cluster _classify_message → "other" for everything new
+Ebola, hurricanes, earthquakes, Nvidia earnings — all map to "other".
+No new topics can form. Topic count is frozen.
+Fix: Replace with _generate_topic_label (content-derived labels).
+
+## Architecture plan (to implement)
+
+### A. Dynamic topic labels
+Replace `_classify_message` with `_generate_topic_label` in `_topic_split`.
+Labels derived from actual content words. New domains auto-create new topics.
+No "other" bucket. Unlimited topic growth.
+
+### B. Smaller chunks = more injection diversity
+Chunk size: 300-500 chars. 10-15 chunks fit in 4K token budget vs 2-3.
+Cross-topic synthesis gets multiple sources.
+
+### C. Injection matches chunk size
+build_context, _trim_chunks, save_chunk all use same cap as CHUNK_SIZE.
+No truncated snippets. Model sees full chunk or nothing.
 
 ## Future
 
-- Image input handling
+- Image handling
 - Small context model testing
-- Config file for user-tunable params
-- Split monolith into modules once API stabilizes
+- Config file
+- FAISS IndexIVFFlat at scale
+- Split monolith into modules
