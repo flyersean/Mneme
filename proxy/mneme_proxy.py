@@ -38,8 +38,8 @@ OLLAMA_TEMP    = 0.3
 # ─── Multi-pass compression config ───
 # CLASSIFY_MODEL removed — using embedding-based classification
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
-CHUNK_SIZE = 8000  # chars per chunk for large tool outputs
-COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
+CHUNK_SIZE = 1500  # chars per chunk for large tool outputs
+COMPRESS_THRESHOLD = 1500    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
 
@@ -524,7 +524,7 @@ def generate_strategy(messages: list, outcome: str) -> str:
     """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = " ".join(m["content"][:300] for m in messages[-3:] if m["role"] in ("user", "assistant"))
+    text = " ".join(m["content"][:1500] for m in messages[-3:] if m["role"] in ("user", "assistant"))
     # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
         return f"FAILURE on: {text[:200]}. Retry with different approach."
@@ -846,7 +846,7 @@ def _merge_small_groups(groups: list) -> list:
     return result
 
 
-MAX_CHUNK_SIZE = 10000  # chars per chunk for embedding
+MAX_CHUNK_SIZE = 3000  # chars per chunk for embedding
 
 
 def _clean_content(text: str) -> str:
