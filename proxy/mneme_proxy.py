@@ -1192,6 +1192,13 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
 
 
 def compress_large_tool_results(messages: list) -> list:
+    """PASS-THROUGH: chunking disabled. Returns messages unchanged."""
+    return messages  # CHUNKING DISABLED
+
+
+# ─── ORIGINAL CHUNKING (disabled) ───
+
+def _compress_large_tool_results_OLD(messages: list) -> list:
     """Chunk large tool outputs for sequential reading.
     
     Large outputs are split into CHUNK_SIZE segments stored in a
@@ -1219,7 +1226,7 @@ def compress_large_tool_results(messages: list) -> list:
         
         if role == "tool":
             print(f"  [CHUNK-DEBUG] tool msg: type={type(content).__name__}, len={len(content) if hasattr(content, '__len__') else 'N/A'}", flush=True)
-        if role == "tool" and isinstance(content, str) and len(content) > COMPRESS_THRESHOLD:
+        if role == "tool" and isinstance(content, str) and len(content) > COMPRESS_THRESHOLD and "browser_navigate" not in content[:200]:
             print(f"  [CHUNK] Splitting {role} output: {len(content)} chars into {int(len(content)/CHUNK_SIZE)+1} chunks", flush=True)
             # Split into chunks
             chunks = [content[i:i+CHUNK_SIZE] for i in range(0, len(content), CHUNK_SIZE)]
@@ -1250,6 +1257,10 @@ def compress_large_tool_results(messages: list) -> list:
 
 
 def _advance_chunk(messages: list) -> list:
+    return messages  # CHUNKING DISABLED
+
+
+def _advance_chunk_OLD(messages: list) -> list:
     """If the last user message is 'continue', swap in the next chunk."""
     if not messages:
         return messages
@@ -1302,6 +1313,10 @@ def _needs_chunk_loop(response_content: str) -> bool:
 
 
 def _model_loop_read_all(messages: list, tools: list = None) -> dict:
+    return query_model(messages, tools=tools)  # CHUNKING DISABLED
+
+
+def _model_loop_read_all_OLD(messages: list, tools: list = None) -> dict:
     """Internal loop: feed chunks to model until all consumed.
     
     Keeps calling Ollama as long as the model says "continue" after
