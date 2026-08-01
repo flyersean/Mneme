@@ -398,13 +398,13 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     """Insert chunk into SQLite + FAISS."""
     blob = _vec_to_blob(vector)
     msgs_json = json.dumps(
-        [{"role": m["role"], "content": m["content"][:500]} for m in messages[-6:]]
+        [{"role": m["role"], "content": m["content"][:8000]} for m in messages[-6:]]
     )
     
     db.execute("""
         INSERT OR REPLACE INTO chunks
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (chunk_id, topic_label, msgs_json, thinking[:500], strategy,
+    """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
           blob, grade, consensus, outcome, problem_type,
           datetime.now(timezone.utc).isoformat()))
     db.commit()
@@ -943,7 +943,7 @@ def store_tool_chunk(tool_output: str, tool_name: str = "tool") -> str:
             with open("/tmp/chunk_log.txt", "a", encoding="utf-8") as f:
                 f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} ===\n")
                 f.write(f"CHUNK: {chunk_id}  TOOL: {tool_name}  SIZE: {size}\n")
-                f.write(f"--- PREVIEW ---\n{tool_output[:500]}\n")
+                f.write(f"--- PREVIEW ---\n{tool_output[:8000]}\n")
         except Exception as e:
             print(f"  [CHUNK][LOG-ERROR] {e}", flush=True)
 
