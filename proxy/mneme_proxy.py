@@ -50,7 +50,7 @@ STAGING_IDLE   = 120
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for more recall
+ROUTE_THRESHOLD    = 0.15  # tunable: raise for stricter matching, lower for more recall
 AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
 
 # Save-cycle counter — incremented on every staging flush AND manual <<SAVE>>
@@ -1571,12 +1571,12 @@ def _model_loop_read_all_OLD(messages: list, tools: list = None) -> dict:
             "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "loop_complete"}
 
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
-    # Extract query from last USER message, not last message (which may be tool output)
-    user_msg = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            user_msg = m["content"]
-            break
+    # Extract query from ALL recent user messages — not just the last one.
+    # Multi-turn context is captured so "also the earthquake" finds earthquake
+    # chunks alongside Ebola chunks from earlier in the conversation.
+    user_msgs = [m["content"][:500] for m in reversed(messages) 
+                 if m.get("role") == "user"][:3]  # last 3 user turns
+    user_msg = " ".join(reversed(user_msgs))  # chronological order
     
     # ── Detail: load full chunk if DETAIL tag found ──
     import re as _detail_re
@@ -1932,6 +1932,8 @@ if FLASK_OK:
         return _cors_response({
             "chunk_id": chunk.get("chunk_id"),
             "topic_label": chunk.get("topic_label"),
+            "source": chunk.get("source", "unknown"),
+            "cycle": chunk.get("cycle", 0),
             "messages": parts,
         })
 
@@ -1955,9 +1957,9 @@ if FLASK_OK:
         results = _cosine_search(vec, top_k, threshold=ROUTE_THRESHOLD)
         chunks = []
         for score, chunk_id in results:
-            row = db.execute("SELECT topic_label, grade, created_at, outcome FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
+            row = db.execute("SELECT topic_label, grade, created_at, outcome, source, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
             if row:
-                chunks.append({"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "similarity": round(score, 4)})
+                chunks.append({"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4)})
         return _cors_response({"results": chunks})
 
 
