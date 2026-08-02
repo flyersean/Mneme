@@ -568,6 +568,28 @@ def get_siblings(chunk_id: str) -> List[str]:
     rows = db.execute("SELECT chunk_id FROM chunks WHERE topic_label=?", (row[0],)).fetchall()
     return [r[0] for r in rows]
 
+def get_siblings_batch(chunk_ids: List[str]) -> Dict[str, List[str]]:
+    """Batch sibling fetch: one query per topic, not per chunk.
+    
+    Returns {chunk_id: [sibling_ids...]} — each chunk maps to its full sibling list.
+    """
+    if not chunk_ids:
+        return {}
+    placeholders = ",".join("?" for _ in chunk_ids)
+    rows = db.execute(
+        f"SELECT chunk_id, topic_label FROM chunks WHERE chunk_id IN ({placeholders})",
+        chunk_ids
+    ).fetchall()
+    # Map topic -> chunks
+    topics = {}
+    for cid, topic in rows:
+        topics.setdefault(topic, []).append(cid)
+    # Inflate each chunk to its full sibling list (same topic)
+    result = {}
+    for cid, topic in rows:
+        result[cid] = topics[topic]
+    return result
+
 def get_strategies(problem_type: str, limit: int = 3) -> List[str]:
     rows = db.execute(
         "SELECT strategy_text FROM strategies WHERE problem_type=? "
@@ -581,7 +603,7 @@ def get_strategies(problem_type: str, limit: int = 3) -> List[str]:
 # Token budget for injected memory. Hard cap to prevent context overflow.
 # The model has 32768 ctx total. System prompt + live conversation need room.
 MAX_INJECTED_TOKENS = 4096   # ~4K tokens for memory + strategies
-MAX_SIBLINGS        = 5      # max chunks per topic
+MAX_SIBLINGS        = 3      # max chunks per topic (was 5 — caps sibling blowup)
 MAX_CHUNK_WORDS     = 500    # split user messages longer than this
 
 def _estimate_tokens(text: str) -> int:
@@ -615,6 +637,29 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
     
     return selected
 
+def _trim_chunks_cached(ordered_ids: List[str], max_tokens: int, cache: Dict[str, Optional[dict]]) -> List[str]:
+    """Cached variant of _trim_chunks — uses pre-loaded chunks, no per-chunk DB hits."""
+    selected = []
+    used = 0
+    for cid in ordered_ids:
+        chunk = cache.get(cid)
+        if not chunk:
+            continue
+        text = "\n".join(
+            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
+            for m in chunk.get("messages", [])
+        )
+        if chunk.get("strategy"):
+            text += f"\n[strategy: {chunk['strategy']}]"
+        
+        cost = _estimate_tokens(text)
+        if used + cost > max_tokens:
+            continue
+        selected.append(cid)
+        used += cost
+    
+    return selected
+
 def _extract_text(content) -> str:
     """Extract text from message content (str or list of blocks)."""
     if isinstance(content, str):
@@ -643,25 +688,55 @@ def build_context(query: str) -> Tuple[str, str]:
     """
     chunk_ids = route_query(query, top_k=3)
     
-    # Expand to siblings with cap
+    # Expand to siblings with cap — batch query instead of per-chunk
     all_ids = set()
+    siblings_map = get_siblings_batch(chunk_ids)
     for cid in chunk_ids:
         all_ids.add(cid)
-        siblings = get_siblings(cid)
+        siblings = siblings_map.get(cid, [])
         for sib in siblings[:MAX_SIBLINGS]:
             all_ids.add(sib)
     
+    # Batch-fetch grades for all candidates — avoids per-chunk SQLite hits during sort
+    if all_ids:
+        placeholders = ",".join("?" for _ in all_ids)
+        grade_rows = db.execute(
+            f"SELECT chunk_id, grade FROM chunks WHERE chunk_id IN ({placeholders})",
+            list(all_ids)
+        ).fetchall()
+        _grade_cache = {cid: GRADE_PRIORITY.get(g, GRADE_PRIORITY[DEFAULT_GRADE]) for cid, g in grade_rows}
+    else:
+        _grade_cache = {}
+    
     # Grade-aware ordering (A first, F last)
-    ordered = sorted(all_ids, key=lambda c: (-grade_priority(c), c))
+    ordered = sorted(all_ids, key=lambda c: (-_grade_cache.get(c, 1), c))
+    
+    # Batch-load all candidate chunks once — reused for trim, text build, and struct_ref scan
+    _chunk_cache: Dict[str, Optional[dict]] = {}
+    if ordered:
+        placeholders = ",".join("?" for _ in ordered)
+        rows = db.execute(
+            f"SELECT chunk_id, topic_label, messages, thinking, strategy, "
+            f"grade, consensus, outcome, problem_type FROM chunks WHERE chunk_id IN ({placeholders})",
+            ordered
+        ).fetchall()
+        for row in rows:
+            _chunk_cache[row[0]] = {
+                "chunk_id": row[0], "topic_label": row[1],
+                "messages": json.loads(row[2]), "thinking": row[3],
+                "strategy": row[4], "grade": row[5],
+                "consensus": row[6], "outcome": row[7],
+                "problem_type": row[8],
+            }
     
     # Trim to token budget — preserves high-grade, drops low-grade
-    trimmed = _trim_chunks(ordered, MAX_INJECTED_TOKENS)
+    trimmed = _trim_chunks_cached(ordered, MAX_INJECTED_TOKENS, _chunk_cache)
     
     # Build raw chunk text
     parts = []
     ptype = "other"
     for cid in trimmed:
-        chunk = load_chunk(cid)
+        chunk = _chunk_cache.get(cid)
         if not chunk:
             continue
         ptype = chunk.get("problem_type", "other")
@@ -683,7 +758,7 @@ def build_context(query: str) -> Tuple[str, str]:
     # Scan for structured chunk references in all archived conversations and surface them
     struct_refs = set()
     for cid in trimmed:
-        chunk = load_chunk(cid)
+        chunk = _chunk_cache.get(cid)
         if chunk:
             for m in chunk.get("messages", []):
                 text = _extract_text(m.get("content", ""))
@@ -1410,9 +1485,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Advance chunked tool output if user said "continue"
     messages = _advance_chunk(messages)
     
-    # Advance chunked tool output if user said "continue"
-    messages = _advance_chunk(messages)
-    
     # Build injected memory
     context, ptype = build_context(user_msg)
     
@@ -1424,11 +1496,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     full_msgs = [{"role": "system", "content": prefix}] + messages
     
     # If chunks are pending, loop internally until all consumed
-    buf = getattr(compress_large_tool_results, '_buffer', {})
-    if buf.get("default"):
-        result = _model_loop_read_all(full_msgs, tools=msg_tools)
-    else:
-        result = query_model(full_msgs, tools=msg_tools)
+    result = query_model(full_msgs, tools=msg_tools)
     
     staging.add("user", user_msg)
     if result["content"]:
