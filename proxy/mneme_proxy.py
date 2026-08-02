@@ -327,8 +327,8 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     if tools:
         payload["tools"] = tools
     
-    # Hard cap: model CUDA crashes above ~4600 total chars. Trim every message.
-    MAX_MSG_CHARS = 800  # per-message cap in history
+    # Smarter truncation: keep first user message (task context) + last 2 turns
+    MAX_MSG_CHARS = 800
     trimmed_msgs = []
     for m in msgs:
         content = m.get("content", "")
@@ -337,10 +337,15 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         else:
             trimmed_msgs.append(m)
     
-    # Keep only system + last 3 non-system messages
     sys_msgs = [m for m in trimmed_msgs if m.get("role") == "system"]
     non_sys = [m for m in trimmed_msgs if m.get("role") != "system"]
-    msgs = sys_msgs + non_sys[-4:]
+    
+    if len(non_sys) > 4:
+        first_user = [m for m in non_sys if m.get("role") == "user"][:1]  # task context
+        recent = non_sys[-4:]  # last 2 turns
+        msgs = sys_msgs + first_user + recent
+    else:
+        msgs = sys_msgs + non_sys
     
     total = sum(len(m.get("content","")) for m in msgs)
     if total > MAX_PROMPT_CHARS:
