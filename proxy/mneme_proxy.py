@@ -283,6 +283,50 @@ def _cosine_search(query_vec: np.ndarray, top_k: int, threshold: float):
             return [(float(scores[i]), ids[i]) for i in order[:top_k]
                     if float(scores[i]) >= threshold]
 
+def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
+    """SQLite LIKE keyword fallback when FAISS is sparse.
+    
+    Splits query into words, searches messages column for each,
+    deduplicates, returns [(0.0, chunk_id), ...] ordered by recency.
+    """
+    if not query or not query.strip():
+        return []
+    words = [w.strip() for w in query.split() if len(w.strip()) >= 2]
+    if not words:
+        return []
+    exclude_ids = exclude_ids if exclude_ids is not None else set()
+    seen = set()
+    results = []
+    # Search each word, collect matching chunk_ids
+    for word in words:
+        pattern = f"%{word}%"
+        rows = db.execute(
+            "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
+            (pattern, top_k * 2)
+        ).fetchall()
+        for (cid,) in rows:
+            if cid not in seen and cid not in exclude_ids:
+                seen.add(cid)
+                results.append((0.0, cid))  # score 0.0 = keyword match, no semantic score
+            if len(results) >= top_k:
+                break
+        if len(results) >= top_k:
+            break
+    return results[:top_k]
+
+def _hybrid_search(query: str, top_k: int, faiss_results: list):
+    """Fill FAISS results with keyword matches if below threshold.
+    
+    Returns list of (score, chunk_id, method) tuples.
+    """
+    faiss_ids = {cid for _, cid in faiss_results}
+    combined = [(s, cid, "faiss") for s, cid in faiss_results]
+    if len(combined) < top_k:
+        needed = top_k - len(combined)
+        kw_results = _keyword_search(query, needed, exclude_ids=faiss_ids)
+        combined.extend([(s, cid, "keyword") for s, cid in kw_results])
+    return combined
+
 # ─── Model Interface ───────────────────────────────────────────
 
 SYSTEM_PROMPT_FILE = os.path.join(os.path.dirname(__file__), "system_prompt.md")
@@ -657,18 +701,18 @@ def _calibrate_noise(n_samples: int = 3) -> float:
     return 0.20
 
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """FAISS top-k with noise-normalized scores + recency weighting."""
+    """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback."""
     q_vec = embed(query)
     scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
-    if not scored_raw:
-        return []
     # Normalize: subtract baseline noise, filter negative
     scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
-    if not scored:
+    # Hybrid: fill with keyword matches if FAISS is sparse
+    hybrid = _hybrid_search(query, top_k, scored)
+    if not hybrid:
         return []
     
     # Fetch cycle for all candidates
-    cids = [cid for _, cid in scored]
+    cids = [cid for _, cid, _ in hybrid]
     placeholders = ','.join('?' for _ in cids)
     rows = db.execute(
         f"SELECT chunk_id, cycle FROM chunks WHERE chunk_id IN ({placeholders})",
@@ -684,7 +728,7 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
         norm_age = 1.0 / (1 + cycle_delta)  # 1.0 for fresh, decays with cycle distance
         return score + norm_age  # norm_sim + norm_age
     
-    scored_combined = [(combined(s, cid), cid) for s, cid in scored]
+    scored_combined = [(combined(s, cid), cid) for s, cid, _ in hybrid]
     scored_combined.sort(reverse=True)
     return [cid for _, cid in scored_combined[:top_k]]
 
@@ -2024,12 +2068,15 @@ if FLASK_OK:
         top_k = data.get("top_k", 10)
         vec = embed(query)
         results_raw = _cosine_search(vec, top_k, 0.0)
-        results = [(s - BASELINE_NOISE, cid) for s, cid in results_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
+        faiss_results = [(s - BASELINE_NOISE, cid) for s, cid in results_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
+        # Hybrid: fill with keyword matches if FAISS is sparse
+        hybrid = _hybrid_search(query, top_k, faiss_results)
         chunks = []
-        for score, chunk_id in results:
+        for score, chunk_id, method in hybrid:
             row = db.execute("SELECT topic_label, grade, created_at, outcome, source, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
             if row:
-                chunks.append({"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4)})
+                entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4), "method": method}
+                chunks.append(entry)
         return _cors_response({"results": chunks})
 
 
