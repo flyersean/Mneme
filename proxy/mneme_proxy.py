@@ -38,8 +38,8 @@ OLLAMA_TEMP    = 0.3
 # ─── Multi-pass compression config ───
 # CLASSIFY_MODEL removed — using embedding-based classification
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
-CHUNK_SIZE = 8000  # chars per chunk for large tool outputs
-COMPRESS_THRESHOLD = 8000    # chars — tool results larger than this get compressed
+CHUNK_SIZE = 500  # chars per chunk for large tool outputs
+COMPRESS_THRESHOLD = 500    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
 
@@ -398,9 +398,9 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     """Insert chunk into SQLite + FAISS."""
     blob = _vec_to_blob(vector)
     msgs_json = json.dumps(
-        [{"role": m["role"], "content": m["content"][:8000]} for m in messages[-6:]]
+        [{"role": m["role"], "content": m["content"][:CHUNK_SIZE]} for m in messages]
     )
-    
+
     db.execute("""
         INSERT OR REPLACE INTO chunks
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -441,29 +441,46 @@ CLASSIFY_PROMPT = (
     "Conversation:\n"
 )
 
-# Topic clusters for embedding-based classification
-TOPIC_CLUSTERS = {
-    "technology": "programming code software development debugging api github git server deployment infrastructure python javascript shell terminal command",
-    "memory_system": "memories memory retrieval injection context vector embedding FAISS database chunk storage proxy mneme session archive recall inject",
-    "configuration": "config configuration setup settings profile install environment variable hermes",
-    "web_content": "browser web page article wikipedia search reading extract navigate snapshot url fetch",
-    "debugging": "error crash bug fix debug traceback 500 exception failure broken troubleshoot diagnosis",
-    "data_analysis": "data statistics analysis numbers metrics counting spreadsheet table query",
-    "conversation": "chat conversation discussion talking question answer explaining clarifying planning brainstorming",
-    "olympics": "olympic games winter summer medal athlete sport competition milano cortina beijing",
-    "politics_news": "government border incident crisis migration policy president minister country international",
-    "sports": "sport football soccer team game match player champion league tournament score result",
-    "science": "science research physics chemistry biology experiment astronomy space rocket launch nasa",
-    "other": "uncategorized general topic miscellaneous"
-}
+# ─── Content-derived topic labels ─────────────────────────────
 
-# Pre-compute cluster embeddings at startup
-TOPIC_VECTORS = {}
-for label, desc in TOPIC_CLUSTERS.items():
-    try:
-        TOPIC_VECTORS[label] = embed(desc)
-    except Exception:
-        TOPIC_VECTORS[label] = None
+def _clean_content(text: str) -> str:
+    """Strip browser wrapper boilerplate to get real content for embedding."""
+    # browser_console/navigate output: remove ~600 chars of wrapper boilerplate
+    lower = text[:300].lower()
+    if "browser_console" in lower or "browser_navigate" in lower or "untrusted_tool_result" in lower:
+        return text[600:] if len(text) > 600 else text
+    return text
+
+
+def _generate_topic_label(text):
+    """Derive a topic label from actual content words.
+
+    Picks years, known locations/events if present, otherwise the first
+    few content words. New domains auto-create new topics — no fixed
+    cluster list, no 'other' bucket.
+    """
+    clean = _clean_content(text)[:2000].lower()
+    keywords = []
+    import re as _tlre
+    dates = _tlre.findall(r"(20\d{2})", clean)
+    if dates:
+        keywords.append(dates[0])
+    locations = {"spain":"Spain","morocco":"Morocco","ceuta":"Ceuta","melilla":"Melilla","france":"France","italy":"Italy","japan":"Japan","china":"China","russia":"Russia","canada":"Canada","mexico":"Mexico","brazil":"Brazil","kumamoto":"Kumamoto"}
+    for k,v in locations.items():
+        if k in clean:
+            keywords.append(v)
+    events = {"earthquake":"earthquake","border":"border","migrant":"migration","olympic":"Olympics","election":"election","hurricane":"hurricane","storm":"storm"}
+    for k,v in events.items():
+        if k in clean:
+            keywords.append(v)
+    if keywords:
+        return " ".join(keywords[:4])[:60]
+    words = [w for w in clean.split()[:8] if len(w) > 3]
+    return " ".join(words)[:60] or "untitled"
+
+
+# Old TOPIC_CLUSTERS / TOPIC_VECTORS removed — dynamic content-derived
+# topic labels via _generate_topic_label are used everywhere instead.
 
 
 def classify_chunk(messages: list) -> dict:
@@ -491,26 +508,8 @@ def classify_chunk(messages: list) -> dict:
     elif any(w in lower for w in ("code", "function", "def ", "patch", "fix")):
         ptype = "code"
     
-    # Embedding-based topic: find nearest cluster
-    try:
-        vec = embed(text)
-        if vec is not None and vec.shape[0] > 0:
-            best_label = "other"
-            best_score = -2.0
-            for label, cvec in TOPIC_VECTORS.items():
-                if cvec is not None:
-                    score = np.dot(vec, cvec) / (np.linalg.norm(vec) * np.linalg.norm(cvec) + 1e-8)
-                    if score > best_score:
-                        best_score = score
-                        best_label = label
-            
-            # Generate readable topic label from best cluster + first words
-            first_words = " ".join(text.split()[:6])[:60]
-            topic_label = f"{best_label}: {first_words}" if best_label != "other" else first_words
-        else:
-            topic_label = "uncategorized"
-    except Exception:
-        topic_label = "uncategorized"
+    # Content-derived topic label (replaces fixed cluster matching)
+    topic_label = _generate_topic_label(text)
     
     return {
         "topic_label": topic_label[:80],
@@ -524,7 +523,7 @@ def generate_strategy(messages: list, outcome: str) -> str:
     """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = " ".join(m["content"][:300] for m in messages[-3:] if m["role"] in ("user", "assistant"))
+    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[-3:] if m["role"] in ("user", "assistant"))
     # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
         return f"FAILURE on: {text[:200]}. Retry with different approach."
@@ -542,12 +541,12 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     # Grade-aware sort
     scored.sort(key=lambda x: (-grade_priority(x[1]), -x[0]))
     
-    # Pass 1: best chunk per topic
+    # Pass 1: best chunk per topic (dedup by DB topic_label, not regex on chunk_id)
     results = []
     seen = set()
     for score, cid in scored:
-        # Topic extracted by stripping version suffix
-        topic = re.sub(r'_v\d+$', '', cid)
+        row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
+        topic = row[0] if row else cid
         if topic not in seen:
             results.append(cid)
             seen.add(topic)
@@ -602,7 +601,7 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
         if not chunk:
             continue
         text = "\n".join(
-            f"{m['role']}: {m['content'][:300]}"
+            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -669,7 +668,7 @@ def build_context(query: str) -> Tuple[str, str]:
         topic = chunk.get("topic_label", "unknown")
         msg_text = f"--- {topic} (id:{cid}) ---\n"
         msg_text += "\n".join(
-            f"{m['role']}: {m['content'][:300]}" 
+            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -774,28 +773,15 @@ def archive_staging():
 
 
 def _classify_message(msg: dict) -> str:
-    """Classify a single message using embedding similarity to topic clusters."""
+    """Generate a content-derived topic label for a single message.
+
+    Replaces the fixed 12-cluster embedding classifier. New domains
+    auto-create new topics from actual content words — no 'other' bucket.
+    """
     text = msg.get("content", "")
     if not text or len(text) < 10:
-        return "other"
-    
-    try:
-        vec = embed(text[:2000])  # use first 2K chars for embedding
-        if vec is None or vec.shape[0] == 0:
-            return "other"
-        
-        best_label = "other"
-        best_score = -2.0
-        for label, cvec in TOPIC_VECTORS.items():
-            if cvec is not None:
-                score = np.dot(vec, cvec) / (np.linalg.norm(vec) * np.linalg.norm(cvec) + 1e-8)
-                if score > best_score:
-                    best_score = score
-                    best_label = label
-        
-        return best_label
-    except Exception:
-        return "other"
+        return "untitled"
+    return _generate_topic_label(text)
 
 
 def _topic_split(msgs: list) -> list:
@@ -847,37 +833,6 @@ def _merge_small_groups(groups: list) -> list:
 
 
 MAX_CHUNK_SIZE = 10000  # chars per chunk for embedding
-
-
-def _clean_content(text: str) -> str:
-    """Strip browser wrapper boilerplate to get real content for embedding."""
-    # browser_console/navigate output: remove ~600 chars of wrapper boilerplate
-    lower = text[:300].lower()
-    if "browser_console" in lower or "browser_navigate" in lower or "untrusted_tool_result" in lower:
-        return text[600:] if len(text) > 600 else text
-    return text
-
-
-
-def _generate_topic_label(text):
-    clean = _clean_content(text)[:2000].lower()
-    keywords = []
-    import re as _tlre
-    dates = _tlre.findall(r"(20\d{2})", clean)
-    if dates:
-        keywords.append(dates[0])
-    locations = {"spain":"Spain","morocco":"Morocco","ceuta":"Ceuta","melilla":"Melilla","france":"France","italy":"Italy","japan":"Japan","china":"China","russia":"Russia","canada":"Canada","mexico":"Mexico","brazil":"Brazil","kumamoto":"Kumamoto"}
-    for k,v in locations.items():
-        if k in clean:
-            keywords.append(v)
-    events = {"earthquake":"earthquake","border":"border","migrant":"migration","olympic":"Olympics","election":"election","hurricane":"hurricane","storm":"storm"}
-    for k,v in events.items():
-        if k in clean:
-            keywords.append(v)
-    if keywords:
-        return " ".join(keywords[:4])[:60]
-    words = [w for w in clean.split()[:8] if len(w) > 3]
-    return " ".join(words)[:60] or "untitled"
 
 
 def _archive_group(topic_label: str, msgs: list) -> int:
