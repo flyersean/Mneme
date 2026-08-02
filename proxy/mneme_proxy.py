@@ -532,34 +532,12 @@ def generate_strategy(messages: list, outcome: str) -> str:
 # ─── Routing ───────────────────────────────────────────────────
 
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """Two-pass dedup: best per topic, then fill remaining."""
+    """Raw FAISS top-k: vectors alone determine injection."""
     q_vec = embed(query)
-    scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
+    scored = _cosine_search(q_vec, top_k, ROUTE_THRESHOLD)
     if not scored:
         return []
-    
-    # Grade-aware sort
-    scored.sort(key=lambda x: (-grade_priority(x[1]), -x[0]))
-    
-    # Pass 1: best chunk per topic (dedup by DB topic_label, not regex on chunk_id)
-    results = []
-    seen = set()
-    for score, cid in scored:
-        row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
-        topic = row[0] if row else cid
-        if topic not in seen:
-            results.append(cid)
-            seen.add(topic)
-            if len(results) >= top_k:
-                return results
-    
-    # Pass 2: fill remaining
-    for score, cid in scored:
-        if cid not in results:
-            results.append(cid)
-            if len(results) >= top_k:
-                break
-    return results
+    return [cid for _, cid in scored[:top_k]]
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
