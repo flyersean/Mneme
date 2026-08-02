@@ -20,6 +20,7 @@ Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
 import json, os, re, sqlite3, threading, time, uuid, struct
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 
@@ -52,6 +53,20 @@ CLASSIFY_THRESHOLD = 0.78
 ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for more recall
 AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
 
+# Save-cycle counter — incremented on every staging flush AND manual <<SAVE>>
+_archive_cycle = 0
+_archive_cycle_lock = threading.Lock()
+
+def _next_cycle() -> int:
+    global _archive_cycle
+    with _archive_cycle_lock:
+        _archive_cycle += 1
+        return _archive_cycle
+
+def _current_cycle() -> int:
+    with _archive_cycle_lock:
+        return _archive_cycle
+
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
 # ─── Database ──────────────────────────────────────────────────
@@ -72,6 +87,8 @@ db.executescript("""
         consensus   REAL DEFAULT 0.0,
         outcome     TEXT DEFAULT '',
         problem_type TEXT DEFAULT 'other',
+        source      TEXT DEFAULT 'unknown',
+        cycle       INTEGER DEFAULT 0,
         created_at  TEXT NOT NULL
     );
     
@@ -87,17 +104,17 @@ db.executescript("""
     CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
     CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
     CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
-
-    CREATE TABLE IF NOT EXISTS tool_output_chunks (
-        chunk_id    TEXT PRIMARY KEY,
-        tool_name   TEXT NOT NULL,
-        content     TEXT NOT NULL,          -- raw tool output, full fidelity
-        size_chars  INTEGER NOT NULL,
-        created_at  TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_tool_chunks_tool ON tool_output_chunks(tool_name);
 """)
+
+# ─── Schema migrations for existing DBs ─────────────────────────
+for migration in (
+    "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
+    "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
+):
+    try:
+        db.execute(migration)
+    except sqlite3.OperationalError:
+        pass  # column already exists
 db.commit()
 
 # ─── Grade Priority (same as raw-k-cache) ──────────────────────
@@ -395,7 +412,8 @@ def query_model_stream(messages: list, tools: list = None):
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector: np.ndarray, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
-               outcome: str = "", problem_type: str = "other"):
+               outcome: str = "", problem_type: str = "other",
+               source: str = "unknown"):
     """Insert chunk into SQLite + FAISS."""
     blob = _vec_to_blob(vector)
     msgs_json = json.dumps(
@@ -404,9 +422,10 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 
     db.execute("""
         INSERT OR REPLACE INTO chunks
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
           blob, grade, consensus, outcome, problem_type,
+          source, _current_cycle(),
           datetime.now(timezone.utc).isoformat()))
     db.commit()
     
@@ -419,7 +438,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
         "SELECT chunk_id, topic_label, messages, thinking, strategy, "
-        "grade, consensus, outcome, problem_type FROM chunks WHERE chunk_id=?",
+        "grade, consensus, outcome, problem_type, source, cycle FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
     if not row:
@@ -429,7 +448,7 @@ def load_chunk(chunk_id: str) -> Optional[dict]:
         "messages": json.loads(row[2]), "thinking": row[3],
         "strategy": row[4], "grade": row[5],
         "consensus": row[6], "outcome": row[7],
-        "problem_type": row[8],
+        "problem_type": row[8], "source": row[9], "cycle": row[10],
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -451,6 +470,61 @@ def _clean_content(text: str) -> str:
     if "browser_console" in lower or "browser_navigate" in lower or "untrusted_tool_result" in lower:
         return text[600:] if len(text) > 600 else text
     return text
+
+
+LABEL_MODEL = "qwen2.5:0.5b"
+LABEL_PROMPT = (
+    "Output only a 3 to 5 word descriptive label for the following text. "
+    "Do not use quotes, punctuation, or conversational filler.\n\n"
+)
+
+def _llm_topic_label(text: str) -> str:
+    """Call qwen2.5:0.5b via Ollama to generate a semantic topic label.
+    
+    Falls back to _generate_topic_label on any error.
+    """
+    clean = _clean_content(text)[:2000]
+    if not clean.strip():
+        return "untitled"
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": LABEL_MODEL,
+                "prompt": LABEL_PROMPT + clean,
+                "stream": False,
+                "options": {
+                    "num_predict": 15,
+                    "num_ctx": 512,
+                    "temperature": 0.0,
+                },
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        label = r.json().get("response", "").strip()
+        # Sanitize: strip quotes, collapse whitespace, cap length
+        label = re.sub(r'["\']', '', label)
+        label = re.sub(r'\s+', ' ', label).strip()
+        if label and len(label) >= 3:
+            return label[:60]
+    except Exception as e:
+        print(f"  [LABEL][ERROR] {type(e).__name__}: {e} — falling back to heuristic", flush=True)
+    return _generate_topic_label(text)
+
+
+def _llm_topic_labels_batch(texts: List[str], max_workers: int = 6) -> List[str]:
+    """Concurrent batch labeling via qwen2.5:0.5b. Falls back per-item on error."""
+    results: List[Optional[str]] = [None] * len(texts)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_llm_topic_label, t): i for i, t in enumerate(texts)}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            try:
+                results[i] = fut.result()
+            except Exception:
+                results[i] = _generate_topic_label(texts[i])
+    return [r if r is not None else _generate_topic_label(t) for r, t in zip(results, texts)]
 
 
 def _generate_topic_label(text):
@@ -533,32 +607,28 @@ def generate_strategy(messages: list, outcome: str) -> str:
 # ─── Routing ───────────────────────────────────────────────────
 
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """FAISS top-k with recency weighting — combined similarity + age score."""
+    """FAISS top-k with recency weighting — combined similarity + cycle score."""
     q_vec = embed(query)
     scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
     if not scored:
         return []
     
-    # Fetch created_at for all candidates
+    # Fetch cycle for all candidates
     cids = [cid for _, cid in scored]
     placeholders = ','.join('?' for _ in cids)
     rows = db.execute(
-        f"SELECT chunk_id, created_at FROM chunks WHERE chunk_id IN ({placeholders})",
+        f"SELECT chunk_id, cycle FROM chunks WHERE chunk_id IN ({placeholders})",
         cids
     ).fetchall()
-    age_map = {r[0]: r[1] for r in rows}
-    now = datetime.now(timezone.utc)
+    cycle_map = {r[0]: r[1] for r in rows}
+    current = _current_cycle()
     
-    # Combined score: similarity * recency_bonus
+    # Combined score: similarity + recency bonus (cycle-based)
     def combined(score, cid):
-        ts = age_map.get(cid, now.isoformat())
-        try:
-            created = datetime.fromisoformat(ts)
-            age_days = max(0.0, (now - created).total_seconds() / 86400.0)
-        except Exception:
-            age_days = 0.0
-        decay = 0.5 ** (age_days / AGE_DECAY_DAYS)  # 0.5 at half-life, near 1.0 for fresh
-        return score * (0.7 + 0.3 * decay)  # 70% similarity, 30% recency bonus
+        chunk_cycle = cycle_map.get(cid, current)
+        cycle_delta = max(0, current - chunk_cycle)
+        norm_age = 1.0 / (1 + cycle_delta)  # 1.0 for fresh, decays with cycle distance
+        return score + norm_age  # norm_sim + norm_age
     
     scored_combined = [(combined(s, cid), cid) for s, cid in scored]
     scored_combined.sort(reverse=True)
@@ -805,9 +875,9 @@ class StagingBuffer:
         self.last_activity = time.time()
         self.lock = threading.Lock()
     
-    def add(self, role: str, content: str):
+    def add(self, role: str, content: str, source: str = "unknown"):
         with self.lock:
-            self.messages.append({"role": role, "content": content})
+            self.messages.append({"role": role, "content": content, "source": source})
             self.last_activity = time.time()
     
     def should_flush(self) -> bool:
@@ -838,6 +908,9 @@ def archive_staging():
     if not msgs:
         return 0
 
+    # Increment save-cycle counter on every flush
+    _next_cycle()
+
     # Classify each message into a topic group
     groups = _topic_split(msgs)
     
@@ -846,20 +919,20 @@ def archive_staging():
         n = _archive_group(topic_label, group_msgs)
         total += n
     
-    print(f"  [ARCHIVE] {len(groups)} topics, {total} chunks total", flush=True)
+    print(f"  [ARCHIVE] {len(groups)} topics, {total} chunks total (cycle={_current_cycle()})", flush=True)
     return total
 
 
 def _classify_message(msg: dict) -> str:
     """Generate a content-derived topic label for a single message.
 
-    Replaces the fixed 12-cluster embedding classifier. New domains
+    Uses LLM semantic labeling with heuristic fallback. New domains
     auto-create new topics from actual content words — no 'other' bucket.
     """
     text = msg.get("content", "")
     if not text or len(text) < 10:
         return "untitled"
-    return _generate_topic_label(text)
+    return _llm_topic_label(text)
 
 
 def _topic_split(msgs: list) -> list:
@@ -922,10 +995,19 @@ def _archive_group(topic_label: str, msgs: list) -> int:
         _clean_content(m["content"])[:5000] for m in msgs if m["role"] in SEMANTIC_ROLES
     )
     
+    # Determine source from messages — prefer explicit source tags from staging
+    source = "unknown"
+    for m in msgs:
+        if m.get("source") and m["source"] != "unknown":
+            source = m["source"]
+            break
+    if source == "unknown":
+        source = _infer_source(msgs)
+    
     # If group is small enough, archive as single chunk
     if len(user_text) <= MAX_CHUNK_SIZE:
-        descriptive = _generate_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
-        return _archive_single_chunk(msgs, user_text, descriptive)
+        descriptive = _llm_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
+        return _archive_single_chunk(msgs, user_text, descriptive, source=source)
     
     # Split into sibling chunks by MAX_CHUNK_SIZE
     total = 0
@@ -947,9 +1029,9 @@ def _archive_group(topic_label: str, msgs: list) -> int:
         frag = m["content"][:5000]
         if current_text and len(current_text) + len(frag) > MAX_CHUNK_SIZE:
             # Archive current batch
-            descriptive = _generate_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
+            descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
             label = f"{descriptive[:30]}_p{seq_base}"
-            _archive_single_chunk(current, current_text, label)
+            _archive_single_chunk(current, current_text, label, source=source)
             total += 1
             seq_base += 1
             current = []
@@ -960,15 +1042,60 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     
     # Archive remaining
     if current:
-        descriptive = _generate_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
-        label = f"{descriptive[:30]}_p{seq_base}" if total > 0 else (_generate_topic_label(user_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label)
-        _archive_single_chunk(current, current_text, label)
+        descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
+        label = f"{descriptive[:30]}_p{seq_base}" if total > 0 else (_llm_topic_label(user_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label)
+        _archive_single_chunk(current, current_text, label, source=source)
         total += 1
     
     return total
 
 
-def _archive_single_chunk(msgs: list, user_text: str, topic_label: str) -> int:
+def _infer_source(msgs: list) -> str:
+    """Infer source tag from message list.
+    
+    Scans for tool outputs, browser_navigate URLs, user/model messages.
+    Returns source string like 'page:example.com', 'tool:terminal', 'user', 'model'.
+    """
+    # Check for browser_navigate in any message (most specific)
+    for m in msgs:
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            continue
+        # Look for browser_navigate tool call or URL patterns
+        if "browser_navigate" in content[:500] or "browser_console" in content[:500]:
+            # Try to extract domain from URL
+            import re as _sre
+            urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
+            if urls:
+                return f"page:{urls[0]}"
+            return "page:unknown"
+    
+    # Check for tool outputs
+    for m in msgs:
+        role = m.get("role", "")
+        if role == "tool":
+            # Try to find tool name from content or context
+            content = m.get("content", "")
+            if isinstance(content, str):
+                # Look for common tool signatures
+                for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
+                    if tool in content[:200]:
+                        return f"tool:{tool}"
+            return "tool:unknown"
+    
+    # Check roles present
+    roles = {m.get("role", "") for m in msgs}
+    if "user" in roles and "assistant" in roles:
+        return "conversation"
+    elif "user" in roles:
+        return "user"
+    elif "assistant" in roles:
+        return "model"
+    
+    return "unknown"
+
+
+def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: str = "unknown") -> int:
     """Archive one chunk. Returns 1 on success."""
     # Determine outcome and problem type heuristically
     full_text = " ".join(m["content"][:200] for m in msgs if m["role"] in ("user", "assistant"))
@@ -997,7 +1124,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str) -> int:
     chunk_id = f"{topic_label[:40]}_v{seq}"
     
     save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy,
-               outcome=outcome, problem_type=ptype)
+               outcome=outcome, problem_type=ptype, source=source)
     
     if strategy and ptype != "other":
         sid = f"strat_{ptype}_{seq}_{int(time.time())}"
@@ -1182,46 +1309,33 @@ def classify_tool_output(tool_output: str, tool_name: str = "tool") -> str:
 
 
 def store_tool_chunk(tool_output: str, tool_name: str = "tool") -> str:
-    """Store raw tool output in the tool_output_chunks table.
+    """Store raw tool output via unified staging → archive → chunks pipeline.
 
     Returns a short reference string to replace the content in messages.
     """
-    chunk_id = f"chunk-{uuid.uuid4().hex[:8]}"
     size = len(tool_output)
 
-    try:
-        db.execute(
-            "INSERT INTO tool_output_chunks (chunk_id, tool_name, content, size_chars, created_at) VALUES (?,?,?,?,?)",
-            (chunk_id, tool_name, tool_output, size, datetime.now(timezone.utc).isoformat())
-        )
-        db.commit()
+    # Stage for unified ingestion — will be archived into chunks table
+    staging.add("assistant", tool_output, source=f"tool:{tool_name}")
 
-        reference = f"[Tool output indexed as {chunk_id}: {size:,} chars — use read_chunk('{chunk_id}') to retrieve]"
-        print(f"  [CHUNK] Stored {tool_name} output as {chunk_id} ({size:,} chars)", flush=True)
+    reference = f"[Tool output staged as tool:{tool_name}: {size:,} chars — will be archived to memory]"
+    print(f"  [CHUNK] Staged {tool_name} output ({size:,} chars) for unified ingestion", flush=True)
 
-        # Log chunk storage
-        try:
-            with open("/tmp/chunk_log.txt", "a", encoding="utf-8") as f:
-                f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} ===\n")
-                f.write(f"CHUNK: {chunk_id}  TOOL: {tool_name}  SIZE: {size}\n")
-                f.write(f"--- PREVIEW ---\n{tool_output[:8000]}\n")
-        except Exception as e:
-            print(f"  [CHUNK][LOG-ERROR] {e}", flush=True)
-
-        return reference
-
-    except Exception as e:
-        print(f"  [CHUNK][ERROR] Failed to store chunk: {type(e).__name__}: {e}", flush=True)
-        # Fallback: return truncated output if DB write fails
-        return tool_output[:COMPRESS_THRESHOLD] + f"\n\n[... truncated, {size} chars total ...]"
+    return reference
 
 
 def get_tool_chunk(chunk_id: str) -> Optional[str]:
-    """Retrieve a stored tool output chunk by ID. Returns None if not found."""
-    row = db.execute(
-        "SELECT content FROM tool_output_chunks WHERE chunk_id=?", (chunk_id,)
-    ).fetchone()
-    return row[0] if row else None
+    """Retrieve a stored chunk by ID from the unified chunks table.
+    
+    Repointed from tool_output_chunks to chunks table.
+    """
+    chunk = load_chunk(chunk_id)
+    if not chunk:
+        return None
+    parts = []
+    for m in chunk.get("messages", []):
+        parts.append(m.get("content", ""))
+    return "\n".join(parts) if parts else None
 
 
 def compress_large_tool_results(messages: list) -> list:
@@ -1230,8 +1344,23 @@ def compress_large_tool_results(messages: list) -> list:
     Splits outputs > COMPRESS_THRESHOLD chars into chunks and adds each
     to the staging buffer. Model sees unchanged output — no chunk markers,
     no "continue" loops. Useful flag prevents repeated staging of same content.
+    
+    Source auto-tagging: scans messages for last browser_navigate call,
+    extracts domain from URL, tags staged content as page:{domain}.
     """
     _staged_hashes = getattr(compress_large_tool_results, '_staged_hashes', set())
+    
+    # Scan for last browser_navigate to determine page source
+    page_source = None
+    for msg in reversed(messages):
+        if msg.get("role") == "tool":
+            content = msg.get("content", "")
+            if isinstance(content, str) and "browser_navigate" in content[:500]:
+                import re as _sre
+                urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
+                if urls:
+                    page_source = f"page:{urls[0]}"
+                break
     
     for msg in messages:
         if msg.get("role") != "tool":
@@ -1249,12 +1378,21 @@ def compress_large_tool_results(messages: list) -> list:
             continue
         _staged_hashes.add(h)
         
-        # Split into chunks and stage each
+        # Determine source for this tool output
+        tool_source = page_source or "tool:unknown"
+        if not page_source:
+            # Try to identify tool from content
+            for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
+                if tool in content[:200]:
+                    tool_source = f"tool:{tool}"
+                    break
+        
+        # Split into chunks and stage each with source metadata
         for i in range(0, len(content), CHUNK_SIZE):
             chunk = content[i:i+CHUNK_SIZE]
-            staging.add("assistant", chunk)
+            staging.add("assistant", chunk, source=tool_source)
         
-        print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks", flush=True)
+        print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks (source={tool_source})", flush=True)
         
         # Trigger archive if buffer has substantial content
         if staging.should_flush():
@@ -1501,9 +1639,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # If chunks are pending, loop internally until all consumed
     result = query_model(full_msgs, tools=msg_tools)
     
-    staging.add("user", user_msg)
+    staging.add("user", user_msg, source="user")
     if result["content"]:
-        staging.add("assistant", result["content"])
+        staging.add("assistant", result["content"], source="model")
     
     if staging.should_flush():
         threading.Thread(target=archive_staging, daemon=True).start()
