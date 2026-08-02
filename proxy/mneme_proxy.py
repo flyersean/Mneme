@@ -39,7 +39,8 @@ OLLAMA_TEMP    = 0.3
 # ─── Multi-pass compression config ───
 # CLASSIFY_MODEL removed — using embedding-based classification
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
-CHUNK_SIZE = 500  # chars per chunk for large tool outputs
+CHUNK_SIZE = 500   # chars per chunk for splitting large tool outputs
+DB_MSG_CAP  = 8000  # chars per message stored in SQLite (full content)
 COMPRESS_THRESHOLD = 500    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
@@ -57,6 +58,8 @@ AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bo
 # Save-cycle counter — incremented on every staging flush AND manual <<SAVE>>
 _archive_cycle = 0
 _archive_cycle_lock = threading.Lock()
+_chunk_seq = 0
+_chunk_seq_lock = threading.Lock()
 
 def _next_cycle() -> int:
     global _archive_cycle
@@ -323,6 +326,27 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     }
     if tools:
         payload["tools"] = tools
+    
+    # Hard cap: model CUDA crashes above ~4600 total chars. Trim every message.
+    MAX_MSG_CHARS = 800  # per-message cap in history
+    trimmed_msgs = []
+    for m in msgs:
+        content = m.get("content", "")
+        if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
+            trimmed_msgs.append({**m, "content": content[:MAX_MSG_CHARS] + "..."})
+        else:
+            trimmed_msgs.append(m)
+    
+    # Keep only system + last 3 non-system messages
+    sys_msgs = [m for m in trimmed_msgs if m.get("role") == "system"]
+    non_sys = [m for m in trimmed_msgs if m.get("role") != "system"]
+    msgs = sys_msgs + non_sys[-4:]
+    
+    total = sum(len(m.get("content","")) for m in msgs)
+    if total > MAX_PROMPT_CHARS:
+        print(f"  [WARN] Still {total} chars after trim — stripping oldest", flush=True)
+        msgs = sys_msgs + non_sys[-3:]
+    
     r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300)
     d = r.json()
     if "error" in d:
@@ -418,7 +442,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     """Insert chunk into SQLite + FAISS."""
     blob = _vec_to_blob(vector)
     msgs_json = json.dumps(
-        [{"role": m["role"], "content": m["content"][:CHUNK_SIZE]} for m in messages]
+        [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
     )
 
     db.execute("""
@@ -698,6 +722,8 @@ def get_strategies(problem_type: str, limit: int = 3) -> List[str]:
 
 # ─── Context Injection ─────────────────────────────────────────
 
+# Total prompt char limit — this model crashes above ~4600 chars with injection
+MAX_PROMPT_CHARS = 4500  # system + injection + history must stay below this
 # Token budget for injected memory. Hard cap to prevent context overflow.
 # The model has 32768 ctx total. System prompt + live conversation need room.
 MAX_INJECTED_TOKENS = 2048   # ~2K tokens — stay under model CUDA safe-zone
@@ -839,13 +865,18 @@ def build_context(query: str) -> Tuple[str, str]:
             continue
         ptype = chunk.get("problem_type", "other")
         topic = chunk.get("topic_label", "unknown")
-        msg_text = f"--- {topic} (id:{cid}) ---\n"
+        msg_text = f"--- [{cid}] {topic} ---\n"
+        # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
             msg_text += f"\n[learned strategy: {chunk['strategy']}]"
+        # Add next-chunk hint for sequential navigation
+        next_seq = f"mem_{int(cid.split('_')[1]) + 1}" if cid.startswith('mem_') else None
+        if next_seq:
+            msg_text += f"\n[see also: {next_seq}]"
         parts.append(msg_text)
     
     if not parts:
@@ -1149,9 +1180,14 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic_label,)).fetchone()
     seq = (row[0] if row else 0) + 1
-    chunk_id = f"{topic_label[:40]}_v{seq}"
+    global _chunk_seq
+    with _chunk_seq_lock:
+        _chunk_seq += 1
+        chunk_id = f"mem_{_chunk_seq}"
+    # topic_label and seq still in DB for search
     
-    save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy,
+    # chunk_id is set inside save_chunk (sequential) — just pass label
+    save_chunk("", topic_label, msgs, vec, strategy=strategy,
                outcome=outcome, problem_type=ptype, source=source)
     
     if strategy and ptype != "other":
@@ -1955,7 +1991,7 @@ if FLASK_OK:
         parts = []
         for m in chunk.get("messages", []):
             r = m["role"]
-            content = m["content"][:8000]
+            content = m["content"][:DB_MSG_CAP]
             parts.append({"role": r, "content": content})
         return _cors_response({
             "chunk_id": chunk.get("chunk_id"),
