@@ -49,7 +49,8 @@ STAGING_IDLE   = 120
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.08
+ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for more recall
+AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
@@ -532,12 +533,36 @@ def generate_strategy(messages: list, outcome: str) -> str:
 # ─── Routing ───────────────────────────────────────────────────
 
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """Raw FAISS top-k: vectors alone determine injection."""
+    """FAISS top-k with recency weighting — combined similarity + age score."""
     q_vec = embed(query)
-    scored = _cosine_search(q_vec, top_k, ROUTE_THRESHOLD)
+    scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
     if not scored:
         return []
-    return [cid for _, cid in scored[:top_k]]
+    
+    # Fetch created_at for all candidates
+    cids = [cid for _, cid in scored]
+    placeholders = ','.join('?' for _ in cids)
+    rows = db.execute(
+        f"SELECT chunk_id, created_at FROM chunks WHERE chunk_id IN ({placeholders})",
+        cids
+    ).fetchall()
+    age_map = {r[0]: r[1] for r in rows}
+    now = datetime.now(timezone.utc)
+    
+    # Combined score: similarity * recency_bonus
+    def combined(score, cid):
+        ts = age_map.get(cid, now.isoformat())
+        try:
+            created = datetime.fromisoformat(ts)
+            age_days = max(0.0, (now - created).total_seconds() / 86400.0)
+        except Exception:
+            age_days = 0.0
+        decay = 0.5 ** (age_days / AGE_DECAY_DAYS)  # 0.5 at half-life, near 1.0 for fresh
+        return score * (0.7 + 0.3 * decay)  # 70% similarity, 30% recency bonus
+    
+    scored_combined = [(combined(s, cid), cid) for s, cid in scored]
+    scored_combined.sort(reverse=True)
+    return [cid for _, cid in scored_combined[:top_k]]
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
