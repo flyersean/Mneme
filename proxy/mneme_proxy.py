@@ -50,7 +50,8 @@ STAGING_IDLE   = 120
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.15  # tunable: raise for stricter matching, lower for more recall
+ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for more recall
+BASELINE_NOISE     = 0.20  # fallback — overridden at startup by _calibrate_noise()
 AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
 
 # Save-cycle counter — incremented on every staging flush AND manual <<SAVE>>
@@ -606,10 +607,34 @@ def generate_strategy(messages: list, outcome: str) -> str:
 
 # ─── Routing ───────────────────────────────────────────────────
 
+def _calibrate_noise(n_samples: int = 3) -> float:
+    """Compute dynamic noise floor by embedding random strings and measuring min FAISS similarity."""
+    import random, string as _st
+    if not FAISS_OK or not _id_map:
+        return 0.20
+    scores = []
+    for _ in range(n_samples):
+        rand = ''.join(random.choices(_st.ascii_lowercase, k=20))
+        try:
+            vec = embed(rand)
+            if vec is not None:
+                hits = _cosine_search(vec, 5, 0.0)
+                if hits:
+                    scores.append(hits[-1][0])  # lowest similarity of top-5
+        except Exception:
+            pass
+    if scores:
+        return sum(scores) / len(scores)  # average minimum across samples
+    return 0.20
+
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """FAISS top-k with recency weighting — combined similarity + cycle score."""
+    """FAISS top-k with noise-normalized scores + recency weighting."""
     q_vec = embed(query)
-    scored = _cosine_search(q_vec, top_k * 3, ROUTE_THRESHOLD)
+    scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
+    if not scored_raw:
+        return []
+    # Normalize: subtract baseline noise, filter negative
+    scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
     if not scored:
         return []
     
@@ -675,7 +700,7 @@ def get_strategies(problem_type: str, limit: int = 3) -> List[str]:
 
 # Token budget for injected memory. Hard cap to prevent context overflow.
 # The model has 32768 ctx total. System prompt + live conversation need room.
-MAX_INJECTED_TOKENS = 4096   # ~4K tokens for memory + strategies
+MAX_INJECTED_TOKENS = 2048   # ~2K tokens — stay under model CUDA safe-zone
 MAX_SIBLINGS        = 3      # max chunks per topic (was 5 — caps sibling blowup)
 MAX_CHUNK_WORDS     = 500    # split user messages longer than this
 
@@ -827,6 +852,9 @@ def build_context(query: str) -> Tuple[str, str]:
         return "", ptype
     
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
+    # Hard cap: model safe-zone is ~4600 chars total. System prompt + injection + query must fit.
+    if len(context) > 3000:
+        context = context[:3000] + "\n[memory truncated to fit model context]"
     
     # Scan for structured chunk references in all archived conversations and surface them
     struct_refs = set()
@@ -1954,7 +1982,8 @@ if FLASK_OK:
         query = data.get("query", "")
         top_k = data.get("top_k", 10)
         vec = embed(query)
-        results = _cosine_search(vec, top_k, threshold=ROUTE_THRESHOLD)
+        results_raw = _cosine_search(vec, top_k, 0.0)
+        results = [(s - BASELINE_NOISE, cid) for s, cid in results_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
         chunks = []
         for score, chunk_id in results:
             row = db.execute("SELECT topic_label, grade, created_at, outcome, source, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -1982,6 +2011,9 @@ if FLASK_OK:
 # ─── Startup ───────────────────────────────────────────────────
 
 _load_index()
+# Calibrate noise baseline AFTER FAISS is loaded
+BASELINE_NOISE = _calibrate_noise()
+print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
 print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
 
