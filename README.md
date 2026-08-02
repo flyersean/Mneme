@@ -26,6 +26,7 @@ Agent (Hermes / any OpenAI client) → Mneme proxy (:8080) → Ollama (:11434)
 |---------|--------|
 | Streaming + non-streaming tool calls | ✓ |
 | FAISS memory injection with noise-normalized routing | ✓ |
+| Hybrid search: FAISS + SQLite LIKE keyword fallback | ✓ |
 | Sequential chunk IDs (mem_1, mem_2, ...) with next-chunk hints | ✓ |
 | Silent page ingestion (auto-stage + save) | ✓ |
 | Dynamic topic labels from content (no fixed clusters) | ✓ |
@@ -34,14 +35,15 @@ Agent (Hermes / any OpenAI client) → Mneme proxy (:8080) → Ollama (:11434)
 | Save-cycle recency weighting | ✓ |
 | Source field on all chunks (user, model, tool, page) | ✓ |
 | Score normalization (baseline noise floor subtraction) | ✓ |
+| Smarter history truncation (keeps task context + last 2 turns) | ✓ |
+| Strategy noise filter (skips CUDA/timeout failures) | ✓ |
 | Chunk+pool embedding (arctic-embed2) | ✓ |
-| POST /search — FAISS search with source/cycle fields | ✓ |
+| POST /search — FAISS search with source/cycle/method fields | ✓ |
 | GET /list — recent 50 chunks | ✓ |
 | GET /detail/<id> — full chunk content with source/cycle | ✓ |
 | Memory Strategies (learned from failures, auto-injected) | ✓ |
 | Multi-turn query context (last 3 user messages) | ✓ |
 | Per-message character trimming (prevents CUDA OOM) | ✓ |
-| Sliding window (32 messages) | ✓ |
 
 ## Hermes Integration
 
@@ -61,7 +63,7 @@ memory:
 - `GET /health` — status, chunk count, model
 - `POST /v1/chat/completions` — OpenAI-compatible chat
 - `GET /list` — recent 50 chunks
-- `POST /search` — FAISS search `{"query": "...", "top_k": 10}`
+- `POST /search` — hybrid FAISS+keyword search `{"query": "...", "top_k": 10}`, returns `method: "faiss"` or `"keyword"`
 - `GET /detail/<chunk_id>` — full chunk content
 - `POST /save` — force archive
 
@@ -88,28 +90,31 @@ Novel-writing stress test — 30-turn session, 13 chapters, 58K chars. Indirect 
 ### Phase 4: Targeted fiction (Fever Dreams)
 Steers model toward saved topics — "WHO doctor, outbreak zone, central Africa." Model writes 38K chars explicitly citing Mbandaka, June 2026, and case numbers from stored memory. Final chapter self-audits which details came from memory vs training data.
 
+### Phase 5: Hybrid search validation
+Tests keyword fallback when FAISS returns sparse results. Short queries ("sports", "Japan", "Italy") previously returned 0 results; now return 3-5 keyword matches. Nonsense queries still correctly rejected (0 results). 11/11 tests passing.
+
 ## Results (2026-08-02)
 
 | Test | Result |
 |------|--------|
 | Precision/recall API tests | 26/26 passed |
-| Score normalization (noise rejection) | Nonsense queries return 0-2 results |
+| Hybrid search tests | 11/11 passed |
+| Score normalization (noise rejection) | Nonsense queries return 0 results |
 | Save-cycle ordering | Marburg (cycle 4) ranks above Ebola (cycle 1) |
 | Cross-topic switching | All stored topics returned on targeted query |
 | CUDA crash threshold | Discovered at ~4,600 chars; fixed with per-message cap |
 | Long conversation stability | 30 turns, no memory leaks, no CUDA crashes |
-| Indirect memory prompting | Fails — model uses training data unless prompts overlap stored topics |
+| Indirect memory prompting | Fails via FAISS; keyword fallback partially helps |
 | Targeted fiction injection | Works — model self-audits 7 real facts from memory |
 | Cross-contamination | Story 1's fictional characters NOT pulled into story 2 |
 
 ## Known Issues
 
-- arctic-embed2 noise floor ~0.26 — requires score normalization, limits recall of short/vague queries
+- arctic-embed2 noise floor ~0.26 — mitigated by hybrid keyword fallback; FAISS-only short queries still limited
 - CUDA crash on Qwen 35B above ~4,600 chars total prompt — requires aggressive trimming
-- Memory strategies generate noise from CUDA crash "failures" — needs real failure data
+- Indirect prompting fails to trigger FAISS injection — keyword fallback helps but embedding gap remains
 - Save endpoint can timeout during model generation (single-threaded proxy)
-- arctic-embed2 can't bridge semantic gaps (e.g. "cascading disasters" ≠ "Ebola outbreak") — see Phase 3 results
-- Growing conversation history currently trimmed to last 3-4 messages of 800 chars each
+- Strategy generation filtered for noise; strategies still unused due to problem_type mismatch
 
 ## Dependencies
 
