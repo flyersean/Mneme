@@ -26,13 +26,14 @@ Agent (Hermes / any OpenAI client) → Mneme proxy (:8080) → Ollama (:11434)
 |---------|--------|
 | Streaming + non-streaming tool calls | ✓ |
 | FAISS memory injection with noise-normalized routing | ✓ |
-| Sequential chunk IDs (mem_1, mem_2, ...) | ✓ |
+| Sequential chunk IDs (mem_1, mem_2, ...) with next-chunk hints | ✓ |
 | Silent page ingestion (auto-stage + save) | ✓ |
 | Dynamic topic labels from content (no fixed clusters) | ✓ |
 | LLM-based semantic labeling (qwen2.5:0.5b) | ✓ |
 | 500-char injection / 8000-char storage | ✓ |
 | Save-cycle recency weighting | ✓ |
-| Source field on all chunks | ✓ |
+| Source field on all chunks (user, model, tool, page) | ✓ |
+| Score normalization (baseline noise floor subtraction) | ✓ |
 | Chunk+pool embedding (arctic-embed2) | ✓ |
 | POST /search — FAISS search with source/cycle fields | ✓ |
 | GET /list — recent 50 chunks | ✓ |
@@ -76,41 +77,39 @@ bash setup_pod.sh               # full pod setup
 Tests run on RunPod A40 (48GB VRAM) with Qwen 3.6 35B (Q4_K_M).
 
 ### Phase 1: Precision/Recall (API-level)
-Inject known facts (Ebola, earthquake, hurricane, World Cup) via chat, then validate `/search` returns correct chunks. Tests noise rejection via random-string queries and score normalization (baseline noise floor subtraction).
+Inject known facts (Ebola, earthquake, hurricane, World Cup) via chat, then validate `/search` returns correct chunks. Tests noise rejection via random-string queries and dynamic score normalization.
 
 ### Phase 2: Break-finding
 Rapid-fire injection, 5K-char messages, empty/whitespace/unicode queries, 10-way concurrent searches, save-cycle consistency, health endpoint stability. All 26 tests passing.
 
-### Phase 3: Long-conversation
-Novel-writing stress test — 30-turn session, 10 chapters, 58K+ chars. Tests cross-chapter memory persistence, injection accuracy across growing history, proxy stability. Model writes "The Year Everything Broke" weaving real 2026 events from memory.
+### Phase 3: Long-conversation (Echoes of 2026)
+Novel-writing stress test — 30-turn session, 13 chapters, 58K chars. Indirect prompting ("I'm thinking about writing a novel... set in 2026"). Tests cross-chapter memory persistence and proxy stability. Model used training data predominantly — indirect prompts didn't trigger real memory injection.
 
-### Phase 4: Indirect prompting
-Tests whether model naturally uses injected context without explicit "search your memory" commands. Vague prompts like "write about a doctor in an outbreak" trigger Ebola chunks. Direct prompts like "list events from 2026" return training data only — the embedding model requires topical overlap.
-
-### Phase 5: Targeted fiction
-Steers model toward saved topics — "WHO doctor, outbreak zone, central Africa." Model writes "Fever Dreams" (38K chars) explicitly citing Mbandaka, June 2026, and case numbers from stored memory. Final chapter self-audits which details came from memory vs training data.
+### Phase 4: Targeted fiction (Fever Dreams)
+Steers model toward saved topics — "WHO doctor, outbreak zone, central Africa." Model writes 38K chars explicitly citing Mbandaka, June 2026, and case numbers from stored memory. Final chapter self-audits which details came from memory vs training data.
 
 ## Results (2026-08-02)
 
 | Test | Result |
 |------|--------|
 | Precision/recall API tests | 26/26 passed |
-| Score normalization (noise rejection) | Working — nonsense queries return 0-2 results |
+| Score normalization (noise rejection) | Nonsense queries return 0-2 results |
 | Save-cycle ordering | Marburg (cycle 4) ranks above Ebola (cycle 1) |
 | Cross-topic switching | All stored topics returned on targeted query |
 | CUDA crash threshold | Discovered at ~4,600 chars; fixed with per-message cap |
-| Long conversation stability | 30 turns, no memory leaks |
-| Indirect memory prompting | Works with topical overlap; fails with abstract queries |
-| Targeted fiction injection | Model self-audits: 7 real facts from memory, rest from training |
-| Cross-contamination | First story's fictional characters NOT pulled into second story |
+| Long conversation stability | 30 turns, no memory leaks, no CUDA crashes |
+| Indirect memory prompting | Fails — model uses training data unless prompts overlap stored topics |
+| Targeted fiction injection | Works — model self-audits 7 real facts from memory |
+| Cross-contamination | Story 1's fictional characters NOT pulled into story 2 |
 
 ## Known Issues
 
 - arctic-embed2 noise floor ~0.26 — requires score normalization, limits recall of short/vague queries
 - CUDA crash on Qwen 35B above ~4,600 chars total prompt — requires aggressive trimming
-- Memory strategies generate noise from CUDA crash "failures"
+- Memory strategies generate noise from CUDA crash "failures" — needs real failure data
 - Save endpoint can timeout during model generation (single-threaded proxy)
-- Story-length content for first test run lost — only 500-char previews saved (fixed in v2 with 8000-char storage cap)
+- arctic-embed2 can't bridge semantic gaps (e.g. "cascading disasters" ≠ "Ebola outbreak") — see Phase 3 results
+- Growing conversation history currently trimmed to last 3-4 messages of 800 chars each
 
 ## Dependencies
 
