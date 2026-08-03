@@ -649,6 +649,7 @@ def classify_chunk(messages: list) -> dict:
     # Infer outcome heuristically from message content
     session_id = "default"
     chunk_grade = "C"
+    print(f"  [ARCHIVE-DEBUG] extracting grade from {len(msgs)} msgs", flush=True)
     for m in msgs:
         sid = m.get("session", "")
         if sid and sid != "default":
@@ -656,6 +657,7 @@ def classify_chunk(messages: list) -> dict:
         g = m.get("grade", "")
         if g and g in ("A","B","C","D","F"):
             chunk_grade = g
+    print(f"  [ARCHIVE-DEBUG] final chunk_grade={chunk_grade}", flush=True)
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -1250,6 +1252,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     session_id = "default"
     chunk_grade = "C"
+    print(f"  [ARCHIVE-DEBUG] extracting grade from {len(msgs)} msgs", flush=True)
     for m in msgs:
         sid = m.get("session", "")
         if sid and sid != "default":
@@ -1257,6 +1260,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         g = m.get("grade", "")
         if g and g in ("A","B","C","D","F"):
             chunk_grade = g
+    print(f"  [ARCHIVE-DEBUG] final chunk_grade={chunk_grade}", flush=True)
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -1800,9 +1804,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # If chunks are pending, loop internally until all consumed
     result = query_model(full_msgs, tools=msg_tools)
     
+    # Parse [GRADE:] from model output
+    grade = "C"
+    if result["content"]:
+        import re as _gm
+        gm = _gm.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
+        if gm:
+            grade = gm.group(1).upper()
+            print(f"  [GRADE] Model grade: {grade}", flush=True)
+    
     staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
-        staging.add("assistant", result["content"], source="model", session=session_id)
+        staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
     
     if staging.should_flush():
         threading.Thread(target=archive_staging, daemon=True).start()
@@ -1880,8 +1893,7 @@ if FLASK_OK:
         ct = result.get("content", "")
         gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
         grade = gm.group(1).upper() if gm else "D"  # D = unverified default
-        # Store grade in result for process_chat to use during staging
-        result["grade"] = grade
+        # Grade already parsed in process_chat
         
         sm = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
         if sm:
