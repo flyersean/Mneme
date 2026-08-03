@@ -648,11 +648,14 @@ def classify_chunk(messages: list) -> dict:
     
     # Infer outcome heuristically from message content
     session_id = "default"
+    chunk_grade = "C"
     for m in msgs:
         sid = m.get("session", "")
         if sid and sid != "default":
             session_id = sid
-            break
+        g = m.get("grade", "")
+        if g and g in ("A","B","C","D","F"):
+            chunk_grade = g
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -1019,9 +1022,9 @@ class StagingBuffer:
         self.last_activity = time.time()
         self.lock = threading.Lock()
     
-    def add(self, role: str, content: str, source: str = "unknown", session: str = "default"):
+    def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C"):
         with self.lock:
-            self.messages.append({"role": role, "content": content, "source": source, "session": session})
+            self.messages.append({"role": role, "content": content, "source": source, "session": session, "grade": grade})
             self.last_activity = time.time()
     
     def should_flush(self) -> bool:
@@ -1246,11 +1249,14 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     lower = full_text.lower()
     
     session_id = "default"
+    chunk_grade = "C"
     for m in msgs:
         sid = m.get("session", "")
         if sid and sid != "default":
             session_id = sid
-            break
+        g = m.get("grade", "")
+        if g and g in ("A","B","C","D","F"):
+            chunk_grade = g
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -1278,7 +1284,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     # topic_label and seq still in DB for search
     
     # Pass generated sequential chunk_id through to save_chunk
-    save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id,
+    save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id, grade=chunk_grade,
                outcome=outcome, problem_type=ptype, source=source)
     
     if strategy and ptype != "other":
@@ -1874,6 +1880,8 @@ if FLASK_OK:
         ct = result.get("content", "")
         gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
         grade = gm.group(1).upper() if gm else "D"  # D = unverified default
+        # Store grade in result for process_chat to use during staging
+        result["grade"] = grade
         
         sm = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
         if sm:
