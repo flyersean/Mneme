@@ -1299,6 +1299,15 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
              datetime.now(timezone.utc).isoformat())
         )
         db.commit()
+        # Embed strategy into FAISS for semantic retrieval
+        try:
+            svec = embed(strategy)
+            if svec is not None and FAISS_OK:
+                with _idx_lock:
+                    _index.add(svec.reshape(1, -1))
+                    _id_map.append(f"strat_{sid}")
+        except Exception:
+            pass
     
     print(f"  [ARCHIVE] {chunk_id} topic={topic_label[:30]} outcome={outcome} type={ptype} ({len(user_text)} chars)", flush=True)
     return 1
