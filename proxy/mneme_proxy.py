@@ -506,8 +506,8 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
           blob, grade, consensus, outcome, problem_type,
-          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0,
-          datetime.now(timezone.utc).isoformat()))
+          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0))
+
     db.commit()
     
     # Add to FAISS (only if indexable)
