@@ -114,6 +114,8 @@ db.executescript("""
 for migration in (
     "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
     "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
+    "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
 ):
     try:
         db.execute(migration)
@@ -487,8 +489,13 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector: np.ndarray, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
                outcome: str = "", problem_type: str = "other",
-               source: str = "unknown"):
+               source: str = "unknown", session_id: str = "default"):
     """Insert chunk into SQLite + FAISS."""
+    # Source-tiered indexing: only index user/page/tool content, not model hallucinations
+    is_indexable = True
+    if source and source.startswith("model"):
+        if grade in ("C", "D", "F"):
+            is_indexable = False
     blob = _vec_to_blob(vector)
     msgs_json = json.dumps(
         [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
@@ -499,20 +506,21 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
           blob, grade, consensus, outcome, problem_type,
-          source, _current_cycle(),
+          source, session_id, 1 if is_indexable else 0, _current_cycle(),
           datetime.now(timezone.utc).isoformat()))
     db.commit()
     
-    # Add to FAISS
-    with _idx_lock:
-        if FAISS_OK:
-            _index.add(vector.reshape(1, -1))
-        _id_map.append(chunk_id)
+    # Add to FAISS (only if indexable)
+    if is_indexable:
+        with _idx_lock:
+            if FAISS_OK:
+                _index.add(vector.reshape(1, -1))
+            _id_map.append(chunk_id)
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
         "SELECT chunk_id, topic_label, messages, thinking, strategy, "
-        "grade, consensus, outcome, problem_type, source, cycle FROM chunks WHERE chunk_id=?",
+        "grade, consensus, outcome, problem_type, source, session_id, cycle FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
     if not row:
@@ -522,7 +530,7 @@ def load_chunk(chunk_id: str) -> Optional[dict]:
         "messages": json.loads(row[2]), "thinking": row[3],
         "strategy": row[4], "grade": row[5],
         "consensus": row[6], "outcome": row[7],
-        "problem_type": row[8], "source": row[9], "cycle": row[10],
+        "problem_type": row[8], "source": row[9], "session_id": row[10], "cycle": row[11],
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -639,6 +647,12 @@ def classify_chunk(messages: list) -> dict:
     text = " ".join(m["content"][:500] for m in messages if m["role"] in ("user", "assistant"))
     
     # Infer outcome heuristically from message content
+    session_id = "default"
+    for m in msgs:
+        sid = m.get("session", "")
+        if sid and sid != "default":
+            session_id = sid
+            break
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -721,12 +735,32 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     cycle_map = {r[0]: r[1] for r in rows}
     current = _current_cycle()
     
-    # Combined score: similarity + recency bonus (cycle-based)
+    # Fetch grades for trust scoring
+    grade_rows = db.execute(
+        f"SELECT chunk_id, grade, source FROM chunks WHERE chunk_id IN ({placeholders})",
+        cids
+    ).fetchall()
+    grade_map = {r[0]: r[1] for r in grade_rows}
+    source_map = {r[0]: r[2] for r in grade_rows}
+    
+    SOURCE_W = {"user": 0.4, "page": 0.3, "tool": 0.2, "model": 0.0}
+    GRADE_W  = {"A": 0.4, "B": 0.3, "C": 0.1, "D": 0.0, "F": 0.0}
+    
+    # Combined score: similarity + recency + trust
     def combined(score, cid):
         chunk_cycle = cycle_map.get(cid, current)
         cycle_delta = max(0, current - chunk_cycle)
-        norm_age = 1.0 / (1 + cycle_delta)  # 1.0 for fresh, decays with cycle distance
-        return score + norm_age  # norm_sim + norm_age
+        norm_age = 1.0 / (1 + cycle_delta)
+        gr = grade_map.get(cid, "C")
+        src = source_map.get(cid, "unknown")
+        sw = SOURCE_W.get(src, 0.0) if not (src or "").startswith("model") else 0.0
+        for prefix in ["user", "page", "tool"]:
+            if (src or "").startswith(prefix):
+                sw = SOURCE_W.get(prefix, 0.0)
+                break
+        gw = GRADE_W.get(gr.upper() if gr else "C", 0.1)
+        trust = (sw + gw) / 2.0
+        return score * (0.7 + 0.3 * trust) + norm_age * 0.1  # sim*trust + small recency boost
     
     scored_combined = [(combined(s, cid), cid) for s, cid, _ in hybrid]
     scored_combined.sort(reverse=True)
@@ -914,7 +948,9 @@ def build_context(query: str) -> Tuple[str, str]:
             continue
         ptype = chunk.get("problem_type", "other")
         topic = chunk.get("topic_label", "unknown")
-        msg_text = f"--- [{cid}] {topic} ---\n"
+        sid = chunk.get("session_id", "default")
+        sid_tag = f" [session:{sid}]" if sid and sid != "default" else ""
+        msg_text = f"--- [{cid}]{sid_tag} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
@@ -983,9 +1019,9 @@ class StagingBuffer:
         self.last_activity = time.time()
         self.lock = threading.Lock()
     
-    def add(self, role: str, content: str, source: str = "unknown"):
+    def add(self, role: str, content: str, source: str = "unknown", session: str = "default"):
         with self.lock:
-            self.messages.append({"role": role, "content": content, "source": source})
+            self.messages.append({"role": role, "content": content, "source": source, "session": session})
             self.last_activity = time.time()
     
     def should_flush(self) -> bool:
@@ -1209,6 +1245,12 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     full_text = " ".join(m["content"][:200] for m in msgs if m["role"] in ("user", "assistant"))
     lower = full_text.lower()
     
+    session_id = "default"
+    for m in msgs:
+        sid = m.get("session", "")
+        if sid and sid != "default":
+            session_id = sid
+            break
     outcome = "SUCCESS"
     ptype = "other"
     
@@ -1235,8 +1277,8 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         chunk_id = f"mem_{_chunk_seq}"
     # topic_label and seq still in DB for search
     
-    # chunk_id is set inside save_chunk (sequential) — just pass label
-    save_chunk("", topic_label, msgs, vec, strategy=strategy,
+    # Pass generated sequential chunk_id through to save_chunk
+    save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id,
                outcome=outcome, problem_type=ptype, source=source)
     
     if strategy and ptype != "other":
@@ -1752,9 +1794,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # If chunks are pending, loop internally until all consumed
     result = query_model(full_msgs, tools=msg_tools)
     
-    staging.add("user", user_msg, source="user")
+    staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
-        staging.add("assistant", result["content"], source="model")
+        staging.add("assistant", result["content"], source="model", session=session_id)
     
     if staging.should_flush():
         threading.Thread(target=archive_staging, daemon=True).start()
@@ -1814,27 +1856,41 @@ if FLASK_OK:
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
         
-
-        if stream:
-            return _chat_stream(messages, tools=data.get("tools"))
+        # Auto-generate session ID for new conversations
+        user_count = sum(1 for m in messages if m.get("role") == "user")
+        if user_count <= 1:
+            # New conversation — generate unique session
+            import hashlib
+            first_msg = next((m.get("content","") for m in messages if m.get("role") == "user"), "")
+            h = hashlib.md5(first_msg[:100].encode()).hexdigest()[:8]
+        session_id = f"conv_{h}_{int(time.time()) % 100000}" if user_count <= 1 else "default"
         
-        result = process_chat(messages, tools=data.get("tools"))
+        if stream:
+            return _chat_stream(messages, tools=data.get("tools"), session_id=session_id)
+        
+        result = process_chat(messages, tools=data.get("tools"), session_id=session_id)
 
-        # Parse [STRATEGY:] from model output and save to strategies table
+        # Parse [GRADE:] and [STRATEGY:] from model output
         ct = result.get("content", "")
-        m = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
-        if m:
+        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
+        grade = gm.group(1).upper() if gm else "D"  # D = unverified default
+        
+        sm = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
+        if sm:
             try:
                 db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?)",
-                    ("strat_" + str(int(time.time())), "model", m.group(1).strip(), "", "A",
+                    ("strat_" + str(int(time.time())), "model", sm.group(1).strip(), "", "A",
                      datetime.now(timezone.utc).isoformat()))
                 db.commit()
-                print("  [STRATEGY] " + m.group(1).strip()[:80], flush=True)
+                print("  [STRATEGY] " + sm.group(1).strip()[:80], flush=True)
             except Exception as e:
                 print("  [STRATEGY][ERR] " + str(e)[:100], flush=True)
+        
+        print(f"  [GRADE] Parsed: {grade}", flush=True)
 
         # /v1/ prefix = OpenAI format (provider: custom)
         # bare = Ollama format (provider: ollama)
+        resp = None
         if request.path.startswith("/v1"):
             msg_obj = {"role": "assistant", "content": result.get("content", "")}
             if result.get("thinking"):
@@ -1855,8 +1911,9 @@ if FLASK_OK:
                         }
                     })
                 msg_obj["tool_calls"] = oai_tc
-            return _cors_response({
+            resp = _cors_response({
                 "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                "session_id": session_id,
                 "object": "chat.completion",
                 "system_fingerprint": "fp_ollama",
                 "created": int(time.time()),
@@ -1868,14 +1925,16 @@ if FLASK_OK:
                 }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": result.get("eval_count", 0), "total_tokens": result.get("eval_count", 0)},
             })
+            return resp
         else:
             msg = {"role": "assistant", "content": result.get("content", "")}
             if result.get("thinking"):
                 msg["thinking"] = result["thinking"]
             if result.get("tool_calls"):
                 msg["tool_calls"] = result["tool_calls"]
-            return _cors_response({
+            resp = _cors_response({
                 "model": FAKE_MODEL_ID,
+                "session_id": session_id,
                 "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "message": msg,
                 "done": True,
@@ -1889,8 +1948,8 @@ if FLASK_OK:
             })
     
     # ── Chat completions (SSE streaming) ──
-    def _chat_stream(messages, tools=None):
-        result = process_chat(messages, tools=tools)
+    def _chat_stream(messages, tools=None, session_id="default"):
+        result = process_chat(messages, tools=tools, session_id=session_id)
         content = result["content"]
         tool_calls = result.get("tool_calls", [])
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -2086,7 +2145,7 @@ if FLASK_OK:
         hybrid = _hybrid_search(query, top_k, faiss_results)
         chunks = []
         for score, chunk_id, method in hybrid:
-            row = db.execute("SELECT topic_label, grade, created_at, outcome, source, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
+            row = db.execute("SELECT topic_label, grade, created_at, outcome, source, session_id, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
             if row:
                 entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4), "method": method}
                 chunks.append(entry)
