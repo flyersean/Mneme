@@ -33,7 +33,8 @@ curl -s http://localhost:11434/api/tags
 
 ```bash
 # Main chat model (35B, Q4_K_M, ~22GB VRAM)
-ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest
+# Mneme works with ANY reasoning model — pick what fits your hardware
+ollama pull qwen3.6:35b
 
 # Embedding model (567M, ~1.2GB VRAM)
 ollama pull snowflake-arctic-embed2
@@ -237,7 +238,7 @@ bash restart_proxy.sh
 Environment variables for the proxy:
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MNEME_MODEL` | `fredrezones55/...` | Ollama model name |
+| `MNEME_MODEL` | `qwen3.6:35b` | Ollama model name |
 | `MNEME_CHUNK_DIR` | `/workspace/mneme_chunks` | Database directory |
 
 Tunable constants in `proxy/mneme_proxy.py`:
@@ -255,7 +256,7 @@ Run this on a fresh pod or local machine:
 curl -fsSL https://ollama.com/install.sh | sh
 nohup ollama serve > /tmp/ollama.log 2>&1 &
 sleep 5
-ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest
+ollama pull qwen3.6:35b
 ollama pull snowflake-arctic-embed2
 ollama pull qwen2.5:0.5b
 git clone https://github.com/flyersean/Mneme.git /tmp/mneme
