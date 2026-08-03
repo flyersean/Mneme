@@ -1820,6 +1820,19 @@ if FLASK_OK:
         
         result = process_chat(messages, tools=data.get("tools"))
 
+        # Parse [STRATEGY:] from model output and save to strategies table
+        ct = result.get("content", "")
+        m = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
+        if m:
+            try:
+                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?)",
+                    ("strat_" + str(int(time.time())), "model", m.group(1).strip(), "", "A",
+                     datetime.now(timezone.utc).isoformat()))
+                db.commit()
+                print("  [STRATEGY] " + m.group(1).strip()[:80], flush=True)
+            except Exception as e:
+                print("  [STRATEGY][ERR] " + str(e)[:100], flush=True)
+
         # /v1/ prefix = OpenAI format (provider: custom)
         # bare = Ollama format (provider: ollama)
         if request.path.startswith("/v1"):
