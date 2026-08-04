@@ -128,6 +128,11 @@ for migration in (
     "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
     "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
     "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
+    "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
+    "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
+    "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
+    "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
 ):
     try:
         db.execute(migration)
@@ -889,7 +894,17 @@ def build_context(query: str) -> Tuple[str, str]:
     strategies = get_strategies(ptype)
     strat_text = ""
     if strategies:
-        strat_text = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join(f"• {s}" for s in strategies)
+        strat_text = "\n\n--- PROVEN STRATEGIES ---\n"
+        # Get full stats for top strategies
+        strat_rows = db.execute(
+            "SELECT strategy_id, strategy_text, grade, version, effective_grade, use_count, success_count, parent_id FROM strategies "
+            "ORDER BY effective_grade DESC, use_count DESC LIMIT ?", (limit,)
+        ).fetchall()
+        for sr in strat_rows:
+            sid_short = sr[0].replace("strat_", "")[:8] if sr[0].startswith("strat_") else sr[0][:8]
+            vtag = f" v{sr[3]}" if sr[3] and sr[3] > 1 else ""
+            ptag = f" parent:{sr[7].replace('strat_','')[:8]}" if sr[7] else ""
+            strat_text += f"• STRATEGY #{sid_short}{vtag}{ptag} [grade:{sr[2]}] [eff:{sr[4]:.2f}] [used:{sr[5]}/{sr[6]} success]\n  {sr[1][:200]}\n"
         # Only append if strategies fit in remaining budget
         if _estimate_tokens(context + strat_text) <= MAX_INJECTED_TOKENS:
             context += strat_text
@@ -1185,18 +1200,39 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     if strategy and ptype != "other":
         sid = f"strat_{ptype}_{seq}_{int(time.time())}"
+        # Check for existing similar strategy (semantic dedup)
+        existing_version = 0
+        try:
+            svec_check = embed(strategy)
+            if svec_check is not None and FAISS_OK:
+                strat_hits = _cosine_search(svec_check, 1, 0.85)
+                for _, cid in strat_hits:
+                    if cid.startswith("strat_"):
+                        ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?",
+                            (cid.replace("strat_", ""),)).fetchone()
+                        if ex:
+                            existing_version = ex[1]
+                            sid = ex[0]  # reuse existing ID
+                            break
+        except Exception:
+            pass
+        
+        new_version = existing_version + 1
         db.execute(
-            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ptype, strategy, chunk_id, "B",
-             datetime.now(timezone.utc).isoformat())
+             datetime.now(timezone.utc).isoformat(),
+             new_version, sid if existing_version > 0 else "",
+             0.0, 0, 0)
         )
         db.commit()
-        # Embed strategy into FAISS for semantic retrieval
+        print(f"  [STRATEGY] v{new_version} {strategy[:60]}...", flush=True)
+        # Embed into FAISS for retrieval
         try:
-            svec = embed(strategy)
-            if svec is not None and FAISS_OK:
+            svec2 = embed(strategy)
+            if svec2 is not None and FAISS_OK:
                 with _idx_lock:
-                    _index.add(svec.reshape(1, -1))
+                    _index.add(svec2.reshape(1, -1))
                     _id_map.append(f"strat_{sid}")
         except Exception:
             pass
@@ -1506,7 +1542,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Parse [GRADE:] from model output
     grade = "C"
     if result["content"]:
-        gm = _gm.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
+        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
         if gm:
             grade = gm.group(1).upper()
             print(f"  [GRADE] Model grade: {grade}", flush=True)
@@ -1605,6 +1641,32 @@ if FLASK_OK:
                 print("  [STRATEGY][ERR] " + str(e)[:100], flush=True)
         
         print(f"  [GRADE] Parsed: {grade}", flush=True)
+        
+        # Update effectiveness of strategies referenced in this response
+        try:
+            # Find strategy IDs mentioned in response
+            import re as _sre2
+            refs = _sre2.findall(r'STRATEGY #(\d+)', ct)
+            for ref_id in refs:
+                sid = f"strat_{ref_id}"
+                row = db.execute(
+                    "SELECT effective_grade, use_count, success_count FROM strategies WHERE strategy_id LIKE ?",
+                    (f"%{ref_id}%",)
+                ).fetchone()
+                if row:
+                    old_eg = row[0] or 0.0
+                    uc = (row[1] or 0) + 1
+                    sc = (row[2] or 0) + (1 if grade in ("A", "B") else 0)
+                    grade_val = {"A": 1.0, "B": 0.75, "C": 0.5, "D": 0.25, "F": 0.0}.get(grade, 0.5)
+                    new_eg = old_eg * 0.7 + grade_val * 0.3
+                    db.execute(
+                        "UPDATE strategies SET effective_grade=?, use_count=?, success_count=? WHERE strategy_id LIKE ?",
+                        (new_eg, uc, sc, f"%{ref_id}%")
+                    )
+                    db.commit()
+                    print(f"  [STRATEGY-EFF] #{ref_id} eff={new_eg:.2f} used={uc} success={sc}", flush=True)
+        except Exception:
+            pass
 
         # /v1/ prefix = OpenAI format (provider: custom)
         # bare = Ollama format (provider: ollama)
