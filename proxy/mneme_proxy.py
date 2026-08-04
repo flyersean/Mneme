@@ -1645,9 +1645,10 @@ if FLASK_OK:
         sm = re.search(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.MULTILINE)
         if sm:
             try:
-                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?)",
+                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     ("strat_" + str(int(time.time())), "model", sm.group(1).strip(), "", "A",
-                     datetime.now(timezone.utc).isoformat()))
+                     datetime.now(timezone.utc).isoformat(),
+                     1, "", 0.0, 0, 0))
                 db.commit()
                 print("  [STRATEGY] " + sm.group(1).strip()[:80], flush=True)
             except Exception as e:
