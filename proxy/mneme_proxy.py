@@ -870,15 +870,19 @@ def build_context(query: str) -> Tuple[str, str]:
         parts.append(msg_text)
     
     if not parts:
-        srows = db.execute("SELECT strategy_text FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
+        srows = db.execute("SELECT strategy_text, strategy_id, grade, version, effective_grade, use_count, success_count FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
         if srows:
-            strat_text = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows)
+            strat_text = "\n\n--- PROVEN STRATEGIES ---\n"
+            for s in srows:
+                sid_short = s[1].replace("strat_","")[:10]
+                vpart = " v" + str(s[3]) if s[3] and s[3] > 1 else ""
+                strat_text += "\u2022 STRATEGY #" + sid_short + vpart + " [grade:" + str(s[2]) + "] [eff:" + str(round(s[4],2)) + "] [used:" + str(s[5]) + "/" + str(s[6]) + " success]\n  " + s[0][:200] + "\n"
             return strat_text, ptype
         return "", ptype
     
     # Inject strategies alongside chunks
     try:
-        srows = db.execute("SELECT strategy_text FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
+        srows = db.execute("SELECT strategy_text, strategy_id, grade, version, effective_grade, use_count, success_count FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
         if srows:
             context = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows) + "\n" + context
     except: pass
