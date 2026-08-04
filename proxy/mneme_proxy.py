@@ -417,74 +417,6 @@ def query_model(messages: list, system: str = None, temperature: float = None,
 
 
 # ─── Native streaming query (SSE passthrough from Ollama) ─────
-def query_model_stream(messages: list, tools: list = None):
-    """Generator: yields Ollama SSE chunks as they arrive.
-    Each chunk is a dict ready for json.dumps."""
-    trimmed = list(messages)
-    if len(trimmed) > MAX_HISTORY_MESSAGES:
-        first = trimmed[0] if trimmed[0].get("role") == "system" else None
-        rest = [m for m in trimmed if m.get("role") != "system"] if first else trimmed
-        trimmed = rest[-(MAX_HISTORY_MESSAGES - (1 if first else 0)):]
-        if first:
-            trimmed.insert(0, first)
-    msgs = []
-    msgs.extend(trimmed)
-
-    payload = {
-        "model": MODEL, "stream": True, "messages": msgs,
-        "options": {"temperature": OLLAMA_TEMP}
-    }
-    if tools:
-        payload["tools"] = tools
-
-    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300, stream=True)
-    cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-
-    yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-           "model": FAKE_MODEL_ID,
-           "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
-
-    for line in r.iter_lines():
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if "error" in d:
-            print(f"  [ERROR] Ollama streaming: {d['error']}", flush=True)
-            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                   "model": FAKE_MODEL_ID,
-                   "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}]}
-            yield None  # DONE signal
-            return
-
-        if d.get("done"):
-            break
-
-        msg = d.get("message", {})
-        content = msg.get("content", "")
-        thinking = msg.get("thinking", "")
-
-        if thinking:
-            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                   "model": FAKE_MODEL_ID,
-                   "choices": [{"index": 0, "delta": {"reasoning": thinking, "role": "assistant"}, "finish_reason": None}]}
-        if content:
-            yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                   "model": FAKE_MODEL_ID,
-                   "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}
-
-    yield {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-           "model": FAKE_MODEL_ID,
-           "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
-    yield None  # DONE signal
-
-
-
-
-# ─── Chunk Storage ─────────────────────────────────────────────
-
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector: np.ndarray, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
@@ -618,7 +550,6 @@ def _generate_topic_label(text):
     """
     clean = _clean_content(text)[:2000].lower()
     keywords = []
-    import re as _tlre
     dates = _tlre.findall(r"(20\d{2})", clean)
     if dates:
         keywords.append(dates[0])
@@ -639,53 +570,6 @@ def _generate_topic_label(text):
 # Old TOPIC_CLUSTERS / TOPIC_VECTORS removed — dynamic content-derived
 # topic labels via _generate_topic_label are used everywhere instead.
 
-
-def classify_chunk(messages: list) -> dict:
-    """Classify using embedding similarity against topic clusters.
-    No model call — pure vector math. Returns topic label + heuristics."""
-    # Build text from messages for embedding
-    text = " ".join(m["content"][:500] for m in messages if m["role"] in ("user", "assistant"))
-    
-    # Infer outcome heuristically from message content
-    session_id = "default"
-    chunk_grade = "C"
-    print(f"  [ARCHIVE-DEBUG] extracting grade from {len(msgs)} msgs", flush=True)
-    for m in msgs:
-        sid = m.get("session", "")
-        if sid and sid != "default":
-            session_id = sid
-        g = m.get("grade", "")
-        if g and g in ("A","B","C","D","F"):
-            chunk_grade = g
-    print(f"  [ARCHIVE-DEBUG] final chunk_grade={chunk_grade}", flush=True)
-    outcome = "SUCCESS"
-    ptype = "other"
-    
-    full_text = " ".join(m["content"][:200] for m in messages)
-    lower = full_text.lower()
-    
-    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
-        outcome = "FAILURE"
-        ptype = "error"
-    elif any(w in lower for w in ("continue", "next chunk", "more chunks")):
-        outcome = "TRUNCATED"
-    elif any(w in lower for w in ("save", "archive", "memory", "store")):
-        ptype = "memory_operation"
-    elif any(w in lower for w in ("browser", "://", "page", "article", "wikipedia", "extract", "content")):
-        ptype = "web_retrieval"
-    elif any(w in lower for w in ("code", "function", "def ", "patch", "fix")):
-        ptype = "code"
-    
-    # Content-derived topic label (replaces fixed cluster matching)
-    topic_label = _generate_topic_label(text)
-    
-    return {
-        "topic_label": topic_label[:80],
-        "outcome": outcome,
-        "problem_type": ptype,
-    }
-
-# ─── Strategy Generation ───────────────────────────────────────
 
 def generate_strategy(messages: list, outcome: str) -> str:
     """Generate strategy heuristically — no model call needed for simple cases."""
@@ -973,9 +857,7 @@ def build_context(query: str) -> Tuple[str, str]:
         return "", ptype
     
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
-    # Hard cap: model safe-zone is ~4600 chars total. System prompt + injection + query must fit.
-    if len(context) > 3000:
-        context = context[:3000] + "\n[memory truncated to fit model context]"
+    # Budget enforced by _trim_chunks_cached — no second guillotine
     
     # Scan for structured chunk references in all archived conversations and surface them
     struct_refs = set()
@@ -984,7 +866,6 @@ def build_context(query: str) -> Tuple[str, str]:
         if chunk:
             for m in chunk.get("messages", []):
                 text = _extract_text(m.get("content", ""))
-                import re as _sre
                 found = _sre.findall(r'\[chunk-[a-f0-9]+:\s*\d+[^\]]*\]', text)
                 struct_refs.update(found)
     if struct_refs:
@@ -1213,7 +1094,6 @@ def _infer_source(msgs: list) -> str:
         # Look for browser_navigate tool call or URL patterns
         if "browser_navigate" in content[:500] or "browser_console" in content[:500]:
             # Try to extract domain from URL
-            import re as _sre
             urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
             if urls:
                 return f"page:{urls[0]}"
@@ -1331,65 +1211,6 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         segments.append(current)
     return segments
 
-
-def _archive_split(msgs):
-    """Split a long buffer into per-user-message segments and archive each
-    segment as its own chunk with its own classification.
-
-    This fixes topic mixing: previously the whole buffer got one label from
-    the dominant topic; now each user-turn cluster gets its own label.
-    Returns the number of chunks archived.
-    """
-    segments = _segment_by_user(msgs)
-
-    # If only one segment, fall back to single archive
-    if len(segments) <= 1:
-        user_text = " ".join(
-            m["content"][:5000] for m in msgs if m["role"] in ("user", "assistant")
-        )
-        return _archive_single(msgs, user_text)
-
-    archived = 0
-    for i, seg in enumerate(segments):
-        seg_text = " ".join(
-            m["content"][:5000] for m in seg if m["role"] in ("user", "assistant")
-        )
-        if not seg_text.strip():
-            continue
-        print(f"  [ARCHIVE] Segment {i+1}/{len(segments)}: {len(seg)} msgs, "
-              f"{len(seg_text.split())} words", flush=True)
-        archived += _archive_single(seg, seg_text)
-
-    return archived
-
-
-# ─── Tool Output Classification config ───
-CLASSIFY_MAX_TOK   = 1024    # max tokens for classification response (thinking + answer)
-CLASSIFY_TEMP      = 0.0     # deterministic classification
-
-# ─── Multi-Pass Compression ────────────────────────────────────
-
-COMPRESS_PROMPT_TEMPLATE = (
-    "The following is the output of a {tool_name} call that was too large to process directly. "
-    "Extract the key information, facts, and data that would be most relevant for answering "
-    "the user's question. Preserve all critical details, code snippets, error messages, "
-    "and specific values. Be comprehensive but concise. Format as clear structured text."
-    "\n\n[TOOL OUTPUT]\n{tool_output}"
-)
-
-CLASSIFY_PROMPT_TEMPLATE = (
-    "You are a classifier. Reply with ONLY one word: TEXT, STRUCTURED, or SHORT. No explanation, no thinking, just the word.\n\n"
-    "Categories:\n"
-    "TEXT — Articles, prose, HTML, documentation, error messages, natural language content. "
-    "Can be summarized without losing critical information.\n"
-    "STRUCTURED — Data tables, CSV, JSON arrays/objects with many records, log files, numeric datasets, "
-    "API responses with structured records, spreadsheet data. Every value must be preserved — summarization loses data.\n"
-    "SHORT — Under {threshold} characters, small enough to pass through unchanged.\n\n"
-    "Tool: {tool_name}\n"
-    "Size: {size} characters\n\n"
-    "[TOOL OUTPUT PREVIEW — first 2000 chars]\n{preview}\n\n"
-    "Reply with ONE word only:"
-)
 
 def compress_tool_output(tool_output: str, tool_name: str = "tool") -> str:
     """Use the model to extract key information from a large tool output.
@@ -1530,7 +1351,6 @@ def compress_large_tool_results(messages: list) -> list:
         if msg.get("role") == "tool":
             content = msg.get("content", "")
             if isinstance(content, str) and "browser_navigate" in content[:500]:
-                import re as _sre
                 urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
                 if urls:
                     page_source = f"page:{urls[0]}"
@@ -1580,107 +1400,9 @@ def compress_large_tool_results(messages: list) -> list:
 
 # ─── ORIGINAL CHUNKING (disabled) ───
 
-def _compress_large_tool_results_OLD(messages: list) -> list:
-    """Chunk large tool outputs for sequential reading.
-    
-    Large outputs are split into CHUNK_SIZE segments stored in a
-    per-session buffer. The first chunk is injected inline with a
-    [Chunk 1/N] marker. When the model replies "continue", the proxy
-    swaps in the next chunk on the subsequent request.
-    """
-    global _active_chunks, _chunk_buffer
-    _chunk_buffer = getattr(compress_large_tool_results, '_buffer', {})
-    _active_chunks = getattr(compress_large_tool_results, '_active', {})
-    
-    session_id = "default"
-    result = []
-    
-    # Debug: log all message roles
-    for i, msg in enumerate(messages):
-        r = msg.get("role", "?")
-        c_len = len(msg.get("content", "")) if isinstance(msg.get("content", ""), str) else 0
-        if c_len > 1000:
-            print(f"  [CHUNK-DEBUG] msg[{i}] role={r} content_len={c_len}", flush=True)
-    
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        
-        if role == "tool":
-            print(f"  [CHUNK-DEBUG] tool msg: type={type(content).__name__}, len={len(content) if hasattr(content, '__len__') else 'N/A'}", flush=True)
-        if role == "tool" and isinstance(content, str) and len(content) > COMPRESS_THRESHOLD and "browser_navigate" not in content[:200]:
-            print(f"  [CHUNK] Splitting {role} output: {len(content)} chars into {int(len(content)/CHUNK_SIZE)+1} chunks", flush=True)
-            # Split into chunks
-            chunks = [content[i:i+CHUNK_SIZE] for i in range(0, len(content), CHUNK_SIZE)]
-            total = len(chunks)
-            
-            # Store all chunks
-            _chunk_buffer[session_id] = chunks
-            _active_chunks[session_id] = 0  # current chunk index
-            
-            # Inject first chunk with marker
-            first = chunks[0]
-            import hashlib, os as _os; hi = hashlib.md5(content[:200].encode()).hexdigest()[:8]; cd = "/tmp/mneme_chunks"; _os.makedirs(cd, exist_ok=True)
-            for ci, chunk in enumerate(chunks):
-                fp = f"{cd}/chunk_{hi}_{ci+1}of{total}.txt"
-                with open(fp, "w") as cf:
-                    cf.write(chunk)
-            print(f"  [CHUNK] Wrote {total} chunks to {cd}/chunk_{hi}_*.txt", flush=True)
-            hint = f"\n\n--- Page truncated. Read chunks with read_file: {cd}/chunk_{hi}_2of{total}.txt to {cd}/chunk_{hi}_{total}of{total}.txt ---"
-            result.append({**msg, "content": first + hint})
-            # Also stage full text for permanent archival with FAISS vector
-            staging.add("assistant", content)
-        else:
-            result.append(msg)
-    
-    compress_large_tool_results._buffer = _chunk_buffer
-    compress_large_tool_results._active = _active_chunks
-    return result
-
-
 def _advance_chunk(messages: list) -> list:
     return messages  # CHUNKING DISABLED
 
-
-def _advance_chunk_OLD(messages: list) -> list:
-    """If the last user message is 'continue', swap in the next chunk."""
-    if not messages:
-        return messages
-    
-    last = messages[-1]
-    if last.get("role") != "user":
-        return messages
-    
-    text = last.get("content", "").strip().lower()
-    if text not in ("continue", "next", "more"):
-        return messages
-    
-    session_id = "default"
-    buf = getattr(compress_large_tool_results, '_buffer', {})
-    active = getattr(compress_large_tool_results, '_active', {})
-    
-    chunks = buf.get(session_id, [])
-    idx = active.get(session_id, 0) + 1
-    
-    if idx >= len(chunks):
-        # All chunks consumed — replace with completion marker
-        messages[-1]["content"] = "[All chunks read. Continue with your response.]"
-        if session_id in buf:
-            del buf[session_id]
-        if session_id in active:
-            del active[session_id]
-        return messages
-    
-    # Swap in next chunk
-    next_chunk = chunks[idx]
-    active[session_id] = idx
-    total = len(chunks)
-    marker = f"\n\n[Chunk {idx+1}/{total} — reply \"continue\" for next chunk]"
-    messages[-1]["content"] = next_chunk + marker
-    
-    compress_large_tool_results._buffer = buf
-    compress_large_tool_results._active = active
-    return messages
 
 def _needs_chunk_loop(response_content: str) -> bool:
     """Check if model response is ONLY a chunk-advance signal.
@@ -1698,52 +1420,6 @@ def _model_loop_read_all(messages: list, tools: list = None) -> dict:
     return query_model(messages, tools=tools)  # CHUNKING DISABLED
 
 
-def _model_loop_read_all_OLD(messages: list, tools: list = None) -> dict:
-    """Internal loop: feed chunks to model until all consumed.
-    
-    Keeps calling Ollama as long as the model says "continue" after
-    receiving a chunk. Returns the final non-continue result.
-    """
-    session_id = "default"
-    buf = getattr(compress_large_tool_results, '_buffer', {})
-    active = getattr(compress_large_tool_results, '_active', {})
-    
-    max_loops = 50
-    nchunks = len(buf.get("default", []))
-    print(f"  [LOOP] Model loop: {nchunks} chunks queued", flush=True)
-    nchunks = len(buf.get("default", []))
-    if nchunks > 1:
-        print(f"  [LOOP] Chunk loop: {nchunks} chunks, auto-advancing tool calls", flush=True)
-    for _ in range(max_loops):
-        result = query_model(messages, tools=tools)
-        content = result.get("content", "").strip()
-        
-        if not _needs_chunk_loop(content):
-            # If model returned tool_calls but chunks remain, advance and loop
-            tool_calls = result.get("tool_calls", []) or result.get("tool_calls_json", [])
-            remaining = active.get("default", 0) < len(buf.get("default", []))
-            if tool_calls and remaining:
-                print(f"  [LOOP] Got tool_calls with {len(tool_calls)} calls — advancing chunk once", flush=True)
-                _advance_chunk(messages)
-                # After advancing, return the chunk content directly as a simulated response
-                # so the model doesn't keep trying tools
-                for i in range(len(messages) - 1, -1, -1):
-                    if messages[i].get("role") == "tool":
-                        return {"content": messages[i]["content"], "tool_calls": [], "eval_count": 0, "done_reason": "chunk_advance"}
-                continue
-            return result
-        
-        # Advance chunk and loop
-        _advance_chunk(messages)
-    
-    # All chunks consumed — auto-save the conversation
-    print(f"  [LOOP] All chunks consumed — auto-saving", flush=True)
-    # Flush staging buffer to persist page content
-    import threading
-    threading.Thread(target=archive_staging, daemon=True).start()
-    return {"content": "[All chunks consumed and saved. Continue with your analysis.]", 
-            "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "loop_complete"}
-
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -1753,7 +1429,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     user_msg = " ".join(reversed(user_msgs))  # chronological order
     
     # ── Detail: load full chunk if DETAIL tag found ──
-    import re as _detail_re
     # Scan last message regardless of role (model may output DETAIL in response)
     last_msg = messages[-1].get("content", "") if messages else ""
     detail_match = _detail_re.search(r"<<DETAIL\s+id:([^>]+)>>", last_msg, _detail_re.IGNORECASE)
@@ -1816,7 +1491,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Parse [GRADE:] from model output
     grade = "C"
     if result["content"]:
-        import re as _gm
         gm = _gm.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
         if gm:
             grade = gm.group(1).upper()
