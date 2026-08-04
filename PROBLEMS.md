@@ -66,6 +66,40 @@ LLM labeler with `temperature=0.0` produces identical labels for similar content
 ### P4: Single-file monolith
 1,888 lines in one module. Module-level mutable state shared across Flask threads. Would benefit from splitting into storage/embedding/routing/injection/HTTP modules.
 
+## Planned: Strategy Improvement Loop (P1)
+
+### Problem
+Strategies are static once created. A B-grade strategy from session 1 has the same weight as session 50. Models can't improve or supersede old strategies. The "learning" is one layer deep — a strategy is created once and never evolves. There's no usage tracking, no effectiveness feedback, no versioning, and no decay.
+
+### Design (three phases, incremental)
+
+**Phase 1: Strategy versioning via semantic dedup**
+Before inserting a new strategy, FAISS-search existing strategies. If cosine > 0.8 with an existing one, don't create a new row — increment the existing strategy's `version` counter, update its text, and set `parent_id` to itself. Schema additions: `version INT DEFAULT 1`, `parent_id TEXT`. The model sees `[STRATEGY v3]` and knows it's iterating on prior work.
+
+**Phase 2: Effectiveness feedback**
+When a model outputs `[GRADE: X]` in the same response where it references a strategy, apply a weighted update: `strategy.effective_grade = 0.7 * old_grade + 0.3 * model_grade`. An A-grade response nudges the strategy toward A. An F-grade response nudges it toward F. Schema additions: `effective_grade REAL DEFAULT 0.0`, `use_count INT DEFAULT 0`, `success_count INT DEFAULT 0`. The system learns which strategies actually produce good outcomes.
+
+**Phase 3: Dynamic ranking replaces static injection**
+The "always inject top-3" becomes `ORDER BY effective_grade DESC, use_count DESC, created_at DESC`. Strategies that correlate with A/B grades float to the top. Strategies that correlate with failure sink. Unused strategies fade out naturally. Cross-model: qwen's strategy gets graded by gemma's results, creating an honest feedback loop neither model controls alone.
+
+### User-prompted iteration
+The model can self-improve strategies if the injection header includes enough context. Currently the model only sees strategy text. What it needs:
+
+```
+STRATEGY #7 [grade: D] [used: 12 times, success: 2/12] [v1, no parent]
+Created from: FAILURE on "What is the capital of Australia?" — answered Sydney.
+Text: "Always verify country capitals against encyclopedias."
+
+STRATEGY #3 [grade: A] [used: 34 times, success: 31/34] [v3, parent: #1]
+Created from: FAILURE on "source verification" — cited unreliable blog.
+Text: "Cross-reference claims with official records and credible media sources."
+```
+
+With enriched headers, a user can say "look at your D and F rated strategies and attempt to improve them" and the model has enough context to generate a better version with `[STRATEGY: ...]` and mark it as `v2 of #7`.
+
+### The full loop
+Model fails → creates strategy v1 → strategy helps → other model grades A → strategy rises → model improves strategy → v2 supersedes v1 → cycle repeats. Strategies that help survive. Strategies that don't sink out of the always-inject pool.
+
 ## Not Issues (verified correct)
 
 - WAL journaling works — `db.commit()` persists correctly.
