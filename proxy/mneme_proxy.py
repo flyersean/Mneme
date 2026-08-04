@@ -61,6 +61,18 @@ _archive_cycle_lock = threading.Lock()
 _chunk_seq = 0
 _chunk_seq_lock = threading.Lock()
 
+def _seed_chunk_seq():
+    global _chunk_seq
+    try:
+        row = db.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(chunk_id, 5) AS INTEGER)), 0) FROM chunks WHERE chunk_id LIKE 'mem_%'"
+        ).fetchone()
+        if row and row[0]:
+            _chunk_seq = row[0]
+            print(f"  [STARTUP] chunk_seq seeded to {_chunk_seq}", flush=True)
+    except Exception:
+        pass
+
 def _next_cycle() -> int:
     global _archive_cycle
     with _archive_cycle_lock:
@@ -1164,7 +1176,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     global _chunk_seq
     with _chunk_seq_lock:
         _chunk_seq += 1
-        chunk_id = f"mem_{_chunk_seq}"
+        chunk_id = f"mem_{int(time.time()*1000000)}"
     # topic_label and seq still in DB for search
     
     # Pass generated sequential chunk_id through to save_chunk
@@ -1877,6 +1889,7 @@ if FLASK_OK:
 # ─── Startup ───────────────────────────────────────────────────
 
 _load_index()
+_seed_chunk_seq()
 # Calibrate noise baseline AFTER FAISS is loaded
 BASELINE_NOISE = _calibrate_noise()
 print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
