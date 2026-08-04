@@ -1659,7 +1659,7 @@ if FLASK_OK:
         try:
             # Find strategy IDs mentioned in response
             import re as _sre2
-            refs = _sre2.findall(r'STRATEGY #(\d+)', ct)
+            refs = _sre2.findall(r'STRATEGY #([\w]+)', ct)
             for ref_id in refs:
                 sid = f"strat_{ref_id}"
                 row = db.execute(
