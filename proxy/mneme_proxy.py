@@ -870,8 +870,18 @@ def build_context(query: str) -> Tuple[str, str]:
         parts.append(msg_text)
     
     if not parts:
+        srows = db.execute("SELECT strategy_text FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
+        if srows:
+            strat_text = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows)
+            return strat_text, ptype
         return "", ptype
     
+    # Inject strategies alongside chunks
+    try:
+        srows = db.execute("SELECT strategy_text FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
+        if srows:
+            context = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows) + "\n" + context
+    except: pass
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
     # Budget enforced by _trim_chunks_cached — no second guillotine
     
