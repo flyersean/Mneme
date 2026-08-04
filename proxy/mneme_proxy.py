@@ -866,7 +866,7 @@ def build_context(query: str) -> Tuple[str, str]:
         if chunk:
             for m in chunk.get("messages", []):
                 text = _extract_text(m.get("content", ""))
-                found = _sre.findall(r'\[chunk-[a-f0-9]+:\s*\d+[^\]]*\]', text)
+                found = re.findall(r'\[chunk-[a-f0-9]+:\s*\d+[^\]]*\]', text)
                 struct_refs.update(found)
     if struct_refs:
         context += "\n\n--- STORED RAW DATA (retrievable with <<DETAIL>>) ---\n"
@@ -1094,7 +1094,7 @@ def _infer_source(msgs: list) -> str:
         # Look for browser_navigate tool call or URL patterns
         if "browser_navigate" in content[:500] or "browser_console" in content[:500]:
             # Try to extract domain from URL
-            urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
+            urls = re.findall(r'https?://(?:www\.)?([^/\s]+)', content)
             if urls:
                 return f"page:{urls[0]}"
             return "page:unknown"
@@ -1351,7 +1351,7 @@ def compress_large_tool_results(messages: list) -> list:
         if msg.get("role") == "tool":
             content = msg.get("content", "")
             if isinstance(content, str) and "browser_navigate" in content[:500]:
-                urls = _sre.findall(r'https?://(?:www\.)?([^/\s]+)', content)
+                urls = re.findall(r'https?://(?:www\.)?([^/\s]+)', content)
                 if urls:
                     page_source = f"page:{urls[0]}"
                 break
@@ -1420,6 +1420,9 @@ def _model_loop_read_all(messages: list, tools: list = None) -> dict:
     return query_model(messages, tools=tools)  # CHUNKING DISABLED
 
 
+# Regex for <<DETAIL id:chunk_id>> syntax
+_detail_re = re.compile(r"<<DETAIL\s+id:([^>]+)>>", re.IGNORECASE)
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -1431,7 +1434,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # ── Detail: load full chunk if DETAIL tag found ──
     # Scan last message regardless of role (model may output DETAIL in response)
     last_msg = messages[-1].get("content", "") if messages else ""
-    detail_match = _detail_re.search(r"<<DETAIL\s+id:([^>]+)>>", last_msg, _detail_re.IGNORECASE)
+    detail_match = _detail_re.search(last_msg)
     if detail_match:
         chunk_id = detail_match.group(1).strip()
         print(f"  [DETAIL] Loading chunk {chunk_id}", flush=True)
