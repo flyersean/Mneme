@@ -1642,7 +1642,7 @@ if FLASK_OK:
         grade = gm.group(1).upper() if gm else "D"  # D = unverified default
         # Grade already parsed in process_chat
         
-        sm = re.search(r"\[STRATEGY:\s*(.+?)\]", ct)
+        sm = re.search(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.MULTILINE)
         if sm:
             try:
                 db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?)",
