@@ -701,11 +701,10 @@ def get_siblings_batch(chunk_ids: List[str]) -> Dict[str, List[str]]:
         result[cid] = topics[topic]
     return result
 
-def get_strategies(problem_type: str, limit: int = 3) -> List[str]:
+def get_strategies(problem_type=None, limit=3):
     rows = db.execute(
-        "SELECT strategy_text FROM strategies WHERE problem_type=? "
-        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END LIMIT ?",
-        (problem_type, limit)
+        "SELECT strategy_text FROM strategies ORDER BY effective_grade DESC, use_count DESC LIMIT ?",
+        (limit,)
     ).fetchall()
     return [r[0] for r in rows]
 
