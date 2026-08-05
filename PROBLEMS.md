@@ -1,8 +1,8 @@
 # Mneme — Issue Tracker
 
-## Status: Cross-model collaboration verified, persistence bugs resolved
+## Status: Strategy improvement loop complete — Phase 1-3 verified
 
-dev-chunks branch. Tested August 3-4, 2026 on RunPod A40 with qwen2.5:7b + gemma4:26b.
+dev-chunks branch. Tested August 3-5, 2026 on RunPod A40 with qwen2.5:7b + gemma4:26b.
 
 ## Resolved (August 2026 session)
 
@@ -26,17 +26,34 @@ dev-chunks branch. Tested August 3-4, 2026 on RunPod A40 with qwen2.5:7b + gemma
 ### P1: Grade pipeline [RESOLVED]
 - **Cause:** Grades parsed from model output but never written to DB.
 - **Fix:** Full pipeline: model output `[GRADE: X]` → process_chat parsing → staging → archive → save_chunk → DB.
-- **Verified:** gemma4 outputs `[GRADE: A]`, DB shows `grade=A`.
+- **Verified:** Models output `[GRADE: A]`, DB shows `grade=A`.
 
 ### P1: Strategy type mismatch [RESOLVED]
 - **Cause:** Strategies keyed on `problem_type` string matching — never matched in practice.
-- **Fix:** Always inject top-3 highest-graded strategies regardless of problem_type. FAISS semantic match as bonus.
+- **Fix:** Always inject top-3 strategies ranked by effective_grade, regardless of problem_type.
 - **Verified:** Cross-model strategy transfer confirmed (qwen strategies injected into gemma context).
+
+### P1: Strategy improvement loop — Phase 1: Versioning [RESOLVED]
+- **Schema:** `version INT DEFAULT 1`, `parent_id TEXT`, `effective_grade REAL DEFAULT 0.0`, `use_count INT DEFAULT 0`, `success_count INT DEFAULT 0`.
+- **Dedup:** FAISS cosine > 0.75 on strategy text before INSERT. Match → bump version, update text, set parent_id.
+- **Verified:** "Always verify arithmetic." → v2 on second identical creation (Aug 5, pod 69.30.85.50).
+
+### P1: Strategy improvement loop — Phase 2: Effectiveness feedback [RESOLVED]
+- **Mechanism:** When model references `STRATEGY #id` in response and grades itself, apply: `new_eff = 0.7 * old + 0.3 * grade_val`, increment use_count, increment success_count on A/B.
+- **Verified:** A-grade with strategy → eff bumped 0.50→0.65, used 5→6, success 2→3. F-grade → eff dropped 0.65→0.45, used 6→7, success stayed 3/6 (Aug 5).
+
+### P1: Strategy improvement loop — Phase 3: Enriched injection + dynamic ranking [RESOLVED]
+- **Enriched headers:** `STRATEGY #t1 v1 [grade:A] [eff:0.95] [used:10/9 success]` in injected context.
+- **Dynamic ranking:** `ORDER BY effective_grade DESC, use_count DESC` in both get_strategies and inline queries.
+- **Always-inject fallback:** build_context returns strategies even when no FAISS chunks match.
+- **Parser:** Accepts `STRATEGY:` without square brackets via `re.MULTILINE`.
+- **Effectiveness regex:** Matches alphanumeric `STRATEGY #id` references.
+- **Verified:** All confirmed on pod Aug 5. Model echoes back `[STRATEGY: STRATEGY #t1]`.
 
 ### P2: Hallucination memory loop [MITIGATED]
 - **Source-tiered indexing:** model-sourced chunks with grade C/D/F excluded from FAISS.
 - **Combined trust scoring:** source + grade weights in `route_query` ranking.
-- **Not fully eliminated:** gemma4 still sometimes defaults to training data over injected memory.
+- **Not fully eliminated:** models still sometimes default to training data over injected memory.
 
 ### P3: Stale DB chunks on restart [RESOLVED]
 - **Cause:** WAL not checkpointed before proxy kill.
@@ -44,9 +61,18 @@ dev-chunks branch. Tested August 3-4, 2026 on RunPod A40 with qwen2.5:7b + gemma
 
 ### P4: Dead code (~400 lines) [RESOLVED]
 - **Removed:** `classify_chunk`, `_archive_split`, `_segment_by_user` orphan, `_compress_large_tool_results_OLD`, `_advance_chunk_OLD`, `_model_loop_read_all_OLD`, `query_model_stream`, `CLASSIFY_PROMPT`.
-- **Impact:** 326 lines removed. Code from 2,214 → 1,888 lines.
+- **Impact:** 326 lines removed.
+
+### P4: Handler INSERT column count [RESOLVED]
+- **Cause:** Chat handler INSERT used 6 values for 11-column strategies table.
+- **Fix:** Aligned all handler INSERTs with schema: version, parent_id, effective_grade, use_count, success_count.
+- **Also fixed:** Missing closing quote on line 914, undefined `limit` variable in inline queries, `st` variable extraction after regex match.
 
 ## Active Issues
+
+### P1: No easy DB backup — strategies lost on pod termination
+- **Cause:** The DB at `/workspace/mneme_chunks/mneme.db` is ephemeral. Every `rm -rf` or pod shutdown destroys all accumulated strategies and chunks. We can't assume Jupyter Lab is available on the pod — many GPU pods only offer SSH.
+- **Fix:** `scp -P $PORT root@$IP:/workspace/mneme_chunks/mneme.db ./` before pod termination. Future: `/backup` endpoint or periodic SCP cron.
 
 ### P2: Training weight dominance (persistent)
 Models with strong training data on a topic (e.g., 2016 Kumamoto earthquake) ignore injected 2026 data. Known across all models. Epistemic framing in system prompt helps but doesn't fully solve.
@@ -64,45 +90,7 @@ LLM labeler with `temperature=0.0` produces identical labels for similar content
 `_chat_stream()` buffers full response then re-chunks into 16-char SSE deltas — fake streaming. True SSE generator `query_model_stream()` exists but is unused. TTFB = full generation latency.
 
 ### P4: Single-file monolith
-1,888 lines in one module. Module-level mutable state shared across Flask threads. Would benefit from splitting into storage/embedding/routing/injection/HTTP modules.
-
-## Planned: Strategy Improvement Loop (P1)
-
-### Problem
-Strategies are static once created. A B-grade strategy from session 1 has the same weight as session 50. Models can't improve or supersede old strategies. The "learning" is one layer deep — a strategy is created once and never evolves. There's no usage tracking, no effectiveness feedback, no versioning, and no decay.
-
-### Design (three phases, incremental)
-
-**Phase 1: Strategy versioning via semantic dedup**
-Before inserting a new strategy, FAISS-search existing strategies. If cosine > 0.8 with an existing one, don't create a new row — increment the existing strategy's `version` counter, update its text, and set `parent_id` to itself. Schema additions: `version INT DEFAULT 1`, `parent_id TEXT`. The model sees `[STRATEGY v3]` and knows it's iterating on prior work.
-
-**Phase 2: Effectiveness feedback**
-When a model outputs `[GRADE: X]` in the same response where it references a strategy, apply a weighted update: `strategy.effective_grade = 0.7 * old_grade + 0.3 * model_grade`. An A-grade response nudges the strategy toward A. An F-grade response nudges it toward F. Schema additions: `effective_grade REAL DEFAULT 0.0`, `use_count INT DEFAULT 0`, `success_count INT DEFAULT 0`. The system learns which strategies actually produce good outcomes.
-
-**Phase 3: Dynamic ranking replaces static injection**
-The "always inject top-3" becomes `ORDER BY effective_grade DESC, use_count DESC, created_at DESC`. Strategies that correlate with A/B grades float to the top. Strategies that correlate with failure sink. Unused strategies fade out naturally. Cross-model: qwen's strategy gets graded by gemma's results, creating an honest feedback loop neither model controls alone.
-
-### User-prompted iteration
-The model can self-improve strategies if the injection header includes enough context. Currently the model only sees strategy text. What it needs:
-
-```
-STRATEGY #7 [grade: D] [used: 12 times, success: 2/12] [v1, no parent]
-Created from: FAILURE on "What is the capital of Australia?" — answered Sydney.
-Text: "Always verify country capitals against encyclopedias."
-
-STRATEGY #3 [grade: A] [used: 34 times, success: 31/34] [v3, parent: #1]
-Created from: FAILURE on "source verification" — cited unreliable blog.
-Text: "Cross-reference claims with official records and credible media sources."
-```
-
-With enriched headers, a user can say "look at your D and F rated strategies and attempt to improve them" and the model has enough context to generate a better version with `[STRATEGY: ...]` and mark it as `v2 of #7`.
-
-### The full loop
-Model fails → creates strategy v1 → strategy helps → other model grades A → strategy rises → model improves strategy → v2 supersedes v1 → cycle repeats. Strategies that help survive. Strategies that don't sink out of the always-inject pool.
-
-### P1: No easy DB backup — strategies lost on pod termination
-- **Cause:** The DB at `/workspace/mneme_chunks/mneme.db` is ephemeral. Every `rm -rf` or pod shutdown destroys all accumulated strategies and chunks. We can't assume Jupyter Lab is available on the pod — many GPU pods only offer SSH.
-- **Needed:** A simple backup/restore mechanism. Options: `scp` the DB file before pod shutdown, an endpoint like `/backup` that streams the DB as a download, or periodic SCP via a cron-like wrapper. Minimum viable: document the one-liner `scp -P $PORT root@$IP:/workspace/mneme_chunks/mneme.db ./` so we can grab the DB before terminating.
+~2,000 lines in one module. Module-level mutable state shared across Flask threads. Would benefit from splitting into storage/embedding/routing/injection/HTTP modules.
 
 ## Not Issues (verified correct)
 
@@ -110,3 +98,5 @@ Model fails → creates strategy v1 → strategy helps → other model grades A 
 - Cycle counter increments per flush — correct.
 - `/save` returns proper error codes — not swallowing failures.
 - FAISS `_idx_lock` covers read + write paths — thread-safe for this code path.
+- build_context IS called for every query — confirmed via entry dump (Aug 5).
+- Second requests don't crash — prior "CUDA crashes" were Python NameError bugs, now fixed.
