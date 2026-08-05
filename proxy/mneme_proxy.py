@@ -1222,7 +1222,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
                 for _, cid in strat_hits:
                     if cid.startswith("strat_"):
                         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?",
-                            (cid.replace("strat_", ""),)).fetchone()
+                            (cid.replace("strat_", "", 1),)).fetchone()
                         if ex:
                             existing_version = ex[1]
                             sid = ex[0]  # reuse existing ID
@@ -1655,7 +1655,7 @@ if FLASK_OK:
                         hits = _cosine_search(svec, 1, 0.75)
                         for _, cid in hits:
                             if cid.startswith("strat_"):
-                                ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (cid.replace("strat_", ""),)).fetchone()
+                                ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (cid.replace("strat_", "", 1),)).fetchone()
                                 if ex:
                                     existing_version = ex[1]
                                     sid = ex[0]
