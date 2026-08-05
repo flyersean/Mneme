@@ -1,6 +1,6 @@
 # Mneme
 
-Conversational memory proxy between AI agents and Ollama. Transparent layer that archives conversations, classifies by topic, and injects relevant past context into future sessions. Model-agnostic. Multi-model. Self-improving.
+Conversational memory proxy between AI agents and Ollama. Transparent layer that archives conversations, classifies by topic, injects relevant past context, and evolves its own strategies through a self-improving feedback loop. Model-agnostic. Multi-model. Self-improving.
 
 ## How It Works
 
@@ -29,9 +29,15 @@ Every conversation turn is staged, then on `/save` the proxy:
 - Models append `[GRADE: A-F]` after every response
 - Models create `[STRATEGY: ...]` for sub-A grades
 - Proxy parses both from model output, stores in DB + FAISS
-- Strategies injected as PROVEN STRATEGIES in future sessions
-- Always-inject fallback: top-graded strategies always appear regardless of semantic match
-- Cross-model: strategies from qwen help gemma, and vice versa
+- Strategies injected as enriched `PROVEN STRATEGIES` with lifecycle stats
+
+**Strategy Improvement Loop** (Phases 1-3, verified Aug 5)
+- **Versioning:** Semantic dedup via FAISS cosine > 0.75. Identical strategies bump `version` counter. Schema: `version INT`, `parent_id TEXT`.
+- **Effectiveness feedback:** Weighted update when model references `STRATEGY #id` and grades itself: `new_eff = 0.7 * old + 0.3 * grade_val`. Tracks `use_count` and `success_count`.
+- **Dynamic ranking:** `ORDER BY effective_grade DESC, use_count DESC`. High-performing strategies float to top; failing ones sink.
+- **Enriched headers:** `STRATEGY #t1 v2 [grade:A] [eff:0.65] [used:7/3 success]` — models see full strategy lifecycle.
+- **Always-inject fallback:** build_context returns strategies even when no FAISS chunks match a query.
+- **Verified:** A-grade → eff 0.50→0.65. F-grade → eff 0.65→0.45. Identical text → v1→v2 dedup.
 
 **Session Awareness**
 - Auto-generated session IDs for new conversations
@@ -83,7 +89,7 @@ Result: all 5 phases preserved as 5 distinct chunks in shared DB. All 11 injecte
 
 ## Architecture
 
-Single-file Flask proxy (~1,900 lines). Module-level state (FAISS index, SQLite connection, staging buffer). Threaded server with daemon archival threads.
+Single-file Flask proxy (~2,000 lines). Module-level state (FAISS index, SQLite connection, staging buffer). Threaded server with daemon archival threads.
 
 **Models needed on Ollama:**
 - Main model (any): via `MNEME_MODEL` env var
