@@ -911,7 +911,7 @@ def build_context(query: str) -> Tuple[str, str]:
         # Get full stats for top strategies
         strat_rows = db.execute(
             "SELECT strategy_id, strategy_text, grade, version, effective_grade, use_count, success_count, parent_id FROM strategies "
-            "ORDER BY effective_grade DESC, use_count DESC LIMIT ?", (limit,)
+            "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
         ).fetchall()
         for sr in strat_rows:
             sid_short = sr[0].replace("strat_", "")[:8] if sr[0].startswith("strat_") else sr[0][:8]
@@ -1645,12 +1645,40 @@ if FLASK_OK:
         sm = re.search(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.MULTILINE)
         if sm:
             try:
+                st = sm.group(1).strip()
+                sid = "strat_" + str(int(time.time()))
+                existing_version = 0
+                # Semantic dedup: check FAISS for similar strategies
+                try:
+                    svec = embed(st)
+                    if svec is not None and FAISS_OK:
+                        hits = _cosine_search(svec, 1, 0.75)
+                        for _, cid in hits:
+                            if cid.startswith("strat_"):
+                                ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (cid.replace("strat_", ""),)).fetchone()
+                                if ex:
+                                    existing_version = ex[1]
+                                    sid = ex[0]
+                                    break
+                except Exception:
+                    pass
+                new_version = existing_version + 1
                 db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    ("strat_" + str(int(time.time())), "model", sm.group(1).strip(), "", "A",
+                    (sid, "model", st, "", "A",
                      datetime.now(timezone.utc).isoformat(),
-                     1, "", 0.0, 0, 0))
+                     new_version, sid if existing_version > 0 else "",
+                     0.0, 0, 0))
                 db.commit()
-                print("  [STRATEGY] " + sm.group(1).strip()[:80], flush=True)
+                print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
+                # Add to FAISS for future dedup
+                try:
+                    svec2 = embed(st)
+                    if svec2 is not None and FAISS_OK:
+                        with _idx_lock:
+                            _index.add(svec2.reshape(1, -1))
+                            _id_map.append(f"strat_{sid}")
+                except Exception:
+                    pass
             except Exception as e:
                 print("  [STRATEGY][ERR] " + str(e)[:100], flush=True)
         
