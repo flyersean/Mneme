@@ -100,6 +100,10 @@ With enriched headers, a user can say "look at your D and F rated strategies and
 ### The full loop
 Model fails → creates strategy v1 → strategy helps → other model grades A → strategy rises → model improves strategy → v2 supersedes v1 → cycle repeats. Strategies that help survive. Strategies that don't sink out of the always-inject pool.
 
+### P1: No easy DB backup — strategies lost on pod termination
+- **Cause:** The DB at `/workspace/mneme_chunks/mneme.db` is ephemeral. Every `rm -rf` or pod shutdown destroys all accumulated strategies and chunks. We can't assume Jupyter Lab is available on the pod — many GPU pods only offer SSH.
+- **Needed:** A simple backup/restore mechanism. Options: `scp` the DB file before pod shutdown, an endpoint like `/backup` that streams the DB as a download, or periodic SCP via a cron-like wrapper. Minimum viable: document the one-liner `scp -P $PORT root@$IP:/workspace/mneme_chunks/mneme.db ./` so we can grab the DB before terminating.
+
 ## Not Issues (verified correct)
 
 - WAL journaling works — `db.commit()` persists correctly.
