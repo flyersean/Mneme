@@ -39,7 +39,7 @@ OLLAMA_TEMP    = 0.3
 # ─── Multi-pass compression config ───
 # CLASSIFY_MODEL removed — using embedding-based classification
 MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
-CHUNK_SIZE = 500   # chars per chunk for splitting large tool outputs
+CHUNK_SIZE = 2000   # chars per chunk for splitting large tool outputs
 DB_MSG_CAP  = 8000  # chars per message stored in SQLite (full content)
 COMPRESS_THRESHOLD = 500    # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
@@ -592,7 +592,7 @@ def generate_strategy(messages: list, outcome: str) -> str:
     """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[-3:] if m["role"] in ("user", "assistant"))
+    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[:] if m["role"] in ("user", "assistant"))
     # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
         return f"FAILURE on: {text[:200]}. Retry with different approach."
@@ -714,7 +714,7 @@ def get_strategies(problem_type=None, limit=3):
 MAX_PROMPT_CHARS = 4500  # system + injection + history must stay below this
 # Token budget for injected memory. Hard cap to prevent context overflow.
 # The model has 32768 ctx total. System prompt + live conversation need room.
-MAX_INJECTED_TOKENS = 2048   # ~2K tokens — stay under model CUDA safe-zone
+MAX_INJECTED_TOKENS = 6000   # ~2K tokens — stay under model CUDA safe-zone
 MAX_SIBLINGS        = 3      # max chunks per topic (was 5 — caps sibling blowup)
 MAX_CHUNK_WORDS     = 500    # split user messages longer than this
 
