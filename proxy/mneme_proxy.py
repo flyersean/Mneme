@@ -735,7 +735,7 @@ def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
         if not chunk:
             continue
         text = "\n".join(
-            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
+            f"{m['role']}: {m['content']}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -758,7 +758,7 @@ def _trim_chunks_cached(ordered_ids: List[str], max_tokens: int, cache: Dict[str
         if not chunk:
             continue
         text = "\n".join(
-            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
+            f"{m['role']}: {m['content']}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
@@ -858,7 +858,7 @@ def build_context(query: str) -> Tuple[str, str]:
         msg_text = f"--- [{cid}]{sid_tag} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
-            f"{m['role']}: {m['content'][:CHUNK_SIZE]}"
+            f"{m['role']}: {m['content']}"
             for m in chunk.get("messages", [])
         )
         if chunk.get("strategy"):
