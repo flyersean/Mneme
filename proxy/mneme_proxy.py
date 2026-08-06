@@ -714,7 +714,23 @@ def get_strategies(problem_type=None, limit=3):
 MAX_PROMPT_CHARS = 4500  # system + injection + history must stay below this
 # Token budget for injected memory. Hard cap to prevent context overflow.
 # The model has 32768 ctx total. System prompt + live conversation need room.
-MAX_INJECTED_TOKENS = 6000   # ~2K tokens — stay under model CUDA safe-zone
+MAX_INJECTED_TOKENS = 6000   # ~6K tokens — stay under model CUDA safe-zone
+
+SEARCH_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_memory",
+        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for — be specific"},
+                "top_k": {"type": "integer", "description": "Number of results (default 5)"}
+            },
+            "required": ["query"]
+        }
+    }
+}
 MAX_SIBLINGS        = 3      # max chunks per topic (was 5 — caps sibling blowup)
 MAX_CHUNK_WORDS     = 500    # split user messages longer than this
 
@@ -1520,7 +1536,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         threading.Thread(target=archive_staging, daemon=True).start()
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
-    msg_tools = tools
+    msg_tools = tools if tools else [SEARCH_MEMORY_TOOL]
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
     for m in messages:
         for tc in m.get("tool_calls", []):
@@ -1551,6 +1567,39 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # If chunks are pending, loop internally until all consumed
     result = query_model(full_msgs, tools=msg_tools)
+    
+    # Handle search_memory tool calls — execute and inject results
+    if result.get("tool_calls") and not result.get("content"):
+        for tc in result["tool_calls"]:
+            fn = tc.get("function", {})
+            if fn.get("name") == "search_memory":
+                q = fn.get("arguments", {}).get("query", "")
+                k = fn.get("arguments", {}).get("top_k", 5)
+                print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
+                hits = route_query(q, top_k=k)
+                if hits:
+                    lines = ["Search results from Mneme memory:\n"]
+                    for h in hits:
+                        cid = h[1]
+                        crow = db.execute("SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
+                        if crow:
+                            label, grd, msgs_json = crow[0], crow[1], crow[2]
+                            lines.append(f"[{cid} | G:{grd}] {label}")
+                            try:
+                                msgs = json.loads(msgs_json)
+                                for m in msgs[:5]:
+                                    c = m.get("content", "")[:300]
+                                    if c:
+                                        lines.append(f"  {m['role']}: {c}")
+                            except:
+                                pass
+                        lines.append("")
+                    inject = "\n".join(lines[:30])  # cap
+                    result["content"] = inject
+                    print(f"  [SEARCH-TOOL] injected {len(hits)} results ({len(inject)} chars)", flush=True)
+                else:
+                    result["content"] = "No matching memories found."
+                    print("  [SEARCH-TOOL] no results", flush=True)
     
     # Parse [GRADE:] from model output
     grade = "C"
