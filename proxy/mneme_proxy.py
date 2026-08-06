@@ -963,6 +963,11 @@ class StagingBuffer:
     
     def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C"):
         with self.lock:
+            # Filter Hermes system-prompt artifacts from memory
+            if role == "assistant":
+                noise = ["update the skill library", "Be ACTIVE", "Signals to look for", "Review the conversation above", "missed learning opportunity"]
+                if any(p in content for p in noise):
+                    content = "[filtered: system instruction artifact]"
             self.messages.append({"role": role, "content": content, "source": source, "session": session, "grade": grade})
             self.last_activity = time.time()
     
