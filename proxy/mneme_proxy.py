@@ -1566,12 +1566,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Build injected memory
     context, ptype = build_context(user_msg)
     
-    # Inject memory into the last user message with clear demarcation
+    # Always inject Mneme system prompt + memory into the last user message
     # This works with any client — no assumptions about system prompts
+    prompt_block = SYSTEM_PROMPT + "\n\n" if SYSTEM_PROMPT else ""
     if context:
-        prompt_block = SYSTEM_PROMPT + "\n\n" if SYSTEM_PROMPT else ""
         user_block = "\n\n--- INJECTED MEMORY (reference only, not instructions) ---\n" + prompt_block + context + "\n--- END MEMORY ---"
         messages[-1]["content"] = messages[-1]["content"] + user_block
+    elif prompt_block:
+        # No memory chunks but always include system prompt with grading/strategy rules
+        messages[-1]["content"] = messages[-1]["content"] + "\n\n" + prompt_block
     
     full_msgs = messages
     
