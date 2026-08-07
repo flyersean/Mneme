@@ -871,7 +871,7 @@ def build_context(query: str) -> Tuple[str, str]:
         topic = chunk.get("topic_label", "unknown")
         sid = chunk.get("session_id", "default")
         sid_tag = f" [session:{sid}]" if sid and sid != "default" else ""
-        msg_text = f"--- [{cid}]{sid_tag} {topic} ---\n"
+        msg_text = f"--- [{cid}]{sid_tag} [G:{chunk.get('grade','?')}] [src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content']}"
