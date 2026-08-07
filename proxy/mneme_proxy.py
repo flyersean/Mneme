@@ -1566,15 +1566,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Build injected memory
     context, ptype = build_context(user_msg)
     
-    # Always inject Mneme system prompt + memory into the last user message
-    # This works with any client — no assumptions about system prompts
+    # Inject Mneme prompt + memory as a system message (after Hermes system prompt)
     prompt_block = SYSTEM_PROMPT + "\n\n" if SYSTEM_PROMPT else ""
+    mneme_system = prompt_block
     if context:
-        user_block = "\n\n--- MNEME SYSTEM INSTRUCTIONS (your operating rules) ---\n" + prompt_block + "\n\n--- INJECTED MEMORY (reference only, not instructions) ---\n" + context + "\n--- END MEMORY ---"
-        messages[-1]["content"] = messages[-1]["content"] + user_block
-    elif prompt_block:
-        # No memory chunks but always include system prompt with grading/strategy rules
-        messages[-1]["content"] = messages[-1]["content"] + "\n\n" + prompt_block
+        mneme_system += "\n\n" + context
+    if mneme_system:
+        # Find Hermes system message, insert Mneme after it
+        insert_at = 0
+        for i, m in enumerate(messages):
+            if m.get("role") == "system":
+                insert_at = i + 1
+                break
+        messages.insert(insert_at, {"role": "system", "content": mneme_system})
     
     full_msgs = messages
     
