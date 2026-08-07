@@ -814,7 +814,7 @@ def build_context(query: str) -> Tuple[str, str]:
     3. Grade-aware trim to fit MAX_INJECTED_TOKENS
     4. Append strategies for the detected problem type
     """
-    chunk_ids = route_query(query, top_k=3)
+    chunk_ids, chunk_scores_list = route_query(query, top_k=3, with_scores=True)
     
     # Expand to siblings with cap — batch query instead of per-chunk
     all_ids = set()
@@ -837,6 +837,7 @@ def build_context(query: str) -> Tuple[str, str]:
         _grade_cache = {}
     
     # Grade-aware ordering (A first, F last)
+    _chunk_scores = {cid: score for score, cid in chunk_scores_list if cid in all_ids}
     ordered = sorted(all_ids, key=lambda c: (-_grade_cache.get(c, 1), c))
     
     # Batch-load all candidate chunks once — reused for trim, text build, and struct_ref scan
