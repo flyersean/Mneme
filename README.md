@@ -96,6 +96,20 @@ Single-file Flask proxy (~2,000 lines). Module-level state (FAISS index, SQLite 
 - Labeler: `qwen2.5:0.5b` — generates topic labels
 - Embedder: `snowflake-arctic-embed2` — 1024-dim vectors
 
+## Current Status (August 7, 2026)
+
+**Active testing:** Mneme + Pi (lightweight AI harness) on RunPod A40 with Qwen 3.6 35B 120k.
+
+**Key finding:** Mneme works as a transparent proxy with any OpenAI-compatible client, but harness prompt competition is a real issue. The proxy injects Mneme instructions as a system message, but the harness's own system prompt defines the model's identity. Two prompts = two competing personas. See `PROBLEMS.md` for details and proposed solutions (Options B and C).
+
+**Pi testing notes:**
+- Pi installed at `/workspace/npm`, configured with custom provider pointing at Mneme
+- Built-in tools (read, bash, edit, write) + pi-web-access for web search
+- Content format compatibility fixed (array vs string content — see PROBLEMS.md)
+- Model grades and saves chunks correctly; defaults to Pi's coding persona over Mneme memory identity
+
+**Hermes testing (prior):** Confirmed same prompt competition at scale — Hermes's ~78KB system prompt + 70 skills dominate Mneme's instructions even when injected as a separate system message.
+
 ## Branches
 
 - `main` — stable release

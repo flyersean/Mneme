@@ -92,6 +92,34 @@ LLM labeler with `temperature=0.0` produces identical labels for similar content
 ### P4: Single-file monolith
 ~2,000 lines in one module. Module-level mutable state shared across Flask threads. Would benefit from splitting into storage/embedding/routing/injection/HTTP modules.
 
+### P1: Harness prompt competition — Mneme instructions buried [NEW — Aug 7, 2026]
+
+**Symptom:** When Mneme is used as a backend for a standard AI harness (Hermes, Pi, OpenCode), the harness's system prompt competes with Mneme's instructions. The model follows the harness persona and ignores Mneme grading/strategy rules.
+
+**Root cause:** Mneme controls the model through prompt engineering (`[GRADE: A-F]`, `[STRATEGY: ...]`, `<<SAVE>>`). Every harness also controls the model through its own system prompt. Two prompts = two identities. The model picks one.
+
+**Tested:**
+- **Hermes (full install):** ~78KB per turn (21K system prompt + 30 tools + 70 skills). Mneme instructions injected as separate system message. Model uses Hermes tools and personality; Mneme grading captured but model defaults to Hermes behavior.
+- **Pi (lightweight):** ~600 char system prompt ("expert coding assistant"). Mneme injected as second system message. Model grades and saves chunks but defaults to coding persona. When asked about Mneme, searches the web instead of acknowledging memory instructions.
+
+**Proposed fix paths:**
+- **Option B:** Reframe Mneme as a capability, not a persona. Drop "You are a memory-aware assistant" — Mneme becomes a feature the model uses within its harness identity.
+- **Option C:** Ship per-harness prompt templates (`mneme-for-pi.md`, `mneme-for-hermes.md`). Each integrates Mneme rules into the harness's existing prompt structure.
+
+### P2: Content format compatibility — array vs string [RESOLVED — Aug 7, 2026]
+
+**Symptom:** 500 errors when Pi (or any client sending `"content": [{"type":"text","text":"..."}]`) talks to Mneme.
+
+**Cause:** Mneme's message handling at 3 code points assumed `content` was a plain string. OpenAI's API allows both `"content": "string"` and `"content": [{"type":"text","text":"string"}]`. Hermes sends strings; Pi sends arrays.
+
+**Fix:** Applied `_extract_text()` normalization in `query_model` (message forwarding to Ollama), `process_chat` (user message extraction), and `chat_completions` (session ID generation). Verified working with Pi Aug 7.
+
+### P3: Ollama content array rejection [RESOLVED — Aug 7, 2026]
+
+**Symptom:** `json: cannot unmarshal array into Go struct field ChatRequest.messages.content of type string` from Ollama.
+
+**Cause:** Array-format content was forwarded verbatim to Ollama, which only accepts string content. The `_extract_text()` normalization now happens before Ollama forwarding.
+
 ## Not Issues (verified correct)
 
 - WAL journaling works — `db.commit()` persists correctly.
