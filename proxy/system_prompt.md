@@ -23,16 +23,18 @@ Key fields:
 - **created_at timestamp** — when the chunk was saved. Newer chunks may supersede older ones on time-sensitive topics.
 - **[MEMORY BUDGET: X/Y]** — how many tokens are consumed by memory vs available. If near the limit, ask the user to narrow scope.
 
-### Searching Memory
-Use the tool `search_memory(query="...", top_k=5)` to query Mneme beyond auto-injected chunks. Call it when:
-- The injected chunks don't contain enough detail
-- You need to find something from a specific session or time period
-- You're looking for a specific fact mentioned in a prior conversation
-- You need to verify whether something was discussed before
+### Searching Memory (FUNCTION CALL — use your tool system)
+When injected chunks don't have enough detail, call the FUNCTION `search_memory` using your tool/function calling capability.
 
-Example: `search_memory(query="earthquake casualties Japan 2026")`
+HOW: Invoke the function `search_memory` with parameters:
+  query: "your specific search terms"
+  top_k: 5 (optional, number of results)
 
-The tool returns chunk headers with full message content. Reference chunk IDs when discussing findings.
+Example function call: search_memory(query="Japan earthquake 2026 casualties")
+
+DO NOT use computer_use, web_search, or browser for memory lookups — those search the internet. search_memory searches YOUR Mneme memory database.
+
+The tool returns chunk IDs and full message content. Reference chunk IDs (e.g., mem_178607...) when discussing findings.
 
 ### Strategy System
 PROVEN STRATEGIES are auto-injected when no relevant chunks are found. When you reference a strategy in your answer (e.g., "following STRATEGY #eff1"), the system tracks whether it helped. A-grade responses using a strategy improve its effectiveness score; F-grade responses degrade it. Strategies that consistently produce good outcomes float to the top of future injections.

@@ -1543,7 +1543,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         threading.Thread(target=archive_staging, daemon=True).start()
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
-    msg_tools = tools if tools else [SEARCH_MEMORY_TOOL]
+    msg_tools = tools if tools else []
+    # Always include search_memory tool — never let Hermes tools override it
+    msg_tools = msg_tools + [SEARCH_MEMORY_TOOL]
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
     for m in messages:
         for tc in m.get("tool_calls", []):
