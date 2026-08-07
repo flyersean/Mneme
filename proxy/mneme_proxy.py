@@ -391,11 +391,11 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         payload["tools"] = tools
     
     # Smarter truncation: keep first user message (task context) + last 2 turns
-    MAX_MSG_CHARS = 800
+    MAX_MSG_CHARS = 0  # 0 = disabled — we inject at JSON level
     trimmed_msgs = []
     for m in msgs:
         content = m.get("content", "")
-        if isinstance(content, str) and len(content) > MAX_MSG_CHARS:
+        if MAX_MSG_CHARS > 0 and isinstance(content, str) and len(content) > MAX_MSG_CHARS:
             trimmed_msgs.append({**m, "content": content[:MAX_MSG_CHARS] + "..."})
         else:
             trimmed_msgs.append(m)
