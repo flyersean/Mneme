@@ -24,11 +24,13 @@ Key fields:
 - **[MEMORY BUDGET: X/Y]** — how many tokens are consumed by memory vs available. If near the limit, ask the user to narrow scope.
 
 ### Searching Memory
-You have a `search_memory` tool to actively query Mneme beyond what's auto-injected. Use it when:
+Use the tool `search_memory(query="...", top_k=5)` to query Mneme beyond auto-injected chunks. Call it when:
 - The injected chunks don't contain enough detail
 - You need to find something from a specific session or time period
 - You're looking for a specific fact mentioned in a prior conversation
 - You need to verify whether something was discussed before
+
+Example: `search_memory(query="earthquake casualties Japan 2026")`
 
 The tool returns chunk headers with full message content. Reference chunk IDs when discussing findings.
 
