@@ -391,7 +391,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         payload["tools"] = tools
     
     # Smarter truncation: keep first user message (task context) + last 2 turns
-    MAX_MSG_CHARS = 0  # 0 = disabled — we inject at JSON level
+    MAX_MSG_CHARS = 0  # disabled
     trimmed_msgs = []
     for m in msgs:
         content = m.get("content", "")
@@ -814,7 +814,7 @@ def build_context(query: str) -> Tuple[str, str]:
     3. Grade-aware trim to fit MAX_INJECTED_TOKENS
     4. Append strategies for the detected problem type
     """
-    chunk_ids, chunk_scores_list = route_query(query, top_k=3, with_scores=True)
+    chunk_ids = route_query(query, top_k=3)
     
     # Expand to siblings with cap — batch query instead of per-chunk
     all_ids = set()
@@ -837,7 +837,6 @@ def build_context(query: str) -> Tuple[str, str]:
         _grade_cache = {}
     
     # Grade-aware ordering (A first, F last)
-    _chunk_scores = {cid: score for score, cid in chunk_scores_list if cid in all_ids}
     ordered = sorted(all_ids, key=lambda c: (-_grade_cache.get(c, 1), c))
     
     # Batch-load all candidate chunks once — reused for trim, text build, and struct_ref scan
@@ -872,14 +871,7 @@ def build_context(query: str) -> Tuple[str, str]:
         topic = chunk.get("topic_label", "unknown")
         sid = chunk.get("session_id", "default")
         sid_tag = f" [session:{sid}]" if sid and sid != "default" else ""
-        # Show similarity score for relevance ranking
-        sim_tag = f" sim:{score:.2f}" if (score := _chunk_scores.get(cid)) else ""
-        msg_text = f"--- [{cid}]{sid_tag}{sim_tag} {topic} ---\n"
-        # Add grade, source, timestamp for context
-        grd = chunk.get("grade", "?")
-        src = chunk.get("source", "?")
-        ts = chunk.get("created_at", "")[:19]
-        msg_text = f"--- [{cid}]{sid_tag}{sim_tag} [G:{grd}] [src:{src}] {ts} {topic} ---\n"
+        msg_text = f"--- [{cid}]{sid_tag} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content']}"
@@ -910,8 +902,7 @@ def build_context(query: str) -> Tuple[str, str]:
         if srows:
             context = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows) + "\n" + context
     except: pass
-    token_info = f"[MEMORY BUDGET: {used_tokens} tokens used of {MAX_INJECTED_TOKENS} max]\n"
-    context = token_info + MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
+    context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
     # Budget enforced by _trim_chunks_cached — no second guillotine
     
     # Scan for structured chunk references in all archived conversations and surface them
@@ -972,6 +963,11 @@ class StagingBuffer:
     
     def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C"):
         with self.lock:
+            # Filter Hermes system-prompt artifacts from memory
+            if role == "assistant":
+                noise = ["update the skill library", "Be ACTIVE", "Signals to look for", "Review the conversation above", "missed learning opportunity"]
+                if any(p in content for p in noise):
+                    content = "[filtered: system instruction artifact]"
             self.messages.append({"role": role, "content": content, "source": source, "session": session, "grade": grade})
             self.last_activity = time.time()
     
@@ -1567,20 +1563,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Build injected memory
     context, ptype = build_context(user_msg)
     
-    # Inject Mneme prompt + memory as a system message (after Hermes system prompt)
-    prompt_block = SYSTEM_PROMPT + "\n\n" if SYSTEM_PROMPT else ""
-    mneme_system = prompt_block
+    # Construct prompt with memory + system prompt + live messages
+    prefix = SYSTEM_PROMPT
     if context:
-        mneme_system += "\n\n" + context
-    if mneme_system:
-        # Find Hermes system message, insert Mneme after it
-        insert_at = 0
-        for i, m in enumerate(messages):
-            if m.get("role") == "system":
-                insert_at = i + 1
-                break
-        messages.insert(insert_at, {"role": "system", "content": mneme_system})
+        prefix += "\n\n" + context
     
+    # Merge memory prefix into Hermes system message instead of overriding it
+    merged = False
+    for i, m in enumerate(messages):
+        if m.get("role") == "system":
+            messages[i] = {"role": "system", "content": prefix + "\n\n" + m.get("content", "")}
+            merged = True
+            break
+    if not merged:
+        messages.insert(0, {"role": "system", "content": prefix})
     full_msgs = messages
     
     # If chunks are pending, loop internally until all consumed
