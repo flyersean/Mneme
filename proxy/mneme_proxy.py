@@ -871,7 +871,9 @@ def build_context(query: str) -> Tuple[str, str]:
         topic = chunk.get("topic_label", "unknown")
         sid = chunk.get("session_id", "default")
         sid_tag = f" [session:{sid}]" if sid and sid != "default" else ""
-        msg_text = f"--- [{cid}]{sid_tag} {topic} ---\n"
+        # Show similarity score for relevance ranking
+        sim_tag = f" sim:{score:.2f}" if (score := _chunk_scores.get(cid)) else ""
+        msg_text = f"--- [{cid}]{sid_tag}{sim_tag} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content']}"
@@ -902,7 +904,8 @@ def build_context(query: str) -> Tuple[str, str]:
         if srows:
             context = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows) + "\n" + context
     except: pass
-    context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
+    token_info = f"[MEMORY BUDGET: {used_tokens} tokens used of {MAX_INJECTED_TOKENS} max]\n"
+    context = token_info + MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
     # Budget enforced by _trim_chunks_cached — no second guillotine
     
     # Scan for structured chunk references in all archived conversations and surface them
