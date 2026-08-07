@@ -1568,7 +1568,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if context:
         prefix += "\n\n" + context
     
-    full_msgs = [{"role": "system", "content": prefix}] + messages
+    # Merge memory prefix into Hermes system message instead of overriding it
+    merged = False
+    for i, m in enumerate(messages):
+        if m.get("role") == "system":
+            messages[i] = {"role": "system", "content": prefix + "\n\n" + m.get("content", "")}
+            merged = True
+            break
+    if not merged:
+        messages.insert(0, {"role": "system", "content": prefix})
+    full_msgs = messages
     
     # If chunks are pending, loop internally until all consumed
     result = query_model(full_msgs, tools=msg_tools)
