@@ -951,6 +951,8 @@ def build_context(query: str) -> Tuple[str, str]:
     except Exception as e:
         print(f"  [INJECT][LOG-ERROR] {e}", flush=True)
 
+    # Always include Mneme instructions with every injection
+    context = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + context
     return context, ptype
 
 # ─── Staging Buffer ────────────────────────────────────────────
@@ -1560,26 +1562,27 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Advance chunked tool output if user said "continue"
     messages = _advance_chunk(messages)
     
-    # Build injected memory
+    # Build injected memory (already includes Mneme instructions)
     context, ptype = build_context(user_msg)
     
-    # Construct prompt with memory + system prompt + live messages
-    prefix = SYSTEM_PROMPT
-    if context:
-        prefix += "\n\n" + context
-    
-    # Merge memory prefix into Hermes system message instead of overriding it
-    merged = False
+    # Insert Mneme (instructions + memory) as a system message after Hermes
+    mneme_system = context
+    insert_at = 0
     for i, m in enumerate(messages):
         if m.get("role") == "system":
-            messages[i] = {"role": "system", "content": prefix + "\n\n" + m.get("content", "")}
-            merged = True
+            insert_at = i + 1
             break
-    if not merged:
-        messages.insert(0, {"role": "system", "content": prefix})
+    messages.insert(insert_at, {"role": "system", "content": mneme_system})
     full_msgs = messages
     
     # If chunks are pending, loop internally until all consumed
+    # DEBUG
+    with open("/workspace/sys_dump.txt","w") as f:
+        for m in full_msgs:
+            if m.get("role") == "system":
+                f.write("=== SYSTEM MSG ===\n")
+                f.write(m["content"][:600])
+                f.write("\n...\n")
     result = query_model(full_msgs, tools=msg_tools)
     
     # Handle search_memory tool calls — execute and inject results
