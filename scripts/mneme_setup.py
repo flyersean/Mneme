@@ -227,6 +227,7 @@ def main():
     time.sleep(3)
     
     # Install Pi if requested
+    ext_path = "/workspace/mneme-search-tool.ts"
     if install_pi:
         print("\nInstalling Pi (AI coding assistant)...")
         if not shutil.which("node") or "v22" not in run("node --version").stdout:
@@ -252,6 +253,17 @@ def main():
         with open(os.path.expanduser("~/.pi/agent/models.json"), "w") as f:
             import json; json.dump(pi_config, f, indent=2)
         print("  Pi configured to use Mneme at localhost:8080")
+        
+        # Install search_memory extension
+        ext_path = "/workspace/mneme-search-tool.ts"
+        if not os.path.exists(ext_path):
+            print("  Installing search_memory extension...")
+            ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/extensions/pi/mneme-search-tool.ts"
+            r = run(f"curl -sSL -o {ext_path} {ext_url}")
+            if r.returncode == 0:
+                print("    Extension installed at /workspace/mneme-search-tool.ts")
+            else:
+                print("    Warning: could not download extension (search_memory tool not registered)")
     
     # ── DONE ──
     print(f"\n{'='*50}")
@@ -264,7 +276,8 @@ def main():
     print("Connect from this machine (SSH or local):")
     print(f"  OpenAI client → http://localhost:8080/v1")
     if install_pi:
-        print(f"  Pi agent:     pi --provider mneme --model text-mneme:64k")
+        ext_flag = f" --extension {ext_path}" if os.path.exists(ext_path) else ""
+        print(f"  Pi agent:     pi --provider mneme --model text-mneme:64k{ext_flag}")
     print()
     print("Logs: tail -f /tmp/mneme.log")
     print()
