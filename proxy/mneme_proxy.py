@@ -379,7 +379,9 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
-    msgs.extend(trimmed)
+    for m in trimmed:
+            mc = _extract_text(m.get("content", ""))
+            msgs.append({"role": m["role"], "content": mc})
     
     payload = {
         "model": MODEL, "stream": False, "messages": msgs,
@@ -1511,13 +1513,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
     # chunks alongside Ebola chunks from earlier in the conversation.
-    user_msgs = [m["content"][:500] for m in reversed(messages) 
+    user_msgs = [_extract_text(m["content"])[:500] for m in reversed(messages) 
                  if m.get("role") == "user"][:3]  # last 3 user turns
     user_msg = " ".join(reversed(user_msgs))  # chronological order
     
     # ── Detail: load full chunk if DETAIL tag found ──
     # Scan last message regardless of role (model may output DETAIL in response)
-    last_msg = messages[-1].get("content", "") if messages else ""
+    last_msg = _extract_text(messages[-1].get("content", "")) if messages else ""
     detail_match = _detail_re.search(last_msg)
     if detail_match:
         chunk_id = detail_match.group(1).strip()
@@ -1543,9 +1545,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         threading.Thread(target=archive_staging, daemon=True).start()
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
+    # Strip all <<COMMANDS>> from user messages
+    _cmd_re = re.compile(r"<<[A-Z_]+(?:\s+[^>]+)?>>")
+    for m in messages:
+        if m.get("role") == "user":
+            raw = _extract_text(m.get("content", ""))
+            cleaned = _cmd_re.sub("", raw).strip()
+            if cleaned: m["content"] = cleaned
+    user_msgs2 = [_extract_text(m["content"])[:500] for m in reversed(messages) if m.get("role") == "user"][:3]
+    user_msg = " ".join(reversed(user_msgs2))
+
     msg_tools = tools if tools else []
     # Always include search_memory tool — never let Hermes tools override it
-    msg_tools = msg_tools + [SEARCH_MEMORY_TOOL]
+    pass  # SEARCH_MEMORY_TOOL handled by harness
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
     for m in messages:
         for tc in m.get("tool_calls", []):
@@ -1658,6 +1670,58 @@ try:
 except ImportError:
     FLASK_OK = False
 
+
+# ─── Phase 2: Proxy-Driven Strategy Lifecycle ──────────────────
+
+def _save_strategy(text, grade, existing_id=""):
+    import time as _t
+    sid = "strat_" + str(int(_t.time()))
+    new_version = 1
+    parent = ""
+    try:
+        svec = embed(text.strip())
+        if svec is not None and FAISS_OK:
+            hits = _cosine_search(svec, 1, 0.75)
+            for _, cid in hits:
+                if cid.startswith("strat_"):
+                    ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (cid.replace("strat_", "", 1),)).fetchone()
+                    if ex:
+                        sid = ex[0]; new_version = ex[1] + 1; parent = sid
+                        break
+    except: pass
+    if existing_id and "strat_" in str(existing_id) and not parent:
+        clean_id = str(existing_id).replace("strat_", "").strip()
+        ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
+        if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
+    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, "model", text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
+         new_version, parent, 0.0, 0, 0))
+    db.commit()
+    try:
+        svec = embed(text.strip())
+        if svec is not None and FAISS_OK:
+            with _idx_lock:
+                _index.add(svec.reshape(1, -1))
+                _id_map.append(f"strat_{sid}")
+    except: pass
+
+def _strategy_lifecycle(grade, messages):
+    try:
+        if grade in ("A", "B"):
+            q1 = [{"role": "user", "content": "You graded this response " + grade + ". Did you use a novel approach worth saving? Answer yes or no."}]
+            r1 = query_model(q1)
+            if "yes" not in (r1.get("content","") or "").strip().lower(): return
+            q2 = [{"role": "user", "content": "If this improves an existing strategy state the strategy ID (strat_XXX). If new, say new. One word only."}]
+            r2 = query_model(q2)
+            q3 = [{"role": "user", "content": "Describe the approach in 2-3 sentences."}]
+            r3 = query_model(q3)
+            if r3.get("content"): _save_strategy(r3["content"].strip(), grade, r2.get("content","").strip())
+        elif grade in ("C", "D", "F"):
+            _save_strategy("Previous low-grade responses on this topic suggest trying different approaches. Use tools. Verify claims against memory. Be honest when grading.", "D")
+    except Exception as e:
+        print(f"  [STRATEGY][ERR] {str(e)[:100]}", flush=True)
+
+
 if FLASK_OK:
     app = Flask(__name__)
     CORS(app)
@@ -1695,7 +1759,7 @@ if FLASK_OK:
         if user_count <= 1:
             # New conversation — generate unique session
             import hashlib
-            first_msg = next((m.get("content","") for m in messages if m.get("role") == "user"), "")
+            first_msg = _extract_text(next((m.get("content","") for m in messages if m.get("role") == "user"), ""))
             h = hashlib.md5(first_msg[:100].encode()).hexdigest()[:8]
         session_id = f"conv_{h}_{int(time.time()) % 100000}" if user_count <= 1 else "default"
         
@@ -1840,8 +1904,44 @@ if FLASK_OK:
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None, session_id="default"):
         result = process_chat(messages, tools=tools, session_id=session_id)
-        content = result["content"]
+        ct = result.get("content", "")
+        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
+        grade = gm.group(1).upper() if gm else "D"
+        threading.Thread(target=_strategy_lifecycle, args=(grade, messages), daemon=True).start()
+        content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
+
+        # Handle search_memory server-side for streaming clients
+        if tool_calls and not content:
+            has_search = any(
+                tc.get("function", {}).get("name") == "search_memory"
+                for tc in tool_calls
+            )
+            if has_search:
+                # Execute search_memory, inject results, re-query
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    if fn.get("name") == "search_memory":
+                        q = fn.get("arguments", {}).get("query", "")
+                        k = fn.get("arguments", {}).get("top_k", 5)
+                        hits = route_query(q, top_k=k)
+                        if hits:
+                            lines = ["Search results:\n"]
+                            for h in hits:
+                                cid = h[1]
+                                crow = db.execute(
+                                    "SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?",
+                                    (cid,)
+                                ).fetchone()
+                                if crow:
+                                    label, grd, msgs_json = crow
+                                    lines.append(f"[{cid} | G:{grd}] {label}")
+                            result["content"] = "\n".join(lines)
+                            print(f"  [STREAM-SEARCH] {len(hits)} results for '{q[:60]}'", flush=True)
+                        else:
+                            result["content"] = "No matching memories found."
+                content = result["content"]
+                tool_calls = []  # Don't send to client
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         
         def generate():
