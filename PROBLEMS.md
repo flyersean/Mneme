@@ -128,3 +128,95 @@ LLM labeler with `temperature=0.0` produces identical labels for similar content
 - FAISS `_idx_lock` covers read + write paths — thread-safe for this code path.
 - build_context IS called for every query — confirmed via entry dump (Aug 5).
 - Second requests don't crash — prior "CUDA crashes" were Python NameError bugs, now fixed.
+
+---
+
+## Implementation Plan: Prompt + Strategy Architecture v2 (Aug 8, 2026)
+
+### Problem Summary
+
+The current Mneme system prompt competes with harness prompts by defining a persona ("You are a memory-aware assistant"). Strategies only capture failure — successful approaches are never saved. Model-generated strategy creation via `[STRATEGY: ...]` tags is unreliable across different model sizes. `<<COMMANDS>>` confuse models into trying to execute them.
+
+### Design Principles
+
+1. **Prompt has no persona.** It describes Mneme as a system the model uses, not an identity the model adopts. Works alongside any harness prompt.
+2. **Proxy handles strategy lifecycle.** The model grades responses; the proxy runs mini-conversations to decide when and how to create/improve strategies. No `[STRATEGY: ...]` output format needed in the prompt.
+3. **Grading measures answer quality, not Mneme usage.** A-grade from web search beats D-grade from memory. Honest uncertainty beats fabrication.
+4. **Strategies capture both success and failure.** A-grade work produces "here's how to do this" strategies. C/D/F work produces "here's what went wrong" strategies. Both compete on effectiveness.
+
+### Phase 1: New System Prompt
+
+Replace `system_prompt.md` with a persona-free, information-only prompt (see `docs/system-prompt-v2.md`). Changes:
+
+- No "You are..." statements. Pure system description: "Mneme is a persistent memory system..."
+- No strategy creation instructions. Model only needs to know strategies exist and are auto-managed.
+- No `[STRATEGY: ...]` output format. Model never writes strategy tags.
+- Grading simplified to 5 clear criteria measuring answer quality.
+- `<<SAVE>>` described as user action, not model command: "The user can force a save by typing <<SAVE>>. You do not need to do anything."
+- `<<COMMANDS>>` stripped by proxy before reaching the model (see Phase 3).
+
+### Phase 2: Proxy-Driven Strategy Lifecycle
+
+After every model response, the proxy evaluates the grade and runs decision logic:
+
+**Success path (grade A or B):**
+```
+Proxy runs mini-convo with model (labeler or main model):
+  Q1: "You graded this response A/B. Did you use a novel or
+       repeatable approach worth saving for future sessions?
+       Answer yes or no."
+  
+  If no → stop.
+  
+  If yes:
+    Q2: "Does this improve or replace an existing strategy? If
+         yes, state the strategy ID. If no, say 'new'."
+    
+    Q3: "Describe the approach in 2-3 sentences. What steps did
+         you take and why did they work?"
+    
+    Proxy saves the result as a strategy. If Q2 referenced an
+    existing ID, version-bump the old strategy and recalculate
+    effectiveness.
+```
+
+**Failure path (grade C, D, or F):**
+```
+Proxy auto-generates boilerplate strategy:
+  "Previous low-grade responses on this topic suggest trying
+   different approaches. Use available tools. Verify claims
+   against memory. Be honest when grading."
+```
+No model call needed. Simple, fast, consistent.
+
+### Phase 3: Strategy Ranking and Improvement
+
+**Dynamic ranking (already implemented, no change needed):**
+`ORDER BY effective_grade DESC, use_count DESC`
+
+**De-ranking via silent observation (NEW):**
+When a strategy is injected before a response that receives grade D or F, the strategy's effectiveness is slightly penalized even if the model did not explicitly reference its ID. This provides negative feedback for strategies that silently fail.
+
+**Mid-session improvement (NEW):**
+Model can flag a strategy for revision during normal chat by outputting `<<REVISE id:strat_XXX>>`. The proxy runs a mini-convo asking the model to propose an improved version. This gives the model agency to fix strategies it encounters mid-session without waiting for a post-response hook.
+
+**Improvement during success mini-convo (Phase 2, Q2):**
+Already covered — the proxy asks if the new approach improves an existing strategy.
+
+### Phase 4: <<COMMAND>> Stripping
+
+All `<<...>>` tags in user messages are stripped by the proxy before reaching the model. This includes `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>`, and any future commands. The proxy intercepts them and acts on them server-side. The model never sees angle-bracket commands and never tries to execute them.
+
+Implementation: add a regex filter in `process_chat()` that removes `<<[A-Z_]+(\s+[^>]+)?>>` patterns from user message content before injection and forwarding.
+
+### Phase 5: Prompt Injection Architecture (no change)
+
+The current injection architecture (system prompt + memory as separate system message after harness prompt) stays. The new prompt is shorter and has no persona, so it won't compete with harness identity. Same injection point, cleaner content.
+
+### Migration Notes
+
+- The `[STRATEGY: ...]` regex parser in `chat_completions()` becomes dead code. Keep for backward compatibility with old sessions, but no new strategies use this path.
+- Strategy table schema unchanged (version, parent_id, effective_grade, use_count, success_count). New proxy logic writes same columns.
+- Grade pipeline unchanged. Grades still parsed from `[GRADE: X]` in model output.
+- Mini-convos use existing `query_model()` function. No new Ollama endpoint needed.
+- `<<COMMAND>>` stripping must happen AFTER command processing (proxy needs to see the tag to act) but BEFORE message forwarding to the model.
