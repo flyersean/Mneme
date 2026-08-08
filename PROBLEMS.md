@@ -251,3 +251,30 @@ Hermes plugin to register `search_memory` as a native tool. Hermes has a Python 
 
 - **Symptom:** In streaming mode, tool calls happen mid-SSE-stream and Pi can't inject results. Model hangs waiting for tool response.
 - **Fix:** `_chat_stream` detects search_memory tool calls, executes search via `route_query()`, injects results into `result["content"]`, clears `tool_calls`. Pi receives a clean response with no tool calls.
+
+---
+
+## Ollama KV Cache Quantization for Large Context Windows (Aug 8, 2026)
+
+Qwen 3.6 35B on A40 (46GB VRAM) can support 129K-264K context windows by quantizing the KV cache. Without quantization, 120K context crashes with CUDA OOM (~50GB required, 46GB available).
+
+**Modelfile for large context:**
+```
+FROM fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest
+PARAMETER num_ctx 129000
+PARAMETER cache_type q4_0
+PARAMETER flash_attention true
+```
+
+Then create: `ollama create qwen3.6-35b-129k -f Modelfile`
+
+**cache_type options:**
+- `f16` — full precision, ~25-30GB KV cache at 120K (won't fit A40)
+- `q8_0` — 8-bit quantization, ~12-15GB KV cache at 120K
+- `q4_0` — 4-bit quantization, ~6-8GB KV cache at 120K (recommended for A40)
+
+With `q4_0`, the A40 should have headroom for 129K-264K context with the 22GB model weights + ~8GB quantized KV cache = ~30GB total.
+
+**setup.sh and mneme_setup.py should:**
+- Default to `num_ctx 129000` with `cache_type q4_0` for 120K+ context options
+- Allow users to override via the "Custom" context size option
