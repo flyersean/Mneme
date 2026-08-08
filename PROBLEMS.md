@@ -220,3 +220,34 @@ The current injection architecture (system prompt + memory as separate system me
 - Grade pipeline unchanged. Grades still parsed from `[GRADE: X]` in model output.
 - Mini-convos use existing `query_model()` function. No new Ollama endpoint needed.
 - `<<COMMAND>>` stripping must happen AFTER command processing (proxy needs to see the tag to act) but BEFORE message forwarding to the model.
+
+---
+
+## Implementation Status (Aug 8, 2026)
+
+### Completed (deployed on pod 69.30.85.95:22176)
+
+- **Phase 1 (v2 prompt):** Persona-free prompt deployed. Pi-compatible trimmed version active. Full version saved at `docs/system-prompt-v2.md`.
+- **Phase 2 (strategy lifecycle):** `_save_strategy` + `_strategy_lifecycle` functions implemented. FAISS dedup prevents boilerplate stacking. Success path (A/B) runs mini-convo; failure path (C/D/F) auto-generates boilerplate.
+- **Phase 4 (COMMAND stripping):** `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>` stripped from user messages before model sees them. Proxy intercepts and processes commands server-side.
+- **Content normalization:** `_extract_text()` applied to all content access points for compatibility with array-format messages (Pi, OpenAI structured format).
+- **SEARCH_MEMORY_TOOL conditional:** Only appended to tool list when client sends no tools. When client provides tools (Pi, Hermes), the harness's own tool system handles search_memory.
+
+### In Progress
+
+**P3: Harness-native search_memory tool [Aug 8, 2026]**
+
+The proxy can inject `search_memory` as a function tool, but harnesses that validate tools client-side (Pi, Hermes) reject unrecognized tools. Solution: create harness-native tool wrappers that call the Mneme `/search` endpoint.
+
+**Pi extension** (`/workspace/mneme-search-tool.js`):
+- Created and deployed — ~15 lines of JS using `pi.registerTool()`
+- Extension loads correctly and model invokes the tool
+- Async handler hangs on streaming responses — needs debugging (likely `fetch` in streaming tool callback)
+- Load with: `pi --extension /workspace/mneme-search-tool.js --provider mneme ...`
+
+**Hermes plugin** (TODO):
+- Even simpler than Pi — Hermes has native Python plugin system
+- ~10 lines: register tool → POST to `localhost:8080/search` → return formatted results
+- Plugin goes in `~/.hermes/plugins/mneme_search/plugin.py`
+- No streaming issues expected (Hermes tool system is synchronous)
+- Task: create plugin, test with `hermes chat --profile mneme`
