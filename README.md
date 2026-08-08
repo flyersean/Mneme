@@ -1,22 +1,64 @@
 # Mneme
 
-Conversational memory proxy between AI agents and Ollama. Transparent layer that archives conversations, classifies by topic, injects relevant past context, and evolves its own strategies through a self-improving feedback loop. Model-agnostic. Multi-model. Self-improving.
+Conversational memory proxy between AI agents and Ollama. Transparent layer that archives conversations, classifies by topic, injects relevant past context, and evolves its own strategies through a self-improving feedback loop. Model-agnostic. Self-improving.
 
 ## How It Works
 
 ```
-Hermes (or any OpenAI client) → Mneme Proxy (:8080) → Ollama (:11434)
-                                      ↕
-                              SQLite + FAISS memory
+Any OpenAI client → Mneme Proxy (:8080) → Ollama (:11434)
+                         ↕
+                 SQLite + FAISS memory
 ```
 
-Every conversation turn is staged, then on `/save` the proxy:
+Every conversation turn is staged, then on save the proxy:
 1. Classifies messages into topic groups via LLM labeling (qwen2.5:0.5b)
 2. Embeds each group with arctic-embed2 (1024-dim)
 3. Stores in SQLite (chunks table) + FAISS (IndexFlatIP)
 4. On future requests: searches FAISS + keyword fallback, injects top matches
 
-## Features (August 2026)
+## Getting Started
+
+### Pod Setup (one command)
+
+Run this on a fresh RunPod or any Linux machine with a GPU:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/setup.sh | bash
+```
+
+The interactive wizard walks through:
+- Model selection (Qwen 3.6 35B, Qwen 2.5 7B/14B, or custom)
+- Context window size (32K, 129K, or custom)
+- Chat interface (Pi terminal agent, or proxy-only)
+- Embedding model (arctic-embed2, nomic-embed-text, or custom)
+
+After setup, the proxy is at `http://localhost:8080` with an OpenAI-compatible API at `/v1`.
+
+### Local Connect
+
+Run on your laptop to SSH-tunnel into the pod and launch an agent:
+
+```bash
+python3 scripts/mneme_connect.py
+```
+
+Prompts for pod IP/port, then:
+- **Hermes**: creates a new profile, displays connection info, launches `hermes --profile mneme`
+- **Pi**: writes config, launches `pi --provider mneme --model text-mneme:64k`
+
+### Manual Start
+
+```bash
+cd /workspace
+MNEME_MODEL="qwen3.6-35b-120k:latest" \
+  OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
+  OLLAMA_KEEP_ALIVE=24h PYTHONDONTWRITEBYTECODE=1 \
+  python3 -uB proxy/mneme_proxy.py
+```
+
+For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` before starting Ollama.
+
+## Features
 
 **Core Memory**
 - Topic-aware chunking with automatic LLM labeling
@@ -27,36 +69,51 @@ Every conversation turn is staged, then on `/save` the proxy:
 
 **Self-Grading & Strategy Learning**
 - Models append `[GRADE: A-F]` after every response
-- Models create `[STRATEGY: ...]` for sub-A grades
-- Proxy parses both from model output, stores in DB + FAISS
-- Strategies injected as enriched `PROVEN STRATEGIES` with lifecycle stats
+- Proxy parses grades from model output, stores in DB
+- Proxy-driven strategy lifecycle: success (A/B) triggers mini-convo, failure (C/D/F) auto-creates boilerplate with FAISS dedup
 
-**Strategy Improvement Loop** (Phases 1-3, verified Aug 5)
-- **Versioning:** Semantic dedup via FAISS cosine > 0.75. Identical strategies bump `version` counter. Schema: `version INT`, `parent_id TEXT`.
-- **Effectiveness feedback:** Weighted update when model references `STRATEGY #id` and grades itself: `new_eff = 0.7 * old + 0.3 * grade_val`. Tracks `use_count` and `success_count`.
-- **Dynamic ranking:** `ORDER BY effective_grade DESC, use_count DESC`. High-performing strategies float to top; failing ones sink.
-- **Enriched headers:** `STRATEGY #t1 v2 [grade:A] [eff:0.65] [used:7/3 success]` — models see full strategy lifecycle.
-- **Always-inject fallback:** build_context returns strategies even when no FAISS chunks match a query.
-- **Verified:** A-grade → eff 0.50→0.65. F-grade → eff 0.65→0.45. Identical text → v1→v2 dedup.
+**v2 Architecture (persona-free)**
+- No "You are..." identity in system prompt — Mneme describes itself as a system, not a personality
+- `<<COMMAND>>` stripping — `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>` processed server-side, stripped from model context
+- Content normalization — handles both string and array content formats (OpenAI, Pi, Hermes)
 
-**Session Awareness**
-- Auto-generated session IDs for new conversations
-- Chunks tagged with session_id
-- Injection headers show `[session:conv_abc]`
-- Cross-session bleed as feature: multi-agent teams see each other's work
-- System prompt teaches models about multi-session operation
+**Harness Integration**
+- **Hermes**: Full support with all tools, memory, compression enabled. SEARCH_MEMORY_TOOL appended by proxy (Hermes doesn't validate tools client-side).
+- **Pi**: Streaming support with search_memory via extension + proxy intercept. Extension at `extensions/pi/mneme-search-tool.ts`.
+- **Any OpenAI client**: Connect to `http://localhost:8080/v1`
 
-**Multi-Proxy / Multi-Model**
-- Timestamp-based chunk IDs eliminate collisions across proxy instances
-- Two proxies on different ports sharing one DB confirmed working
-- gemma4:26b + qwen2.5:7b tested simultaneously
-- `HTTP_PORT` env var for per-instance port control
+## Benchmarks
+
+**LoCoMo (Long Conversation Memory) benchmark — August 2026:**
+
+| Conversations | Questions | Model | Result |
+|--------------|-----------|-------|--------|
+| 1 | 5 (session summaries) | Qwen 3.6 35B (32K) | 100% (5/5) |
+| 1 | 10 (individual turns) | Qwen 3.6 35B (32K) | 100% (10/10)* |
+
+*\*Later determined LoCoMo is in Qwen's training data — results not meaningful for memory testing.*
+
+**Custom 2026 Events benchmark (post-training-cutoff data) — August 2026:**
+
+20 questions across 4 types: needle-in-haystack, temporal reasoning, trick questions, cross-conversation.
+
+| Type | Score |
+|------|-------|
+| Needle (fact recall) | 10/15 (67%) |
+| Trick (contradictions) | 2/2 (100%) |
+| Cross-conversation | 0/1 (0%) |
+| Temporal | 0/2 (0%) |
+| **Total** | **12/20 (60%)** |
+
+Judge: gpt-4o-mini via OpenRouter. Model: Qwen 3.6 35B (32K). 3 conversations, 20 individual turns ingested, 29 DB chunks.
+
+Benchmark runner: `benchmarks/locomo_runner.py`
 
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/v1/chat/completions` | OpenAI-compatible chat (also `/api/chat/completions`, `/chat/completions`) |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat |
 | POST | `/save` | Flush staging buffer to persistent storage |
 | POST | `/search` | Search memory: `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
@@ -64,58 +121,18 @@ Every conversation turn is staged, then on `/save` the proxy:
 | GET | `/search?q=...` | GET-based keyword search |
 | GET | `/detail/<chunk_id>` | Full JSON for one chunk |
 
-## Quick Start (RunPod)
-
-```bash
-cd /workspace && MNEME_MODEL=qwen2.5:7b nohup python3 -uB proxy/mneme_proxy.py > /tmp/mneme.log 2>&1 &
-```
-
-For two models sharing one DB:
-```bash
-MNEME_MODEL=gemma4:26b HTTP_PORT=8080 nohup python3 -uB proxy/mneme_proxy.py > /tmp/gemma.log 2>&1 &
-MNEME_MODEL=qwen2.5:7b HTTP_PORT=8082 nohup python3 -uB proxy/mneme_proxy.py > /tmp/qwen.log 2>&1 &
-```
-
-## Testing
-
-Dual-model novel test verified August 2026:
-1. Qwen researches topic → saves to shared DB
-2. Qwen creates chapter outline → saves
-3. Gemma writes Chapter 1 using qwen's research from injected memory
-4. Qwen writes Chapter 2 using Gemma's Chapter 1 from injected memory
-5. Gemma writes Chapter 3 using all prior content
-
-Result: all 5 phases preserved as 5 distinct chunks in shared DB. All 11 injected facts survived across both models with zero hallucinations. Cross-model strategy transfer confirmed (qwen's verification strategies used by gemma).
-
 ## Architecture
 
-Single-file Flask proxy (~2,000 lines). Module-level state (FAISS index, SQLite connection, staging buffer). Threaded server with daemon archival threads.
+Single-file Flask proxy. Module-level state (FAISS index, SQLite connection, staging buffer). Threaded server with daemon archival threads.
 
-**Models needed on Ollama:**
+**Required Ollama models:**
 - Main model (any): via `MNEME_MODEL` env var
 - Labeler: `qwen2.5:0.5b` — generates topic labels
 - Embedder: `snowflake-arctic-embed2` — 1024-dim vectors
 
-## Current Status (August 8, 2026)
-
-**Active testing:** Mneme + Pi on RunPod A40 with Qwen 3.6 35B.
-
-**v2 Architecture deployed:**
-- Persona-free system prompt — no "You are..." identity, pure system description
-- Proxy-driven strategy lifecycle — success (A/B) triggers mini-convo, failure (C/D/F) auto-creates boilerplate with FAISS dedup
-- `<<COMMAND>>` stripping — `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>` processed by proxy, stripped from model context
-- Content normalization — `_extract_text()` handles both string and array content formats (OpenAI, Pi)
-
-**Pi integration:**
-- Chat, grading, `<<SAVE>>`, and memory injection all work in streaming mode
-- `search_memory` tool via Pi extension + proxy streaming intercept — extension registers tool (empty shim), proxy handles execution server-side
-- Extension at `extensions/pi/mneme-search-tool.ts`, load with `--extension`
-
-**Hermes (prior):** Full install tested. Prompt competition confirmed at scale. Per-harness prompt templates proposed as solution (Option C).
-
 ## Branches
 
 - `main` — stable release
-- `dev-chunks` — active development (proxy code, v2 architecture)
+- `dev-chunks` — active development (proxy code, v2 architecture, setup scripts, benchmarks)
 - `pi` — Pi-specific extension and testing
 - `dev-v2` — restore point, do not modify
