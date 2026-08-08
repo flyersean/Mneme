@@ -235,19 +235,19 @@ The current injection architecture (system prompt + memory as separate system me
 
 ### In Progress
 
-**P3: Harness-native search_memory tool [Aug 8, 2026]**
+**P3: Hermes-native search_memory plugin (TODO)**
 
-The proxy can inject `search_memory` as a function tool, but harnesses that validate tools client-side (Pi, Hermes) reject unrecognized tools. Solution: create harness-native tool wrappers that call the Mneme `/search` endpoint.
+Hermes plugin to register `search_memory` as a native tool. Hermes has a Python plugin system — ~10 lines: register tool → POST to `localhost:8080/search` → return results. Plugin goes in `~/.hermes/plugins/mneme_search/plugin.py`. No streaming issues expected (Hermes tools are synchronous).
 
-**Pi extension** (`/workspace/mneme-search-tool.js`):
-- Created and deployed — ~15 lines of JS using `pi.registerTool()`
-- Extension loads correctly and model invokes the tool
-- Async handler hangs on streaming responses — needs debugging (likely `fetch` in streaming tool callback)
-- Load with: `pi --extension /workspace/mneme-search-tool.js --provider mneme ...`
+### Resolved (Aug 8, 2026)
 
-**Hermes plugin** (TODO):
-- Even simpler than Pi — Hermes has native Python plugin system
-- ~10 lines: register tool → POST to `localhost:8080/search` → return formatted results
-- Plugin goes in `~/.hermes/plugins/mneme_search/plugin.py`
-- No streaming issues expected (Hermes tool system is synchronous)
-- Task: create plugin, test with `hermes chat --profile mneme`
+**P3: Pi search_memory extension + streaming intercept [RESOLVED]**
+
+- **Root cause:** Pi validates tools client-side. Proxy-injected `search_memory` was rejected. Pi's tool API uses `execute(toolCallId, params)` returning `{content: [{type: "text", text}], details: {}}` — the `handler` key was silently ignored.
+- **Fix:** Pi extension (`extensions/pi/mneme-search-tool.ts`) registers the tool with an empty `execute()` handler. Proxy's `_chat_stream` interceptor catches tool calls server-side, executes search, and injects results before Pi processes the response. No hang, no conflict.
+- **Verified:** Streaming mode, model calls `search_memory`, proxy returns results, model synthesizes answer. Qwen 3.6 + Pi on RunPod A40.
+
+**P3: Proxy streaming search_memory intercept [RESOLVED]**
+
+- **Symptom:** In streaming mode, tool calls happen mid-SSE-stream and Pi can't inject results. Model hangs waiting for tool response.
+- **Fix:** `_chat_stream` detects search_memory tool calls, executes search via `route_query()`, injects results into `result["content"]`, clears `tool_calls`. Pi receives a clean response with no tool calls.
