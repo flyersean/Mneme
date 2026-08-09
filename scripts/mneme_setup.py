@@ -72,7 +72,17 @@ def install_ollama():
 
 def install_python_deps():
     print("Installing Python dependencies...")
-    run(f"{sys.executable} -m pip install flask flask-cors faiss-cpu numpy requests -q")
+    r = run(f"{sys.executable} -m pip install flask flask-cors faiss-cpu numpy requests")
+    if r.returncode != 0:
+        print(f"  pip install failed: {r.stderr[:200]}")
+        print("  Trying with --break-system-packages...")
+        run(f"{sys.executable} -m pip install --break-system-packages flask flask-cors faiss-cpu numpy requests")
+    # Verify flask is importable
+    try:
+        import flask
+        print("  Dependencies OK")
+    except ImportError:
+        print("  WARNING: Flask still not importable. Proxy may fail to start.")
 
 def pull_model(name):
     """Pull a model if not already present. Retries ollama list in case server is busy."""
