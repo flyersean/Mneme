@@ -1,6 +1,14 @@
 #!/bin/bash
 # Mneme dependency installer — idempotent, pipe-safe, no interactive prompts.
 # Run: curl -sSL <url> | bash
+#
+# Self-update: always fetch latest version before running.
+if [ -z "${MNEME_DEPS_UPDATED:-}" ]; then
+    export MNEME_DEPS_UPDATED=1
+    curl -sSL -o /tmp/mneme_install.sh "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh"
+    exec bash /tmp/mneme_install.sh
+fi
+
 set -e
 
 echo "=== Mneme === Installing dependencies (pipe-safe, no prompts) ==="
