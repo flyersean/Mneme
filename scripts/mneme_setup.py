@@ -64,10 +64,15 @@ def install_ollama():
     print("Installing Ollama...")
     r = run("curl -fsSL https://ollama.com/install.sh | sh")
     if r.returncode != 0:
-        print("Failed to install Ollama. Install manually and re-run.")
-        sys.exit(1)
+        print(f"  curl install failed: {r.stderr[:200]}")
+        print("  Trying apt-get...")
+        r2 = run("apt-get update -qq && apt-get install -y -qq curl && curl -fsSL https://ollama.com/install.sh | sh")
+        if r2.returncode != 0:
+            print(f"  All install methods failed. stderr: {r2.stderr[:200]}")
+            print("  Install Ollama manually: curl -fsSL https://ollama.com/install.sh | sh")
+            sys.exit(1)
     run("ollama serve > /dev/null 2>&1 &")
-    time.sleep(2)
+    time.sleep(3)
     return True
 
 def install_python_deps():
