@@ -154,20 +154,9 @@ def get_pulled_models():
         if name in exclude:
             continue
         size = parts[1] if len(parts) > 1 else "?"
-        tag = " (pulled)" if name not in [p[1] for p in MODULE_PRESETS] else " (pulled)"
+        tag = " (pulled)"
         models.append((f"{name}{tag}", name))
     return models
-
-# Module-level presets so get_pulled_models can reference them
-MODULE_PRESETS = [
-    ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest (32K)", 
-     "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"),
-    ("qwen3.6:35b-a3b (official Ollama, 32K)", "qwen3.6:35b-a3b"),
-    ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model)", "__120k__"),
-    ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
-    ("qwen2.5:14b (mid-range, ~10GB)", "qwen2.5:14b"),
-    ("Custom (enter any Ollama model name)", "__custom__"),
-]
 
 def main():
     banner()
@@ -177,26 +166,29 @@ def main():
     
     print("\nThis wizard will set up the Mneme memory proxy on this machine.\n")
     
-    # ── Step 1: Model ──
-    # Detect already-pulled models
-    pulled = get_pulled_models()
+    print("\033[1mModel recommendations:\033[0m")
+    print("  • Hermes: 120K+ context (Hermes sends ~78KB of system prompt)")
+    print("  • Pi:     32K context is plenty (Pi's prompt is tiny)")
+    print("  • Any OpenAI-compatible model works. Pull models first with: ollama pull <name>")
+    print("  • For large context, create a Modelfile with PARAMETER num_ctx, or use 'Custom' below")
+    print()
     
-    # Build options: pulled models first, then presets not already shown
-    pulled_names = {p[1] for p in pulled}
-    remaining_presets = [p for p in MODULE_PRESETS if p[1] not in pulled_names]
+    # ── Step 1: Model ──
+    pulled = get_pulled_models()
     
     opts = []
     models = []
     if pulled:
-        opts.append("── Already in Ollama ──")
+        opts.append("── Pulled models ──")
         for p in pulled:
             opts.append(p[0])
             models.append(p)
-        if remaining_presets:
-            opts.append("── Available to install ──")
-    for p in remaining_presets:
-        opts.append(p[0])
-        models.append(p)
+    
+    opts.append("── Other options ──")
+    models.append(("+ 129K Modelfile from a pulled model (creates custom high-context model)", "__120k__"))
+    opts.append("+ 129K Modelfile from a pulled model (creates custom high-context model)")
+    models.append(("Custom (enter any Ollama model name)", "__custom__"))
+    opts.append("Custom (enter any Ollama model name)")
     
     idx, _ = choose("Step 1/4: Choose main model", opts)
     
@@ -205,8 +197,9 @@ def main():
         if not model_name:
             sys.exit(1)
     elif models[idx][1] == "__120k__":
-        # Use any already-pulled Qwen 3.6 35B as base
+        # Use any already-pulled model as base for Modelfile
         base = None
+        pulled_names = {p[1] for p in pulled}
         for pname in pulled_names:
             if "qwen" in pname.lower() and "35" in pname:
                 base = pname
