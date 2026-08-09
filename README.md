@@ -29,7 +29,7 @@ Installs Ollama, Python packages (flask, faiss, numpy, requests), and downloads 
 ### Step 2: Run setup wizard
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
+rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
 The interactive wizard walks through:

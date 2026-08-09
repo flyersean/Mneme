@@ -164,6 +164,11 @@ def get_pulled_models():
 def main():
     banner()
     
+    # Cleanup from previous runs
+    subprocess.run(["pkill", "-f", "mneme_proxy.py"], capture_output=True)
+    subprocess.run(["pkill", "-f", "ollama serve"], capture_output=True)
+    time.sleep(1)
+    
     gpu, vram = detect_gpu()
     print(f"GPU: {gpu} ({vram}GB VRAM)")
     
