@@ -192,23 +192,35 @@ def main():
     
     idx, _ = choose("Step 1/4: Choose main model", opts)
     
-    if models[idx][1] == "__custom__":
+    # Look up chosen model by value, not index (opts has separators models doesn't)
+    chosen_label = opts[idx]
+    model_entry = None
+    for m in models:
+        if m[0] == chosen_label:
+            model_entry = m
+            break
+    
+    if not model_entry:
+        print("Invalid selection")
+        sys.exit(1)
+    
+    if model_entry[1] == "__custom__":
         model_name = ask("Enter Ollama model name")
         if not model_name:
             sys.exit(1)
-    elif models[idx][1] == "__120k__":
+    elif model_entry[1] == "__120k__":
         # Use any already-pulled model as base for Modelfile
         base = None
         pulled_names = {p[1] for p in pulled}
         for pname in pulled_names:
-            if "qwen" in pname.lower() and "35" in pname:
+            if len(pname) > 5:
                 base = pname
                 break
-        model_name = base if base else "qwen3.6:35b-a3b"
+        model_name = base if base else ask("No pulled models found. Enter base model name (e.g. qwen3.6:35b-a3b)")
         if base:
             print(f"  Using already-pulled {base} as base for 120K model")
     else:
-        model_name = models[idx][1]
+        model_name = model_entry[1]
     
     print(f"  Selected: {model_name}")
     
