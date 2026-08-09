@@ -18,12 +18,18 @@ Every conversation turn is staged, then on save the proxy:
 
 ## Getting Started
 
-### Pod Setup (one command)
-
-Run this on a fresh RunPod or any Linux machine with a GPU:
+### Step 1: Install dependencies (pipe-safe, one command)
 
 ```bash
-curl -sSL -o /tmp/setup.sh https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/setup.sh && bash /tmp/setup.sh
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh | bash
+```
+
+Installs Ollama, Python packages (flask, faiss, numpy, requests), and downloads proxy code. Skips anything already installed — safe to run on existing setups.
+
+### Step 2: Run setup wizard
+
+```bash
+python3 <(curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py)
 ```
 
 The interactive wizard walks through:
