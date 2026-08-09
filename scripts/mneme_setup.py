@@ -89,7 +89,13 @@ def install_python_deps():
             print("  Dependencies OK")
             return
         except ImportError:
-            print("  Flask still not importable, trying next method...")
+            pass
+        # Check via subprocess (pip may have installed to a new path)
+        r2 = subprocess.run([sys.executable, "-c", "import flask"], capture_output=True)
+        if r2.returncode == 0:
+            print("  Dependencies OK (restart Python to use)")
+            return
+        print("  Flask still not importable, trying next method...")
     
     # Fall back to apt
     print("  Trying apt-get...")
@@ -98,10 +104,11 @@ def install_python_deps():
     # pip install faiss-cpu (not in apt)
     subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "faiss-cpu", "flask-cors"], capture_output=True)
     
-    try:
-        import flask
+    # Check via subprocess
+    r = subprocess.run([sys.executable, "-c", "import flask"], capture_output=True)
+    if r.returncode == 0:
         print("  Dependencies OK (apt)")
-    except ImportError:
+    else:
         print("  WARNING: Flask not importable. Proxy will fail to start.")
         print("  Manual fix: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests")
 
