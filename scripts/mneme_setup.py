@@ -93,6 +93,11 @@ def main():
     
     print("\nThis wizard will set up the Mneme memory proxy on this machine.\n")
     
+    # Start Ollama early so we can detect already-pulled models
+    if shutil.which("ollama"):
+        run("ollama serve > /dev/null 2>&1 &")
+        time.sleep(2)
+    
     # ── Step 1: Model ──
     # Detect already-pulled Ollama models
     pulled = []
