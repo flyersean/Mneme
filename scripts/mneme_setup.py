@@ -162,8 +162,6 @@ def get_pulled_models():
 MODULE_PRESETS = [
     ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest (32K)", 
      "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"),
-    ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-120k:latest (120K)", 
-     "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-120k:latest"),
     ("qwen3.6:35b-a3b (official Ollama, 32K)", "qwen3.6:35b-a3b"),
     ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model)", "__120k__"),
     ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
