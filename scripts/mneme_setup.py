@@ -85,6 +85,49 @@ def pull_model(name):
     if r.returncode != 0:
         print(f"  Warning: could not pull {name}")
 
+def get_pulled_models():
+    """Return list of (display_name, model_name) for models already in Ollama."""
+    if not shutil.which("ollama"):
+        return []
+    
+    # Start ollama if not running, poll until ready
+    run("ollama serve > /dev/null 2>&1 &")
+    for _ in range(20):
+        time.sleep(1)
+        try:
+            out = run("ollama list", timeout=10).stdout
+            if "NAME" in out:
+                break
+        except:
+            continue
+    
+    models = []
+    exclude = {"qwen2.5:0.5b", "snowflake-arctic-embed2", "nomic-embed-text", "mneme-chat:latest"}
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts or "NAME" in line:
+            continue
+        name = parts[0]
+        if name in exclude:
+            continue
+        size = parts[1] if len(parts) > 1 else "?"
+        tag = " (pulled)" if name not in [p[1] for p in MODULE_PRESETS] else " (pulled)"
+        models.append((f"{name}{tag}", name))
+    return models
+
+# Module-level presets so get_pulled_models can reference them
+MODULE_PRESETS = [
+    ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest (32K)", 
+     "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"),
+    ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-120k:latest (120K)", 
+     "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-120k:latest"),
+    ("qwen3.6:35b-a3b (official Ollama, 32K)", "qwen3.6:35b-a3b"),
+    ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model)", "__120k__"),
+    ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
+    ("qwen2.5:14b (mid-range, ~10GB)", "qwen2.5:14b"),
+    ("Custom (enter any Ollama model name)", "__custom__"),
+]
+
 def main():
     banner()
     
@@ -93,40 +136,26 @@ def main():
     
     print("\nThis wizard will set up the Mneme memory proxy on this machine.\n")
     
-    # Start Ollama early so we can detect already-pulled models
-    if shutil.which("ollama"):
-        run("ollama serve > /dev/null 2>&1 &")
-        time.sleep(2)
-    
     # ── Step 1: Model ──
-    # Detect already-pulled Ollama models
-    pulled = []
-    try:
-        out = run("ollama list").stdout
-        for line in out.splitlines():
-            parts = line.split()
-            if parts and ":" in parts[0] and "NAME" not in line:
-                name = parts[0]
-                size = parts[1] if len(parts) > 1 else "?"
-                pulled.append((f"{name} ({size}, already pulled)", name))
-    except:
-        pass
+    # Detect already-pulled models
+    pulled = get_pulled_models()
     
-    presets = [
-        ("qwen3.6:35b-a3b (official Ollama, 32K context)", "qwen3.6:35b-a3b"),
-        ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model)", "__120k__"),
-        ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
-        ("qwen2.5:14b (mid-range, ~10GB)", "qwen2.5:14b"),
-        ("Custom (enter any Ollama model name)", "__custom__"),
-    ]
+    # Build options: pulled models first, then presets not already shown
+    pulled_names = {p[1] for p in pulled}
+    remaining_presets = [p for p in MODULE_PRESETS if p[1] not in pulled_names]
     
-    # Build option list: pulled models first, then presets
+    opts = []
+    models = []
     if pulled:
-        opts = ["── Already pulled ──"] + [p[0] for p in pulled] + ["── Available to pull ──"] + [p[0] for p in presets]
-        models = [(p[0], p[1]) for p in pulled] + [(p[0], p[1]) for p in presets]
-    else:
-        opts = [p[0] for p in presets]
-        models = [(p[0], p[1]) for p in presets]
+        opts.append("── Already in Ollama ──")
+        for p in pulled:
+            opts.append(p[0])
+            models.append(p)
+        if remaining_presets:
+            opts.append("── Available to install ──")
+    for p in remaining_presets:
+        opts.append(p[0])
+        models.append(p)
     
     idx, _ = choose("Step 1/4: Choose main model", opts)
     
