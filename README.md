@@ -21,7 +21,7 @@ Every conversation turn is staged, then on save the proxy:
 ### Step 1: Install dependencies (pipe-safe, one command)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh | bash
+curl -sSL "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh?$(date +%s)" | bash
 ```
 
 Installs Ollama, Python packages (flask, faiss, numpy, requests), and downloads proxy code. Skips anything already installed — safe to run on existing setups.
