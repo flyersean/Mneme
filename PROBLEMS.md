@@ -93,23 +93,39 @@ Complete, deployed, and verified.
 
 ### Problem
 
-Pi's system prompt is baked into its TypeScript source. To modify it, you must:
-1. Find the prompt in Pi's source code
-2. Edit, recompile, restart Pi
+Pi's system prompt (~2KB) is embedded in its TypeScript source. Mneme prepends its own prompt BEFORE Pi's. The model sees:
 
-This makes prompt iteration slow and prevents runtime customization through the Mneme proxy.
+```
+=== MNEME INSTRUCTIONS ===
+[Mneme memory prompt — currently persona-free]
 
-### How It Works Currently
+[Pi's harness prompt — coding agent, tools, guidelines]
+[Conversation messages]
+```
 
-The Mneme proxy already intercepts ALL chat requests and injects its own system prompt from `/workspace/proxy/system_prompt.md`. It strips whatever system message the client (Pi, Hermes, etc.) sent and replaces it with the Mneme prompt. This means:
+This works but makes iteration on the COMBINED behavior difficult — two separate prompts, only one editable.
 
-- **Pi's own prompt is already being overridden** by the Mneme proxy
-- Editing `system_prompt.md` changes what the model sees — no Pi recompile needed
-- The workspace for prompt iteration is `system_prompt.md`, not Pi's source
+### Pi's Current System Prompt
 
-### Making It Hot-Swappable
+Extracted and saved as `docs/pi-system-prompt.md`. Critical sections:
+- Identity: "expert coding assistant operating inside pi"
+- Tools: read, bash, edit, write (+ custom extensions)
+- Guidelines: file ops, edit precision, conciseness
+- Doc references: extensions, themes, skills, SDK
 
-The proxy reads `system_prompt.md` once at startup. To make it hot-swappable:
+### Merge Strategy
+
+**Approach:** Keep Pi's prompt intact. Edit Mneme's `system_prompt.md` to complement it.
+
+- Pi handles: tool usage, coding guidelines, file operations
+- Mneme handles: memory grading, save/detail commands, retrieval instructions
+- Don't repeat Pi's instructions in Mneme's prompt — Pi already handles that
+
+**Why not merge into one file:** Pi's prompt is critical for harness operation. Changing it breaks tool calling and coding behavior. Mneme's prompt sits ABOVE Pi's and controls memory behavior. Separation of concerns.
+
+### Hot-Swap Implementation
+
+The proxy reads `system_prompt.md` once at startup. Add `/admin/reload` endpoint for hot-swap:
 
 **Option A: Reload endpoint** (recommended)
 Add `POST /admin/reload` endpoint that re-reads `system_prompt.md` into memory. No proxy restart, no chunk loss.
