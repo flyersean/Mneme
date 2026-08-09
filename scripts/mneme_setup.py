@@ -300,8 +300,21 @@ def main():
     print("Installing...")
     print("="*50)
     
-    install_ollama()
-    install_python_deps()
+    # Quick check: are deps already installed?
+    deps_ok = subprocess.run([sys.executable, "-c", "import flask, numpy, requests, faiss"],
+                              capture_output=True).returncode == 0
+    
+    if not deps_ok:
+        install_ollama()
+        install_python_deps()
+    else:
+        print("  Python dependencies already installed, skipping.")
+        # Still ensure Ollama is running
+        if shutil.which("ollama"):
+            if subprocess.run("curl -s --max-time 2 http://localhost:11434 >/dev/null", 
+                            shell=True).returncode != 0:
+                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(3)
     
     # Pull models
     print(f"\nPulling models (this may take a few minutes)...")
