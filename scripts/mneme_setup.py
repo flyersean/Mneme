@@ -62,15 +62,12 @@ def install_ollama():
         run("ollama serve > /dev/null 2>&1 &")
         return True
     print("Installing Ollama...")
-    r = run("curl -fsSL https://ollama.com/install.sh | sh")
-    if r.returncode != 0:
-        print(f"  curl install failed: {r.stderr[:200]}")
-        print("  Trying apt-get...")
-        r2 = run("apt-get update -qq && apt-get install -y -qq curl && curl -fsSL https://ollama.com/install.sh | sh")
-        if r2.returncode != 0:
-            print(f"  All install methods failed. stderr: {r2.stderr[:200]}")
-            print("  Install Ollama manually: curl -fsSL https://ollama.com/install.sh | sh")
-            sys.exit(1)
+    run("apt-get update -qq && apt-get install -y -qq zstd curl")
+    run("curl -fsSL https://ollama.com/install.sh | sh")
+    if not shutil.which("ollama"):
+        print("  Ollama install failed. Check network and re-run.")
+        sys.exit(1)
+    print("  Ollama installed.")
     run("ollama serve > /dev/null 2>&1 &")
     time.sleep(3)
     return True
