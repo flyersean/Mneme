@@ -21,10 +21,10 @@ Every conversation turn is staged, then on save the proxy:
 ### Step 1: Install dependencies (pipe-safe, one command)
 
 ```bash
-curl -sSL "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh?$(date +%s)" | bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh | bash
 ```
 
-Installs Ollama, Python packages (flask, faiss, numpy, requests), and downloads proxy code. Skips anything already installed — safe to run on existing setups.
+Idempotent — installs Ollama, Python packages, proxy code. Detects and skips anything already present. Safe to run repeatedly.
 
 ### Step 2: Run setup wizard
 
@@ -32,11 +32,7 @@ Installs Ollama, Python packages (flask, faiss, numpy, requests), and downloads 
 rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
-The interactive wizard walks through:
-- Model selection (Qwen 3.6 35B, Qwen 2.5 7B/14B, or custom)
-- Context window size (32K, 129K, or custom)
-- Chat interface (Pi terminal agent, or proxy-only)
-- Embedding model (arctic-embed2, nomic-embed-text, or custom)
+Interactive 5-step wizard: model → context size → chat interface → embedding → labeling. Both scripts self-update on every run.
 
 After setup, the proxy is at `http://localhost:8080` with an OpenAI-compatible API at `/v1`.
 
