@@ -2,8 +2,23 @@
 """Mneme setup wizard — interactive terminal setup for pod deployment.
 No external dependencies — uses built-in input() only.
 """
-
 import subprocess, sys, os, shutil, time, json
+
+# Self-update: always fetch latest before running
+_SETUP_URL = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py"
+if __file__.startswith("/tmp/") or __file__.startswith("/var/"):
+    # Running from temp file — check if we're stale by comparing size
+    try:
+        import urllib.request
+        remote_size = int(urllib.request.urlopen(_SETUP_URL).headers.get("Content-Length", 0))
+        local_size = os.path.getsize(__file__)
+        if remote_size > 0 and remote_size != local_size:
+            print("Updating to latest version...")
+            os.remove(__file__)
+            subprocess.run(["curl", "-sSL", "-o", __file__, _SETUP_URL], check=True)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+    except:
+        pass  # network unavailable, continue with current version
 
 # Reopen stdin from terminal if piped (curl|bash closes the pipe)
 if not sys.stdin.isatty():
