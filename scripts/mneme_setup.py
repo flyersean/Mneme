@@ -75,36 +75,32 @@ def install_ollama():
 def install_python_deps():
     print("Installing Python dependencies...")
     
-    # Try pip first
+    # Try pip with visible output so we can see errors
     for args in [
-        f"{sys.executable} -m pip install flask flask-cors faiss-cpu numpy requests",
-        f"{sys.executable} -m pip install --break-system-packages flask flask-cors faiss-cpu numpy requests",
-        f"{sys.executable} -m pip install --user flask flask-cors faiss-cpu numpy requests",
+        [sys.executable, "-m", "pip", "install", "flask", "flask-cors", "faiss-cpu", "numpy", "requests"],
+        [sys.executable, "-m", "pip", "install", "--break-system-packages", "flask", "flask-cors", "faiss-cpu", "numpy", "requests"],
     ]:
-        r = run(args)
+        print(f"  Running: {' '.join(args)}")
+        r = subprocess.run(args, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"  pip error: {r.stderr[-300:]}")
         try:
             import flask
-            print("  Dependencies OK (pip)")
+            print("  Dependencies OK")
             return
         except ImportError:
-            pass
+            print("  Flask still not importable, trying next method...")
     
     # Fall back to apt
     print("  Trying apt-get...")
-    r = run("apt-get update -qq && apt-get install -y -qq python3-flask python3-flask-cors python3-numpy python3-requests 2>&1")
+    subprocess.run(["apt-get", "update", "-qq"], capture_output=True)
+    subprocess.run(["apt-get", "install", "-y", "-qq", "python3-flask", "python3-requests", "python3-numpy"], capture_output=True)
+    # pip install faiss-cpu (not in apt)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "faiss-cpu", "flask-cors"], capture_output=True)
+    
     try:
         import flask
         print("  Dependencies OK (apt)")
-        return
-    except ImportError:
-        pass
-    
-    # Last resort: install faiss-cpu via pip anyway
-    run(f"{sys.executable} -m pip install --break-system-packages faiss-cpu numpy requests")
-    
-    try:
-        import flask
-        print("  Dependencies OK")
     except ImportError:
         print("  WARNING: Flask not importable. Proxy will fail to start.")
         print("  Manual fix: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests")
