@@ -13,7 +13,7 @@ echo "  Distro: $DISTRO"
 echo; echo "[1/4] Python dependencies"
 
 # Remove system packages that conflict with pip versions
-apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug 2>/dev/null || true
+apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-blinker 2>/dev/null || true
 
 # Check each package
 for pkg in flask flask_cors faiss numpy requests; do
