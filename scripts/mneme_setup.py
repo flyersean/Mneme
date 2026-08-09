@@ -261,17 +261,39 @@ def main():
     
     # Start proxy
     print(f"\nStarting Mneme proxy...")
-    run("pkill -f mneme_proxy.py")
+    subprocess.run(["pkill", "-f", "mneme_proxy.py"], capture_output=True)
     time.sleep(1)
     
     os.makedirs("/workspace/mneme_chunks", exist_ok=True)
     
-    run(
-        f"cd /workspace && OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 "
-        f"MNEME_MODEL={proxy_model} EMBED_MODEL={embed_model} "
-        f"OLLAMA_KEEP_ALIVE=24h PYTHONDONTWRITEBYTECODE=1 "
-        f"nohup {sys.executable} -uB proxy/mneme_proxy.py > /tmp/mneme.log 2>&1 &"
+    env = os.environ.copy()
+    env["OLLAMA_FLASH_ATTENTION"] = "1"
+    env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
+    env["MNEME_MODEL"] = proxy_model
+    env["EMBED_MODEL"] = embed_model
+    env["OLLAMA_KEEP_ALIVE"] = "24h"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    
+    log = open("/tmp/mneme.log", "w")
+    subprocess.Popen(
+        [sys.executable, "-uB", "proxy/mneme_proxy.py"],
+        cwd="/workspace", env=env, stdout=log, stderr=log,
+        start_new_session=True
     )
+    
+    # Wait for proxy to start
+    print("  Waiting for proxy...", end=" ", flush=True)
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            import urllib.request
+            d = json.loads(urllib.request.urlopen("http://localhost:8080/health", timeout=2).read())
+            print(f"running ({d.get('chunks',0)} chunks)")
+            break
+        except:
+            continue
+    else:
+        print("timeout — check /tmp/mneme.log")
     time.sleep(3)
     
     # Install Pi if requested
