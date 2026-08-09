@@ -86,3 +86,51 @@ Complete, deployed, and verified.
 - **Phase 3 (Hermes tool):** SEARCH_MEMORY_TOOL appended to Hermes tool list. Works natively (Hermes doesn't validate tools).
 - **Content normalization:** All content access points use `_extract_text()` for array/string compatibility.
 - **Streaming intercept:** `_chat_stream` server-side tool call handling for streaming clients.
+
+---
+
+## Hot-Swappable System Prompt (Pi + Mneme)
+
+### Problem
+
+Pi's system prompt is baked into its TypeScript source. To modify it, you must:
+1. Find the prompt in Pi's source code
+2. Edit, recompile, restart Pi
+
+This makes prompt iteration slow and prevents runtime customization through the Mneme proxy.
+
+### How It Works Currently
+
+The Mneme proxy already intercepts ALL chat requests and injects its own system prompt from `/workspace/proxy/system_prompt.md`. It strips whatever system message the client (Pi, Hermes, etc.) sent and replaces it with the Mneme prompt. This means:
+
+- **Pi's own prompt is already being overridden** by the Mneme proxy
+- Editing `system_prompt.md` changes what the model sees — no Pi recompile needed
+- The workspace for prompt iteration is `system_prompt.md`, not Pi's source
+
+### Making It Hot-Swappable
+
+The proxy reads `system_prompt.md` once at startup. To make it hot-swappable:
+
+**Option A: Reload endpoint** (recommended)
+Add `POST /admin/reload` endpoint that re-reads `system_prompt.md` into memory. No proxy restart, no chunk loss.
+```python
+@app.route("/admin/reload", methods=["POST"])
+def reload_prompt():
+    global SYSTEM_PROMPT
+    with open(PROMPT_PATH) as f:
+        SYSTEM_PROMPT = f.read()
+    return {"ok": True, "size": len(SYSTEM_PROMPT)}
+```
+
+**Option B: Per-request file read**
+Re-read `system_prompt.md` on every request. Simplest but adds ~1ms stat+read overhead. No endpoint needed.
+
+**Option C: Watch file with inotify**
+Use `watchdog` or raw `inotify` to auto-reload when the file changes. Overkill for this use case.
+
+### Recommended Flow
+
+1. Implement Option A (reload endpoint)
+2. Add to setup script output: `curl -X POST localhost:8080/admin/reload` after editing prompt
+3. User workflow: `vim /workspace/proxy/system_prompt.md` → `curl -X POST localhost:8080/admin/reload` → next chat uses new prompt
+4. No restart, no chunk loss, instant feedback loop
