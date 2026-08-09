@@ -103,7 +103,7 @@ echo "════════════════════════�
 echo "  Dependencies ready."
 echo
 echo "  Now run the setup wizard:"
-echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py \"https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py?\$(date +%s)\" && python3 /tmp/setup.py"
 echo
 echo "  Or pull models first, then run the wizard:"
 echo "    ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"
