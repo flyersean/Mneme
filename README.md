@@ -23,7 +23,7 @@ Every conversation turn is staged, then on save the proxy:
 Run this on a fresh RunPod or any Linux machine with a GPU:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/setup.sh | bash
+curl -sSL -o /tmp/setup.sh https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/setup.sh && bash /tmp/setup.sh
 ```
 
 The interactive wizard walks through:
