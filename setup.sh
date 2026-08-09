@@ -7,7 +7,7 @@ echo "=== Mneme Setup ==="
 # Clone Mneme if not present
 if [ ! -d "/workspace/mneme" ]; then
     echo "Cloning Mneme..."
-    git clone https://github.com/flyersean/Mneme.git /workspace/mneme 2>/dev/null || {
+    git clone -b dev-chunks https://github.com/flyersean/Mneme.git /workspace/mneme 2>/dev/null || {
         mkdir -p /workspace/mneme/proxy /workspace/mneme/scripts
         curl -sSL -o /workspace/mneme/proxy/mneme_proxy.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/proxy/mneme_proxy.py
         curl -sSL -o /workspace/mneme/proxy/system_prompt.md https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/proxy/system_prompt.md
