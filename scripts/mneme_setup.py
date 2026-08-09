@@ -90,9 +90,8 @@ def main():
     
     # ── Step 1: Model ──
     models = [
-        ("qwen3.6-35b-120k:latest (120K context, needs ~45GB VRAM)", "qwen3.6-35b-120k:latest"),
-        ("fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest (32K, ~25GB)", 
-         "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"),
+        ("qwen3.6:35b-a3b (official Ollama, 32K context, recommended)", "qwen3.6:35b-a3b"),
+        ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model, needs q8_0 KV cache)", "__120k__"),
         ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
         ("qwen2.5:14b (mid-range, ~10GB)", "qwen2.5:14b"),
         ("Custom (enter any Ollama model name)", "__custom__"),
@@ -104,6 +103,8 @@ def main():
         model_name = ask("Enter Ollama model name")
         if not model_name:
             sys.exit(1)
+    elif models[idx][1] == "__120k__":
+        model_name = "qwen3.6:35b-a3b"  # base model, modelfile created later
     else:
         model_name = models[idx][1]
     
