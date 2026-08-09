@@ -75,6 +75,11 @@ def install_python_deps():
     run(f"{sys.executable} -m pip install flask flask-cors faiss-cpu numpy requests -q")
 
 def pull_model(name):
+    """Pull a model if not already present."""
+    r = run(f"ollama list")
+    if name in r.stdout:
+        print(f"  {name} already pulled, skipping.")
+        return
     print(f"  Pulling {name}...")
     r = run(f"ollama pull {name}", timeout=600)
     if r.returncode != 0:
@@ -89,15 +94,36 @@ def main():
     print("\nThis wizard will set up the Mneme memory proxy on this machine.\n")
     
     # ── Step 1: Model ──
-    models = [
-        ("qwen3.6:35b-a3b (official Ollama, 32K context, recommended)", "qwen3.6:35b-a3b"),
-        ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model, needs q8_0 KV cache)", "__120k__"),
+    # Detect already-pulled Ollama models
+    pulled = []
+    try:
+        out = run("ollama list").stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if parts and ":" in parts[0] and "NAME" not in line:
+                name = parts[0]
+                size = parts[1] if len(parts) > 1 else "?"
+                pulled.append((f"{name} ({size}, already pulled)", name))
+    except:
+        pass
+    
+    presets = [
+        ("qwen3.6:35b-a3b (official Ollama, 32K context)", "qwen3.6:35b-a3b"),
+        ("qwen3.6:35b-a3b + 129K Modelfile (creates custom model)", "__120k__"),
         ("qwen2.5:7b (lightweight, ~5GB)", "qwen2.5:7b"),
         ("qwen2.5:14b (mid-range, ~10GB)", "qwen2.5:14b"),
         ("Custom (enter any Ollama model name)", "__custom__"),
     ]
     
-    idx, _ = choose("Step 1/4: Choose main model", [m[0] for m in models])
+    # Build option list: pulled models first, then presets
+    if pulled:
+        opts = ["── Already pulled ──"] + [p[0] for p in pulled] + ["── Available to pull ──"] + [p[0] for p in presets]
+        models = [(p[0], p[1]) for p in pulled] + [(p[0], p[1]) for p in presets]
+    else:
+        opts = [p[0] for p in presets]
+        models = [(p[0], p[1]) for p in presets]
+    
+    idx, _ = choose("Step 1/4: Choose main model", opts)
     
     if models[idx][1] == "__custom__":
         model_name = ask("Enter Ollama model name")
