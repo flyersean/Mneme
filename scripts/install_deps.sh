@@ -11,34 +11,36 @@ echo "  Distro: $DISTRO"
 
 # ── 1. Python dependencies
 echo; echo "[1/4] Python dependencies"
-NEED_PIP=0
+
+# Remove system packages that conflict with pip versions
+apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug 2>/dev/null || true
+
+# Check each package
 for pkg in flask flask_cors faiss numpy requests; do
-    if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; NEED_PIP=1; fi
+    if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; fi
 done
 
-if [ "$NEED_PIP" = "1" ]; then
-    echo "  Installing missing packages..."
-    if python3 -m pip install --break-system-packages flask flask-cors faiss-cpu numpy requests 2>/dev/null; then
-        echo "  ✓ pip install OK"
-    elif [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
-        echo "  pip failed, trying apt..."
-        apt-get update -qq 2>/dev/null || true
-        apt-get install -y -qq python3-flask python3-flask-cors python3-numpy python3-requests 2>/dev/null || true
-        python3 -m pip install --break-system-packages faiss-cpu 2>/dev/null || true
-    fi
-    
-    MISSED=""
-    for pkg in flask flask_cors faiss numpy requests; do
-        if ! python3 -c "import $pkg" 2>/dev/null; then MISSED="$MISSED $pkg"; fi
-    done
-    if [ -n "$MISSED" ]; then
-        echo "  ⚠ Still missing:$MISSED"
-        echo "  Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests"
-    else
-        echo "  ✓ All Python packages available"
-    fi
+# Install fresh from pip (upgrade ensures latest wins over system packages)
+echo "  Installing from pip..."
+if python3 -m pip install --break-system-packages --upgrade flask flask-cors faiss-cpu numpy requests 2>/dev/null; then
+    echo "  ✓ pip install OK"
+elif [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    echo "  pip failed, trying apt..."
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq python3-flask python3-flask-cors python3-numpy python3-requests 2>/dev/null || true
+    python3 -m pip install --break-system-packages faiss-cpu 2>/dev/null || true
+fi
+
+# Verify
+MISSED=""
+for pkg in flask flask_cors faiss numpy requests; do
+    if ! python3 -c "import $pkg" 2>/dev/null; then MISSED="$MISSED $pkg"; fi
+done
+if [ -n "$MISSED" ]; then
+    echo "  ⚠ Still missing:$MISSED"
+    echo "  Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests"
 else
-    echo "  ✓ All Python packages already available"
+    echo "  ✓ All Python packages available"
 fi
 
 # ── 2. Ollama
