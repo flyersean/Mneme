@@ -29,6 +29,7 @@ curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/setup.sh 
 | 2 | Context window size | 32K, 129K, 264K, Custom |
 | 3 | Chat interface | Pi, Skip (proxy-only), Both |
 | 4 | Embedding model | arctic-embed2, nomic-embed-text, Custom |
+| 5 | Labeling model | qwen2.5:0.5b, 1.5b, 3b, Custom |
 
 **Pre-step guidance displayed:**
 ```
@@ -46,7 +47,7 @@ After user confirms choices:
 1. **GPU detection:** `nvidia-smi` for VRAM capacity.
 2. **Ollama install:** `apt-get zstd curl`, then `curl ollama.com/install.sh | sh`, verify with `which ollama`. Starts `ollama serve` in background.
 3. **Python deps:** Tries `pip install` (plain, then `--break-system-packages`), falls back to `apt-get python3-flask`. Prints actual errors on failure.
-4. **Model pulling:** Pulls chosen model, embedding model, and `qwen2.5:0.5b` (labeler). Skips already-pulled models.
+4. **Model pulling:** Pulls chosen model, embedding model, labeling model. Skips already-pulled models.
 5. **120K Modelfile:** If context > 32K, creates `FROM <model>\nPARAMETER num_ctx <size>` and runs `ollama create mneme-chat -f Modelfile`. Uses any already-pulled model as base rather than downloading a new one.
 6. **Proxy start:** Spawns `mneme_proxy.py` via `subprocess.Popen(start_new_session=True)` with env vars `OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`. Polls `/health` for 15s to confirm startup.
 7. **Pi install (optional):** Installs Node.js 22, `npm install -g @earendil-works/pi-coding-agent`, writes `~/.pi/agent/models.json` pointing at `localhost:8080/v1`, downloads `mneme-search-tool.ts` extension.
