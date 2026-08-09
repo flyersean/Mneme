@@ -31,9 +31,12 @@ fi
 #    curl|bash leaves stdin as the pipe, which input() can't use.
 curl -sSL -o /tmp/mneme_setup.py "${RAW}/scripts/kimi_setup.py"
 
-if [ -e /dev/tty ]; then
-    python3 /tmp/mneme_setup.py < /dev/tty
+if [ -t 0 ] || [ -e /dev/tty ] && python3 -c "open('/dev/tty')" 2>/dev/null; then
+    python3 /tmp/mneme_setup.py < /dev/tty 2>/dev/null || python3 /tmp/mneme_setup.py
 else
-    # No controlling terminal (Docker without -it) — wizard uses defaults
-    python3 /tmp/mneme_setup.py
+    # No terminal available — wizard uses defaults or fails gracefully
+    python3 /tmp/mneme_setup.py 2>/dev/null || {
+        echo "No terminal available. Run directly on the pod:"
+        echo "  python3 /tmp/mneme_setup.py"
+    }
 fi
