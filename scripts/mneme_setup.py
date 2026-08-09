@@ -75,11 +75,19 @@ def install_python_deps():
     run(f"{sys.executable} -m pip install flask flask-cors faiss-cpu numpy requests -q")
 
 def pull_model(name):
-    """Pull a model if not already present."""
-    r = run(f"ollama list")
-    if name in r.stdout:
-        print(f"  {name} already pulled, skipping.")
-        return
+    """Pull a model if not already present. Retries ollama list in case server is busy."""
+    # Check if already pulled (retry up to 3 times)
+    for attempt in range(3):
+        try:
+            r = run(f"ollama list", timeout=10)
+            if r.returncode == 0 and name in r.stdout:
+                print(f"  {name} already pulled, skipping.")
+                return
+        except:
+            pass
+        if attempt < 2:
+            time.sleep(2)
+    
     print(f"  Pulling {name}...")
     r = run(f"ollama pull {name}", timeout=600)
     if r.returncode != 0:
@@ -164,7 +172,15 @@ def main():
         if not model_name:
             sys.exit(1)
     elif models[idx][1] == "__120k__":
-        model_name = "qwen3.6:35b-a3b"  # base model, modelfile created later
+        # Use any already-pulled Qwen 3.6 35B as base
+        base = None
+        for pname in pulled_names:
+            if "qwen" in pname.lower() and "35" in pname:
+                base = pname
+                break
+        model_name = base if base else "qwen3.6:35b-a3b"
+        if base:
+            print(f"  Using already-pulled {base} as base for 120K model")
     else:
         model_name = models[idx][1]
     
