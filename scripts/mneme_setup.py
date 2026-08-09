@@ -257,7 +257,7 @@ def main():
         ("Custom (enter any Ollama embedding model)", "__custom__"),
     ]
     
-    idx, _ = choose("\nStep 4/4: Embedding model for memory retrieval", [e[0] for e in embed_options])
+    idx, _ = choose("\nStep 4/5: Embedding model for memory retrieval", [e[0] for e in embed_options])
     
     if embed_options[idx][1] == "__custom__":
         embed_model = ask("Enter embedding model name")
@@ -267,6 +267,26 @@ def main():
         embed_model = embed_options[idx][1]
     
     print(f"  Selected: {embed_model}")
+    
+    # ── Step 5: Labeling model ──
+    label_options = [
+        ("qwen2.5:0.5b (default, tiny, 397MB)", "qwen2.5:0.5b"),
+        ("qwen2.5:1.5b (better labels, ~1GB)", "qwen2.5:1.5b"),
+        ("qwen2.5:3b (best labels, ~2GB)", "qwen2.5:3b"),
+        ("Custom (enter any Ollama model name)", "__custom__"),
+    ]
+    
+    idx, _ = choose("\nStep 5/5: Labeling model (generates topic labels for stored chunks)", 
+                    [l[0] for l in label_options])
+    
+    if label_options[idx][1] == "__custom__":
+        label_model = ask("Enter labeling model name")
+        if not label_model:
+            sys.exit(1)
+    else:
+        label_model = label_options[idx][1]
+    
+    print(f"  Selected: {label_model}")
     
     # ── INSTALLATION ──
     print(f"\n{'='*50}")
@@ -280,7 +300,7 @@ def main():
     print(f"\nPulling models (this may take a few minutes)...")
     pull_model(model_name)
     pull_model(embed_model)
-    pull_model("qwen2.5:0.5b")  # labeler
+    pull_model(label_model)
     print("  Models ready.")
     
     # Create context-size modelfile if needed
@@ -305,6 +325,7 @@ def main():
     env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
     env["MNEME_MODEL"] = proxy_model
     env["EMBED_MODEL"] = embed_model
+    env["LABEL_MODEL"] = label_model
     env["OLLAMA_KEEP_ALIVE"] = "24h"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     

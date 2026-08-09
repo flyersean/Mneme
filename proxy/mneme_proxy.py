@@ -505,7 +505,7 @@ def _clean_content(text: str) -> str:
     return text
 
 
-LABEL_MODEL = "qwen2.5:0.5b"
+LABEL_MODEL = os.environ.get("LABEL_MODEL", "qwen2.5:0.5b")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
