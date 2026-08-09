@@ -2,9 +2,6 @@
 # Mneme one-line setup: curl -sSL <url> | bash
 set -e
 
-# Reopen stdin from terminal (curl pipe closes)
-exec < /dev/tty
-
 echo "=== Mneme Setup ==="
 
 # Clone Mneme if not present

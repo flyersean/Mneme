@@ -5,6 +5,13 @@ No external dependencies — uses built-in input() only.
 
 import subprocess, sys, os, shutil, time, json
 
+# Reopen stdin from terminal if piped (curl|bash closes the pipe)
+if not sys.stdin.isatty():
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except:
+        pass  # fall through, input() will get EOF
+
 def run(cmd, timeout=None):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
 
