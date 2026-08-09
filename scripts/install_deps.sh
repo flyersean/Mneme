@@ -20,9 +20,9 @@ for pkg in flask flask_cors faiss numpy requests; do
     if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; fi
 done
 
-# Install fresh from pip (upgrade ensures latest wins over system packages)
+# Install fresh from pip (ignore-installed bypasses pinned system packages like blinker)
 echo "  Installing from pip..."
-if python3 -m pip install --break-system-packages --upgrade flask flask-cors faiss-cpu numpy requests 2>/dev/null; then
+if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests 2>/dev/null; then
     echo "  ✓ pip install OK"
 elif [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
     echo "  pip failed, trying apt..."
