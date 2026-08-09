@@ -21,12 +21,6 @@ cp /workspace/mneme/proxy/* /workspace/proxy/ 2>/dev/null || {
     cp /workspace/mneme/proxy/* /workspace/proxy/
 }
 
-# Run setup wizard (uses built-in input(), no dependencies)
-if [ -f "/workspace/mneme/scripts/mneme_setup.py" ]; then
-    python3 /workspace/mneme/scripts/mneme_setup.py
-elif [ -f "/tmp/mneme_setup.py" ]; then
-    python3 /tmp/mneme_setup.py
-else
-    curl -sSL -o /tmp/mneme_setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py
-    python3 /tmp/mneme_setup.py
-fi
+# Always fetch latest setup wizard
+curl -sSL -o /tmp/mneme_setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py
+python3 /tmp/mneme_setup.py
