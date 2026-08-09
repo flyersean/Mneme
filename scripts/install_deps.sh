@@ -102,12 +102,12 @@ echo
 echo "══════════════════════════════════════════"
 echo "  Dependencies ready."
 echo
-Now run the setup wizard:
-  rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
-
-Or pull models first, then run the wizard:
-  ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest
-  ollama pull snowflake-arctic-embed2:latest
-  ollama pull qwen2.5:0.5b
-  rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
+echo "  Now run the setup wizard:"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo
+echo "  Or pull models first, then run the wizard:"
+echo "    ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"
+echo "    ollama pull snowflake-arctic-embed2:latest"
+echo "    ollama pull qwen2.5:0.5b"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo "══════════════════════════════════════════"
