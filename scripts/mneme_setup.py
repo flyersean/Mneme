@@ -393,6 +393,7 @@ def main():
     
     # Install Pi if requested
     ext_path = "/workspace/mneme-search-tool.ts"
+    web_ext_path = "/workspace/mneme-web-tools.ts"
     if install_pi:
         print("\nInstalling Pi (AI coding assistant)...")
         if not shutil.which("node") or "v22" not in run("node --version").stdout:
@@ -426,9 +427,19 @@ def main():
             ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/extensions/pi/mneme-search-tool.ts"
             r = run(f"curl -sSL -o {ext_path} {ext_url}")
             if r.returncode == 0:
-                print("    Extension installed at /workspace/mneme-search-tool.ts")
+                print("    ✓ search_memory installed")
             else:
                 print("    Warning: could not download extension")
+        
+        # Install web tools extension (search + scrape)
+        if not os.path.exists(web_ext_path):
+            print("  Installing web tools extension...")
+            web_url = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/extensions/pi/mneme-web-tools.ts"
+            r = run(f"curl -sSL -o {web_ext_path} {web_url}")
+            if r.returncode == 0:
+                print("    ✓ web_search + web_scrape installed")
+            else:
+                print("    Warning: could not download web tools")
     
     # ── DONE ──
     health = ""
@@ -452,8 +463,12 @@ def main():
     OpenAI client → http://localhost:8080/v1""")
     
     if install_pi:
-        ext_flag = f" --extension {ext_path}" if os.path.exists(ext_path) else ""
-        print(f"    Pi agent:     pi --provider mneme --model text-mneme:64k{ext_flag}")
+        extensions = ""
+        if os.path.exists(ext_path):
+            extensions += f" --extension {ext_path}"
+        if os.path.exists(web_ext_path):
+            extensions += f" --extension {web_ext_path}"
+        print(f"    Pi agent:     pi --provider mneme --model text-mneme:64k{extensions}")
     
     print(f"\n  Logs: tail -f /tmp/mneme.log\n")
 
