@@ -21,6 +21,6 @@ cp /workspace/mneme/proxy/* /workspace/proxy/ 2>/dev/null || {
     cp /workspace/mneme/proxy/* /workspace/proxy/
 }
 
-# Always fetch latest setup wizard
+# Fetch latest wizard and run with terminal stdin (curl|bash closes fd 0)
 curl -sSL -o /tmp/mneme_setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py
-python3 /tmp/mneme_setup.py
+python3 /tmp/mneme_setup.py < /dev/tty
