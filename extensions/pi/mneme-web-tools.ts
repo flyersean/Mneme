@@ -5,22 +5,37 @@
 // Usage: pi --extension /workspace/mneme-web-tools.ts
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
-export default function setup(api: ExtensionAPI) {
+export default function (pi: ExtensionAPI) {
   
   // ── web_search ──
-  api.registerTool({
+  pi.registerTool({
     name: "web_search",
-    description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets. Free, no API key required.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "What to search for" },
-        limit: { type: "number", description: "Max results (default 5)", default: 5 },
-      },
-      required: ["query"],
-    },
-    execute: async ({ query, limit = 5 }) => {
+    label: "Web Search",
+    description:
+      "Search the web using DuckDuckGo. Returns titles, URLs, and snippets. " +
+      "Free, no API key required.",
+    promptSnippet: "Search the web for information using DuckDuckGo",
+    parameters: Type.Object({
+      query: Type.String({ description: "What to search for" }),
+      limit: Type.Optional(
+        Type.Number({ default: 5, description: "Max results (default 5)" })
+      ),
+    }),
+
+    async execute(_toolCallId, params, signal, onUpdate) {
+      const query = params.query as string;
+      const limit = (params.limit as number | undefined) ?? 5;
+
+      onUpdate?.({
+        content: [{ type: "text", text: `Searching web for: ${query}` }],
+      });
+
+      if (signal?.aborted) {
+        return { content: [{ type: "text", text: "Cancelled" }], details: {} };
+      }
+
       try {
         const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
         const resp = await fetch(url, {
@@ -46,28 +61,50 @@ export default function setup(api: ExtensionAPI) {
           }
         }
         
-        if (results.length === 0) return "No results found.";
-        return results.map((r, i) => 
+        if (results.length === 0) {
+          return {
+            content: [{ type: "text", text: "No results found." }],
+            details: { query, count: 0 },
+          };
+        }
+        
+        const text = results.map((r, i) =>
           `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`
         ).join("\n\n");
+        
+        return {
+          content: [{ type: "text", text }],
+          details: { query, count: results.length },
+        };
       } catch (e: any) {
-        return `Search failed: ${e.message}`;
+        throw new Error(`web_search failed: ${e?.message ?? e}`);
       }
     },
   });
 
   // ── web_scrape ──
-  api.registerTool({
+  pi.registerTool({
     name: "web_scrape",
-    description: "Fetch and extract text content from a URL. Returns clean text (no HTML). Works with most websites. Use after web_search to read a page.",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Full URL to fetch" },
-      },
-      required: ["url"],
-    },
-    execute: async ({ url }) => {
+    label: "Web Scrape",
+    description:
+      "Fetch and extract text content from a URL. Returns clean text (no HTML). " +
+      "Use after web_search to read a page.",
+    promptSnippet: "Fetch and extract text content from a URL",
+    parameters: Type.Object({
+      url: Type.String({ description: "Full URL to fetch" }),
+    }),
+
+    async execute(_toolCallId, params, signal, onUpdate) {
+      const url = params.url as string;
+
+      onUpdate?.({
+        content: [{ type: "text", text: `Fetching: ${url}` }],
+      });
+
+      if (signal?.aborted) {
+        return { content: [{ type: "text", text: "Cancelled" }], details: {} };
+      }
+
       try {
         const resp = await fetch(url, {
           headers: { "User-Agent": "Mneme/1.0" },
@@ -75,31 +112,35 @@ export default function setup(api: ExtensionAPI) {
         });
         const contentType = resp.headers.get("content-type") || "";
         
+        let text: string;
         // Handle plain text / markdown directly
         if (contentType.includes("text/plain") || url.endsWith(".md") || url.endsWith(".txt")) {
-          return (await resp.text()).slice(0, 15000);
+          text = (await resp.text()).slice(0, 15000);
+        } else {
+          // HTML — strip tags, extract body text
+          const html = await resp.text();
+          text = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/&amp;/g, "&")
+            .replace(/&lt;/g, "<")
+            .replace(/&gt;/g, ">")
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&nbsp;/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 15000);
         }
         
-        // HTML — strip tags, extract body text
-        const html = await resp.text();
-        let text = html
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-          .replace(/<[^>]+>/g, " ")
-          .replace(/&amp;/g, "&")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&#39;/g, "'")
-          .replace(/&nbsp;/g, " ")
-          .replace(/\s+/g, " ")
-          .trim();
-        
-        return text.slice(0, 15000) || "(no text content found)";
+        return {
+          content: [{ type: "text", text: text || "(no text content found)" }],
+          details: { url, charCount: text.length },
+        };
       } catch (e: any) {
-        return `Scrape failed: ${e.message}`;
+        throw new Error(`web_scrape failed: ${e?.message ?? e}`);
       }
     },
   });
-
 }
