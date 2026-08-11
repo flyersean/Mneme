@@ -134,6 +134,7 @@ for migration in (
     "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
     "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
     "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
 ):
     try:
         db.execute(migration)
@@ -212,7 +213,9 @@ def _load_index_from_disk():
 def _load_index():
     """Rebuild FAISS index from SQLite (fallback if disk files missing)."""
     global _id_map
-    rows = db.execute("SELECT chunk_id, vector FROM chunks WHERE vector IS NOT NULL").fetchall()
+    rows = db.execute(
+        "SELECT chunk_id, vector FROM chunks WHERE vector IS NOT NULL AND (superseded_by = '' OR superseded_by IS NULL)"
+    ).fetchall()
     with faiss_lock():
         _id_map.clear()
         if FAISS_OK and _index is not None:
@@ -469,6 +472,68 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     return result
 
 
+# ─── Belief Evolution ───────────────────────────────────────────
+
+def _check_belief_evolution(new_chunk_id: str, topic_label: str):
+    """Async: ask 35B if new chunk updates/contradicts older chunks on same topic.
+    Marks superseded chunks in DB to prevent conflicting context injection."""
+    try:
+        # Find older chunks on same topic (not already superseded)
+        older = db.execute(
+            "SELECT chunk_id, messages FROM chunks WHERE topic_label=? "
+            "AND chunk_id != ? AND superseded_by = '' "
+            "ORDER BY created_at DESC LIMIT 3",
+            (topic_label, new_chunk_id)
+        ).fetchall()
+        if not older:
+            return
+        
+        new_chunk = load_chunk(new_chunk_id)
+        if not new_chunk:
+            return
+        
+        new_text = " ".join(
+            m.get("content", "")[:300] for m in new_chunk.get("messages", [])
+            if m.get("role") in ("user", "assistant")
+        )[:1500]
+        
+        for old_id, old_msgs_json in older:
+            old_text = ""
+            try:
+                old_msgs = json.loads(old_msgs_json)
+                old_text = " ".join(
+                    m.get("content", "")[:300] for m in old_msgs
+                    if m.get("role") in ("user", "assistant")
+                )[:1500]
+            except:
+                continue
+            
+            # Ask 35B to compare
+            q = [{"role": "user", "content": (
+                "Compare these two pieces of information about the same topic:\n\n"
+                f"OLDER: {old_text[:800]}\n\n"
+                f"NEWER: {new_text[:800]}\n\n"
+                "Does the newer information UPDATE or CONTRADICT the older one? "
+                "Answer with one word: UPDATE, CONTRADICT, or NO.\n"
+                "UPDATE means the newer info supersedes or refines the older.\n"
+                "CONTRADICT means they cannot both be true.\n"
+                "NO means they are compatible or about different aspects."
+            )}]
+            r = query_model(q)
+            answer = (r.get("content", "") or "").strip().upper()
+            
+            if "UPDATE" in answer or "CONTRADICT" in answer:
+                db.execute(
+                    "UPDATE chunks SET superseded_by = ? WHERE chunk_id = ?",
+                    (new_chunk_id, old_id)
+                )
+                db.commit()
+                print(f"  [BELIEF] {old_id[:20]}... superseded by {new_chunk_id[:20]}... "
+                      f"({answer[:20]})", flush=True)
+    except Exception as e:
+        print(f"  [BELIEF][ERR] {e}", flush=True)
+
+
 # ─── Native streaming query (SSE passthrough from Ollama) ─────
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector: np.ndarray, thinking: str = "", strategy: str = "",
@@ -503,6 +568,10 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
                 _index.add(vector.reshape(1, -1))
             _id_map.append(chunk_id)
             _save_index()
+    
+    # Async belief evolution: check if this chunk supersedes older ones
+    if is_indexable:
+        threading.Thread(target=_check_belief_evolution, args=(chunk_id, topic_label), daemon=True).start()
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
