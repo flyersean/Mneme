@@ -394,8 +394,9 @@ MEMORY_DISCLAIMER = (
 )
 
 def query_model(messages: list, system: str = None, temperature: float = None,
-                max_tokens: int = None, tools: list = None) -> dict:
-    """Send to Ollama, return {content, thinking, eval_count, done_reason}."""
+                max_tokens: int = None, tools: list = None, options: dict = None) -> dict:
+    """Send to Ollama, return {content, thinking, eval_count, done_reason}.
+    Pass options dict for top_p, top_k, mirostat, etc."""
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
     
@@ -414,11 +415,13 @@ def query_model(messages: list, system: str = None, temperature: float = None,
             mc = _extract_text(m.get("content", ""))
             msgs.append({"role": m["role"], "content": mc})
     
+    opts = {"temperature": temperature}
+    if options:
+        opts.update(options)
+    
     payload = {
         "model": MODEL, "stream": False, "messages": msgs,
-        "options": {
-            "temperature": temperature,
-        }
+        "options": opts
     }
     if tools:
         payload["tools"] = tools
@@ -2244,6 +2247,104 @@ if FLASK_OK:
         except Exception as e:
             print(f"  [SAVE][ERROR] {e}", flush=True)
             return _cors_response({"saved": False, "error": str(e)}, status=500)
+    
+    # ── Learning Mode ──────────────────────────────────────────
+    
+    @app.route("/mode/learn", methods=["POST"])
+    def mode_learn():
+        """Proxy-driven learning mode: parameter cycling + strategy extraction.
+        POST body: {problem, iterations?, params?}
+        Cycles through parameter sets, grades at standard temp, extracts strategies."""
+        data = request.get_json(force=True)
+        problem = data.get("problem", "")
+        iterations = min(data.get("iterations", 5), 10)
+        custom_params = data.get("params", None)
+        
+        if not problem:
+            return _cors_response({"error": "problem required"}, status=400)
+        
+        # Default parameter sets for exploration
+        default_params = [
+            {"temperature": 0.3, "top_p": 0.5},
+            {"temperature": 0.7, "top_p": 0.9},
+            {"temperature": 1.2, "top_p": 0.95},
+            {"temperature": 1.5, "top_k": 20},
+            {"mirostat": 2, "mirostat_tau": 8.0},
+        ]
+        param_sets = custom_params or default_params
+        
+        results = []
+        strategies = []
+        
+        for i in range(iterations):
+            params = param_sets[i % len(param_sets)]
+            print(f"  [LEARN] iteration {i+1}/{iterations} params={params}", flush=True)
+            
+            # Build prompt for this iteration
+            if i == 0:
+                prompt = f"Solve or analyze: {problem}\n\nConsider approaches that are NON-OBVIOUS. What would someone who disagrees with the conventional answer propose?"
+            else:
+                prev = results[-1].get("content", "")[:300]
+                prompt = f"Previous approach: {prev}\n\nWhat ASSUMPTIONS did it make? Can you find a solution that doesn't rely on those assumptions? Problem: {problem}"
+            
+            msgs = [{"role": "user", "content": prompt}]
+            
+            # Query with varied parameters
+            result = query_model(msgs, options=params)
+            
+            # Grade at standard temp (0.7) — always use same temp for fair comparison
+            grade_msgs = [{"role": "user", "content": (
+                f"Grade this answer [A-F] based on correctness, novelty, and whether it "
+                f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:1000]}\n\n"
+                f"Respond with ONLY: [GRADE: A/B/C/D/F]"
+            )}]
+            grade_result = query_model(grade_msgs)
+            grade_text = grade_result.get("content", "")
+            gm = re.search(r"\[GRADE:\s*([ABCDF])\]", grade_text, re.IGNORECASE)
+            grade = gm.group(1).upper() if gm else "C"
+            
+            iteration = {
+                "iteration": i + 1,
+                "params": params,
+                "content": result.get("content", "")[:2000],
+                "grade": grade,
+            }
+            results.append(iteration)
+            
+            if grade in ("A", "B"):
+                # Extract strategy from good responses
+                strat_msgs = [{"role": "user", "content": (
+                    f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
+                    f"Format each as: [STRATEGY: one-sentence imperative rule]\n\n"
+                    f"ANSWER: {result.get('content', '')[:1500]}"
+                )}]
+                strat_result = query_model(strat_msgs)
+                for sm in re.finditer(r"STRATEGY:\s*(.+?)(?:\]|$)", strat_result.get("content", ""), re.MULTILINE):
+                    s_text = sm.group(1).strip()[:300]
+                    if len(s_text) > 10:
+                        strategies.append(s_text)
+                        _save_strategy(s_text, grade)
+                        print(f"  [LEARN-STRATEGY] {s_text[:80]}...", flush=True)
+        
+        # Synthesis: extract final strategies from all A-grade responses
+        if any(r["grade"] in ("A", "B") for r in results):
+            best = [r["content"][:500] for r in results if r["grade"] in ("A", "B")]
+            synth_msgs = [{"role": "user", "content": (
+                f"Here are the best solutions to: {problem}\n\n" +
+                "\n---\n".join(best[:3]) +
+                "\n\nExtract 1-3 operational SYSTEM RULES. Format each as: RULE: <imperative instruction>"
+            )}]
+            synth_result = query_model(synth_msgs)
+            for rm in re.finditer(r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", "")):
+                rule_text = rm.group(1).strip()[:300]
+                if len(rule_text) > 10:
+                    strategies.append(f"RULE: {rule_text}")
+        
+        return _cors_response({
+            "problem": problem,
+            "iterations": results,
+            "strategies": list(dict.fromkeys(strategies))[-5:],  # deduplicated, last 5
+        })
 
 # ─── Startup ───────────────────────────────────────────────────
 
