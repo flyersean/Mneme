@@ -124,9 +124,71 @@ If the focus is making the strategy system the standout feature:
 2. **Strategy extraction as directives** (few hours) — turn [GRADE: F] into
    actionable SYSTEM RULES, not passive records
 3. **Dynamic K** (30 min) — stop polluting context with noise-floor chunks
-4. **Belief evolution with 35B** (half day) — contradiction detection during
+4. **Multi-writer FAISS** (1 hour) — lock + reload per operation, all proxies
+   read/write same DB safely
+5. **Belief evolution with 35B** (half day) — contradiction detection during
    archiving, superseded fact flagging
-5. **Thread cards** (deferred) — revisit after 1-4 are solid
+6. **Thread cards** (deferred) — revisit after 1-5 are solid
 
-Items 1-3 are achievable without schema changes. Item 4 needs a SQLite schema
-addition. Item 5 is a research project.
+Items 1-4 are achievable without schema changes. Item 5 needs a SQLite schema
+addition. Item 6 is a research project.
+
+---
+
+## Multi-Writer FAISS Architecture
+
+Allow multiple Mneme proxy instances to safely read AND write to a single
+shared DB + FAISS index. Accepts the speed trade-off in exchange for
+architectural simplicity.
+
+### Approach: Lock + Reload
+
+No background threads, no cache invalidation, no stale reads. Every FAISS
+operation loads the index fresh from disk under a file lock:
+
+```
+Any FAISS operation:
+  1. Acquire fcntl.flock() on /workspace/mneme_chunks/faiss.lock
+  2. Load FAISS index from disk  (always current state)
+  3. Do the operation  (search or rebuild)
+  4. Release lock
+```
+
+- **Writes:** lock → write chunks to SQLite → rebuild FAISS on disk → unlock
+- **Reads:** lock → load FAISS from disk → search → unlock
+
+Every proxy is equal — all read, all write, they just take turns.
+
+### Performance
+
+| Chunks | Index size | Load time |
+|---|---|---|
+| 0 | empty | <1ms |
+| 100 | ~400KB | ~5ms |
+| 1,000 | ~4MB | ~20ms |
+| 10,000 | ~40MB | ~200ms |
+| 100,000 | ~400MB | ~2s |
+
+Up to ~10K chunks, load overhead (<200ms) is invisible against Ollama
+inference latency (2-5 seconds). At 100K+ chunks (months of heavy use),
+add periodic index compaction.
+
+### Code Changes (~30 lines)
+
+1. Add `faiss_lock` context manager using `fcntl.flock()`
+2. Wrap every FAISS read (search) in: lock → load → search → unlock
+3. Wrap every FAISS write (rebuild) in: lock → rebuild → unlock
+4. Remove forever-in-memory index — loaded and discarded per operation
+
+### Safety Properties
+
+- `fcntl.flock()` is kernel-enforced — released on process death (no stale locks)
+- SQLite WAL mode handles concurrent DB writes (lock only protects FAISS)
+- Archiving proxy holds lock during rebuild; searching proxies wait briefly
+- All proxies must use the SAME embedding model (enforced by setup script)
+
+### Setup Script UX
+
+First run: normal setup with `MNEME_CHUNK_DIR=/workspace/mneme_chunks`.
+Subsequent runs: "Existing memory DB found. Add another proxy instance?"
+→ model name + port → writes start script with same chunk dir, different model.
