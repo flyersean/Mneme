@@ -126,15 +126,17 @@ If the focus is making the strategy system the standout feature:
 3. **Dynamic K** (30 min) — stop polluting context with noise-floor chunks
 4. **Multi-writer FAISS** (1 hour) — lock + reload per operation, all proxies
    read/write same DB safely
-5. **Learning mode** (half day) — parameter cycling + proxy-driven iteration to
+5. **Multi-model mode** (few hours) — multiple proxy instances with different
+   models, all reading/writing one shared DB; builds on #4 infrastructure
+6. **Learning mode** (half day) — parameter cycling + proxy-driven iteration to
    find novel solutions and develop new tools; extracts strategies from
    A-grade responses (see `docs/learning-critical-modes.md`)
-6. **Belief evolution with 35B** (half day) — contradiction detection during
+7. **Belief evolution with 35B** (half day) — contradiction detection during
    archiving, superseded fact flagging
-7. **Thread cards** (deferred) — revisit after 1-6 are solid
+8. **Thread cards** (deferred) — revisit after 1-7 are solid
 
-Items 1-5 are achievable without schema changes. Item 6 needs a SQLite schema
-addition. Item 7 is a research project.
+Items 1-6 are achievable without schema changes. Item 7 needs a SQLite schema
+addition. Item 8 is a research project.
 
 ---
 
@@ -195,3 +197,83 @@ add periodic index compaction.
 First run: normal setup with `MNEME_CHUNK_DIR=/workspace/mneme_chunks`.
 Subsequent runs: "Existing memory DB found. Add another proxy instance?"
 → model name + port → writes start script with same chunk dir, different model.
+
+---
+
+## Multi-Model Mode
+
+Run multiple proxy instances with different models, all reading and writing
+to a single shared memory DB. Each model contributes its own conversations
+and benefits from every other model's stored context. Builds on the
+multi-writer FAISS lock+reload infrastructure (#4).
+
+### Architecture
+
+```
+Port 8080 → proxy A (qwen3.6-35b, 129K ctx) ─┐
+Port 8081 → proxy B (llama3.1-8b,  32K ctx) ─┤
+Port 8082 → proxy C (gemma2-27b,    64K ctx) ─┤
+                                               ├─ /workspace/mneme_chunks/
+Port 8083 → proxy D (deepseek-7b,   32K ctx) ─┤    ├── mneme.db      (shared)
+Port 8084 → proxy E (qwen3.6-35b-120k) ───────┘    ├── faiss.index   (shared)
+                                                    └── faiss.lock    (shared)
+```
+
+All point at `MNEME_CHUNK_DIR=/workspace/mneme_chunks`. All use same
+`EMBED_MODEL` and `LABEL_MODEL`. Different `MNEME_MODEL` per instance.
+The lock serializes FAISS access — each proxy takes its turn.
+
+### Models as Specialists
+
+Different models contribute different kinds of knowledge:
+
+| Model | Strength | Role |
+|---|---|---|
+| 35B (129K ctx) | Deep reasoning, strategy extraction | Primary archiver, learning mode driver |
+| 35B (32K ctx, fast) | Quick iteration, grading | Learning mode iterations |
+| 27B | Good reasoning, faster | Secondary archiver, critical thinking |
+| 8B | Fast, cheap | Quick lookups, label verification |
+| 7B | Lightweight, experimental | Testing merged prompts, small-model edge cases |
+
+The same conversation topic might get a deep analysis from the 35B and a
+quick summary from the 8B — both stored in the shared DB. Future queries
+surface both perspectives, weighted by grade.
+
+### DB Growth from Multiple Models
+
+Each model contributing independently means faster DB growth. A rough model:
+- 1 model: ~50 chunks/day (moderate use)
+- 3 models: ~150 chunks/day
+- At ~1KB per chunk (embedded text), that's ~150KB/day, ~5MB/month
+
+The 10K-chunk threshold (where FAISS load time hits ~200ms) is reached in
+~2 months with 3 models. Well within the "speed doesn't matter" window.
+
+### Setup Script UX
+
+```
+Run 1: Normal setup. MNEME_CHUNK_DIR=/workspace/mneme_chunks.
+       Pick model, embed model, labeler. Proxy on port 8080.
+
+Run 2: "Existing memory DB with X chunks found. Add another model?"
+       → Pick model (different from existing)
+       → Port 8081
+       → Embed/labeler locked to existing choices
+       → Writes start script with env vars
+
+Run 3+: Same as run 2, next available port.
+
+Result:
+  /workspace/start_proxy_8080.sh  (qwen35b)
+  /workspace/start_proxy_8081.sh  (llama3.1-8b)
+  /workspace/start_proxy_8082.sh  (gemma2-27b)
+```
+
+### What the Setup Script Must Enforce
+
+- Same `MNEME_CHUNK_DIR` for all instances (non-negotiable)
+- Same `EMBED_MODEL` for all instances (different vector spaces = garbage)
+- Same `LABEL_MODEL` for all instances (consistent topic labels)
+- Unique ports (auto-assign)
+- Different models allowed (that's the whole point)
+- `MNEME_INJECT_SYSTEM` per-instance (some models use merged prompts, some don't)
