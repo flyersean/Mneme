@@ -1,10 +1,10 @@
 #!/bin/bash
 # Mneme one-line setup (kimi build):
-#   curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/kimi_setup.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/kimi_setup.sh | bash
 set -e
 
 REPO="https://github.com/flyersean/Mneme.git"
-BRANCH="dev-chunks"
+BRANCH="build-roadmap"
 RAW="https://raw.githubusercontent.com/flyersean/Mneme/${BRANCH}"
 
 echo "=== Mneme Setup ==="
