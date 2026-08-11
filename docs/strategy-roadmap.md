@@ -134,9 +134,11 @@ If the focus is making the strategy system the standout feature:
 7. **Belief evolution with 35B** (half day) — contradiction detection during
    archiving, superseded fact flagging
 8. **Thread cards** (deferred) — revisit after 1-7 are solid
+9. **Strategy export/import** (deferred) — share strategies between DBs;
+   re-embed on import, FAISS dedup, conflict flagging
 
 Items 1-6 are achievable without schema changes. Item 7 needs a SQLite schema
-addition. Item 8 is a research project.
+addition. Items 8-9 are deferred.
 
 ---
 
@@ -277,3 +279,102 @@ Result:
 - Unique ports (auto-assign)
 - Different models allowed (that's the whole point)
 - `MNEME_INJECT_SYSTEM` per-instance (some models use merged prompts, some don't)
+
+---
+
+## Strategy Export/Import
+
+Share learned strategies between Mneme databases. Enables bootstrapping a new
+DB with proven strategies, sharing between users, and backing up just the
+strategy layer without exporting all conversation data.
+
+### Export
+
+A SQL query + JSON dump. Strategies are rows with text + metadata:
+
+```json
+{
+  "exported": "2026-08-11T01:00:00Z",
+  "embed_model": "snowflake-arctic-embed2",
+  "strategy_count": 47,
+  "strategies": [
+    {
+      "text": "ALWAYS verify container IP before port routing",
+      "type": "directive",
+      "grade": "A",
+      "effectiveness": 0.87,
+      "uses": 12,
+      "created": "2026-08-07T02:40:00Z"
+    }
+  ]
+}
+```
+
+`POST /admin/export/strategies` → returns JSON. Trivial — one SQL query.
+
+### Import
+
+Runs each strategy through the same embedding pipeline as a newly-created
+internal strategy: text → embed model → FAISS insert. Vectors are rebuilt
+in the target's vector space, so no cross-model compatibility issues.
+
+`POST /admin/import/strategies` with JSON body.
+
+### Import Pipeline
+
+```
+For each strategy in import file:
+  1. FAISS dedup check: search target DB for cosine_sim > 0.95
+     → If match found: update existing strategy's effectiveness score
+     → If no match: continue
+  2. Conflict check: search for strategies with similar topic but
+     contradictory directive (defer to 35B for semantic comparison)
+     → If conflict: flag for review, insert with "conflict" status
+  3. Embed strategy text with target's embed model
+  4. Insert into SQLite + FAISS with "imported" source marker
+  5. Carry over effectiveness score but mark as unearned locally
+```
+
+### Edge Cases
+
+**Embedding model mismatch.** Export says `snowflake-arctic-embed2`, target
+uses `nomic-embed-text`. Import still works because we re-embed with the
+target's model. The export's `embed_model` field is metadata for the user,
+not a constraint.
+
+**Effectiveness inflation.** An imported strategy with effectiveness 0.95
+from 200 uses shouldn't immediately outrank a locally-earned strategy with
+0.80 from 10 uses. Imported strategies start with a "confidence discount" —
+their effectiveness is scaled down until they prove themselves locally.
+Say, imported effectiveness = min(original × 0.7, 0.5). After 5 local uses
+with A/B grades, the discount lifts and the original score is restored.
+
+**Circular imports.** DB A exports, DB B imports, DB B exports, DB A
+imports — duplicate strategies. The FAISS dedup check (step 1) catches
+this. Same text → near-identical vector → cosine_sim > 0.95 → skip.
+
+**Community sharing.** An export file is just JSON. Could be shared via
+GitHub gist, a `/strategies` directory in the repo, or a community registry
+later. The format is self-describing (embed model, dates, grades) so
+consumers know what they're getting.
+
+### API Design
+
+```
+POST /admin/export/strategies
+  → 200 { exported, embed_model, strategy_count, strategies: [...] }
+
+POST /admin/import/strategies
+  Body: { strategies: [...] }  (same format as export)
+  → 200 { imported: 12, skipped_dup: 3, conflicts: 2, ... }
+
+GET /admin/strategies
+  → 200 { strategies: [...], filters: { type, grade, effectiveness } }
+  (Browse/manage strategies without touching the DB directly)
+```
+
+### Implementation Complexity: Low
+- Export: one SQL query, one JSON response
+- Import: reuse existing embed + insert pipeline, add dedup check
+- No schema changes needed if strategies already have a `type` column
+- Deferred because it depends on strategy directives (#2) being stable first
