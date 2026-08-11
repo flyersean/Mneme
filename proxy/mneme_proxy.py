@@ -624,13 +624,32 @@ def _calibrate_noise(n_samples: int = 3) -> float:
     return 0.20
 
 def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback."""
+    """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
+    Dynamic K: adjusts retrieval count based on score spread above noise floor."""
     q_vec = embed(query)
     scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
     # Normalize: subtract baseline noise, filter negative
     scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
+    
+    # Dynamic K: adjust retrieval count based on signal strength
+    if scored:
+        best_delta = scored[0][0]  # highest noise-adjusted score
+        if best_delta > 0.30:
+            dynamic_k = min(top_k * 2, 10)  # Strong signal — get more
+        elif best_delta > 0.15:
+            dynamic_k = top_k  # Moderate signal — default
+        elif best_delta > 0.05:
+            dynamic_k = max(1, top_k // 2)  # Weak signal — fewer
+        else:
+            dynamic_k = 0  # Noise-level — inject nothing, don't pollute context
+    else:
+        dynamic_k = 0  # Nothing above noise floor
+    
+    if dynamic_k == 0:
+        return []
+    
     # Hybrid: fill with keyword matches if FAISS is sparse
-    hybrid = _hybrid_search(query, top_k, scored)
+    hybrid = _hybrid_search(query, dynamic_k, scored)
     if not hybrid:
         return []
     
