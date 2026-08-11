@@ -168,20 +168,62 @@ except ImportError:
 
 _idx_lock = threading.Lock()
 
+# Multi-writer FAISS: disk persistence + file locking
+FAISS_INDEX_FILE = os.path.join(CHUNK_DIR, "faiss.index")
+FAISS_IDMAP_FILE = os.path.join(CHUNK_DIR, "faiss.idmap")
+FAISS_LOCK_FILE   = os.path.join(CHUNK_DIR, "faiss.lock")
+
+import fcntl
+
+class faiss_lock:
+    """Context manager for fcntl file lock around FAISS operations.
+    Kernel-enforced — released on process death, no stale locks."""
+    def __init__(self):
+        self._fd = None
+    def __enter__(self):
+        self._fd = open(FAISS_LOCK_FILE, "w")
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+    def __exit__(self, *args):
+        if self._fd:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            self._fd.close()
+
+def _save_index():
+    """Save FAISS index + id_map to disk. Caller must hold faiss_lock."""
+    if FAISS_OK and _index is not None:
+        faiss.write_index(_index, FAISS_INDEX_FILE)
+    with open(FAISS_IDMAP_FILE, "w") as f:
+        json.dump(list(_id_map), f)
+
+def _load_index_from_disk():
+    """Load FAISS index + id_map from disk. Caller must hold faiss_lock."""
+    global _id_map, _index
+    if os.path.exists(FAISS_INDEX_FILE) and FAISS_OK:
+        _index = faiss.read_index(FAISS_INDEX_FILE)
+    else:
+        _index = faiss.IndexFlatIP(DIM) if FAISS_OK else None
+    if os.path.exists(FAISS_IDMAP_FILE):
+        with open(FAISS_IDMAP_FILE) as f:
+            _id_map = json.load(f)
+    else:
+        _id_map = []
+
 def _load_index():
-    """Rebuild FAISS index from all chunk vectors in SQLite."""
+    """Rebuild FAISS index from SQLite (fallback if disk files missing)."""
     global _id_map
     rows = db.execute("SELECT chunk_id, vector FROM chunks WHERE vector IS NOT NULL").fetchall()
-    with _idx_lock:
+    with faiss_lock():
         _id_map.clear()
-        if FAISS_OK:
+        if FAISS_OK and _index is not None:
             _index.reset()
         for cid, blob in rows:
             vec = _blob_to_vec(blob)
             if vec is not None:
-                if FAISS_OK:
+                if FAISS_OK and _index is not None:
                     _index.add(vec.reshape(1, -1))
                 _id_map.append(cid)
+        _save_index()
     print(f"[mokv] FAISS loaded {len(_id_map)} vectors", flush=True)
 
 # ─── Vector Helpers ────────────────────────────────────────────
@@ -278,30 +320,18 @@ def embed(text: str) -> np.ndarray:
         return np.zeros(DIM, dtype=np.float32)
 
 def _cosine_search(query_vec: np.ndarray, top_k: int, threshold: float):
-    """Search FAISS, return [(score, chunk_id), ...] above threshold."""
-    if not _id_map:
-        return []
-    with _idx_lock:
-        if FAISS_OK:
+    """Search FAISS with file lock — loads index from disk, searches, releases.
+    Multi-writer safe: any proxy with the lock sees the latest index state."""
+    with faiss_lock():
+        _load_index_from_disk()  # Always fresh from disk
+        if not _id_map:
+            return []
+        if FAISS_OK and _index is not None:
             k = min(top_k, len(_id_map))
             scores, idxs = _index.search(query_vec.reshape(1, -1), k)
             return [(float(s), _id_map[i]) for s, i in zip(scores[0], idxs[0])
                     if i >= 0 and float(s) >= threshold]
-        else:
-            # Numpy fallback
-            rows = db.execute("SELECT chunk_id, vector FROM chunks WHERE vector IS NOT NULL").fetchall()
-            vecs = []
-            ids = []
-            for cid, blob in rows:
-                v = _blob_to_vec(blob)
-                if v is not None:
-                    vecs.append(v); ids.append(cid)
-            if not vecs:
-                return []
-            scores = np.dot(np.stack(vecs), query_vec)
-            order = np.argsort(-scores)
-            return [(float(scores[i]), ids[i]) for i in order[:top_k]
-                    if float(scores[i]) >= threshold]
+        return []
 
 def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
     """SQLite LIKE keyword fallback when FAISS is sparse.
@@ -462,12 +492,14 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 
     db.commit()
     
-    # Add to FAISS (only if indexable)
+    # Add to FAISS (only if indexable) — multi-writer safe via file lock
     if is_indexable:
-        with _idx_lock:
-            if FAISS_OK:
+        with faiss_lock():
+            _load_index_from_disk()
+            if FAISS_OK and _index is not None:
                 _index.add(vector.reshape(1, -1))
             _id_map.append(chunk_id)
+            _save_index()
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
@@ -1283,9 +1315,12 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         try:
             svec2 = embed(strategy)
             if svec2 is not None and FAISS_OK:
-                with _idx_lock:
-                    _index.add(svec2.reshape(1, -1))
+                with faiss_lock():
+                    _load_index_from_disk()
+                    if _index is not None:
+                        _index.add(svec2.reshape(1, -1))
                     _id_map.append(f"strat_{sid}")
+                    _save_index()
         except Exception:
             pass
     
@@ -1714,9 +1749,12 @@ def _save_strategy(text, grade, existing_id=""):
     try:
         svec = embed(text.strip())
         if svec is not None and FAISS_OK:
-            with _idx_lock:
-                _index.add(svec.reshape(1, -1))
+            with faiss_lock():
+                _load_index_from_disk()
+                if _index is not None:
+                    _index.add(svec.reshape(1, -1))
                 _id_map.append(f"strat_{sid}")
+                _save_index()
     except: pass
 
 def _strategy_lifecycle(grade, messages):
@@ -1852,9 +1890,12 @@ if FLASK_OK:
                 try:
                     svec2 = embed(st)
                     if svec2 is not None and FAISS_OK:
-                        with _idx_lock:
-                            _index.add(svec2.reshape(1, -1))
+                        with faiss_lock():
+                            _load_index_from_disk()
+                            if _index is not None:
+                                _index.add(svec2.reshape(1, -1))
                             _id_map.append(f"strat_{sid}")
+                            _save_index()
                 except Exception:
                     pass
             except Exception as e:
