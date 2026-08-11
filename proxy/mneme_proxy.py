@@ -1224,7 +1224,11 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         ptype = "code"
     
     strategy = generate_strategy(msgs, outcome)
-    vec = embed(user_text)
+    # Temporal stamping: prepend date to embedding text so FAISS can
+    # distinguish temporally distinct facts (e.g., "favorite model is X"
+    # on Monday vs "favorite model is Y" on Friday). Display text unchanged.
+    date_prefix = datetime.now(timezone.utc).strftime("[%Y-%m-%d] ")
+    vec = embed(date_prefix + user_text)
     
     row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic_label,)).fetchone()
     seq = (row[0] if row else 0) + 1
