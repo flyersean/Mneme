@@ -553,10 +553,10 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
 
     db.execute("""
         INSERT OR REPLACE INTO chunks
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
           blob, grade, consensus, outcome, problem_type,
-          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0))
+          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0, ""))
 
     db.commit()
     
