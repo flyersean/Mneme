@@ -126,12 +126,15 @@ If the focus is making the strategy system the standout feature:
 3. **Dynamic K** (30 min) — stop polluting context with noise-floor chunks
 4. **Multi-writer FAISS** (1 hour) — lock + reload per operation, all proxies
    read/write same DB safely
-5. **Belief evolution with 35B** (half day) — contradiction detection during
+5. **Learning mode** (half day) — parameter cycling + proxy-driven iteration to
+   find novel solutions and develop new tools; extracts strategies from
+   A-grade responses (see `docs/learning-critical-modes.md`)
+6. **Belief evolution with 35B** (half day) — contradiction detection during
    archiving, superseded fact flagging
-6. **Thread cards** (deferred) — revisit after 1-5 are solid
+7. **Thread cards** (deferred) — revisit after 1-6 are solid
 
-Items 1-4 are achievable without schema changes. Item 5 needs a SQLite schema
-addition. Item 6 is a research project.
+Items 1-5 are achievable without schema changes. Item 6 needs a SQLite schema
+addition. Item 7 is a research project.
 
 ---
 
