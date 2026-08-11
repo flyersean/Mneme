@@ -150,3 +150,12 @@ Use `watchdog` or raw `inotify` to auto-reload when the file changes. Overkill f
 2. Add to setup script output: `curl -X POST localhost:8080/admin/reload` after editing prompt
 3. User workflow: `vim /workspace/proxy/system_prompt.md` → `curl -X POST localhost:8080/admin/reload` → next chat uses new prompt
 4. No restart, no chunk loss, instant feedback loop
+
+---
+
+## Strategy Roadmap
+
+See `docs/strategy-roadmap.md` for the full analysis of memory strategies,
+temporal threading, strategy extraction as directives, and implementation
+priority stack. Key takeaway: strategy directives (prescriptive rules) should
+inject above memory (passive records) with higher epistemic weight.
