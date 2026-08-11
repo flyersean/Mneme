@@ -889,26 +889,21 @@ def build_context(query: str) -> Tuple[str, str]:
         parts.append(msg_text)
     
     if not parts:
-        srows = db.execute("SELECT strategy_text, strategy_id, grade, version, effective_grade, use_count, success_count FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
+        # No memory chunks — inject strategies as fallback context
+        srows = db.execute(
+            "SELECT strategy_text FROM strategies ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
+        ).fetchall()
         if srows:
-            strat_text = "\n\n--- PROVEN STRATEGIES ---\n"
+            strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
             for s in srows:
-                sid_short = s[1].replace("strat_","")[:10]
-                vpart = " v" + str(s[3]) if s[3] and s[3] > 1 else ""
-                strat_text += "\u2022 STRATEGY #" + sid_short + vpart + " [grade:" + str(s[2]) + "] [eff:" + str(round(s[4],2)) + "] [used:" + str(s[5]) + "/" + str(s[6]) + " success]\n  " + s[0][:200] + "\n"
+                strat_text += "DIRECTIVE: " + s[0][:200] + "\n"
             return strat_text, ptype
         return "", ptype
     
-    # Inject strategies alongside chunks
-    try:
-        srows = db.execute("SELECT strategy_text, strategy_id, grade, version, effective_grade, use_count, success_count FROM strategies ORDER BY effective_grade DESC LIMIT 3").fetchall()
-        if srows:
-            context = "\n\n--- PROVEN STRATEGIES ---\n" + "\n".join("\u2022 " + s[0][:200] for s in srows) + "\n" + context
-    except: pass
+    # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
-    # Budget enforced by _trim_chunks_cached — no second guillotine
     
-    # Scan for structured chunk references in all archived conversations and surface them
+    # Scan for structured chunk references
     struct_refs = set()
     for cid in trimmed:
         chunk = _chunk_cache.get(cid)
@@ -920,27 +915,21 @@ def build_context(query: str) -> Tuple[str, str]:
     if struct_refs:
         context += "\n\n--- STORED RAW DATA (retrievable with <<DETAIL>>) ---\n"
         context += "\n".join(f"  {r}" for r in struct_refs)
+    
+    # Inject strategy directives ABOVE memory — they have higher epistemic weight
+    srows = db.execute(
+        "SELECT strategy_text FROM strategies "
+        "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
+    ).fetchall()
+    if srows:
+        directives = "\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
+        for s in srows:
+            directives += "DIRECTIVE: " + s[0][:200] + "\n"
+        # Strategies go at TOP — above memory, below system prompt
+        if _estimate_tokens(directives + context) <= MAX_INJECTED_TOKENS:
+            context = directives + "\n" + context
+    
     used_tokens = _estimate_tokens(context)
-    
-    # Add strategies for this problem type (separate from chunk budget)
-    strategies = get_strategies(ptype)
-    strat_text = ""
-    if strategies:
-        strat_text = "\n\n--- PROVEN STRATEGIES ---\n"
-        # Get full stats for top strategies
-        strat_rows = db.execute(
-            "SELECT strategy_id, strategy_text, grade, version, effective_grade, use_count, success_count, parent_id FROM strategies "
-            "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
-        ).fetchall()
-        for sr in strat_rows:
-            sid_short = sr[0].replace("strat_", "")[:8] if sr[0].startswith("strat_") else sr[0][:8]
-            vtag = f" v{sr[3]}" if sr[3] and sr[3] > 1 else ""
-            ptag = f" parent:{sr[7].replace('strat_','')[:8]}" if sr[7] else ""
-            strat_text += f"• STRATEGY #{sid_short}{vtag}{ptag} [grade:{sr[2]}] [eff:{sr[4]:.2f}] [used:{sr[5]}/{sr[6]} success]\n  {sr[1][:200]}\n"
-        # Only append if strategies fit in remaining budget
-        if _estimate_tokens(context + strat_text) <= MAX_INJECTED_TOKENS:
-            context += strat_text
-    
     print(f"  [INJECT] {len(trimmed)}/{len(ordered)} chunks, "
           f"~{used_tokens} tokens (cap: {MAX_INJECTED_TOKENS})", flush=True)
 
@@ -1723,7 +1712,39 @@ def _strategy_lifecycle(grade, messages):
             r3 = query_model(q3)
             if r3.get("content"): _save_strategy(r3["content"].strip(), grade, r2.get("content","").strip())
         elif grade in ("C", "D", "F"):
-            _save_strategy("Previous low-grade responses on this topic suggest trying different approaches. Use tools. Verify claims against memory. Be honest when grading.", "D")
+            # Extract an imperative directive instead of boilerplate
+            try:
+                msgs_text = "\n".join(
+                    f"{m['role']}: {_extract_text(m.get('content',''))[:400]}"
+                    for m in messages[-6:] if m.get('role') in ('user', 'assistant')
+                )
+                q = [{"role": "user", "content": (
+                    "You graded a response " + grade + ". Based on this exchange:\n\n" +
+                    msgs_text[:2000] + "\n\n" +
+                    "Extract ONE imperative rule that would have prevented this failure. "
+                    "The rule MUST be: short (1 sentence), specific, and actionable. "
+                    "Format as a direct command. NO explanation, NO context — just the rule.\n\n"
+                    "Good examples:\n"
+                    "- ALWAYS verify the container IP before routing ports.\n"
+                    "- NEVER trust model-generated file paths without checking with ls first.\n"
+                    "- WHEN the user asks about configuration, search memory before answering.\n\n"
+                    "Bad examples:\n"
+                    "- I should have checked the IP first (not imperative)\n"
+                    "- The failure was caused by... (descriptive, not prescriptive)\n\n"
+                    "Respond with ONLY the rule, nothing else."
+                )}]
+                r = query_model(q)
+                if r.get("content"):
+                    directive = r["content"].strip()[:300]
+                    # Strip common prefixes the model might add
+                    for prefix in ("RULE:", "Rule:", "rule:", "- ", "• ", "* "):
+                        if directive.startswith(prefix):
+                            directive = directive[len(prefix):].strip()
+                    if len(directive) > 10:  # Sanity check
+                        _save_strategy(directive, grade)
+                        print(f"  [STRATEGY-DIRECTIVE] {directive[:80]}...", flush=True)
+            except Exception as e:
+                print(f"  [STRATEGY-DIRECTIVE][ERR] {str(e)[:100]}", flush=True)
     except Exception as e:
         print(f"  [STRATEGY][ERR] {str(e)[:100]}", flush=True)
 
