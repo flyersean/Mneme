@@ -5,7 +5,7 @@
 # Self-update: always fetch latest version before running.
 if [ -z "${MNEME_DEPS_UPDATED:-}" ]; then
     export MNEME_DEPS_UPDATED=1
-    curl -sSL -o /tmp/mneme_install.sh "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh"
+    curl -sSL -o /tmp/mneme_install.sh "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh"
     exec bash /tmp/mneme_install.sh
 fi
 
@@ -82,14 +82,14 @@ mkdir -p /workspace/proxy /workspace/mneme_chunks
 if [ ! -f /workspace/proxy/mneme_proxy.py ]; then
     echo "  Downloading proxy code..."
     if command -v git >/dev/null 2>&1; then
-        git clone -b dev-chunks --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null && {
+        git clone -b build-roadmap --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null && {
             cp /tmp/mneme_repo_install/proxy/* /workspace/proxy/
             rm -rf /tmp/mneme_repo_install
         }
     fi
     if [ ! -f /workspace/proxy/mneme_proxy.py ]; then
-        curl -sSL -o /workspace/proxy/mneme_proxy.py   https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/proxy/mneme_proxy.py
-        curl -sSL -o /workspace/proxy/system_prompt.md https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/proxy/system_prompt.md
+        curl -sSL -o /workspace/proxy/mneme_proxy.py   https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/mneme_proxy.py
+        curl -sSL -o /workspace/proxy/system_prompt.md https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/system_prompt.md
     fi
     echo "  ✓ Proxy code downloaded"
 else
@@ -111,11 +111,11 @@ echo "════════════════════════�
 echo "  Dependencies ready."
 echo
 echo "  Now run the setup wizard:"
-echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo
 echo "  Or pull models first, then run the wizard:"
 echo "    ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"
 echo "    ollama pull snowflake-arctic-embed2:latest"
 echo "    ollama pull qwen2.5:0.5b"
-echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo "══════════════════════════════════════════"

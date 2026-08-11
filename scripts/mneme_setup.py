@@ -5,7 +5,7 @@ No external dependencies — uses built-in input() only.
 import subprocess, sys, os, shutil, time, json
 
 # Self-update: always fetch latest before running
-_SETUP_URL = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py"
+_SETUP_URL = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py"
 if __file__.startswith("/tmp/") or __file__.startswith("/var/"):
     # Running from temp file — check if we're stale by comparing size
     try:
@@ -639,7 +639,7 @@ def main():
         # Install search_memory extension
         if not os.path.exists(ext_path):
             print("  Installing search_memory extension...")
-            ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/extensions/pi/mneme-search-tool.ts"
+            ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-search-tool.ts"
             r = run(f"curl -sSL -o {ext_path} {ext_url}")
             if r.returncode == 0:
                 print("    ✓ search_memory installed")
@@ -649,7 +649,7 @@ def main():
         # Install web tools extension (search + scrape)
         if not os.path.exists(web_ext_path):
             print("  Installing web tools extension...")
-            web_url = "https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/extensions/pi/mneme-web-tools.ts"
+            web_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-web-tools.ts"
             r = run(f"curl -sSL -o {web_ext_path} {web_url}")
             if r.returncode == 0:
                 print("    ✓ web_search + web_scrape installed")
