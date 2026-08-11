@@ -31,6 +31,7 @@ import requests
 OLLAMA_URL  = "http://localhost:11434"
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
+INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
 # Ollama config — let the model use its defaults
@@ -953,8 +954,9 @@ def build_context(query: str) -> Tuple[str, str]:
     except Exception as e:
         print(f"  [INJECT][LOG-ERROR] {e}", flush=True)
 
-    # Always include Mneme instructions with every injection
-    context = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + context
+    # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
+    if INJECT_SYSTEM != "0":
+        context = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + context
     return context, ptype
 
 # ─── Staging Buffer ────────────────────────────────────────────

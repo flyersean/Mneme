@@ -213,7 +213,7 @@ def main():
     models.append(("Custom (enter any Ollama model name)", "__custom__"))
     opts.append("Custom (enter any Ollama model name)")
     
-    idx, _ = choose("Step 1/4: Choose main model", opts)
+    idx, _ = choose("Step 1/6: Choose main model", opts)
     
     # Look up chosen model by value, not index (opts has separators models doesn't)
     chosen_label = opts[idx]
@@ -255,7 +255,7 @@ def main():
         ("Custom (enter value)", 0),
     ]
     
-    idx, _ = choose("\nStep 2/4: Context window size", [c[0] for c in ctx_options])
+    idx, _ = choose("\nStep 2/6: Context window size", [c[0] for c in ctx_options])
     
     if ctx_options[idx][1] == 0:
         ctx_val = ask("Enter context size (e.g. 32000, 65536, 129000)")
@@ -274,7 +274,7 @@ def main():
         "Both",
     ]
     
-    _, choice = choose("\nStep 3/4: Chat interface", chat_options)
+    _, choice = choose("\nStep 3/6: Chat interface", chat_options)
     install_pi = "Pi" in choice or "Both" in choice
     
     # ── Step 4: Embedding model ──
@@ -284,7 +284,7 @@ def main():
         ("Custom (enter any Ollama embedding model)", "__custom__"),
     ]
     
-    idx, _ = choose("\nStep 4/5: Embedding model for memory retrieval", [e[0] for e in embed_options])
+    idx, _ = choose("\nStep 4/6: Embedding model for memory retrieval", [e[0] for e in embed_options])
     
     if embed_options[idx][1] == "__custom__":
         embed_model = ask("Enter embedding model name")
@@ -303,7 +303,7 @@ def main():
         ("Custom (enter any Ollama model name)", "__custom__"),
     ]
     
-    idx, _ = choose("\nStep 5/5: Labeling model (generates topic labels for stored chunks)", 
+    idx, _ = choose("\nStep 5/6: Labeling model (generates topic labels for stored chunks)", 
                     [l[0] for l in label_options])
     
     if label_options[idx][1] == "__custom__":
@@ -314,6 +314,17 @@ def main():
         label_model = label_options[idx][1]
     
     print(f"  Selected: {label_model}")
+    
+    # ── Step 6: System prompt injection ──
+    inject_options = [
+        ("Yes — inject Mneme memory instructions separately (default, needed by most agents)", "1"),
+        ("No — skip injection (for agents with merged prompts, e.g. Pi with SYSTEM.md)", "0"),
+    ]
+    
+    idx, _ = choose("\nStep 6/6: Inject Mneme system instructions into model context?",
+                    [o[0] for o in inject_options])
+    inject_system = inject_options[idx][1]
+    print(f"  Selected: {'Inject' if inject_system == '1' else 'Skip'}")
     
     # ── INSTALLATION ──
     print(f"\n{'='*50}")
@@ -368,6 +379,7 @@ def main():
     env["LABEL_MODEL"] = label_model
     env["OLLAMA_KEEP_ALIVE"] = "24h"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["MNEME_INJECT_SYSTEM"] = inject_system
     
     log = open("/tmp/mneme.log", "w")
     subprocess.Popen(
@@ -421,6 +433,15 @@ def main():
             json.dump(pi_config, f, indent=2)
         print("  Pi configured to use Mneme at localhost:8080")
         
+        # Link .pi to /workspace for Jupyter Lab access
+        pi_dir = os.path.expanduser("~/.pi")
+        if os.path.isdir(pi_dir):
+            ws_link = "/workspace/pi-config"
+            if os.path.islink(ws_link) or os.path.exists(ws_link):
+                os.remove(ws_link)
+            os.symlink(pi_dir, ws_link)
+            print(f"  .pi linked → {ws_link} (edit prompts in Jupyter Lab)")
+        
         # Install search_memory extension
         if not os.path.exists(ext_path):
             print("  Installing search_memory extension...")
@@ -469,6 +490,11 @@ def main():
         if os.path.exists(web_ext_path):
             extensions += f" --extension {web_ext_path}"
         print(f"    Pi agent:     pi --provider mneme --model text-mneme:64k{extensions}")
+    
+    if inject_system == "0":
+        print(f"\n  ⚠ Mneme system instructions injection DISABLED.")
+        print(f"    Use a merged SYSTEM.md or APPEND_SYSTEM.md in ~/.pi/agent/")
+        print(f"    Edit prompts in Jupyter Lab: /workspace/pi-config/agent/")
     
     print(f"\n  Logs: tail -f /tmp/mneme.log\n")
 
