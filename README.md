@@ -21,7 +21,7 @@ Every conversation turn is staged, then on save the proxy:
 ### Step 1: Install dependencies (pipe-safe, one command)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/install_deps.sh | bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh | bash
 ```
 
 Idempotent — installs Ollama, Python packages, proxy code. Detects and skips anything already present. Safe to run repeatedly.
@@ -29,7 +29,7 @@ Idempotent — installs Ollama, Python packages, proxy code. Detects and skips a
 ### Step 2: Run setup wizard
 
 ```bash
-rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/dev-chunks/scripts/mneme_setup.py && python3 /tmp/setup.py
+rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
 Interactive 5-step wizard: model → context size → chat interface → embedding → labeling. Both scripts self-update on every run.
@@ -135,6 +135,7 @@ Single-file Flask proxy. Module-level state (FAISS index, SQLite connection, sta
 ## Branches
 
 - `main` — stable release
-- `dev-chunks` — active development (proxy code, v2 architecture, setup scripts, benchmarks)
+- `build-roadmap` — active development (v3 architecture, strategy directives, multi-writer FAISS, learning mode)
+- `dev-chunks` — previous development branch (v2 architecture)
 - `pi` — Pi-specific extension and testing
 - `dev-v2` — restore point, do not modify
