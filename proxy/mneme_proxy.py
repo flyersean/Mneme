@@ -1816,9 +1816,70 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     b = b / (np.linalg.norm(b) + 1e-8)
     return float(np.dot(a, b))
 
+def _decompose_problem(problem: str) -> list:
+    """Break a problem into its key decision points and the conventional choice at
+    each. Domain-agnostic: adapts to creative, engineering, social, technical.
+    Returns list of {point, conventional} dicts."""
+    q = [{"role": "user", "content": (
+        f"Problem:\n{problem}\n\n"
+        f"Break this problem into 4-6 key DECISION POINTS where a solver must make a "
+        f"meaningful choice. Adapt to the domain: for creative work these might be "
+        f"character, selection method, ritual, conflict, sensory detail; for engineering "
+        f"they might be architecture, algorithm, data structure, tradeoff, validation "
+        f"approach; for social/technical problems, the relevant axes.\n\n"
+        f"For each decision point, state the MOST CONVENTIONAL choice — the default that "
+        f"most people would reflexively make. These are what make answers all look alike.\n\n"
+        f"Output exactly one per line, in this format:\n"
+        f"POINT: <short label> | CONVENTIONAL: <the default choice most people make>"
+    )}]
+    r = query_model(q)
+    points = []
+    for line in r.get("content", "").splitlines():
+        m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
+        if m:
+            points.append({
+                "point": m.group(1).strip()[:60],
+                "conventional": m.group(2).strip()[:200],
+            })
+    return points[:6]
+
+def _wild_seed(problem: str) -> str:
+    """Generate a deliberately outlandish take to steer the model off-center.
+    Acts like the 'wild input' in a swarm: shifts the reference frame so
+    subsequent generations sample away from the modal center."""
+    q = [{"role": "user", "content": (
+        f"Problem:\n{problem}\n\n"
+        f"Give me the MOST OUTLANDISH, boundary-breaking take on this problem you can. "
+        f"Break every convention. Ignore realism and feasibility — I want to see the "
+        f"extreme edge of the possibility space. Go somewhere a normal answer would "
+        f"never go. Aim for genuinely surprising, not weird-for-its-own-sake."
+    )}]
+    r = query_model(q, options={"temperature": 1.7, "top_p": 0.99})
+    return r.get("content", "")
+
+# Temperature schedule — varies sampling per candidate so no single candidate
+# is a re-roll of the same distribution.
+_NOVELTY_TEMP_SCHEDULE = [
+    {"temperature": 0.8, "top_p": 0.9},
+    {"temperature": 1.2, "top_p": 0.95},
+    {"temperature": 1.5, "top_p": 0.95},
+    {"mirostat": 2, "mirostat_tau": 8.0},
+]
+
+NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
+
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
-    """Diverge → measure → judge → save. Returns full results with embedding
-    distances so novelty is an objective number, not a self-report."""
+    """Diverge → measure → gate → judge → save.
+
+    Improvements over the first pass:
+    - Per-decision-point forbidding (not whole-answer clichés), so the model
+      can't escape one slot while re-collapsing on the next (weaver/Kael, salt).
+    - A wild-seed outlier at high temperature to steer the model off-center
+      (the swarm insight: a wild input shifts the main model's direction).
+    - Temperature variation across candidates.
+    - A distance-threshold GATE: near-misses (dist below threshold) are
+      regenerated instead of passed to the lenient judge.
+    """
     import json as _json
     
     # 1. Baseline — the modal answer
@@ -1827,75 +1888,98 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     baseline = baseline_res.get("content", "")
     base_vec = embed(baseline)
 
-    # 2. Extract modal features (the clichés to forbid)
+    # 2. Decompose into decision points + conventional choices to forbid
     if custom_features:
-        modal_features = custom_features
+        decision_points = [{"point": f"feature{i}", "conventional": f} for i, f in enumerate(custom_features)]
     else:
-        feat_res = query_model([{"role": "user", "content": (
-            f"For this prompt:\n{problem}\n\n"
-            f"List the 5 most clichéd or conventional elements a typical answer would use. "
-            f"These are the patterns that make all answers look the same. "
-            f"Output each on its own line, no numbering, no explanation."
-        )}])
-        modal_features = [l.strip(" -•*").strip() for l in feat_res.get("content", "").splitlines()
-                          if len(l.strip()) > 3][:5]
-    print(f"  [THINK] modal features to forbid: {modal_features}", flush=True)
+        decision_points = _decompose_problem(problem)
+    print(f"  [THINK] {len(decision_points)} decision points to forbid:", flush=True)
+    for dp in decision_points:
+        print(f"    - {dp['point']}: {dp['conventional'][:70]}", flush=True)
+    forbid_text = "\n".join(f"- {dp['point']}: NOT {dp['conventional']}" for dp in decision_points)
 
-    # 3. Diverge — generate candidates with forbidden features
+    # 3. Wild seed — the outlandish steering outlier
+    print("  [THINK] generating wild seed (temp 1.7)", flush=True)
+    wild = _wild_seed(problem)
+    wild_vec = embed(wild)
+    print(f"  [THINK] wild seed ready ({len(wild)} chars)", flush=True)
+
+    # 4. Diverge with temperature variation + wild steering + per-slot forbidding
     candidates = []
-    forbid_text = "\n".join(f"- {f}" for f in modal_features)
     for i in range(iterations):
-        # Alternate: constrain (forbid) vs. enumerate-tail (list alternatives first)
-        if i % 2 == 0:
-            gen_prompt = (
-                f"{problem}\n\n"
-                f"HARD CONSTRAINTS — your answer MUST NOT use any of these conventional elements:\n"
-                f"{forbid_text}\n\n"
-                f"Produce a genuinely different answer that routes around every one of these. "
-                f"Do not merely reword the conventional answer — change the underlying approach."
-            )
-        else:
-            gen_prompt = (
-                f"{problem}\n\n"
-                f"First, brainstorm 5 UNCONVENTIONAL approaches that most people would NOT "
-                f"think of (avoid the obvious one). Then pick the most original one and execute it fully. "
-                f"Do NOT use these clichés:\n{forbid_text}"
-            )
-        res = query_model([{"role": "user", "content": gen_prompt}],
-                          options={"temperature": 1.1, "top_p": 0.95})
+        params = _NOVELTY_TEMP_SCHEDULE[i % len(_NOVELTY_TEMP_SCHEDULE)]
+        gen_prompt = (
+            f"{problem}\n\n"
+            f"HARD CONSTRAINTS — route around every one of these conventional choices:\n"
+            f"{forbid_text}\n\n"
+            f"STEERING REFERENCE (a deliberately wild take on this problem, for inspiration "
+            f"only — do NOT copy it, use it to push past the obvious):\n{wild[:800]}\n\n"
+            f"Produce your OWN original answer. It must differ from both the conventional "
+            f"answer AND the wild reference. Change the underlying approach, not the wording."
+        )
+        res = query_model([{"role": "user", "content": gen_prompt}], options=params)
         content = res.get("content", "")
         vec = embed(content)
-        # Distance from baseline + mean distance from prior candidates (objective novelty)
         d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
+        d_wild = 1.0 - _cosine(vec, wild_vec) if np.any(wild_vec) else 0.0
+
+        # Novelty gate: reject near-misses and regenerate once, harder
+        regenerated = False
+        if d_base < NOVELTY_MIN_DIST:
+            print(f"  [THINK] candidate {i} too close (dist={d_base:.4f} < {NOVELTY_MIN_DIST}) — regenerating", flush=True)
+            retry_prompt = (
+                f"{problem}\n\n"
+                f"Your last answer was TOO SIMILAR to the conventional answer. "
+                f"Change the {len(decision_points)} decision points listed below and do "
+                f"something structurally different:\n{forbid_text}\n\n"
+                f"Also, here is a wild idea to push you further off-center:\n{wild[:800]}\n\n"
+                f"Produce a genuinely different answer now."
+            )
+            res = query_model([{"role": "user", "content": retry_prompt}],
+                              options={"temperature": 1.6, "top_p": 0.98})
+            content = res.get("content", "")
+            vec = embed(content)
+            d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
+            d_wild = 1.0 - _cosine(vec, wild_vec) if np.any(wild_vec) else 0.0
+            regenerated = True
+
         prior_dist = []
         for c in candidates:
             if np.any(c["vec"]):
                 prior_dist.append(1.0 - _cosine(vec, c["vec"]))
         mean_prior = float(np.mean(prior_dist)) if prior_dist else 0.0
-        novelty = 0.6 * d_base + 0.4 * mean_prior  # 0.0 = identical, higher = more novel
+        # Novelty: distance from baseline (dominant) + distance from wild seed + peer spread
+        novelty = 0.5 * d_base + 0.25 * d_wild + 0.25 * mean_prior
         candidates.append({"idx": i, "content": content, "vec": vec,
                            "dist_from_baseline": round(d_base, 4),
+                           "dist_from_wild": round(d_wild, 4),
                            "dist_from_peers": round(mean_prior, 4),
-                           "novelty": round(novelty, 4)})
-        print(f"  [THINK] candidate {i} novelty={novelty:.4f} (base={d_base:.4f} peers={mean_prior:.4f})", flush=True)
+                           "novelty": round(novelty, 4),
+                           "regenerated": regenerated})
+        print(f"  [THINK] candidate {i} novelty={novelty:.4f} (base={d_base:.4f} wild={d_wild:.4f} peers={mean_prior:.4f})", flush=True)
 
-    # 4. Pairwise judge each candidate
+    # 5. Pairwise judge (calibrated by the gate: everything here already passed distance)
     results = []
     for c in candidates:
         j = _pairwise_judge(baseline, c["content"], problem)
+        # Distance is the objective arbiter — a judge "different" claim below the
+        # gate threshold is treated as a near-miss.
+        different = j["different"] and c["dist_from_baseline"] >= NOVELTY_MIN_DIST
         results.append({
             "idx": c["idx"],
             "content": c["content"],
             "novelty": c["novelty"],
             "dist_from_baseline": c["dist_from_baseline"],
+            "dist_from_wild": c["dist_from_wild"],
             "dist_from_peers": c["dist_from_peers"],
-            "different": j["different"],
+            "regenerated": c["regenerated"],
+            "different": different,
             "valid": j["valid"],
             "reason": j["reason"],
         })
-        print(f"  [THINK] judge c{c['idx']}: different={j['different']} valid={j['valid']} — {j['reason'][:60]}", flush=True)
+        print(f"  [THINK] judge c{c['idx']}: different={different} valid={j['valid']} — {j['reason'][:60]}", flush=True)
 
-    # 5. Save to separate JSONL store (outside the memory DB)
+    # 6. Save to separate JSONL store (outside the memory DB)
     saved_ids = []
     try:
         with open(LEARNED_IDEAS_FILE, "a") as f:
@@ -1906,6 +1990,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                     "problem": problem[:500],
                     "novelty": c["novelty"],
                     "dist_from_baseline": c["dist_from_baseline"],
+                    "dist_from_wild": c["dist_from_wild"],
                     "different": c["different"],
                     "valid": c["valid"],
                     "reason": c["reason"],
@@ -1917,12 +2002,13 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     except Exception as e:
         print(f"  [THINK][SAVE-ERR] {e}", flush=True)
 
-    # 6. Return — filter to "different AND valid" for the highlight
+    # 7. Return
     highlight = [r for r in results if r["different"] and r["valid"]]
     return {
         "problem": problem,
         "baseline": baseline,
-        "modal_features": modal_features,
+        "wild_seed": wild[:1500],
+        "decision_points": decision_points,
         "candidates": results,
         "novel_winners": [r["idx"] for r in highlight],
         "saved_to": LEARNED_IDEAS_FILE,
