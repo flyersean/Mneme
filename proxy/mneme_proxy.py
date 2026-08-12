@@ -1789,27 +1789,32 @@ LEARNED_IDEAS_FILE = os.path.join(CHUNK_DIR, "learned_ideas.jsonl")
 def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
     """Ask the model: is candidate structurally different from baseline AND still
     valid? Returns {different: bool, valid: bool, reason: str}. Pairwise comparison
-    sidesteps the mean-bias of absolute self-grading."""
-    q = [{"role": "user", "content": (
-        f"Problem: {problem}\n\n"
-        f"BASELINE ANSWER (the conventional one):\n{baseline[:1500]}\n\n"
-        f"CANDIDATE ANSWER:\n{candidate[:1500]}\n\n"
-        f"Answer two questions:\n"
-        f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
-        f"approach or skeleton, not just reworded? Answer YES or NO.\n"
-        f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
-        f"Respond in exactly this format:\nDIFFERENT: yes/no\nVALID: yes/no\nREASON: one short sentence"
-    )}]
-    r = query_model(q)
-    txt = r.get("content", "")
-    dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
-    vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
-    rm = re.search(r"REASON:\s*(.+)", txt, re.IGNORECASE)
-    return {
-        "different": (dm.group(1).lower() == "yes") if dm else False,
-        "valid": (vm.group(1).lower() == "yes") if vm else False,
-        "reason": rm.group(1).strip()[:200] if rm else "",
-    }
+    sidesteps the mean-bias of absolute self-grading. Resilient to timeouts: a
+    judge failure returns different=False rather than crashing the run."""
+    try:
+        q = [{"role": "user", "content": (
+            f"Problem: {problem}\n\n"
+            f"BASELINE ANSWER (the conventional one):\n{baseline[:1000]}\n\n"
+            f"CANDIDATE ANSWER:\n{candidate[:1000]}\n\n"
+            f"Answer two questions:\n"
+            f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
+            f"approach or skeleton, not just reworded? Answer YES or NO.\n"
+            f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
+            f"Respond in exactly this format:\nDIFFERENT: yes/no\nVALID: yes/no\nREASON: one short sentence"
+        )}]
+        r = query_model(q)
+        txt = r.get("content", "")
+        dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
+        vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
+        rm = re.search(r"REASON:\s*(.+?)", txt, re.IGNORECASE)
+        return {
+            "different": (dm.group(1).lower() == "yes") if dm else False,
+            "valid": (vm.group(1).lower() == "yes") if vm else False,
+            "reason": rm.group(1).strip()[:200] if rm else "",
+        }
+    except Exception as e:
+        print(f"  [THINK][JUDGE-ERR] {type(e).__name__}: {e}", flush=True)
+        return {"different": False, "valid": False, "reason": f"judge failed: {type(e).__name__}"}
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     a = a / (np.linalg.norm(a) + 1e-8)
@@ -1958,6 +1963,31 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                            "regenerated": regenerated})
         print(f"  [THINK] candidate {i} novelty={novelty:.4f} (base={d_base:.4f} wild={d_wild:.4f} peers={mean_prior:.4f})", flush=True)
 
+    # 4b. Save candidates to JSONL IMMEDIATELY (before judging) so outputs are
+    # never lost even if a judge times out and crashes the request.
+    saved_ids = []
+    try:
+        with open(LEARNED_IDEAS_FILE, "a") as f:
+            for c in candidates:
+                idea_id = "idea_" + str(int(time.time())) + "_" + str(c["idx"])
+                f.write(_json.dumps({
+                    "id": idea_id,
+                    "problem": problem[:500],
+                    "novelty": c["novelty"],
+                    "dist_from_baseline": c["dist_from_baseline"],
+                    "dist_from_wild": c["dist_from_wild"],
+                    "regenerated": c["regenerated"],
+                    "different": None,
+                    "valid": None,
+                    "reason": "",
+                    "content": c["content"],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }) + "\n")
+                saved_ids.append(idea_id)
+        print(f"  [THINK] saved {len(saved_ids)} candidate ideas (pre-judge)", flush=True)
+    except Exception as e:
+        print(f"  [THINK][SAVE-ERR] {e}", flush=True)
+
     # 5. Pairwise judge (calibrated by the gate: everything here already passed distance)
     results = []
     for c in candidates:
@@ -1978,29 +2008,6 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             "reason": j["reason"],
         })
         print(f"  [THINK] judge c{c['idx']}: different={different} valid={j['valid']} — {j['reason'][:60]}", flush=True)
-
-    # 6. Save to separate JSONL store (outside the memory DB)
-    saved_ids = []
-    try:
-        with open(LEARNED_IDEAS_FILE, "a") as f:
-            for c in results:
-                idea_id = "idea_" + str(int(time.time())) + "_" + str(c["idx"])
-                f.write(_json.dumps({
-                    "id": idea_id,
-                    "problem": problem[:500],
-                    "novelty": c["novelty"],
-                    "dist_from_baseline": c["dist_from_baseline"],
-                    "dist_from_wild": c["dist_from_wild"],
-                    "different": c["different"],
-                    "valid": c["valid"],
-                    "reason": c["reason"],
-                    "content": c["content"],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }) + "\n")
-                saved_ids.append(idea_id)
-        print(f"  [THINK] saved {len(saved_ids)} ideas to {LEARNED_IDEAS_FILE}", flush=True)
-    except Exception as e:
-        print(f"  [THINK][SAVE-ERR] {e}", flush=True)
 
     # 7. Return
     highlight = [r for r in results if r["different"] and r["valid"]]
