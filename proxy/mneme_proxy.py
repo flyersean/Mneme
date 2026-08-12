@@ -418,6 +418,9 @@ def query_model(messages: list, system: str = None, temperature: float = None,
             mc = _extract_text(m.get("content", ""))
             msgs.append({"role": m["role"], "content": mc})
     
+    # Auto-chunk oversized messages before they bloat conversation history
+    msgs = _chunk_large_messages(msgs)
+    
     opts = {"temperature": temperature}
     if options:
         opts.update(options)
@@ -846,6 +849,51 @@ def get_strategies(problem_type=None, limit=3):
 MAX_PROMPT_CHARS = int(os.environ.get("MNEME_MAX_PROMPT_CHARS", "200000"))
 # Token budget for injected memory. Model context minus system prompt + live convo.
 MAX_INJECTED_TOKENS = 6000
+
+# Auto-chunking: messages over this fraction of MAX_PROMPT_CHARS get split
+# into memory chunks and replaced with an index the model can search.
+CHUNK_FRACTION = 0.25
+CHUNK_SIZE = 3000  # chars per chunk — small enough for easy retrieval
+
+def _chunk_large_messages(msgs: list) -> list:
+    """Scan for oversized messages, chunk into memory, replace with index.
+    Returns modified message list with large content swapped for chunk references."""
+    threshold = int(MAX_PROMPT_CHARS * CHUNK_FRACTION)
+    modified = []
+    for m in msgs:
+        content = _extract_text(m.get("content", ""))
+        if len(content) > threshold and m.get("role") in ("user", "tool", "assistant"):
+            # Split into chunks and save to memory
+            chunk_refs = []
+            base_id = f"chunk_{int(time.time())}_{len(content)}"
+            for i in range(0, len(content), CHUNK_SIZE):
+                piece = content[i:i + CHUNK_SIZE]
+                chunk_num = (i // CHUNK_SIZE) + 1
+                chunk_id = f"{base_id}:{chunk_num}"
+                
+                # Save to DB + FAISS
+                vec = embed(piece)
+                if vec is not None:
+                    save_chunk(chunk_id, f"auto_chunk_{base_id}",
+                        [{"role": m["role"], "content": piece}],
+                        vec, source="tool:chunked", grade="B")
+                
+                # Brief summary of this chunk for the index
+                preview = piece[:120].replace("\n", " ").strip()
+                chunk_refs.append(f"[{chunk_id}] {preview}...")
+            
+            total_chunks = len(chunk_refs)
+            total_chars = len(content)
+            index_text = (
+                f"[AUTO-CHUNKED: {total_chunks} sections, {total_chars} chars total]\n"
+                + "\n".join(chunk_refs)
+                + f"\n\nUse search_memory with the chunk ID to retrieve any section."
+            )
+            modified.append({**m, "content": index_text})
+            print(f"  [CHUNK] {total_chars} chars → {total_chunks} chunks ({base_id})", flush=True)
+        else:
+            modified.append(m)
+    return modified
 
 SEARCH_MEMORY_TOOL = {
     "type": "function",
