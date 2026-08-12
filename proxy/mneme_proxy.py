@@ -451,8 +451,12 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     
     total = sum(len(m.get("content","")) for m in msgs)
     if total > MAX_PROMPT_CHARS:
-        print(f"  [WARN] Still {total} chars after trim — stripping oldest", flush=True)
-        msgs = sys_msgs + non_sys[-3:]
+        # Trim oldest non-system messages until under limit, keeping at least 5
+        while len(non_sys) > 5 and total > MAX_PROMPT_CHARS:
+            removed = non_sys.pop(0)
+            total -= len(removed.get("content", ""))
+        msgs = sys_msgs + non_sys
+        print(f"  [WARN] Trimmed to {total} chars ({len(non_sys)} messages, limit {MAX_PROMPT_CHARS})", flush=True)
     
     r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300)
     d = r.json()
@@ -836,11 +840,12 @@ def get_strategies(problem_type=None, limit=3):
 
 # ─── Context Injection ─────────────────────────────────────────
 
-# Total prompt char limit — this model crashes above ~4600 chars with injection
-MAX_PROMPT_CHARS = 4500  # system + injection + history must stay below this
-# Token budget for injected memory. Hard cap to prevent context overflow.
-# The model has 32768 ctx total. System prompt + live conversation need room.
-MAX_INJECTED_TOKENS = 6000   # ~6K tokens — stay under model CUDA safe-zone
+# Prompt char safety limit — prevents runaway OOM from pathological inputs.
+# A40 with 129K ctx handles ~500K chars; 200K leaves plenty of KV cache headroom.
+# Set via MNEME_MAX_PROMPT_CHARS env var, defaults to 200000.
+MAX_PROMPT_CHARS = int(os.environ.get("MNEME_MAX_PROMPT_CHARS", "200000"))
+# Token budget for injected memory. Model context minus system prompt + live convo.
+MAX_INJECTED_TOKENS = 6000
 
 SEARCH_MEMORY_TOOL = {
     "type": "function",
