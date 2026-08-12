@@ -636,25 +636,23 @@ def main():
             os.symlink(pi_dir, ws_link)
             print(f"  .pi linked → {ws_link} (edit prompts in Jupyter Lab)")
         
-        # Install search_memory extension
-        if not os.path.exists(ext_path):
-            print("  Installing search_memory extension...")
-            ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-search-tool.ts"
-            r = run(f"curl -sSL -o {ext_path} {ext_url}")
-            if r.returncode == 0:
-                print("    ✓ search_memory installed")
-            else:
-                print("    Warning: could not download extension")
+        # Install search_memory extension (always fresh)
+        print("  Installing search_memory extension...")
+        ext_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-search-tool.ts"
+        r = run(f"curl -sSL --fail -o {ext_path} '{ext_url}?{int(time.time())}'")
+        if r.returncode == 0:
+            print("    ✓ search_memory installed")
+        else:
+            print("    Warning: could not download search_memory extension")
         
-        # Install web tools extension (search + scrape)
-        if not os.path.exists(web_ext_path):
-            print("  Installing web tools extension...")
-            web_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-web-tools.ts"
-            r = run(f"curl -sSL -o {web_ext_path} {web_url}")
-            if r.returncode == 0:
-                print("    ✓ web_search + web_scrape installed")
-            else:
-                print("    Warning: could not download web tools")
+        # Install web tools extension (always fresh)
+        print("  Installing web tools extension...")
+        web_url = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-web-tools.ts"
+        r = run(f"curl -sSL --fail -o {web_ext_path} '{web_url}?{int(time.time())}'")
+        if r.returncode == 0:
+            print("    ✓ web_search + web_scrape installed")
+        else:
+            print("    Warning: could not download web tools extension")
     
     # ── DONE ──
     health = ""

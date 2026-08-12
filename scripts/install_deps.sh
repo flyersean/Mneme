@@ -79,22 +79,42 @@ fi
 # ── 3. Proxy code
 echo; echo "[3/4] Proxy code"
 mkdir -p /workspace/proxy /workspace/mneme_chunks
-if [ ! -f /workspace/proxy/mneme_proxy.py ]; then
-    echo "  Downloading proxy code..."
-    if command -v git >/dev/null 2>&1; then
-        git clone -b build-roadmap --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null && {
-            cp /tmp/mneme_repo_install/proxy/* /workspace/proxy/
-            rm -rf /tmp/mneme_repo_install
-        }
+
+# Always download fresh — never skip on existing files
+echo "  Downloading proxy code..."
+DOWNLOAD_OK=0
+
+# Try git clone first (gets all files at once, faster for updates)
+if command -v git >/dev/null 2>&1; then
+    rm -rf /tmp/mneme_repo_install 2>/dev/null
+    if git clone -b build-roadmap --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null; then
+        cp -f /tmp/mneme_repo_install/proxy/mneme_proxy.py   /workspace/proxy/mneme_proxy.py
+        cp -f /tmp/mneme_repo_install/proxy/system_prompt.md /workspace/proxy/system_prompt.md
+        cp -f /tmp/mneme_repo_install/extensions/pi/mneme-search-tool.ts /workspace/mneme-search-tool.ts
+        cp -f /tmp/mneme_repo_install/extensions/pi/mneme-web-tools.ts   /workspace/mneme-web-tools.ts
+        rm -rf /tmp/mneme_repo_install
+        DOWNLOAD_OK=1
+        echo "  ✓ git clone OK"
     fi
-    if [ ! -f /workspace/proxy/mneme_proxy.py ]; then
-        curl -sSL -o /workspace/proxy/mneme_proxy.py   https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/mneme_proxy.py
-        curl -sSL -o /workspace/proxy/system_prompt.md https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/system_prompt.md
-    fi
-    echo "  ✓ Proxy code downloaded"
-else
-    echo "  ✓ Proxy code already exists (not overwriting)"
 fi
+
+# Fallback: direct curl (with cache busting)
+if [ "$DOWNLOAD_OK" = "0" ]; then
+    _TS=$(date +%s)
+    curl -sSL --fail -o /workspace/proxy/mneme_proxy.py   "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/mneme_proxy.py?$_TS" || true
+    curl -sSL --fail -o /workspace/proxy/system_prompt.md "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/system_prompt.md?$_TS" || true
+    curl -sSL --fail -o /workspace/mneme-search-tool.ts    "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-search-tool.ts?$_TS" || true
+    curl -sSL --fail -o /workspace/mneme-web-tools.ts      "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-web-tools.ts?$_TS" || true
+    echo "  ✓ curl download OK"
+fi
+
+# Verify the critical file exists
+if [ ! -f /workspace/proxy/mneme_proxy.py ]; then
+    echo "  ✗ FAILED: proxy code not downloaded"
+    echo "  Check network and try again."
+    exit 1
+fi
+echo "  ✓ Proxy code ready"
 
 # ── 4. Model storage
 echo; echo "[4/4] Model storage"
