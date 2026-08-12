@@ -5,8 +5,13 @@
 # Self-update: always fetch latest version before running.
 if [ -z "${MNEME_DEPS_UPDATED:-}" ]; then
     export MNEME_DEPS_UPDATED=1
-    curl -sSL -o /tmp/mneme_install.sh "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh"
-    exec bash /tmp/mneme_install.sh
+    _URL="https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh"
+    if curl -sSL --fail -o /tmp/mneme_install.sh "$_URL?$(date +%s)" 2>/dev/null; then
+        if [ -s /tmp/mneme_install.sh ]; then
+            exec bash /tmp/mneme_install.sh
+        fi
+    fi
+    echo "⚠ Self-update failed — running this version. Network may be slow."
 fi
 
 set -e
