@@ -313,6 +313,173 @@ exec python3 -uB proxy/mneme_proxy.py
   All instances sharing: /workspace/mneme_chunks/
 """)
 
+def _reconfigure(existing_db, embed_model, label_model, prev_config):
+    """Reconfigure existing Mneme installation — change model/settings, keep DB."""
+    print("\n\033[1mReconfigure Mneme Installation\033[0m\n")
+    
+    prev_model = prev_config.get("model", "unknown")
+    prev_port = prev_config.get("port", 8080)
+    chunk_count = "?"
+    try:
+        import sqlite3
+        c = sqlite3.connect(existing_db)
+        chunk_count = c.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        c.close()
+    except: pass
+    
+    print(f"  Current: model={prev_model}, port={prev_port}, chunks={chunk_count}")
+    print(f"  DB preserved at: {os.path.dirname(existing_db)}")
+    print()
+    
+    # Pick new model
+    pulled = get_pulled_models()
+    opts = []
+    models = [("── Keep current ──", prev_model)]
+    opts.append("── Keep current ──")
+    opts.append(f"{prev_model} (current)")
+    if pulled:
+        opts.append("── Other pulled models ──")
+        for p in pulled:
+            if p[1] != prev_model:
+                opts.append(p[0])
+                models.append(p)
+    models.append(("Custom (enter any Ollama model name)", "__custom__"))
+    opts.append("Custom (enter any Ollama model name)")
+    
+    idx, _ = choose("Choose new model", opts)
+    chosen = opts[idx]
+    
+    if "Keep current" in chosen or chosen == f"{prev_model} (current)":
+        model_name = prev_model
+        print(f"  Keeping: {model_name}")
+    elif chosen == "Custom (enter any Ollama model name)":
+        model_name = ask("Enter Ollama model name")
+        if not model_name: sys.exit(1)
+    else:
+        for m in models:
+            if m[0] == chosen:
+                model_name = m[1]
+                break
+        else:
+            model_name = prev_model
+    
+    if model_name != prev_model:
+        pull_model(model_name)
+    
+    # Context size
+    ctx_opts = [
+        ("Keep current (from config)", 0),
+        ("32K (default, fast)", 32000),
+        ("129K (recommended)", 129000),
+        ("Custom (enter value)", -1),
+    ]
+    idx, _ = choose("\nContext window size", [c[0] for c in ctx_opts])
+    if ctx_opts[idx][1] == -1:
+        ctx_size = int(ask("Enter context size") or "32000")
+    elif ctx_opts[idx][1] == 0:
+        ctx_size = prev_config.get("ctx_size", 32000)
+    else:
+        ctx_size = ctx_opts[idx][1]
+    
+    # Injection
+    inject_opts = [
+        ("Keep current", ""),
+        ("Yes — inject Mneme instructions", "1"),
+        ("No — skip (uses merged prompt)", "0"),
+    ]
+    idx, _ = choose("\nInject Mneme system instructions?", [o[0] for o in inject_opts])
+    if inject_opts[idx][1] == "":
+        inject_system = "1"  # default
+    else:
+        inject_system = inject_opts[idx][1]
+    
+    # Pi settings
+    reinstall_pi = False
+    if shutil.which("pi"):
+        pi_opts = ["Skip — Pi is fine", "Reinstall Pi and extensions"]
+        _, pi_choice = choose("\nPi agent?", pi_opts)
+        reinstall_pi = "Reinstall" in pi_choice
+    
+    # Create context modelfile if > 32K
+    proxy_model = model_name
+    if ctx_size > 32000:
+        modelfile = f"FROM {model_name}\nPARAMETER num_ctx {ctx_size}\n"
+        with open("/tmp/Modelfile.mneme", "w") as f:
+            f.write(modelfile)
+        run(f"ollama create mneme-chat -f /tmp/Modelfile.mneme", timeout=60)
+        proxy_model = "mneme-chat:latest"
+    
+    # Update config
+    with open("/workspace/mneme_chunks/setup_config.json", "w") as f:
+        json.dump({
+            "model": model_name, "embed_model": embed_model,
+            "label_model": label_model, "ctx_size": ctx_size,
+            "port": prev_port,
+        }, f)
+    
+    # Kill old proxy, restart with new settings
+    print(f"\n  Restarting proxy with new config...")
+    subprocess.run(["pkill", "-f", "mneme_proxy.py"], capture_output=True)
+    time.sleep(2)
+    
+    env = os.environ.copy()
+    env["OLLAMA_FLASH_ATTENTION"] = "1"
+    env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
+    env["MNEME_MODEL"] = proxy_model
+    env["EMBED_MODEL"] = embed_model
+    env["LABEL_MODEL"] = label_model
+    env["MNEME_CHUNK_DIR"] = "/workspace/mneme_chunks"
+    env["MNEME_INJECT_SYSTEM"] = inject_system
+    env["OLLAMA_KEEP_ALIVE"] = "24h"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    
+    log = open("/tmp/mneme.log", "w")
+    subprocess.Popen(
+        [sys.executable, "-uB", "proxy/mneme_proxy.py"],
+        cwd="/workspace", env=env, stdout=log, stderr=log,
+        start_new_session=True
+    )
+    
+    # Wait for startup
+    print("  Waiting for proxy...", end=" ", flush=True)
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            import urllib.request
+            d = json.loads(urllib.request.urlopen("http://localhost:8080/health", timeout=2).read())
+            print(f"running ({d.get('chunks',0)} chunks)")
+            break
+        except:
+            continue
+    else:
+        print("timeout — check /tmp/mneme.log")
+    
+    # Reinstall Pi extensions if requested
+    if reinstall_pi:
+        ext_path = "/workspace/mneme-search-tool.ts"
+        web_ext_path = "/workspace/mneme-web-tools.ts"
+        for name, path, url_part in [
+            ("search_memory", ext_path, "mneme-search-tool.ts"),
+            ("web tools", web_ext_path, "mneme-web-tools.ts"),
+        ]:
+            print(f"  Installing {name} extension...")
+            url = f"https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/{url_part}"
+            r = run(f"curl -sSL --fail -o {path} '{url}?{int(time.time())}'")
+            if r.returncode == 0:
+                print(f"    ✓ {name} installed")
+            else:
+                print(f"    Warning: could not download {name}")
+    
+    print(f"""
+\033[32m  Mneme reconfigured!\033[0m
+  Model:   {model_name}
+  Context: {ctx_size}
+  Chunks:  {chunk_count} (preserved)
+  Inject:  {'Yes' if inject_system == '1' else 'No'}
+  Proxy:   http://localhost:8080
+  DB:      {os.path.dirname(existing_db)}
+""")
+
 def main():
     banner()
     
@@ -346,6 +513,7 @@ def main():
         
         opts = [
             "Add another model (new proxy instance sharing this DB)",
+            "Reconfigure existing installation (change model, settings, keep DB)",
             "Start fresh (wipe existing DB and reinstall)",
         ]
         _, choice = choose("\nWhat would you like to do?", opts)
@@ -355,6 +523,9 @@ def main():
             print(f"\n  Adding model to existing DB.")
             print(f"  Embed model locked to: {prev_embed or 'snowflake-arctic-embed2'}")
             print(f"  Labeler locked to: {prev_labeler or 'qwen2.5:0.5b'}")
+        elif "Reconfigure" in choice:
+            return _reconfigure(existing_db, prev_embed or "snowflake-arctic-embed2",
+                             prev_labeler or "qwen2.5:0.5b", prev)
         else:
             print("\n  Wiping existing DB and starting fresh...")
             import shutil
