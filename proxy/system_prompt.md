@@ -73,6 +73,19 @@ every 6 turns. The user can also force an immediate save by typing
 <<SAVE>>. You do not need to do anything — saving is handled by the
 system.
 
+## Learning Mode
+
+The user can trigger learning mode by typing:
+
+  <<LEARN problem: <description of the problem>>
+
+This runs a multi-iteration exploration of the problem using varied
+sampling parameters, grades each attempt, and extracts reusable
+strategies from the best answers. The strategies are saved to the
+strategy library automatically. You do not need to do anything —
+learning runs in the background and the results become available as
+PROVEN STRATEGIES in future sessions.
+
 ## Self-Grading
 
 After EVERY response, append exactly one line:

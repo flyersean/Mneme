@@ -1683,6 +1683,95 @@ def _model_loop_read_all(messages: list, tools: list = None) -> dict:
 # Regex for <<DETAIL id:chunk_id>> syntax
 _detail_re = re.compile(r"<<DETAIL\s+id:([^>]+)>>", re.IGNORECASE)
 
+# Regex for <<LEARN problem:...>> command
+_learn_re = re.compile(r"<<LEARN\s+problem:(.+?)>>", re.IGNORECASE)
+
+# Default parameter sets for learning mode exploration
+_LEARN_PARAMS = [
+    {"temperature": 0.3, "top_p": 0.5},
+    {"temperature": 0.7, "top_p": 0.9},
+    {"temperature": 1.2, "top_p": 0.95},
+    {"temperature": 1.5, "top_k": 20},
+    {"mirostat": 2, "mirostat_tau": 8.0},
+]
+
+def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = None) -> dict:
+    """Parameter cycling + strategy extraction. Returns {problem, iterations, strategies}.
+    Grades at fixed temp=0.7 for fair comparison, extracts strategies from A/B answers."""
+    param_sets = custom_params or _LEARN_PARAMS
+    results = []
+    strategies = []
+    
+    for i in range(iterations):
+        params = param_sets[i % len(param_sets)]
+        print(f"  [LEARN] iteration {i+1}/{iterations} params={params}", flush=True)
+        
+        # Build prompt for this iteration
+        if i == 0:
+            prompt = f"Solve or analyze: {problem}\n\nConsider approaches that are NON-OBVIOUS. What would someone who disagrees with the conventional answer propose?"
+        else:
+            prev = results[-1].get("content", "")[:300]
+            prompt = f"Previous approach: {prev}\n\nWhat ASSUMPTIONS did it make? Can you find a solution that doesn't rely on those assumptions? Problem: {problem}"
+        
+        msgs = [{"role": "user", "content": prompt}]
+        
+        # Query with varied parameters
+        result = query_model(msgs, options=params)
+        
+        # Grade at standard temp (0.7) — always use same temp for fair comparison
+        grade_msgs = [{"role": "user", "content": (
+            f"Grade this answer [A-F] based on correctness, novelty, and whether it "
+            f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:1000]}\n\n"
+            f"Respond with ONLY: [GRADE: A/B/C/D/F]"
+        )}]
+        grade_result = query_model(grade_msgs)
+        grade_text = grade_result.get("content", "")
+        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", grade_text, re.IGNORECASE)
+        grade = gm.group(1).upper() if gm else "C"
+        
+        iteration = {
+            "iteration": i + 1,
+            "params": params,
+            "content": result.get("content", "")[:2000],
+            "grade": grade,
+        }
+        results.append(iteration)
+        
+        if grade in ("A", "B"):
+            # Extract strategy from good responses
+            strat_msgs = [{"role": "user", "content": (
+                f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
+                f"Format each as: [STRATEGY: one-sentence imperative rule]\n\n"
+                f"ANSWER: {result.get('content', '')[:1500]}"
+            )}]
+            strat_result = query_model(strat_msgs)
+            for sm in re.finditer(r"STRATEGY:\s*(.+?)(?:\]|$)", strat_result.get("content", ""), re.MULTILINE):
+                s_text = sm.group(1).strip()[:300]
+                if len(s_text) > 10:
+                    strategies.append(s_text)
+                    _save_strategy(s_text, grade)
+                    print(f"  [LEARN-STRATEGY] {s_text[:80]}...", flush=True)
+    
+    # Synthesis: extract final strategies from all A-grade responses
+    if any(r["grade"] in ("A", "B") for r in results):
+        best = [r["content"][:500] for r in results if r["grade"] in ("A", "B")]
+        synth_msgs = [{"role": "user", "content": (
+            f"Here are the best solutions to: {problem}\n\n" +
+            "\n---\n".join(best[:3]) +
+            "\n\nExtract 1-3 operational SYSTEM RULES. Format each as: RULE: <imperative instruction>"
+        )}]
+        synth_result = query_model(synth_msgs)
+        for rm in re.finditer(r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", "")):
+            rule_text = rm.group(1).strip()[:300]
+            if len(rule_text) > 10:
+                strategies.append(f"RULE: {rule_text}")
+    
+    return {
+        "problem": problem,
+        "iterations": results,
+        "strategies": list(dict.fromkeys(strategies))[-5:],  # deduplicated, last 5
+    }
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -1718,6 +1807,17 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         messages[-1]["content"] = user_msg
         threading.Thread(target=archive_staging, daemon=True).start()
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
+
+    # ── Learn trigger: <<LEARN problem:...>> runs learning mode ──
+    learn_match = _learn_re.search(user_msg)
+    if learn_match:
+        learn_problem = learn_match.group(1).strip()
+        user_msg = _learn_re.sub("", user_msg).strip()
+        if not user_msg:
+            user_msg = "Learning mode was triggered."
+        messages[-1]["content"] = user_msg
+        threading.Thread(target=_run_learning_mode, args=(learn_problem, 5), daemon=True).start()
+        print(f"  [LEARN] Triggered via <<LEARN>>: {learn_problem[:80]}", flush=True)
 
     # Strip all <<COMMANDS>> from user messages
     _cmd_re = re.compile(r"<<[A-Z_]+(?:\s+[^>]+)?>>")
@@ -2385,88 +2485,8 @@ if FLASK_OK:
         if not problem:
             return _cors_response({"error": "problem required"}, status=400)
         
-        # Default parameter sets for exploration
-        default_params = [
-            {"temperature": 0.3, "top_p": 0.5},
-            {"temperature": 0.7, "top_p": 0.9},
-            {"temperature": 1.2, "top_p": 0.95},
-            {"temperature": 1.5, "top_k": 20},
-            {"mirostat": 2, "mirostat_tau": 8.0},
-        ]
-        param_sets = custom_params or default_params
-        
-        results = []
-        strategies = []
-        
-        for i in range(iterations):
-            params = param_sets[i % len(param_sets)]
-            print(f"  [LEARN] iteration {i+1}/{iterations} params={params}", flush=True)
-            
-            # Build prompt for this iteration
-            if i == 0:
-                prompt = f"Solve or analyze: {problem}\n\nConsider approaches that are NON-OBVIOUS. What would someone who disagrees with the conventional answer propose?"
-            else:
-                prev = results[-1].get("content", "")[:300]
-                prompt = f"Previous approach: {prev}\n\nWhat ASSUMPTIONS did it make? Can you find a solution that doesn't rely on those assumptions? Problem: {problem}"
-            
-            msgs = [{"role": "user", "content": prompt}]
-            
-            # Query with varied parameters
-            result = query_model(msgs, options=params)
-            
-            # Grade at standard temp (0.7) — always use same temp for fair comparison
-            grade_msgs = [{"role": "user", "content": (
-                f"Grade this answer [A-F] based on correctness, novelty, and whether it "
-                f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:1000]}\n\n"
-                f"Respond with ONLY: [GRADE: A/B/C/D/F]"
-            )}]
-            grade_result = query_model(grade_msgs)
-            grade_text = grade_result.get("content", "")
-            gm = re.search(r"\[GRADE:\s*([ABCDF])\]", grade_text, re.IGNORECASE)
-            grade = gm.group(1).upper() if gm else "C"
-            
-            iteration = {
-                "iteration": i + 1,
-                "params": params,
-                "content": result.get("content", "")[:2000],
-                "grade": grade,
-            }
-            results.append(iteration)
-            
-            if grade in ("A", "B"):
-                # Extract strategy from good responses
-                strat_msgs = [{"role": "user", "content": (
-                    f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
-                    f"Format each as: [STRATEGY: one-sentence imperative rule]\n\n"
-                    f"ANSWER: {result.get('content', '')[:1500]}"
-                )}]
-                strat_result = query_model(strat_msgs)
-                for sm in re.finditer(r"STRATEGY:\s*(.+?)(?:\]|$)", strat_result.get("content", ""), re.MULTILINE):
-                    s_text = sm.group(1).strip()[:300]
-                    if len(s_text) > 10:
-                        strategies.append(s_text)
-                        _save_strategy(s_text, grade)
-                        print(f"  [LEARN-STRATEGY] {s_text[:80]}...", flush=True)
-        
-        # Synthesis: extract final strategies from all A-grade responses
-        if any(r["grade"] in ("A", "B") for r in results):
-            best = [r["content"][:500] for r in results if r["grade"] in ("A", "B")]
-            synth_msgs = [{"role": "user", "content": (
-                f"Here are the best solutions to: {problem}\n\n" +
-                "\n---\n".join(best[:3]) +
-                "\n\nExtract 1-3 operational SYSTEM RULES. Format each as: RULE: <imperative instruction>"
-            )}]
-            synth_result = query_model(synth_msgs)
-            for rm in re.finditer(r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", "")):
-                rule_text = rm.group(1).strip()[:300]
-                if len(rule_text) > 10:
-                    strategies.append(f"RULE: {rule_text}")
-        
-        return _cors_response({
-            "problem": problem,
-            "iterations": results,
-            "strategies": list(dict.fromkeys(strategies))[-5:],  # deduplicated, last 5
-        })
+        result = _run_learning_mode(problem, iterations, custom_params)
+        return _cors_response(result)
 
 # ─── Startup ───────────────────────────────────────────────────
 
