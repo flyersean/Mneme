@@ -1780,6 +1780,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                  if m.get("role") == "user"][:3]  # last 3 user turns
     user_msg = " ".join(reversed(user_msgs))  # chronological order
     
+    # Full (untruncated) last user message — used for <<COMMAND>> detection
+    # so long prompts with a closing ">>" are not cut off by the 500-char truncation.
+    full_user_msg = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            full_user_msg = _extract_text(m.get("content", ""))
+            break
+    
     # ── Detail: load full chunk if DETAIL tag found ──
     # Scan last message regardless of role (model may output DETAIL in response)
     last_msg = _extract_text(messages[-1].get("content", "")) if messages else ""
@@ -1802,14 +1810,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     # ── Save trigger: <<SAVE>> forces archive ──
     SAVE_TRIGGER = "<<SAVE>>"
-    if SAVE_TRIGGER in user_msg:
+    if SAVE_TRIGGER in full_user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
         messages[-1]["content"] = user_msg
         threading.Thread(target=archive_staging, daemon=True).start()
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
     # ── Learn trigger: <<LEARN problem:...>> runs learning mode ──
-    learn_match = _learn_re.search(user_msg)
+    learn_match = _learn_re.search(full_user_msg)
     if learn_match:
         learn_problem = learn_match.group(1).strip()
         user_msg = _learn_re.sub("", user_msg).strip()
