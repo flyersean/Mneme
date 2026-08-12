@@ -1772,6 +1772,164 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         "strategies": list(dict.fromkeys(strategies))[-5:],  # deduplicated, last 5
     }
 
+
+# ─── Novelty Thinking Mode ──────────────────────────────────────
+# The goal: escape mode collapse. LLMs sample the CENTER of an attractor
+# basin, so 10 LLMs produce 10 near-identical answers. This mode forces the
+# model out of the basin by (1) forbidding the modal features it just used,
+# (2) decomposing the problem into decision points and sampling the tail,
+# and (3) measuring novelty OBJECTIVELY via embedding distance instead of
+# asking the model to self-report how creative it was.
+#
+# Quality is judged by PAIRWISE comparison (LLMs are better at "is B
+# different from A AND still valid?" than absolute grading at the mean).
+
+LEARNED_IDEAS_FILE = os.path.join(CHUNK_DIR, "learned_ideas.jsonl")
+
+def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
+    """Ask the model: is candidate structurally different from baseline AND still
+    valid? Returns {different: bool, valid: bool, reason: str}. Pairwise comparison
+    sidesteps the mean-bias of absolute self-grading."""
+    q = [{"role": "user", "content": (
+        f"Problem: {problem}\n\n"
+        f"BASELINE ANSWER (the conventional one):\n{baseline[:1500]}\n\n"
+        f"CANDIDATE ANSWER:\n{candidate[:1500]}\n\n"
+        f"Answer two questions:\n"
+        f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
+        f"approach or skeleton, not just reworded? Answer YES or NO.\n"
+        f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
+        f"Respond in exactly this format:\nDIFFERENT: yes/no\nVALID: yes/no\nREASON: one short sentence"
+    )}]
+    r = query_model(q)
+    txt = r.get("content", "")
+    dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
+    vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
+    rm = re.search(r"REASON:\s*(.+)", txt, re.IGNORECASE)
+    return {
+        "different": (dm.group(1).lower() == "yes") if dm else False,
+        "valid": (vm.group(1).lower() == "yes") if vm else False,
+        "reason": rm.group(1).strip()[:200] if rm else "",
+    }
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    a = a / (np.linalg.norm(a) + 1e-8)
+    b = b / (np.linalg.norm(b) + 1e-8)
+    return float(np.dot(a, b))
+
+def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
+    """Diverge → measure → judge → save. Returns full results with embedding
+    distances so novelty is an objective number, not a self-report."""
+    import json as _json
+    
+    # 1. Baseline — the modal answer
+    print("  [THINK] generating baseline", flush=True)
+    baseline_res = query_model([{"role": "user", "content": problem}])
+    baseline = baseline_res.get("content", "")
+    base_vec = embed(baseline)
+
+    # 2. Extract modal features (the clichés to forbid)
+    if custom_features:
+        modal_features = custom_features
+    else:
+        feat_res = query_model([{"role": "user", "content": (
+            f"For this prompt:\n{problem}\n\n"
+            f"List the 5 most clichéd or conventional elements a typical answer would use. "
+            f"These are the patterns that make all answers look the same. "
+            f"Output each on its own line, no numbering, no explanation."
+        )}])
+        modal_features = [l.strip(" -•*").strip() for l in feat_res.get("content", "").splitlines()
+                          if len(l.strip()) > 3][:5]
+    print(f"  [THINK] modal features to forbid: {modal_features}", flush=True)
+
+    # 3. Diverge — generate candidates with forbidden features
+    candidates = []
+    forbid_text = "\n".join(f"- {f}" for f in modal_features)
+    for i in range(iterations):
+        # Alternate: constrain (forbid) vs. enumerate-tail (list alternatives first)
+        if i % 2 == 0:
+            gen_prompt = (
+                f"{problem}\n\n"
+                f"HARD CONSTRAINTS — your answer MUST NOT use any of these conventional elements:\n"
+                f"{forbid_text}\n\n"
+                f"Produce a genuinely different answer that routes around every one of these. "
+                f"Do not merely reword the conventional answer — change the underlying approach."
+            )
+        else:
+            gen_prompt = (
+                f"{problem}\n\n"
+                f"First, brainstorm 5 UNCONVENTIONAL approaches that most people would NOT "
+                f"think of (avoid the obvious one). Then pick the most original one and execute it fully. "
+                f"Do NOT use these clichés:\n{forbid_text}"
+            )
+        res = query_model([{"role": "user", "content": gen_prompt}],
+                          options={"temperature": 1.1, "top_p": 0.95})
+        content = res.get("content", "")
+        vec = embed(content)
+        # Distance from baseline + mean distance from prior candidates (objective novelty)
+        d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
+        prior_dist = []
+        for c in candidates:
+            if np.any(c["vec"]):
+                prior_dist.append(1.0 - _cosine(vec, c["vec"]))
+        mean_prior = float(np.mean(prior_dist)) if prior_dist else 0.0
+        novelty = 0.6 * d_base + 0.4 * mean_prior  # 0.0 = identical, higher = more novel
+        candidates.append({"idx": i, "content": content, "vec": vec,
+                           "dist_from_baseline": round(d_base, 4),
+                           "dist_from_peers": round(mean_prior, 4),
+                           "novelty": round(novelty, 4)})
+        print(f"  [THINK] candidate {i} novelty={novelty:.4f} (base={d_base:.4f} peers={mean_prior:.4f})", flush=True)
+
+    # 4. Pairwise judge each candidate
+    results = []
+    for c in candidates:
+        j = _pairwise_judge(baseline, c["content"], problem)
+        results.append({
+            "idx": c["idx"],
+            "content": c["content"],
+            "novelty": c["novelty"],
+            "dist_from_baseline": c["dist_from_baseline"],
+            "dist_from_peers": c["dist_from_peers"],
+            "different": j["different"],
+            "valid": j["valid"],
+            "reason": j["reason"],
+        })
+        print(f"  [THINK] judge c{c['idx']}: different={j['different']} valid={j['valid']} — {j['reason'][:60]}", flush=True)
+
+    # 5. Save to separate JSONL store (outside the memory DB)
+    saved_ids = []
+    try:
+        with open(LEARNED_IDEAS_FILE, "a") as f:
+            for c in results:
+                idea_id = "idea_" + str(int(time.time())) + "_" + str(c["idx"])
+                f.write(_json.dumps({
+                    "id": idea_id,
+                    "problem": problem[:500],
+                    "novelty": c["novelty"],
+                    "dist_from_baseline": c["dist_from_baseline"],
+                    "different": c["different"],
+                    "valid": c["valid"],
+                    "reason": c["reason"],
+                    "content": c["content"],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }) + "\n")
+                saved_ids.append(idea_id)
+        print(f"  [THINK] saved {len(saved_ids)} ideas to {LEARNED_IDEAS_FILE}", flush=True)
+    except Exception as e:
+        print(f"  [THINK][SAVE-ERR] {e}", flush=True)
+
+    # 6. Return — filter to "different AND valid" for the highlight
+    highlight = [r for r in results if r["different"] and r["valid"]]
+    return {
+        "problem": problem,
+        "baseline": baseline,
+        "modal_features": modal_features,
+        "candidates": results,
+        "novel_winners": [r["idx"] for r in highlight],
+        "saved_to": LEARNED_IDEAS_FILE,
+        "saved_ids": saved_ids,
+    }
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -2494,6 +2652,23 @@ if FLASK_OK:
             return _cors_response({"error": "problem required"}, status=400)
         
         result = _run_learning_mode(problem, iterations, custom_params)
+        return _cors_response(result)
+
+    @app.route("/mode/think", methods=["POST"])
+    def mode_think():
+        """Novelty thinking mode: escape mode collapse.
+        POST body: {problem, iterations?, features?}
+        Generates a baseline, forbids its modal features, diverges, measures
+        embedding distance (objective novelty), and pairwise-judges quality."""
+        data = request.get_json(force=True)
+        problem = data.get("problem", "")
+        iterations = min(data.get("iterations", 4), 8)
+        custom_features = data.get("features", None)
+        
+        if not problem:
+            return _cors_response({"error": "problem required"}, status=400)
+        
+        result = _novelty_thinking_mode(problem, iterations, custom_features)
         return _cors_response(result)
 
 # ─── Startup ───────────────────────────────────────────────────
