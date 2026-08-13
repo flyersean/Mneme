@@ -469,9 +469,15 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         print(f"  [ERROR] Ollama returned: {d['error']}", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
     msg = d.get("message", {})
+    content = msg.get("content", "")
+    thinking = msg.get("thinking", "")
+    # Reasoning models (gemma4) sometimes put the answer in "thinking" and leave
+    # "content" empty. Fall back to thinking so generations aren't dropped.
+    if not content and thinking:
+        content = thinking
     result = {
-        "content": msg.get("content", ""),
-        "thinking": msg.get("thinking", ""),
+        "content": content,
+        "thinking": thinking,
         "tool_calls": msg.get("tool_calls", []),
         "eval_count": d.get("eval_count", 0),
         "done_reason": d.get("done_reason", "?"),
