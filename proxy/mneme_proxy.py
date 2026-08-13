@@ -1796,8 +1796,8 @@ def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
     try:
         q = [{"role": "user", "content": (
             f"Problem: {problem}\n\n"
-            f"BASELINE ANSWER (the conventional one):\n{baseline[:1000]}\n\n"
-            f"CANDIDATE ANSWER:\n{candidate[:1000]}\n\n"
+            f"BASELINE ANSWER (the conventional one):\n{baseline[:3000]}\n\n"
+            f"CANDIDATE ANSWER:\n{candidate[:3000]}\n\n"
             f"Answer two questions:\n"
             f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
             f"approach or skeleton, not just reworded? Answer YES or NO.\n"
@@ -1864,6 +1864,22 @@ def _wild_seed(problem: str) -> str:
     r = query_model(q, options={"temperature": 1.7, "top_p": 0.99}, timeout=NOVELTY_TIMEOUT)
     return r.get("content", "")
 
+def _extract_distinctive_features(text: str) -> list:
+    """List the specific, recognizable elements of an answer so they can be added
+    to the ban list for the NEXT candidate. This is what kills the re-collapse:
+    candidate 1 uses "clockmaker" and "ash", so candidate 2 is forbidden from them."""
+    q = [{"role": "user", "content": (
+        f"Here is an answer:\n{text[:1500]}\n\n"
+        f"List the 3 most SPECIFIC, recognizable elements of this answer — the character "
+        f"type, the selection mechanism, the ritual/object/setting. These are what would "
+        f"make another answer look like a repeat of this one. Output each as a short "
+        f"phrase on its own line, no numbering, no explanation."
+    )}]
+    r = query_model(q, timeout=NOVELTY_TIMEOUT)
+    feats = [l.strip(" -•*\t").strip() for l in r.get("content", "").splitlines()
+             if len(l.strip()) > 3][:3]
+    return feats
+
 # Temperature schedule — varies sampling per candidate so no single candidate
 # is a re-roll of the same distribution.
 _NOVELTY_TEMP_SCHEDULE = [
@@ -1904,7 +1920,6 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     print(f"  [THINK] {len(decision_points)} decision points to forbid:", flush=True)
     for dp in decision_points:
         print(f"    - {dp['point']}: {dp['conventional'][:70]}", flush=True)
-    forbid_text = "\n".join(f"- {dp['point']}: NOT {dp['conventional']}" for dp in decision_points)
 
     # 3. Wild seed — the outlandish steering outlier
     print("  [THINK] generating wild seed (temp 1.7)", flush=True)
@@ -1912,18 +1927,23 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     wild_vec = embed(wild)
     print(f"  [THINK] wild seed ready ({len(wild)} chars)", flush=True)
 
-    # 4. Diverge with temperature variation + wild steering + per-slot forbidding
+    # 4. Diverge with temperature variation + wild steering + ACCUMULATING forbidding.
+    # ban_items GROWS each iteration: a candidate's distinctive features are added
+    # so the next candidate can't re-collapse on the runner-up (clockmaker/ash bug).
+    ban_items = [f"{dp['point']}: NOT {dp['conventional']}" for dp in decision_points]
     candidates = []
     for i in range(iterations):
         params = _NOVELTY_TEMP_SCHEDULE[i % len(_NOVELTY_TEMP_SCHEDULE)]
+        forbid_text = "\n".join(f"- {b}" for b in ban_items)
         gen_prompt = (
             f"{problem}\n\n"
-            f"HARD CONSTRAINTS — route around every one of these conventional choices:\n"
+            f"HARD CONSTRAINTS — route around ALL of these already-used or conventional elements:\n"
             f"{forbid_text}\n\n"
             f"STEERING REFERENCE (a deliberately wild take on this problem, for inspiration "
             f"only — do NOT copy it, use it to push past the obvious):\n{wild[:800]}\n\n"
-            f"Produce your OWN original answer. It must differ from both the conventional "
-            f"answer AND the wild reference. Change the underlying approach, not the wording."
+            f"Produce your OWN original answer. It must differ from the conventional answer, "
+            f"the wild reference, AND every element listed above. Change the underlying "
+            f"approach, not the wording."
         )
         res = query_model([{"role": "user", "content": gen_prompt}], options=params, timeout=NOVELTY_TIMEOUT)
         content = res.get("content", "")
@@ -1938,8 +1958,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             retry_prompt = (
                 f"{problem}\n\n"
                 f"Your last answer was TOO SIMILAR to the conventional answer. "
-                f"Change the {len(decision_points)} decision points listed below and do "
-                f"something structurally different:\n{forbid_text}\n\n"
+                f"Route around ALL of these already-used elements:\n{forbid_text}\n\n"
                 f"Also, here is a wild idea to push you further off-center:\n{wild[:800]}\n\n"
                 f"Produce a genuinely different answer now."
             )
@@ -1965,6 +1984,13 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                            "novelty": round(novelty, 4),
                            "regenerated": regenerated})
         print(f"  [THINK] candidate {i} novelty={novelty:.4f} (base={d_base:.4f} wild={d_wild:.4f} peers={mean_prior:.4f})", flush=True)
+
+        # Accumulating forbidding: extract this candidate's distinctive features and
+        # add them to the ban list so the next candidate can't reuse them.
+        feats = _extract_distinctive_features(content)
+        for f in feats:
+            ban_items.append(f"NOT {f}")
+        print(f"  [THINK] candidate {i} features banned for next: {feats}", flush=True)
 
     # 4b. Save candidates to JSONL IMMEDIATELY (before judging) so outputs are
     # never lost even if a judge times out and crashes the request.
