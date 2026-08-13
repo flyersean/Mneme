@@ -1868,17 +1868,23 @@ def _extract_distinctive_features(text: str) -> list:
     """List the specific, recognizable elements of an answer so they can be added
     to the ban list for the NEXT candidate. This is what kills the re-collapse:
     candidate 1 uses "clockmaker" and "ash", so candidate 2 is forbidden from them."""
-    q = [{"role": "user", "content": (
-        f"Here is an answer:\n{text[:1500]}\n\n"
-        f"List the 3 most SPECIFIC, recognizable elements of this answer — the character "
-        f"type, the selection mechanism, the ritual/object/setting. These are what would "
-        f"make another answer look like a repeat of this one. Output each as a short "
-        f"phrase on its own line, no numbering, no explanation."
-    )}]
-    r = query_model(q, timeout=NOVELTY_TIMEOUT)
-    feats = [l.strip(" -•*\t").strip() for l in r.get("content", "").splitlines()
-             if len(l.strip()) > 3][:3]
-    return feats
+    if not text or not text.strip():
+        return []
+    try:
+        q = [{"role": "user", "content": (
+            f"Here is an answer:\n{text[:1500]}\n\n"
+            f"List the 3 most SPECIFIC, recognizable elements of this answer — the character "
+            f"type, the selection mechanism, the ritual/object/setting. These are what would "
+            f"make another answer look like a repeat of this one. Output each as a short "
+            f"phrase on its own line, no numbering, no explanation."
+        )}]
+        r = query_model(q, timeout=NOVELTY_TIMEOUT)
+        feats = [l.strip(" -•*\t").strip() for l in r.get("content", "").splitlines()
+                 if len(l.strip()) > 3][:3]
+        return feats
+    except Exception as e:
+        print(f"  [THINK][FEAT-ERR] {type(e).__name__}: {e}", flush=True)
+        return []
 
 # Temperature schedule — varies sampling per candidate so no single candidate
 # is a re-roll of the same distribution.
@@ -1947,6 +1953,18 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
         )
         res = query_model([{"role": "user", "content": gen_prompt}], options=params, timeout=NOVELTY_TIMEOUT)
         content = res.get("content", "")
+
+        # Empty-content retry: a too-long ban list can make the model return nothing.
+        if not content.strip():
+            print(f"  [THINK] candidate {i} empty — retrying with shorter ban list", flush=True)
+            short_forbid = "\n".join(f"- {b}" for b in ban_items[-8:])  # only most recent bans
+            res = query_model([{"role": "user", "content": (
+                f"{problem}\n\n"
+                f"Write an original answer. Avoid these recent elements:\n{short_forbid}\n\n"
+                f"Steering idea (do not copy):\n{wild[:600]}"
+            )}], options={"temperature": 1.4, "top_p": 0.97}, timeout=NOVELTY_TIMEOUT)
+            content = res.get("content", "")
+
         vec = embed(content)
         d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
         d_wild = 1.0 - _cosine(vec, wild_vec) if np.any(wild_vec) else 0.0
