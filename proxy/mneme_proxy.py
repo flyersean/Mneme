@@ -397,9 +397,11 @@ MEMORY_DISCLAIMER = (
 )
 
 def query_model(messages: list, system: str = None, temperature: float = None,
-                max_tokens: int = None, tools: list = None, options: dict = None) -> dict:
+                max_tokens: int = None, tools: list = None, options: dict = None,
+                timeout: int = 300) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
-    Pass options dict for top_p, top_k, mirostat, etc."""
+    Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
+    Ollama read timeout — raise it for long generations (novelty thinking)."""
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
     
@@ -461,7 +463,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         msgs = sys_msgs + non_sys
         print(f"  [WARN] Trimmed to {total} chars ({len(non_sys)} messages, limit {MAX_PROMPT_CHARS})", flush=True)
     
-    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300)
+    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     d = r.json()
     if "error" in d:
         print(f"  [ERROR] Ollama returned: {d['error']}", flush=True)
@@ -1802,7 +1804,7 @@ def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
             f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
             f"Respond in exactly this format:\nDIFFERENT: yes/no\nVALID: yes/no\nREASON: one short sentence"
         )}]
-        r = query_model(q)
+        r = query_model(q, timeout=NOVELTY_TIMEOUT)
         txt = r.get("content", "")
         dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
         vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
@@ -1837,7 +1839,7 @@ def _decompose_problem(problem: str) -> list:
         f"Output exactly one per line, in this format:\n"
         f"POINT: <short label> | CONVENTIONAL: <the default choice most people make>"
     )}]
-    r = query_model(q)
+    r = query_model(q, timeout=NOVELTY_TIMEOUT)
     points = []
     for line in r.get("content", "").splitlines():
         m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
@@ -1859,7 +1861,7 @@ def _wild_seed(problem: str) -> str:
         f"extreme edge of the possibility space. Go somewhere a normal answer would "
         f"never go. Aim for genuinely surprising, not weird-for-its-own-sake."
     )}]
-    r = query_model(q, options={"temperature": 1.7, "top_p": 0.99})
+    r = query_model(q, options={"temperature": 1.7, "top_p": 0.99}, timeout=NOVELTY_TIMEOUT)
     return r.get("content", "")
 
 # Temperature schedule — varies sampling per candidate so no single candidate
@@ -1872,6 +1874,7 @@ _NOVELTY_TEMP_SCHEDULE = [
 ]
 
 NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
+NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))  # seconds, for slow 26B generations
 
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
     """Diverge → measure → gate → judge → save.
@@ -1889,7 +1892,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     
     # 1. Baseline — the modal answer
     print("  [THINK] generating baseline", flush=True)
-    baseline_res = query_model([{"role": "user", "content": problem}])
+    baseline_res = query_model([{"role": "user", "content": problem}], timeout=NOVELTY_TIMEOUT)
     baseline = baseline_res.get("content", "")
     base_vec = embed(baseline)
 
@@ -1922,7 +1925,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             f"Produce your OWN original answer. It must differ from both the conventional "
             f"answer AND the wild reference. Change the underlying approach, not the wording."
         )
-        res = query_model([{"role": "user", "content": gen_prompt}], options=params)
+        res = query_model([{"role": "user", "content": gen_prompt}], options=params, timeout=NOVELTY_TIMEOUT)
         content = res.get("content", "")
         vec = embed(content)
         d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
@@ -1941,7 +1944,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                 f"Produce a genuinely different answer now."
             )
             res = query_model([{"role": "user", "content": retry_prompt}],
-                              options={"temperature": 1.6, "top_p": 0.98})
+                              options={"temperature": 1.6, "top_p": 0.98}, timeout=NOVELTY_TIMEOUT)
             content = res.get("content", "")
             vec = embed(content)
             d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
