@@ -1957,19 +1957,27 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             f"the wild reference, AND every element listed above. Change the underlying "
             f"approach, not the wording."
         )
-        res = query_model([{"role": "user", "content": gen_prompt}], options=params, timeout=NOVELTY_TIMEOUT)
-        content = res.get("content", "")
+        try:
+            res = query_model([{"role": "user", "content": gen_prompt}], options=params, timeout=NOVELTY_TIMEOUT)
+            content = res.get("content", "")
+        except Exception as e:
+            print(f"  [THINK] candidate {i} generation failed: {type(e).__name__} — skipping", flush=True)
+            content = ""
 
         # Empty-content retry: a too-long ban list can make the model return nothing.
         if not content.strip():
             print(f"  [THINK] candidate {i} empty — retrying with shorter ban list", flush=True)
             short_forbid = "\n".join(f"- {b}" for b in ban_items[-8:])  # only most recent bans
-            res = query_model([{"role": "user", "content": (
-                f"{problem}\n\n"
-                f"Write an original answer. Avoid these recent elements:\n{short_forbid}\n\n"
-                f"Steering idea (do not copy):\n{wild[:600]}"
-            )}], options={"temperature": 1.4, "top_p": 0.97}, timeout=NOVELTY_TIMEOUT)
-            content = res.get("content", "")
+            try:
+                res = query_model([{"role": "user", "content": (
+                    f"{problem}\n\n"
+                    f"Write an original answer. Avoid these recent elements:\n{short_forbid}\n\n"
+                    f"Steering idea (do not copy):\n{wild[:600]}"
+                )}], options={"temperature": 1.4, "top_p": 0.97}, timeout=NOVELTY_TIMEOUT)
+                content = res.get("content", "")
+            except Exception as e:
+                print(f"  [THINK] candidate {i} retry failed: {type(e).__name__}", flush=True)
+                content = ""
 
         vec = embed(content)
         d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
