@@ -147,6 +147,48 @@ def _parse_structured(reply: str, schema_hint: str, fallback_re: str = None,
     print(f"  [WARN] Structured output failed and no fallback matched for {schema_hint}", flush=True)
     return {}, True
 
+# ─── Supervised background workers (Phase 3) ────────────────────
+# One queue + N daemon threads. Jobs are (fn, args, kwargs); any exception is
+# written to errors.log via _log_error and the loop continues. Replaces
+# fire-and-forget threading.Thread(daemon=True) which swallowed every failure.
+
+_BG_QUEUE: "queue.Queue" = queue.Queue()
+_BG_N_WORKERS = 2
+_bg_started = False
+_bg_start_lock = threading.Lock()
+
+def _bg_worker():
+    while True:
+        try:
+            fn, args, kwargs = _BG_QUEUE.get()
+        except Exception as e:
+            _log_error("bg_worker:get", e)
+            continue
+        try:
+            fn(*args, **kwargs)
+        except Exception as e:
+            _log_error(f"bg_worker:{getattr(fn, '__name__', fn)}", e)
+        finally:
+            try:
+                _BG_QUEUE.task_done()
+            except Exception:
+                pass
+
+def _start_bg_workers():
+    global _bg_started
+    with _bg_start_lock:
+        if _bg_started:
+            return
+        for i in range(_BG_N_WORKERS):
+            t = threading.Thread(target=_bg_worker, name=f"mneme-bg-{i}", daemon=True)
+            t.start()
+        _bg_started = True
+
+def _enqueue(fn, *args, **kwargs):
+    """Submit a background job. Workers are started lazily on first enqueue."""
+    _start_bg_workers()
+    _BG_QUEUE.put((fn, args, kwargs))
+
 # ─── Database ──────────────────────────────────────────────────
 
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -655,7 +697,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     
     # Async belief evolution: check if this chunk supersedes older ones
     if is_indexable:
-        threading.Thread(target=_check_belief_evolution, args=(chunk_id, topic_label), daemon=True).start()
+        _enqueue(_check_belief_evolution, chunk_id, topic_label)
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
     row = db.execute(
@@ -1728,7 +1770,7 @@ def compress_large_tool_results(messages: list) -> list:
         # Trigger archive if buffer has substantial content
         if staging.should_flush():
             import threading
-            threading.Thread(target=archive_staging, daemon=True).start()
+            _enqueue(archive_staging)
             print(f"  [STAGE] Auto-flushed staging buffer", flush=True)
     
     compress_large_tool_results._staged_hashes = _staged_hashes
@@ -2262,7 +2304,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if SAVE_TRIGGER in full_user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
         messages[-1]["content"] = user_msg
-        threading.Thread(target=archive_staging, daemon=True).start()
+        _enqueue(archive_staging)
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
     # ── Learn trigger: <<LEARN problem:...>> runs learning mode ──
@@ -2273,7 +2315,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if not user_msg:
             user_msg = "Learning mode was triggered."
         messages[-1]["content"] = user_msg
-        threading.Thread(target=_run_learning_mode, args=(learn_problem, 5), daemon=True).start()
+        _enqueue(_run_learning_mode, learn_problem, 5)
         print(f"  [LEARN] Triggered via <<LEARN>>: {learn_problem[:80]}", flush=True)
 
     # Strip all <<COMMANDS>> from user messages
@@ -2377,8 +2419,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
     
     if staging.should_flush():
-        threading.Thread(target=archive_staging, daemon=True).start()
-    
+        _enqueue(archive_staging)
+
     return {
         **result,
         "tool_calls": result.get("tool_calls", []),
@@ -2684,7 +2726,7 @@ if FLASK_OK:
         grade = str(_gd4.get("grade", "D")).strip().upper()
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "D"
-        threading.Thread(target=_strategy_lifecycle, args=(grade, messages), daemon=True).start()
+        _enqueue(_strategy_lifecycle, grade, messages)
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
 
