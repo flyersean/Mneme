@@ -1877,8 +1877,10 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         
         # Grade at standard temp (0.7) — always use same temp for fair comparison
         grade_msgs = [{"role": "user", "content": (
-            f"Grade this answer [A-F] based on correctness, novelty, and whether it "
-            f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:MAX_JUDGE_CHARS]}\n\n"
+            f"Grade this answer [A-F] on correctness, completeness, and direct usefulness.\n"
+            f"A = correct and complete, directly usable. B = correct with minor gaps. "
+            f"C = partial or uncertain. D = incomplete or vague. F = wrong or fabricated.\n\n"
+            f"ANSWER: {result.get('content', '')[:MAX_JUDGE_CHARS]}\n\n"
             f"Respond with ONLY the grade letter (A, B, C, D, or F), nothing else."
         )}]
         grade_result = query_model(grade_msgs)
