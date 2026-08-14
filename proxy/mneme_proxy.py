@@ -56,6 +56,22 @@ ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for mor
 BASELINE_NOISE     = 0.20  # fallback — overridden at startup by _calibrate_noise()
 AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
 
+# ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
+MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
+MAX_JUDGE_CHARS      = 3000   # pairwise judge baseline/candidate excerpt
+MAX_STORY_CHARS      = 2000   # generic content truncation for prompts
+MAX_STORY_CHARS_ALT  = 1500   # secondary content truncation (belief/thinking paths)
+MAX_MESSAGE_STORE    = 8000   # per-message char cap when storing in SQLite
+MAX_THINKING_STORE   = 8000   # thinking field char cap in SQLite
+# MAX_PROMPT_CHARS is defined below near build_context (env-overridable)
+MAX_PREVIEW_CHARS    = 300    # short inline previews
+MAX_MSG_TEXT_CHARS   = 800    # per-message excerpt inside comparison/summary prompts
+MAX_SEMANTIC_FRAG    = 5000   # per-message fragment when building embedding text
+MAX_LABEL_INPUT      = 2000   # chars fed to the topic-label model
+MAX_DETAIL_CHARS     = 20000  # chars returned by the <<DETAIL>> endpoint
+MAX_ABSTRACT_INPUT   = 400    # short excerpt of one message
+MAX_ARCHIVE_FRAG     = 200    # per-message fragment for outcome/type heuristics
+
 # Save-cycle counter — incremented on every staging flush AND manual <<SAVE>>
 _archive_cycle = 0
 _archive_cycle_lock = threading.Lock()
@@ -83,6 +99,25 @@ def _next_cycle() -> int:
 def _current_cycle() -> int:
     with _archive_cycle_lock:
         return _archive_cycle
+
+# ─── Error Log (Phase 1.1) ─────────────────────────────────────
+# Every previously-silent except: now funnels here. Failures stay visible
+# without killing the proxy.
+ERROR_LOG_FILE = os.path.join(CHUNK_DIR, "errors.log")
+
+def _log_error(where: str, e: Exception):
+    """Append 'timestamp | where | type | message' to errors.log. Never raises."""
+    try:
+        os.makedirs(CHUNK_DIR, exist_ok=True)
+        with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()} | {where} | "
+                    f"{type(e).__name__} | {e}\n")
+    except Exception:
+        pass  # error log must never itself crash the proxy
+    try:
+        print(f"  [ERR][{where}] {type(e).__name__}: {str(e)[:200]}", flush=True)
+    except Exception:
+        pass
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
 
@@ -238,7 +273,8 @@ def _vec_to_blob(vec: np.ndarray) -> bytes:
 def _blob_to_vec(blob: bytes) -> Optional[np.ndarray]:
     try:
         return np.frombuffer(blob, dtype=np.float32).copy()
-    except:
+    except Exception as e:
+        _log_error("_blob_to_vec", e)
         return None
 
 # ─── Embedding: chunk + pool for long text ─────────────────────
@@ -387,7 +423,8 @@ def _load_system_prompt():
     try:
         with open(SYSTEM_PROMPT_FILE) as f:
             return f.read().strip()
-    except:
+    except Exception as e:
+        _log_error("_load_system_prompt", e)
         return "You are a helpful AI assistant."
 
 SYSTEM_PROMPT = _load_system_prompt()
@@ -508,26 +545,27 @@ def _check_belief_evolution(new_chunk_id: str, topic_label: str):
             return
         
         new_text = " ".join(
-            m.get("content", "")[:300] for m in new_chunk.get("messages", [])
+            m.get("content", "")[:MAX_PREVIEW_CHARS] for m in new_chunk.get("messages", [])
             if m.get("role") in ("user", "assistant")
-        )[:1500]
-        
+        )[:MAX_STORY_CHARS_ALT]
+
         for old_id, old_msgs_json in older:
             old_text = ""
             try:
                 old_msgs = json.loads(old_msgs_json)
                 old_text = " ".join(
-                    m.get("content", "")[:300] for m in old_msgs
+                    m.get("content", "")[:MAX_PREVIEW_CHARS] for m in old_msgs
                     if m.get("role") in ("user", "assistant")
-                )[:1500]
-            except:
+                )[:MAX_STORY_CHARS_ALT]
+            except Exception as e:
+                _log_error("_check_belief_evolution:parse_old", e)
                 continue
             
             # Ask 35B to compare
             q = [{"role": "user", "content": (
                 "Compare these two pieces of information about the same topic:\n\n"
-                f"OLDER: {old_text[:800]}\n\n"
-                f"NEWER: {new_text[:800]}\n\n"
+                f"OLDER: {old_text[:MAX_MSG_TEXT_CHARS]}\n\n"
+                f"NEWER: {new_text[:MAX_MSG_TEXT_CHARS]}\n\n"
                 "Does the newer information UPDATE or CONTRADICT the older one? "
                 "Answer with one word: UPDATE, CONTRADICT, or NO.\n"
                 "UPDATE means the newer info supersedes or refines the older.\n"
@@ -569,7 +607,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     db.execute("""
         INSERT OR REPLACE INTO chunks
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (chunk_id, topic_label, msgs_json, thinking[:8000], strategy,
+    """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
           blob, grade, consensus, outcome, problem_type,
           source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0, ""))
 
@@ -1729,7 +1767,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         # Grade at standard temp (0.7) — always use same temp for fair comparison
         grade_msgs = [{"role": "user", "content": (
             f"Grade this answer [A-F] based on correctness, novelty, and whether it "
-            f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:1000]}\n\n"
+            f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:MAX_JUDGE_CHARS]}\n\n"
             f"Respond with ONLY: [GRADE: A/B/C/D/F]"
         )}]
         grade_result = query_model(grade_msgs)
@@ -1740,7 +1778,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         iteration = {
             "iteration": i + 1,
             "params": params,
-            "content": result.get("content", "")[:2000],
+            "content": result.get("content", "")[:MAX_STORY_CHARS],
             "grade": grade,
         }
         results.append(iteration)
@@ -1750,7 +1788,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
             strat_msgs = [{"role": "user", "content": (
                 f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
                 f"Format each as: [STRATEGY: one-sentence imperative rule]\n\n"
-                f"ANSWER: {result.get('content', '')[:1500]}"
+                f"ANSWER: {result.get('content', '')[:MAX_STORY_CHARS_ALT]}"
             )}]
             strat_result = query_model(strat_msgs)
             for sm in re.finditer(r"STRATEGY:\s*(.+?)(?:\]|$)", strat_result.get("content", ""), re.MULTILINE):
@@ -1762,7 +1800,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
     
     # Synthesis: extract final strategies from all A-grade responses
     if any(r["grade"] in ("A", "B") for r in results):
-        best = [r["content"][:500] for r in results if r["grade"] in ("A", "B")]
+        best = [r["content"][:MAX_QUERY_CHARS] for r in results if r["grade"] in ("A", "B")]
         synth_msgs = [{"role": "user", "content": (
             f"Here are the best solutions to: {problem}\n\n" +
             "\n---\n".join(best[:3]) +
@@ -1802,8 +1840,8 @@ def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
     try:
         q = [{"role": "user", "content": (
             f"Problem: {problem}\n\n"
-            f"BASELINE ANSWER (the conventional one):\n{baseline[:3000]}\n\n"
-            f"CANDIDATE ANSWER:\n{candidate[:3000]}\n\n"
+            f"BASELINE ANSWER (the conventional one):\n{baseline[:MAX_JUDGE_CHARS]}\n\n"
+            f"CANDIDATE ANSWER:\n{candidate[:MAX_JUDGE_CHARS]}\n\n"
             f"Answer two questions:\n"
             f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
             f"approach or skeleton, not just reworded? Answer YES or NO.\n"
@@ -1878,7 +1916,7 @@ def _extract_distinctive_features(text: str) -> list:
         return []
     try:
         q = [{"role": "user", "content": (
-            f"Here is an answer:\n{text[:1500]}\n\n"
+            f"Here is an answer:\n{text[:MAX_STORY_CHARS_ALT]}\n\n"
             f"List the 3 most SPECIFIC, recognizable elements of this answer — the character "
             f"type, the selection mechanism, the ritual/object/setting. These are what would "
             f"make another answer look like a repeat of this one. Output each as a short "
@@ -1952,7 +1990,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             f"HARD CONSTRAINTS — route around ALL of these already-used or conventional elements:\n"
             f"{forbid_text}\n\n"
             f"STEERING REFERENCE (a deliberately wild take on this problem, for inspiration "
-            f"only — do NOT copy it, use it to push past the obvious):\n{wild[:800]}\n\n"
+            f"only — do NOT copy it, use it to push past the obvious):\n{wild[:MAX_MSG_TEXT_CHARS]}\n\n"
             f"Produce your OWN original answer. It must differ from the conventional answer, "
             f"the wild reference, AND every element listed above. Change the underlying "
             f"approach, not the wording."
@@ -1991,7 +2029,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                 f"{problem}\n\n"
                 f"Your last answer was TOO SIMILAR to the conventional answer. "
                 f"Route around ALL of these already-used elements:\n{forbid_text}\n\n"
-                f"Also, here is a wild idea to push you further off-center:\n{wild[:800]}\n\n"
+                f"Also, here is a wild idea to push you further off-center:\n{wild[:MAX_MSG_TEXT_CHARS]}\n\n"
                 f"Produce a genuinely different answer now."
             )
             res = query_model([{"role": "user", "content": retry_prompt}],
@@ -2033,7 +2071,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                 idea_id = "idea_" + str(int(time.time())) + "_" + str(c["idx"])
                 f.write(_json.dumps({
                     "id": idea_id,
-                    "problem": problem[:500],
+                    "problem": problem[:MAX_QUERY_CHARS],
                     "novelty": c["novelty"],
                     "dist_from_baseline": c["dist_from_baseline"],
                     "dist_from_wild": c["dist_from_wild"],
@@ -2075,7 +2113,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     return {
         "problem": problem,
         "baseline": baseline,
-        "wild_seed": wild[:1500],
+        "wild_seed": wild[:MAX_STORY_CHARS_ALT],
         "decision_points": decision_points,
         "candidates": results,
         "novel_winners": [r["idx"] for r in highlight],
@@ -2088,7 +2126,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
     # chunks alongside Ebola chunks from earlier in the conversation.
-    user_msgs = [_extract_text(m["content"])[:500] for m in reversed(messages) 
+    user_msgs = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages)
                  if m.get("role") == "user"][:3]  # last 3 user turns
     user_msg = " ".join(reversed(user_msgs))  # chronological order
     
@@ -2112,11 +2150,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             parts = []
             for m in chunk.get("messages", []):
                 r = m["role"]
-                c = m["content"][:8000]
+                c = m["content"][:MAX_MESSAGE_STORE]
                 parts.append(f"{r}: {c}")
             full_text = "\n".join(parts)
             print(f"  [DETAIL] Returned {len(full_text)} chars", flush=True)
-            return {"content": full_text[:20000], "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
+            return {"content": full_text[:MAX_DETAIL_CHARS], "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
         else:
             return {"content": f"Chunk {chunk_id} not found.", "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
 
@@ -2146,7 +2184,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             raw = _extract_text(m.get("content", ""))
             cleaned = _cmd_re.sub("", raw).strip()
             if cleaned: m["content"] = cleaned
-    user_msgs2 = [_extract_text(m["content"])[:500] for m in reversed(messages) if m.get("role") == "user"][:3]
+    user_msgs2 = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages) if m.get("role") == "user"][:3]
     user_msg = " ".join(reversed(user_msgs2))
 
     msg_tools = tools if tools else []
@@ -2160,8 +2198,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             if isinstance(args, str):
                 try:
                     fn["arguments"] = json.loads(args)
-                except:
-                    pass
+                except Exception as e:
+                    _log_error("process_chat:tool_args_parse", e)
     
     # Multi-pass compression: replace large tool outputs with model summaries
     # This prevents the model from burning its entire predict budget on raw HTML/JSON
@@ -2213,11 +2251,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                             try:
                                 msgs = json.loads(msgs_json)
                                 for m in msgs[:5]:
-                                    c = m.get("content", "")[:300]
+                                    c = m.get("content", "")[:MAX_PREVIEW_CHARS]
                                     if c:
                                         lines.append(f"  {m['role']}: {c}")
-                            except:
-                                pass
+                            except Exception as e:
+                                _log_error("search_tool:parse_msgs", e)
                         lines.append("")
                     inject = "\n".join(lines[:30])  # cap
                     result["content"] = inject
@@ -2282,7 +2320,8 @@ def _save_strategy(text, grade, existing_id=""):
                     if ex:
                         sid = ex[0]; new_version = ex[1] + 1; parent = sid
                         break
-    except: pass
+    except Exception as e:
+        _log_error("_save_strategy:faiss_dedup", e)
     if existing_id and "strat_" in str(existing_id) and not parent:
         clean_id = str(existing_id).replace("strat_", "").strip()
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
@@ -2300,7 +2339,8 @@ def _save_strategy(text, grade, existing_id=""):
                     _index.add(svec.reshape(1, -1))
                 _id_map.append(f"strat_{sid}")
                 _save_index()
-    except: pass
+    except Exception as e:
+        _log_error("_save_strategy:faiss_add", e)
 
 def _strategy_lifecycle(grade, messages):
     try:
@@ -2317,12 +2357,12 @@ def _strategy_lifecycle(grade, messages):
             # Extract an imperative directive instead of boilerplate
             try:
                 msgs_text = "\n".join(
-                    f"{m['role']}: {_extract_text(m.get('content',''))[:400]}"
+                    f"{m['role']}: {_extract_text(m.get('content',''))[:MAX_ABSTRACT_INPUT]}"
                     for m in messages[-6:] if m.get('role') in ('user', 'assistant')
                 )
                 q = [{"role": "user", "content": (
                     "You graded a response " + grade + ". Based on this exchange:\n\n" +
-                    msgs_text[:2000] + "\n\n" +
+                    msgs_text[:MAX_STORY_CHARS] + "\n\n" +
                     "Extract ONE imperative rule that would have prevented this failure. "
                     "The rule MUST be: short (1 sentence), specific, and actionable. "
                     "Format as a direct command. NO explanation, NO context — just the rule.\n\n"
