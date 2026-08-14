@@ -227,6 +227,15 @@ db.executescript("""
         updated_at TEXT NOT NULL
     );
     
+    CREATE TABLE IF NOT EXISTS capability_edges (
+        problem_type TEXT PRIMARY KEY,
+        attempts     INTEGER DEFAULT 0,
+        failures     INTEGER DEFAULT 0,   -- D/F grades
+        last_grade   TEXT DEFAULT '',
+        flagged      INTEGER DEFAULT 0,   -- 1 = known capability edge
+        updated_at   TEXT NOT NULL
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
     CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
     CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
@@ -2058,6 +2067,95 @@ def _preferences_block() -> str:
         lines.append(f"- {k}: {v}")
     return "\n".join(lines)
 
+# ─── Capability-edge tracking ────────────────────────────────────
+# Turns grades into a map of where the model's competence ends. A model can't
+# know its own limits before trying; it CAN grade a result after producing it.
+# So: try → grade honestly → a poor grade records a capability edge → the NEXT
+# time that problem type appears, route to tool-building instead of another
+# attempt (grind/fabricate). This is the mechanism that turns grades into the
+# model's self-discovered competence map.
+
+EDGE_FAILURE_THRESHOLD = int(os.environ.get("MNEME_EDGE_FAILURES", "2"))   # min D/F to flag
+EDGE_FAILURE_RATIO    = float(os.environ.get("MNEME_EDGE_RATIO", "0.5"))   # D/F ratio to flag
+
+def _record_capability(problem_type: str, grade: str):
+    """Record a graded result against its problem type; re-evaluate the edge flag."""
+    if not problem_type or problem_type == "other":
+        return
+    try:
+        row = db.execute(
+            "SELECT attempts, failures FROM capability_edges WHERE problem_type=?",
+            (problem_type,),
+        ).fetchone()
+        attempts = (row[0] if row else 0) + 1
+        failures = (row[1] if row else 0) + (1 if grade in ("D", "F") else 0)
+        flagged = 1 if (failures >= EDGE_FAILURE_THRESHOLD and failures / max(attempts, 1) >= EDGE_FAILURE_RATIO) else 0
+        now = datetime.now(timezone.utc).isoformat()
+        db.execute(
+            "INSERT INTO capability_edges (problem_type, attempts, failures, last_grade, flagged, updated_at) "
+            "VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(problem_type) DO UPDATE SET attempts=excluded.attempts, failures=excluded.failures, "
+            "last_grade=excluded.last_grade, flagged=excluded.flagged, updated_at=excluded.updated_at",
+            (problem_type, attempts, failures, grade, flagged, now),
+        )
+        db.commit()
+        if flagged:
+            print(f"  [EDGE] problem_type '{problem_type}' flagged as capability edge "
+                  f"({failures}/{attempts} failures)", flush=True)
+    except Exception as e:
+        _log_error("record_capability", e)
+
+def _is_capability_edge(problem_type: str) -> bool:
+    """True if this problem type has accumulated enough poor grades to be a known edge."""
+    if not problem_type or problem_type == "other":
+        return False
+    try:
+        row = db.execute("SELECT flagged FROM capability_edges WHERE problem_type=?", (problem_type,)).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+def _capability_directive(problem_type: str) -> str:
+    """Injected directive when the incoming task is a known capability edge: instead of
+    guessing/grinding, the model should propose (or defer to) a tool/script."""
+    if not _is_capability_edge(problem_type):
+        return ""
+    return (
+        f"\n=== CAPABILITY EDGE ==="
+        f"\nYou have previously failed or performed poorly on tasks of type '{problem_type}'."
+        f"\nDo NOT attempt this again from memory alone. Either (a) propose the exact tool, "
+        f"command, or script that would answer it correctly, or (b) state clearly that you "
+        f"cannot answer it and what capability is missing."
+    )
+
+def _classify_problem_type(text: str) -> str:
+    """Deterministic coarse problem-type classifier (keyword heuristic).
+
+    Capability-oriented: 'compute' (model grinds) and 'live_data' (model
+    fabricates) are the categories where the model's competence genuinely ends,
+    so capability-edge tracking keys on them. 'code' is checked before 'compute'
+    so 'write a function to compute X' is a code task, not a compute task."""
+    if not text:
+        return "other"
+    lower = text.lower()
+    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
+        return "error"
+    if any(w in lower for w in ("code", "function", "def ", "patch", "fix", "debug", "script",
+                                 "python", "program", "implement", "refactor", "write a")):
+        return "code"
+    if any(w in lower for w in ("hash", "sha", "compute", "calculate", "prime", "fibonacci",
+                                 "checksum", "encrypt", "decrypt", "sum of")):
+        return "compute"
+    if any(w in lower for w in ("price", "weather", "stock", "exchange rate", "current",
+                                 "today", "latest", "temperature", "forecast", "now")):
+        return "live_data"
+    if any(w in lower for w in ("search", "fetch", "browser", "http", "page", "article",
+                                 "wikipedia", "extract", "url", "web")):
+        return "web_retrieval"
+    if any(w in lower for w in ("save", "archive", "memory", "store", "remember", "recall")):
+        return "memory_operation"
+    return "other"
+
 def _has_specific_claims(text: str) -> bool:
     """Cheap pre-filter for provenance grading: does the text plausibly assert
     specific, checkable facts (names, numbers, addresses, versions, quotes)?
@@ -2614,9 +2712,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # Build injected memory (already includes Mneme instructions)
     context, ptype = build_context(user_msg)
+    cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (instructions + memory) as a system message after Hermes
-    mneme_system = context
+    # Insert Mneme (instructions + memory + capability-edge directive) as a system
+    # message after Hermes
+    mneme_system = context + _capability_directive(cur_ptype)
     insert_at = 0
     for i, m in enumerate(messages):
         if m.get("role") == "system":
@@ -2712,6 +2812,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if grade not in ("A", "B", "C", "D", "F"):
         grade = "C"
     print(f"  [GRADE] provenance grade: {grade}", flush=True)
+
+    # Capability-edge tracking: record this grade against the task's problem type.
+    # A poor grade accumulates toward flagging the type as a known edge, which then
+    # triggers a tool-build directive on the next encounter.
+    _record_capability(cur_ptype, grade)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
     try:
