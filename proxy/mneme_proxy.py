@@ -593,7 +593,11 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         msgs = sys_msgs + non_sys
         print(f"  [WARN] Trimmed to {total} chars ({len(non_sys)} messages, limit {MAX_PROMPT_CHARS})", flush=True)
     
-    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
+    try:
+        r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
+    except requests.exceptions.ReadTimeout:
+        print(f"  [GRIND-GUARD] Ollama generation exceeded {timeout}s — aborting (done_reason=timeout)", flush=True)
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
     d = r.json()
     if "error" in d:
         print(f"  [ERROR] Ollama returned: {d['error']}", flush=True)
@@ -2324,6 +2328,7 @@ _NOVELTY_TEMP_SCHEDULE = [
 
 NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))  # seconds, for slow 26B generations
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "240"))  # seconds, anti-grind guardrail for chat
 
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
     """Diverge → measure → gate → judge → save.
@@ -2628,7 +2633,24 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 f.write("=== SYSTEM MSG ===\n")
                 f.write(m["content"][:600])
                 f.write("\n...\n")
-    result = query_model(full_msgs, tools=msg_tools)
+    result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
+    # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
+    # or empty reasoning), retry once with a nudge, then fall back to a clear
+    # message so the client never sees an empty/"None" reply.
+    if not (result.get("content") or "").strip() and not result.get("tool_calls"):
+        dr = result.get("done_reason", "?")
+        if dr == "timeout":
+            # Grind guardrail: generation exceeded budget — retrying would just
+            # grind again. Fall through to the capability-edge message.
+            print(f"  [GRIND] generation exceeded {CHAT_TIMEOUT}s — capability edge, no retry", flush=True)
+        else:
+            print(f"  [EMPTY] empty reply (done_reason={dr}) — retrying once", flush=True)
+            _retry = [m for m in full_msgs if m.get("role") != "system"]
+            _retry.append({"role": "user", "content": "(Your previous reply was empty. Give a direct answer now.)"})
+            result = query_model(_retry, tools=msg_tools, timeout=CHAT_TIMEOUT)
+    if not (result.get("content") or "").strip() and not result.get("tool_calls"):
+        result["content"] = ("[The model returned an empty response and could not answer. "
+                             "This is a possible capability edge — flag for tool-building.]")
     
     # Handle search_memory tool calls — execute and inject results
     if result.get("tool_calls") and not result.get("content"):
