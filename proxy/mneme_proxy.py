@@ -144,7 +144,7 @@ def _parse_structured(reply: str, schema_hint: str, fallback_re: str = None,
         if m:
             print(f"  [WARN] Structured output failed, regex fallback used for {schema_hint}", flush=True)
             return {schema_hint: m.group(fallback_group)}, True
-    print(f"  [WARN] Structured output failed and no fallback matched for {schema_hint}", flush=True)
+    print(f"  [WARN] Structured output failed and no fallback matched for {schema_hint} — reply[:200]={reply[:200]!r}", flush=True)
     return {}, True
 
 # ─── Supervised background workers (Phase 3) ────────────────────
