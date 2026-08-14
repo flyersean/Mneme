@@ -1585,11 +1585,11 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         
         new_version = existing_version + 1
         db.execute(
-            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ptype, strategy, chunk_id, "B",
              datetime.now(timezone.utc).isoformat(),
              new_version, sid if existing_version > 0 else "",
-             0.0, 0, 0)
+             0.0, 0, 0, 0, "")
         )
         db.commit()
         print(f"  [STRATEGY] v{new_version} {strategy[:60]}...", flush=True)
@@ -2652,9 +2652,9 @@ def _save_strategy(text, grade, existing_id=""):
         clean_id = str(existing_id).replace("strat_", "").strip()
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
-    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, "model", text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
-         new_version, parent, 0.0, 0, 0))
+         new_version, parent, 0.0, 0, 0, 0, ""))
     db.commit()
     try:
         svec = embed(text.strip())
@@ -2793,11 +2793,11 @@ if FLASK_OK:
                 except Exception:
                     pass
                 new_version = existing_version + 1
-                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (sid, "model", st, "", "A",
                      datetime.now(timezone.utc).isoformat(),
                      new_version, sid if existing_version > 0 else "",
-                     0.0, 0, 0))
+                     0.0, 0, 0, 0, ""))
                 db.commit()
                 print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
                 # Add to FAISS for future dedup
