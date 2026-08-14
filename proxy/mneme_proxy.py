@@ -1188,12 +1188,16 @@ def build_context(query: str) -> Tuple[str, str]:
     if not parts:
         # No memory chunks — inject strategies as fallback context
         srows = db.execute(
-            "SELECT strategy_text FROM strategies ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
+            "SELECT strategy_id, strategy_text FROM strategies "
+            "WHERE (retired IS NULL OR retired = 0) "
+            "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
         ).fetchall()
         if srows:
+            _INJECTED_STRATEGY_IDS.clear()
+            _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
             strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
             for s in srows:
-                strat_text += "DIRECTIVE: " + s[0][:200] + "\n"
+                strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
             return strat_text, ptype
         return "", ptype
     
@@ -1215,13 +1219,16 @@ def build_context(query: str) -> Tuple[str, str]:
     
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
     srows = db.execute(
-        "SELECT strategy_text FROM strategies "
+        "SELECT strategy_id, strategy_text FROM strategies "
+        "WHERE (retired IS NULL OR retired = 0) "
         "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
     ).fetchall()
     if srows:
+        _INJECTED_STRATEGY_IDS.clear()
+        _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
         directives = "\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
         for s in srows:
-            directives += "DIRECTIVE: " + s[0][:200] + "\n"
+            directives += "DIRECTIVE: " + s[1][:200] + "\n"
         # Strategies go at TOP — above memory, below system prompt
         if _estimate_tokens(directives + context) <= MAX_INJECTED_TOKENS:
             context = directives + "\n" + context
@@ -2415,7 +2422,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "C"
         print(f"  [GRADE] Model grade: {grade}", flush=True)
-    
+
+    # Phase 4.2/4.3: close the telemetry loop on injected strategies
+    try:
+        _consume_injected_strategies(grade)
+    except Exception as e:
+        _log_error("process_chat:consume_strategies", e)
+
     staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
@@ -2449,8 +2462,86 @@ except ImportError:
 
 # ─── Phase 2: Proxy-Driven Strategy Lifecycle ──────────────────
 
+# ─── Phase 4: Strategy abstraction + telemetry + refinement ────
+
+# Module-level set of strategy IDs injected into the current turn's context.
+# Set by build_context at injection time; consumed at grade-parse points to
+# close the telemetry loop (use_count / success_count / effective_grade).
+_INJECTED_STRATEGY_IDS = set()
+
+
+def _abstract_strategy_text(text: str) -> str:
+    """Rewrite a strategy domain-agnostically (mechanism, not example).
+
+    Returns the abstracted text, or the original on any failure."""
+    try:
+        r = query_model([{"role": "user", "content": (
+            "Rewrite this rule so it references no specific person, object, "
+            "domain, or proper noun — keep only the underlying mechanism. "
+            "If already general, return unchanged.\n\nRULE: " + text.strip()[:600]
+        )}])
+        out = (r.get("content") or "").strip()
+        # Sanity: non-empty, reasonable length, not an error-ish reply
+        if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
+            return out
+        raise ValueError(f"garbage abstraction: {out[:60]!r}")
+    except Exception as e:
+        _log_error("_abstract_strategy_text", e)
+        return text.strip()
+
+
+def _consume_injected_strategies(grade: str):
+    """Phase 4.2 + 4.3: telemetry + refinement for injected strategies.
+
+    Called at grade-parse points. For each strategy injected this turn:
+      use_count += 1; success_count += 1 if grade A/B;
+      effective_grade = success_count / max(use_count, 1);
+      retire when effective_grade < 0.25 and use_count >= 5.
+    Never raises — failures are logged and swallowed.
+    """
+    global _INJECTED_STRATEGY_IDS
+    ids = list(_INJECTED_STRATEGY_IDS)
+    if not ids:
+        return
+    try:
+        for sid in ids:
+            try:
+                row = db.execute(
+                    "SELECT use_count, success_count FROM strategies WHERE strategy_id=?",
+                    (sid,)
+                ).fetchone()
+                if not row:
+                    continue
+                uc = (row[0] or 0) + 1
+                sc = (row[1] or 0) + (1 if grade in ("A", "B") else 0)
+                eg = sc / max(uc, 1)
+                retired = 1 if (eg < 0.25 and uc >= 5) else 0
+                db.execute(
+                    "UPDATE strategies SET use_count=?, success_count=?, "
+                    "effective_grade=?, retired=? WHERE strategy_id=?",
+                    (uc, sc, eg, retired, sid)
+                )
+                if retired:
+                    print(f"  [STRATEGY-RETIRE] {sid} eff={eg:.2f} uses={uc}", flush=True)
+            except Exception as e:
+                _log_error(f"_consume_injected_strategies:row:{sid}", e)
+        db.commit()
+    except Exception as e:
+        _log_error("_consume_injected_strategies", e)
+    finally:
+        try:
+            _INJECTED_STRATEGY_IDS.clear()
+        except Exception:
+            pass
+
+
 def _save_strategy(text, grade, existing_id=""):
     import time as _t
+    # Phase 4.1: abstract-at-save — store the mechanism, not the example
+    try:
+        text = _abstract_strategy_text(text)
+    except Exception as e:
+        _log_error("_save_strategy:abstract", e)
     sid = "strat_" + str(int(_t.time()))
     new_version = 1
     parent = ""
@@ -2634,6 +2725,13 @@ if FLASK_OK:
                 print("  [STRATEGY][ERR] " + str(e)[:100], flush=True)
         
         print(f"  [GRADE] Parsed: {grade}", flush=True)
+
+        # Phase 4.2/4.3: telemetry on injected strategies (non-stream path;
+        # process_chat already consumed, this is a safety net for alternate flows)
+        try:
+            _consume_injected_strategies(grade)
+        except Exception as e:
+            _log_error("chat:consume_strategies", e)
         
         # Update effectiveness of strategies referenced in this response
         try:
@@ -2728,6 +2826,11 @@ if FLASK_OK:
         grade = str(_gd4.get("grade", "D")).strip().upper()
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "D"
+        # Phase 4.2/4.3: telemetry on injected strategies (streaming path)
+        try:
+            _consume_injected_strategies(grade)
+        except Exception as e:
+            _log_error("chat_stream:consume_strategies", e)
         _enqueue(_strategy_lifecycle, grade, messages)
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
