@@ -517,7 +517,7 @@ MEMORY_DISCLAIMER = (
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: int = 300, format_schema: dict = None) -> dict:
+                timeout: int = 300, format_schema=None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
@@ -1907,11 +1907,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
                 f'Respond with ONLY JSON: {{"strategies": ["rule1", "rule2"]}}\n\n'
                 f"ANSWER: {result.get('content', '')[:MAX_STORY_CHARS_ALT]}"
             )}]
-            strat_result = query_model(strat_msgs, format_schema={
-                "type": "object",
-                "properties": {"strategies": {"type": "array", "items": {"type": "string"}}},
-                "required": ["strategies"],
-            })
+            strat_result = query_model(strat_msgs, format_schema="json")
             _sd, _sfb = _parse_structured(
                 strat_result.get("content", ""), "strategies",
                 r"STRATEGY:\s*(.+?)(?:\]|$)"
@@ -1940,11 +1936,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
             "\n---\n".join(best[:3]) +
             '\n\nExtract 1-3 operational SYSTEM RULES. Respond with ONLY JSON: {"rules": ["rule1", "rule2"]}'
         )}]
-        synth_result = query_model(synth_msgs, format_schema={
-            "type": "object",
-            "properties": {"rules": {"type": "array", "items": {"type": "string"}}},
-            "required": ["rules"],
-        })
+        synth_result = query_model(synth_msgs, format_schema="json")
         _rd, _rfb = _parse_structured(
             synth_result.get("content", ""), "rules",
             r"RULE:\s*(.+?)(?:\n|$)"
@@ -2043,15 +2035,7 @@ def _decompose_problem(problem: str) -> list:
         f"most people would reflexively make. These are what make answers all look alike.\n\n"
         f'Respond with ONLY JSON: {{"points": [{{"point": "short label", "conventional": "default choice"}}]}}'
     )}]
-    r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema={
-        "type": "object",
-        "properties": {"points": {"type": "array", "items": {
-            "type": "object",
-            "properties": {"point": {"type": "string"}, "conventional": {"type": "string"}},
-            "required": ["point", "conventional"],
-        }}},
-        "required": ["points"],
-    })
+    r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema="json")
     points = []
     _pd, _pfb = _parse_structured(r.get("content", ""), "points")
     pts_raw = _pd.get("points")
