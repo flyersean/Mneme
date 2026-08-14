@@ -251,6 +251,18 @@ db.commit()
 GRADE_PRIORITY = {"A": 3, "B": 2, "C": 1, "F": 0}
 DEFAULT_GRADE   = "C"
 
+# ─── Phase 5.1: Permanent meta-principles ──────────────────────
+# A small fixed set of always-relevant thinking directives, injected every
+# turn independent of memory retrieval. Deliberately short and constant —
+# NOT counted against the dynamic MAX_INJECTED_TOKENS budget.
+META_PRINCIPLES = [
+    "The first answer is the mode — generate an alternative before committing.",
+    "State the conventional answer, then find the assumption that makes it conventional.",
+    "Ask what would make the obvious answer wrong before accepting it.",
+    "Prefer the mechanism over the example — name the underlying rule, not the surface detail.",
+    "If the reply feels automatic, it is suspect — slow down and re-derive.",
+]
+
 def grade_priority(chunk_id: str) -> int:
     row = db.execute("SELECT grade FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
     return GRADE_PRIORITY.get(row[0], GRADE_PRIORITY[DEFAULT_GRADE]) if row else 1
@@ -1104,6 +1116,19 @@ def _extract_text(content) -> str:
     return str(content)
 
 
+def _meta_principles_block() -> str:
+    """Phase 5.1: fixed meta-principle directive block, injected every turn.
+
+    Constant and independent of memory retrieval; deliberately NOT counted
+    against the dynamic MAX_INJECTED_TOKENS budget."""
+    try:
+        lines = "\n".join(f"PRINCIPLE: {p}" for p in META_PRINCIPLES)
+        return "\n=== META-PRINCIPLES (always apply) ===\n" + lines + "\n"
+    except Exception as e:
+        _log_error("_meta_principles_block", e)
+        return ""
+
+
 def build_context(query: str) -> Tuple[str, str]:
     if not query or not query.strip():
         return "", "other"  # empty query — skip injection
@@ -1198,8 +1223,8 @@ def build_context(query: str) -> Tuple[str, str]:
             strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
             for s in srows:
                 strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
-            return strat_text, ptype
-        return "", ptype
+            return _meta_principles_block() + strat_text, ptype
+        return _meta_principles_block(), ptype
     
     # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
@@ -1246,6 +1271,10 @@ def build_context(query: str) -> Tuple[str, str]:
             f.write(context + "\n")
     except Exception as e:
         print(f"  [INJECT][LOG-ERROR] {e}", flush=True)
+
+    # Phase 5.1: prepend the fixed meta-principles block AFTER budget
+    # accounting — it is constant and must not consume the dynamic token budget.
+    context = _meta_principles_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
     if INJECT_SYSTEM != "0":
@@ -2429,6 +2458,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     except Exception as e:
         _log_error("process_chat:consume_strategies", e)
 
+    # Phase 5.2: embedding-distance check on self-reported A/B grades
+    try:
+        _check_suspect_grade(grade, result.get("content", ""), messages)
+    except Exception as e:
+        _log_error("process_chat:suspect_grade", e)
+
     staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
@@ -2531,6 +2566,62 @@ def _consume_injected_strategies(grade: str):
     finally:
         try:
             _INJECTED_STRATEGY_IDS.clear()
+        except Exception:
+            pass
+
+
+def _check_suspect_grade(grade: str, answer_text: str, messages=None):
+    """Phase 5.2: objective embedding-distance check on self-reported grades.
+
+    When the model self-grades A/B but the answer is near-identical to the
+    baseline (the user query embedding, or the prior assistant turn), flag it
+    as suspect and log. Does NOT change the grade — only logs discrepancies.
+    Never raises.
+    """
+    try:
+        if grade not in ("A", "B"):
+            return
+        if not answer_text or not answer_text.strip():
+            return
+
+        # Baseline: last user message (the query); fall back to prior assistant turn
+        baseline = ""
+        if messages:
+            user_msgs = [m for m in messages
+                         if m.get("role") == "user" and m.get("content")]
+            if user_msgs:
+                baseline = _extract_text(user_msgs[-1].get("content", ""))
+            if not baseline:
+                asst = [m for m in messages
+                        if m.get("role") == "assistant" and m.get("content")]
+                if asst:
+                    baseline = _extract_text(asst[-1].get("content", ""))
+        if not baseline or not baseline.strip():
+            return
+
+        avec = embed(answer_text[:4000])
+        bvec = embed(baseline[:4000])
+        if avec is None or bvec is None:
+            return
+        an = float(np.linalg.norm(avec))
+        bn = float(np.linalg.norm(bvec))
+        if an < 1e-6 or bn < 1e-6:
+            return  # zero vector (embed failure) — can't judge, skip
+        cos_sim = float(np.dot(avec, bvec) / (an * bn))
+        cos_dist = 1.0 - cos_sim
+
+        # Near-identical to baseline but self-graded A/B → suspect
+        if cos_dist < 0.05:
+            msg = (f"[SUSPECT-GRADE] self-grade={grade} but cos_dist={cos_dist:.4f} "
+                   f"(near-identical to baseline); answer may be mode-collapsed")
+            print("  " + msg, flush=True)
+            try:
+                _log_error("suspect_grade", ValueError(msg))
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            _log_error("_check_suspect_grade", e)
         except Exception:
             pass
 
@@ -2831,6 +2922,11 @@ if FLASK_OK:
             _consume_injected_strategies(grade)
         except Exception as e:
             _log_error("chat_stream:consume_strategies", e)
+        # Phase 5.2: embedding-distance check on self-reported A/B grades
+        try:
+            _check_suspect_grade(grade, ct, messages)
+        except Exception as e:
+            _log_error("chat_stream:suspect_grade", e)
         _enqueue(_strategy_lifecycle, grade, messages)
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
