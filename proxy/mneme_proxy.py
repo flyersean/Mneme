@@ -1917,6 +1917,70 @@ def _grade_from_provenance(reply: str) -> str:
         return "C"
     return "D"
 
+_VERIFY_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+    "have", "has", "had", "not", "but", "its", "his", "her", "their", "there",
+    "about", "into", "than", "them", "then", "what", "when", "where", "which",
+    "will", "would", "should", "could", "your", "you", "they", "these", "those",
+    "some", "such", "each", "other", "more", "most", "over", "under", "after",
+    "before", "between", "very", "just", "only", "also", "been", "does", "being",
+    "example", "examples", "using", "used", "based",
+}
+
+def _verify_claim(location: str, claim_text: str, timeout: int = 12) -> str:
+    """Layer 2 factual verification: fetch a URL and check whether the claim's
+    distinctive terms appear. Returns VERIFIED / CONTRADICTED / NOT-FOUND /
+    UNVERIFIABLE. Non-URL locations return UNVERIFIABLE (need a search API).
+    NOTE: no SSRF guard yet — acceptable on the throwaway pod, harden before
+    any multi-tenant use."""
+    loc = (location or "").strip()
+    if not (loc.startswith("http://") or loc.startswith("https://")):
+        return "UNVERIFIABLE"
+    try:
+        r = requests.get(loc, timeout=timeout, headers={"User-Agent": "mneme-verify/1.0"})
+    except Exception:
+        return "NOT-FOUND"
+    if r.status_code >= 400:
+        return "NOT-FOUND"
+    text = (r.text or "").lower()
+    terms = [w for w in re.findall(r"[a-zA-Z0-9]{4,}", (claim_text or "").lower())
+             if w not in _VERIFY_STOPWORDS]
+    if not terms:
+        return "UNVERIFIABLE"
+    hits = sum(1 for t in terms if t in text)
+    return "VERIFIED" if hits / len(terms) >= 0.5 else "CONTRADICTED"
+
+def _layer2_adjust(grade: str, provenance_reply: str) -> str:
+    """Layer 2: verify checkable locations from the provenance reply and downgrade
+    an honest grade when verification fails (the honest-but-wrong case that
+    Layer 1 cannot see). Only adjusts A/B; D/F are already caught by Layer 1.
+    Caps at 3 fetches to bound latency."""
+    if grade not in ("A", "B"):
+        return grade
+    downgraded = False
+    fetched = 0
+    for line in (provenance_reply or "").splitlines():
+        if "|" not in line or fetched >= 3:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3:
+            continue
+        verdict = parts[1].upper()
+        if "DISHONEST" in verdict:
+            continue
+        m = re.search(r"check:\s*(.+)$", parts[2], re.IGNORECASE)
+        if not m:
+            continue
+        loc = m.group(1).strip().strip("\"'")
+        if loc.lower() in ("none", "n/a", ""):
+            continue
+        fetched += 1
+        res = _verify_claim(loc, parts[0])
+        print(f"  [VERIFY] {res}: {parts[0][:50]} -> {loc[:60]}", flush=True)
+        if res in ("NOT-FOUND", "CONTRADICTED"):
+            downgraded = True
+    return ("B" if grade == "A" else "C") if downgraded else grade
+
 def _has_specific_claims(text: str) -> bool:
     """Cheap pre-filter for provenance grading: does the text plausibly assert
     specific, checkable facts (names, numbers, addresses, versions, quotes)?
@@ -1960,6 +2024,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         # asserted as certain with no source and no uncertainty flag are DISHONEST.
         grade_text = _extract_provenance(problem, result.get("content", ""))
         grade = _grade_from_provenance(grade_text)
+        grade = _layer2_adjust(grade, grade_text)
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "C"
         print(f"  [GRADE] provenance grade: {grade}", flush=True)
@@ -2512,7 +2577,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _resp_content = result.get("content", "") or ""
     if _has_specific_claims(_resp_content):
         _prov = _extract_provenance(user_msg, _resp_content)
-        grade = _grade_from_provenance(_prov)
+        grade = _layer2_adjust(_grade_from_provenance(_prov), _prov)
     else:
         grade = "A"
     if grade not in ("A", "B", "C", "D", "F"):
