@@ -1879,16 +1879,24 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         grade_msgs = [{"role": "user", "content": (
             f"Grade this answer [A-F] based on correctness, novelty, and whether it "
             f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:MAX_JUDGE_CHARS]}\n\n"
-            f'Respond with ONLY JSON: {{"grade": "A"|"B"|"C"|"D"|"F"}}'
+            f"Respond with ONLY the grade letter (A, B, C, D, or F), nothing else."
         )}]
-        grade_result = query_model(grade_msgs, format_schema={
-            "type": "object",
-            "properties": {"grade": {"type": "string", "enum": ["A", "B", "C", "D", "F"]}},
-            "required": ["grade"],
-        })
-        grade_text = grade_result.get("content", "")
-        _gd, _fb = _parse_structured(grade_text, "grade", r"\[GRADE:\s*([ABCDF])\]")
-        grade = str(_gd.get("grade", "C")).strip().upper()
+        grade_result = query_model(grade_msgs)
+        grade_text = grade_result.get("content", "").strip()
+        grade = "C"
+        m = re.search(r"GRADE:\s*([ABCDF])", grade_text, re.IGNORECASE)
+        if not m:
+            m = re.search(r"\[GRADE:\s*([ABCDF])\]", grade_text, re.IGNORECASE)
+        if not m:
+            # Bare letter (model returned just "B")
+            lm = re.search(r"^([ABCDF])\b", grade_text, re.IGNORECASE)
+            if lm and len(grade_text) <= 3:
+                m = lm
+        if m:
+            grade = m.group(1).upper()
+        else:
+            _gd, _fb = _parse_structured(grade_text, "grade")
+            grade = str(_gd.get("grade", "C")).strip().upper()
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "C"
         
@@ -1988,29 +1996,21 @@ def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
             f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
             f"approach or skeleton, not just reworded? Answer YES or NO.\n"
             f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
-            f'Respond with ONLY JSON: {{"different": "yes"|"no", "valid": "yes"|"no", "reason": "one short sentence"}}'
+            f'Respond with exactly three lines:\nDIFFERENT: yes|no\nVALID: yes|no\nREASON: <one short sentence>'
         )}]
-        r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema={
-            "type": "object",
-            "properties": {
-                "different": {"type": "string", "enum": ["yes", "no"]},
-                "valid": {"type": "string", "enum": ["yes", "no"]},
-                "reason": {"type": "string"},
-            },
-            "required": ["different", "valid"],
-        })
+        r = query_model(q, timeout=NOVELTY_TIMEOUT)
         txt = r.get("content", "")
-        _jd, _jfb = _parse_structured(txt, "different")
-        # Regex fallback for DIFFERENT/VALID/REASON
-        if _jfb:
-            dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
-            vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
-            rm = re.search(r"REASON:\s*(.+?)", txt, re.IGNORECASE)
-            _jd = {
-                "different": dm.group(1).lower() if dm else "no",
-                "valid": vm.group(1).lower() if vm else "no",
+        dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
+        vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
+        rm = re.search(r"REASON:\s*(.+?)(?:\n|$)", txt, re.IGNORECASE)
+        if dm and vm:
+            return {
+                "different": dm.group(1).lower() == "yes",
+                "valid": vm.group(1).lower() == "yes",
                 "reason": rm.group(1).strip()[:200] if rm else "",
             }
+        # Fallback: model may still have emitted JSON
+        _jd, _jfb = _parse_structured(txt, "different")
         return {
             "different": str(_jd.get("different", "no")).strip().lower() == "yes",
             "valid": str(_jd.get("valid", "no")).strip().lower() == "yes",
