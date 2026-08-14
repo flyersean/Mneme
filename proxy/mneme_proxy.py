@@ -2539,7 +2539,9 @@ def _consume_injected_strategies(grade: str):
     global _INJECTED_STRATEGY_IDS
     ids = list(_INJECTED_STRATEGY_IDS)
     if not ids:
+        print("  [CONSUME] no injected strategies to consume", flush=True)
         return
+    print(f"  [CONSUME] consuming {len(ids)} injected strategies: {ids}", flush=True)
     try:
         for sid in ids:
             try:
