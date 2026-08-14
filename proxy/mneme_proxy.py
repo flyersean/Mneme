@@ -1917,6 +1917,21 @@ def _grade_from_provenance(reply: str) -> str:
         return "C"
     return "D"
 
+def _has_specific_claims(text: str) -> bool:
+    """Cheap pre-filter for provenance grading: does the text plausibly assert
+    specific, checkable facts (names, numbers, addresses, versions, quotes)?
+    Short/trivial responses return False so we skip the slow provenance call."""
+    if not text:
+        return False
+    if len(text) < 80:
+        return False
+    if re.search(r"\d", text):
+        return True
+    if re.search(r"https?://", text):
+        return True
+    # 3+ capitalized words ~ proper nouns (names/places/brands)
+    return len(re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", text)) >= 3
+
 def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = None) -> dict:
     """Parameter cycling + strategy extraction. Returns {problem, iterations, strategies}.
     Grades at fixed temp=0.7 for fair comparison, extracts strategies from A/B answers."""
@@ -2490,12 +2505,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     result["content"] = "No matching memories found."
                     print("  [SEARCH-TOOL] no results", flush=True)
     
-    # Parse [GRADE:] from model output
-    grade = "C"
-    if result["content"]:
-        _gm = re.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
-        grade = _gm.group(1).upper() if _gm else "C"
-        print(f"  [GRADE] Model grade: {grade}", flush=True)
+    # Grade by provenance honesty (Layer 1) — deterministic, not self-report.
+    # Honest "I don't know" / flagged guesses never penalize; specific facts
+    # asserted as certain with no source are DISHONEST. Short/trivial responses
+    # with no specific claims grade A (nothing to be dishonest about).
+    _resp_content = result.get("content", "") or ""
+    if _has_specific_claims(_resp_content):
+        _prov = _extract_provenance(user_msg, _resp_content)
+        grade = _grade_from_provenance(_prov)
+    else:
+        grade = "A"
+    if grade not in ("A", "B", "C", "D", "F"):
+        grade = "C"
+    print(f"  [GRADE] provenance grade: {grade}", flush=True)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
     try:
@@ -2521,6 +2543,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         "tool_calls": result.get("tool_calls", []),
         "context_injected": bool(context),
         "problem_type": ptype,
+        "_grade": grade,
     }
 
 # ─── Model Spoofing (for Hermes compatibility) ──────────────────
@@ -2814,9 +2837,8 @@ if FLASK_OK:
 
         # Parse [GRADE:] and [STRATEGY:] from model output
         ct = result.get("content", "")
-        _gm3 = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
-        grade = _gm3.group(1).upper() if _gm3 else "D"
-        # Grade already parsed in process_chat
+        grade = result.get("_grade", "C")
+        # Grade computed by provenance in process_chat
 
         _sm3 = re.findall(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.IGNORECASE)
         sm_strategy = _sm3[0].strip() if _sm3 else ""
@@ -2960,8 +2982,7 @@ if FLASK_OK:
     def _chat_stream(messages, tools=None, session_id="default"):
         result = process_chat(messages, tools=tools, session_id=session_id)
         ct = result.get("content", "")
-        _gm4 = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
-        grade = _gm4.group(1).upper() if _gm4 else "D"
+        grade = result.get("_grade", "C")
         # Phase 4.2/4.3: telemetry on injected strategies (streaming path)
         try:
             _consume_injected_strategies(grade)
