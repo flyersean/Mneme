@@ -523,7 +523,7 @@ MEMORY_DISCLAIMER = (
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: int = 300, format_schema=None) -> dict:
+                timeout: int = 600, format_schema=None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
@@ -2095,9 +2095,13 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         # Grade by provenance honesty (Layer 1) — deterministic, not self-report.
         # Honest "I don't know" / flagged guesses never penalize; specific facts
         # asserted as certain with no source and no uncertainty flag are DISHONEST.
-        grade_text = _extract_provenance(problem, result.get("content", ""))
-        grade = _grade_from_provenance(grade_text)
-        grade = _layer2_adjust(grade, grade_text)
+        _answer = result.get("content", "") or ""
+        if not _answer.strip():
+            grade = "F"  # empty/failed iteration — not an honest A
+        else:
+            grade_text = _extract_provenance(problem, _answer)
+            grade = _grade_from_provenance(grade_text)
+            grade = _layer2_adjust(grade, grade_text)
         if grade not in ("A", "B", "C", "D", "F"):
             grade = "C"
         print(f"  [GRADE] provenance grade: {grade}", flush=True)
@@ -2664,7 +2668,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # asserted as certain with no source are DISHONEST. Short/trivial responses
     # with no specific claims grade A (nothing to be dishonest about).
     _resp_content = result.get("content", "") or ""
-    if _has_specific_claims(_resp_content):
+    if not _resp_content.strip():
+        grade = "F"  # empty/failed response — not an honest A
+    elif _has_specific_claims(_resp_content):
         _prov = _extract_provenance(user_msg, _resp_content)
         grade = _layer2_adjust(_grade_from_provenance(_prov), _prov)
     else:
