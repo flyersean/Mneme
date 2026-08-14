@@ -58,7 +58,7 @@ AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bo
 
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
 MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
-MAX_JUDGE_CHARS      = 3000   # pairwise judge baseline/candidate excerpt
+MAX_JUDGE_CHARS      = 8000   # pairwise judge baseline/candidate excerpt (must cover full answers)
 MAX_STORY_CHARS      = 2000   # generic content truncation for prompts
 MAX_STORY_CHARS_ALT  = 1500   # secondary content truncation (belief/thinking paths)
 MAX_MESSAGE_STORE    = 8000   # per-message char cap when storing in SQLite
@@ -2446,10 +2446,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Parse [GRADE:] from model output
     grade = "C"
     if result["content"]:
-        _gd2, _fb2 = _parse_structured(result["content"], "grade", r"\[GRADE:\s*([ABCDF])\]")
-        grade = str(_gd2.get("grade", "C")).strip().upper()
-        if grade not in ("A", "B", "C", "D", "F"):
-            grade = "C"
+        _gm = re.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
+        grade = _gm.group(1).upper() if _gm else "C"
         print(f"  [GRADE] Model grade: {grade}", flush=True)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
@@ -2769,14 +2767,12 @@ if FLASK_OK:
 
         # Parse [GRADE:] and [STRATEGY:] from model output
         ct = result.get("content", "")
-        _gd3, _ = _parse_structured(ct, "grade", r"\[GRADE:\s*([ABCDF])\]")
-        grade = str(_gd3.get("grade", "D")).strip().upper()
-        if grade not in ("A", "B", "C", "D", "F"):
-            grade = "D"
+        _gm3 = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
+        grade = _gm3.group(1).upper() if _gm3 else "D"
         # Grade already parsed in process_chat
 
-        _sd3, _ = _parse_structured(ct, "strategy", r"STRATEGY:\s*(.+?)(?:\]|$)")
-        sm_strategy = _sd3.get("strategy")
+        _sm3 = re.findall(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.IGNORECASE)
+        sm_strategy = _sm3[0].strip() if _sm3 else ""
         if sm_strategy:
             try:
                 st = str(sm_strategy).strip()
@@ -2917,10 +2913,8 @@ if FLASK_OK:
     def _chat_stream(messages, tools=None, session_id="default"):
         result = process_chat(messages, tools=tools, session_id=session_id)
         ct = result.get("content", "")
-        _gd4, _ = _parse_structured(ct, "grade", r"\[GRADE:\s*([ABCDF])\]")
-        grade = str(_gd4.get("grade", "D")).strip().upper()
-        if grade not in ("A", "B", "C", "D", "F"):
-            grade = "D"
+        _gm4 = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
+        grade = _gm4.group(1).upper() if _gm4 else "D"
         # Phase 4.2/4.3: telemetry on injected strategies (streaming path)
         try:
             _consume_injected_strategies(grade)
