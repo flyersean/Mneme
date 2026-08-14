@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, sqlite3, threading, time, uuid, struct
+import json, os, re, sqlite3, threading, time, uuid, struct, queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -120,6 +120,32 @@ def _log_error(where: str, e: Exception):
         pass
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
+
+# ─── Structured-output helper (Phase 2) ─────────────────────────
+# Parses model reply as JSON; on failure falls back to a regex parse and logs
+# a warning. Never raises — returns (data_dict, used_fallback).
+
+def _parse_structured(reply: str, schema_hint: str, fallback_re: str = None,
+                      fallback_group: int = 1):
+    """Try json.loads(reply); if that fails and fallback_re given, try regex.
+    Returns (parsed_dict, used_fallback). On total failure returns ({}, True)."""
+    try:
+        data = json.loads(reply.strip())
+        if isinstance(data, dict):
+            return data, False
+        # Model sometimes wraps in a list
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0], False
+        return {"value": data}, False
+    except Exception:
+        pass
+    if fallback_re:
+        m = re.search(fallback_re, reply, re.IGNORECASE | re.MULTILINE)
+        if m:
+            print(f"  [WARN] Structured output failed, regex fallback used for {schema_hint}", flush=True)
+            return {schema_hint: m.group(fallback_group)}, True
+    print(f"  [WARN] Structured output failed and no fallback matched for {schema_hint}", flush=True)
+    return {}, True
 
 # ─── Database ──────────────────────────────────────────────────
 
@@ -435,10 +461,13 @@ MEMORY_DISCLAIMER = (
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: int = 300) -> dict:
+                timeout: int = 300, format_schema: dict = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
-    Ollama read timeout — raise it for long generations (novelty thinking)."""
+    Ollama read timeout — raise it for long generations (novelty thinking).
+    `format_schema` threads an Ollama structured-output JSON schema into the
+    payload's `format` field; when set the caller should json.loads the reply.
+    """
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
     
@@ -470,6 +499,8 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     }
     if tools:
         payload["tools"] = tools
+    if format_schema:
+        payload["format"] = format_schema
     
     # Smarter truncation: keep first user message (task context) + last 2 turns
     MAX_MSG_CHARS = 0  # disabled
@@ -1768,12 +1799,18 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         grade_msgs = [{"role": "user", "content": (
             f"Grade this answer [A-F] based on correctness, novelty, and whether it "
             f"found an approach the obvious answer misses.\n\nANSWER: {result.get('content', '')[:MAX_JUDGE_CHARS]}\n\n"
-            f"Respond with ONLY: [GRADE: A/B/C/D/F]"
+            f'Respond with ONLY JSON: {{"grade": "A"|"B"|"C"|"D"|"F"}}'
         )}]
-        grade_result = query_model(grade_msgs)
+        grade_result = query_model(grade_msgs, format_schema={
+            "type": "object",
+            "properties": {"grade": {"type": "string", "enum": ["A", "B", "C", "D", "F"]}},
+            "required": ["grade"],
+        })
         grade_text = grade_result.get("content", "")
-        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", grade_text, re.IGNORECASE)
-        grade = gm.group(1).upper() if gm else "C"
+        _gd, _fb = _parse_structured(grade_text, "grade", r"\[GRADE:\s*([ABCDF])\]")
+        grade = str(_gd.get("grade", "C")).strip().upper()
+        if grade not in ("A", "B", "C", "D", "F"):
+            grade = "C"
         
         iteration = {
             "iteration": i + 1,
@@ -1787,12 +1824,29 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
             # Extract strategy from good responses
             strat_msgs = [{"role": "user", "content": (
                 f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
-                f"Format each as: [STRATEGY: one-sentence imperative rule]\n\n"
+                f'Respond with ONLY JSON: {{"strategies": ["rule1", "rule2"]}}\n\n'
                 f"ANSWER: {result.get('content', '')[:MAX_STORY_CHARS_ALT]}"
             )}]
-            strat_result = query_model(strat_msgs)
-            for sm in re.finditer(r"STRATEGY:\s*(.+?)(?:\]|$)", strat_result.get("content", ""), re.MULTILINE):
-                s_text = sm.group(1).strip()[:300]
+            strat_result = query_model(strat_msgs, format_schema={
+                "type": "object",
+                "properties": {"strategies": {"type": "array", "items": {"type": "string"}}},
+                "required": ["strategies"],
+            })
+            _sd, _sfb = _parse_structured(
+                strat_result.get("content", ""), "strategies",
+                r"STRATEGY:\s*(.+?)(?:\]|$)"
+            )
+            strat_list = _sd.get("strategies")
+            if not isinstance(strat_list, list):
+                # Fallback: single string or regex result
+                if isinstance(strat_list, str):
+                    strat_list = [strat_list]
+                elif "strategies" in _sd and isinstance(_sd["strategies"], str):
+                    strat_list = [_sd["strategies"]]
+                else:
+                    strat_list = []
+            for s_text in strat_list:
+                s_text = str(s_text).strip()[:300]
                 if len(s_text) > 10:
                     strategies.append(s_text)
                     _save_strategy(s_text, grade)
@@ -1804,11 +1858,22 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         synth_msgs = [{"role": "user", "content": (
             f"Here are the best solutions to: {problem}\n\n" +
             "\n---\n".join(best[:3]) +
-            "\n\nExtract 1-3 operational SYSTEM RULES. Format each as: RULE: <imperative instruction>"
+            '\n\nExtract 1-3 operational SYSTEM RULES. Respond with ONLY JSON: {"rules": ["rule1", "rule2"]}'
         )}]
-        synth_result = query_model(synth_msgs)
-        for rm in re.finditer(r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", "")):
-            rule_text = rm.group(1).strip()[:300]
+        synth_result = query_model(synth_msgs, format_schema={
+            "type": "object",
+            "properties": {"rules": {"type": "array", "items": {"type": "string"}}},
+            "required": ["rules"],
+        })
+        _rd, _rfb = _parse_structured(
+            synth_result.get("content", ""), "rules",
+            r"RULE:\s*(.+?)(?:\n|$)"
+        )
+        rule_list = _rd.get("rules")
+        if not isinstance(rule_list, list):
+            rule_list = [rule_list] if isinstance(rule_list, str) else []
+        for rule_text in rule_list:
+            rule_text = str(rule_text).strip()[:300]
             if len(rule_text) > 10:
                 strategies.append(f"RULE: {rule_text}")
     
@@ -1846,17 +1911,33 @@ def _pairwise_judge(baseline: str, candidate: str, problem: str) -> dict:
             f"1. Is the candidate STRUCTURALLY different from the baseline — a different "
             f"approach or skeleton, not just reworded? Answer YES or NO.\n"
             f"2. Is the candidate still coherent and valid on its own terms? Answer YES or NO.\n"
-            f"Respond in exactly this format:\nDIFFERENT: yes/no\nVALID: yes/no\nREASON: one short sentence"
+            f'Respond with ONLY JSON: {{"different": "yes"|"no", "valid": "yes"|"no", "reason": "one short sentence"}}'
         )}]
-        r = query_model(q, timeout=NOVELTY_TIMEOUT)
+        r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema={
+            "type": "object",
+            "properties": {
+                "different": {"type": "string", "enum": ["yes", "no"]},
+                "valid": {"type": "string", "enum": ["yes", "no"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["different", "valid"],
+        })
         txt = r.get("content", "")
-        dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
-        vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
-        rm = re.search(r"REASON:\s*(.+?)", txt, re.IGNORECASE)
+        _jd, _jfb = _parse_structured(txt, "different")
+        # Regex fallback for DIFFERENT/VALID/REASON
+        if _jfb:
+            dm = re.search(r"DIFFERENT:\s*(yes|no)", txt, re.IGNORECASE)
+            vm = re.search(r"VALID:\s*(yes|no)", txt, re.IGNORECASE)
+            rm = re.search(r"REASON:\s*(.+?)", txt, re.IGNORECASE)
+            _jd = {
+                "different": dm.group(1).lower() if dm else "no",
+                "valid": vm.group(1).lower() if vm else "no",
+                "reason": rm.group(1).strip()[:200] if rm else "",
+            }
         return {
-            "different": (dm.group(1).lower() == "yes") if dm else False,
-            "valid": (vm.group(1).lower() == "yes") if vm else False,
-            "reason": rm.group(1).strip()[:200] if rm else "",
+            "different": str(_jd.get("different", "no")).strip().lower() == "yes",
+            "valid": str(_jd.get("valid", "no")).strip().lower() == "yes",
+            "reason": str(_jd.get("reason", "")).strip()[:200],
         }
     except Exception as e:
         print(f"  [THINK][JUDGE-ERR] {type(e).__name__}: {e}", flush=True)
@@ -1880,18 +1961,36 @@ def _decompose_problem(problem: str) -> list:
         f"approach; for social/technical problems, the relevant axes.\n\n"
         f"For each decision point, state the MOST CONVENTIONAL choice — the default that "
         f"most people would reflexively make. These are what make answers all look alike.\n\n"
-        f"Output exactly one per line, in this format:\n"
-        f"POINT: <short label> | CONVENTIONAL: <the default choice most people make>"
+        f'Respond with ONLY JSON: {{"points": [{{"point": "short label", "conventional": "default choice"}}]}}'
     )}]
-    r = query_model(q, timeout=NOVELTY_TIMEOUT)
+    r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema={
+        "type": "object",
+        "properties": {"points": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"point": {"type": "string"}, "conventional": {"type": "string"}},
+            "required": ["point", "conventional"],
+        }}},
+        "required": ["points"],
+    })
     points = []
-    for line in r.get("content", "").splitlines():
-        m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
-        if m:
-            points.append({
-                "point": m.group(1).strip()[:60],
-                "conventional": m.group(2).strip()[:200],
-            })
+    _pd, _pfb = _parse_structured(r.get("content", ""), "points")
+    pts_raw = _pd.get("points")
+    if isinstance(pts_raw, list):
+        for p in pts_raw:
+            if isinstance(p, dict) and p.get("point"):
+                points.append({
+                    "point": str(p.get("point", "")).strip()[:60],
+                    "conventional": str(p.get("conventional", "")).strip()[:200],
+                })
+    else:
+        # Regex fallback
+        for line in r.get("content", "").splitlines():
+            m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
+            if m:
+                points.append({
+                    "point": m.group(1).strip()[:60],
+                    "conventional": m.group(2).strip()[:200],
+                })
     return points[:6]
 
 def _wild_seed(problem: str) -> str:
@@ -2267,10 +2366,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Parse [GRADE:] from model output
     grade = "C"
     if result["content"]:
-        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", result["content"], re.IGNORECASE)
-        if gm:
-            grade = gm.group(1).upper()
-            print(f"  [GRADE] Model grade: {grade}", flush=True)
+        _gd2, _fb2 = _parse_structured(result["content"], "grade", r"\[GRADE:\s*([ABCDF])\]")
+        grade = str(_gd2.get("grade", "C")).strip().upper()
+        if grade not in ("A", "B", "C", "D", "F"):
+            grade = "C"
+        print(f"  [GRADE] Model grade: {grade}", flush=True)
     
     staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
@@ -2439,14 +2539,17 @@ if FLASK_OK:
 
         # Parse [GRADE:] and [STRATEGY:] from model output
         ct = result.get("content", "")
-        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
-        grade = gm.group(1).upper() if gm else "D"  # D = unverified default
+        _gd3, _ = _parse_structured(ct, "grade", r"\[GRADE:\s*([ABCDF])\]")
+        grade = str(_gd3.get("grade", "D")).strip().upper()
+        if grade not in ("A", "B", "C", "D", "F"):
+            grade = "D"
         # Grade already parsed in process_chat
-        
-        sm = re.search(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.MULTILINE)
-        if sm:
+
+        _sd3, _ = _parse_structured(ct, "strategy", r"STRATEGY:\s*(.+?)(?:\]|$)")
+        sm_strategy = _sd3.get("strategy")
+        if sm_strategy:
             try:
-                st = sm.group(1).strip()
+                st = str(sm_strategy).strip()
                 sid = "strat_" + str(int(time.time()))
                 existing_version = 0
                 # Semantic dedup: check FAISS for similar strategies
@@ -2577,8 +2680,10 @@ if FLASK_OK:
     def _chat_stream(messages, tools=None, session_id="default"):
         result = process_chat(messages, tools=tools, session_id=session_id)
         ct = result.get("content", "")
-        gm = re.search(r"\[GRADE:\s*([ABCDF])\]", ct, re.IGNORECASE)
-        grade = gm.group(1).upper() if gm else "D"
+        _gd4, _ = _parse_structured(ct, "grade", r"\[GRADE:\s*([ABCDF])\]")
+        grade = str(_gd4.get("grade", "D")).strip().upper()
+        if grade not in ("A", "B", "C", "D", "F"):
+            grade = "D"
         threading.Thread(target=_strategy_lifecycle, args=(grade, messages), daemon=True).start()
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
