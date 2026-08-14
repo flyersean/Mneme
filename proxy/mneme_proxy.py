@@ -238,6 +238,8 @@ for migration in (
     "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
     "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
     "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
+    "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
 ):
     try:
         db.execute(migration)
