@@ -2778,7 +2778,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 if hits:
                     lines = ["Search results from Mneme memory:\n"]
                     for h in hits:
-                        cid = h[1]
+                        cid = h  # route_query returns chunk_id strings, not tuples
                         crow = db.execute("SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
                         if crow:
                             label, grd, msgs_json = crow[0], crow[1], crow[2]
@@ -3327,7 +3327,7 @@ if FLASK_OK:
                         if hits:
                             lines = ["Search results:\n"]
                             for h in hits:
-                                cid = h[1]
+                                cid = h  # route_query returns chunk_id strings, not tuples
                                 crow = db.execute(
                                     "SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?",
                                     (cid,)
