@@ -555,7 +555,13 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         msgs.append({"role": "system", "content": system})
     for m in trimmed:
             mc = _extract_text(m.get("content", ""))
-            msgs.append({"role": m["role"], "content": mc})
+            new_m = {"role": m["role"], "content": mc}
+            # Preserve tool_calls on assistant messages so Ollama can associate a
+            # follow-up tool result with its call (critical for multi-turn tool use
+            # in Pi). Dropping this is what broke tool calls → "None".
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                new_m["tool_calls"] = m["tool_calls"]
+            msgs.append(new_m)
     
     # Auto-chunk oversized messages before they bloat conversation history
     msgs = _chunk_large_messages(msgs)
@@ -614,9 +620,12 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     msg = d.get("message", {})
     content = msg.get("content", "")
     thinking = msg.get("thinking", "")
+    tool_calls = msg.get("tool_calls", [])
     # Reasoning models (gemma4) sometimes put the answer in "thinking" and leave
     # "content" empty. Fall back to thinking so generations aren't dropped.
-    if not content and thinking:
+    # BUT NOT when the model emitted tool_calls — those must stay tool_calls
+    # (filling content with thinking would mask the pending tool call).
+    if not content and thinking and not tool_calls:
         content = thinking
     result = {
         "content": content,
