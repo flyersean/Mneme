@@ -1901,26 +1901,27 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         results.append(iteration)
         
         if grade in ("A", "B"):
-            # Extract strategy from good responses
+            # Extract strategy from good responses. Text format + regex — JSON
+            # grammar is unreliable with muse-glimmer's to=self reasoning turn.
             strat_msgs = [{"role": "user", "content": (
                 f"Extract 1-3 operational STRATEGIES from this {grade}-grade answer. "
-                f'Respond with ONLY JSON: {{"strategies": ["rule1", "rule2"]}}\n\n'
+                f"Format each on its own line exactly as: STRATEGY: <one-sentence imperative rule>. "
+                f"Return ONLY those lines, nothing else.\n\n"
                 f"ANSWER: {result.get('content', '')[:MAX_STORY_CHARS_ALT]}"
             )}]
-            strat_result = query_model(strat_msgs, format_schema="json")
-            _sd, _sfb = _parse_structured(
-                strat_result.get("content", ""), "strategies",
-                r"STRATEGY:\s*(.+?)(?:\]|$)"
+            strat_result = query_model(strat_msgs)
+            strat_list = re.findall(
+                r"STRATEGY:\s*(.+?)(?:\n|$)", strat_result.get("content", ""),
+                re.IGNORECASE
             )
-            strat_list = _sd.get("strategies")
-            if not isinstance(strat_list, list):
-                # Fallback: single string or regex result
-                if isinstance(strat_list, str):
-                    strat_list = [strat_list]
-                elif "strategies" in _sd and isinstance(_sd["strategies"], str):
-                    strat_list = [_sd["strategies"]]
-                else:
-                    strat_list = []
+            if not strat_list:
+                # Fallback: model may still have emitted JSON
+                _sd, _sfb = _parse_structured(
+                    strat_result.get("content", ""), "strategies",
+                    r"STRATEGY:\s*(.+?)(?:\]|$)"
+                )
+                _sl = _sd.get("strategies")
+                strat_list = _sl if isinstance(_sl, list) else ([_sl] if isinstance(_sl, str) else [])
             for s_text in strat_list:
                 s_text = str(s_text).strip()[:300]
                 if len(s_text) > 10:
@@ -1934,16 +1935,20 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         synth_msgs = [{"role": "user", "content": (
             f"Here are the best solutions to: {problem}\n\n" +
             "\n---\n".join(best[:3]) +
-            '\n\nExtract 1-3 operational SYSTEM RULES. Respond with ONLY JSON: {"rules": ["rule1", "rule2"]}'
+            '\n\nExtract 1-3 operational SYSTEM RULES. Format each on its own line exactly as: RULE: <one-sentence imperative rule>. Return ONLY those lines.'
         )}]
-        synth_result = query_model(synth_msgs, format_schema="json")
-        _rd, _rfb = _parse_structured(
-            synth_result.get("content", ""), "rules",
-            r"RULE:\s*(.+?)(?:\n|$)"
+        synth_result = query_model(synth_msgs)
+        rule_list = re.findall(
+            r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", ""),
+            re.IGNORECASE
         )
-        rule_list = _rd.get("rules")
-        if not isinstance(rule_list, list):
-            rule_list = [rule_list] if isinstance(rule_list, str) else []
+        if not rule_list:
+            _rd, _rfb = _parse_structured(
+                synth_result.get("content", ""), "rules",
+                r"RULE:\s*(.+?)(?:\n|$)"
+            )
+            _rl = _rd.get("rules")
+            rule_list = _rl if isinstance(_rl, list) else ([_rl] if isinstance(_rl, str) else [])
         for rule_text in rule_list:
             rule_text = str(rule_text).strip()[:300]
             if len(rule_text) > 10:
@@ -2033,28 +2038,28 @@ def _decompose_problem(problem: str) -> list:
         f"approach; for social/technical problems, the relevant axes.\n\n"
         f"For each decision point, state the MOST CONVENTIONAL choice — the default that "
         f"most people would reflexively make. These are what make answers all look alike.\n\n"
-        f'Respond with ONLY JSON: {{"points": [{{"point": "short label", "conventional": "default choice"}}]}}'
+        f'Format each on its own line exactly as: POINT: <short label> | CONVENTIONAL: <default choice>'
     )}]
-    r = query_model(q, timeout=NOVELTY_TIMEOUT, format_schema="json")
+    r = query_model(q, timeout=NOVELTY_TIMEOUT)
     points = []
-    _pd, _pfb = _parse_structured(r.get("content", ""), "points")
-    pts_raw = _pd.get("points")
-    if isinstance(pts_raw, list):
-        for p in pts_raw:
-            if isinstance(p, dict) and p.get("point"):
-                points.append({
-                    "point": str(p.get("point", "")).strip()[:60],
-                    "conventional": str(p.get("conventional", "")).strip()[:200],
-                })
-    else:
-        # Regex fallback
-        for line in r.get("content", "").splitlines():
-            m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
-            if m:
-                points.append({
-                    "point": m.group(1).strip()[:60],
-                    "conventional": m.group(2).strip()[:200],
-                })
+    for line in r.get("content", "").splitlines():
+        m = re.match(r"POINT:\s*(.+?)\s*\|\s*CONVENTIONAL:\s*(.+)", line.strip(), re.IGNORECASE)
+        if m:
+            points.append({
+                "point": m.group(1).strip()[:60],
+                "conventional": m.group(2).strip()[:200],
+            })
+    if not points:
+        # Fallback: model may still have emitted JSON
+        _pd, _pfb = _parse_structured(r.get("content", ""), "points")
+        pts_raw = _pd.get("points")
+        if isinstance(pts_raw, list):
+            for p in pts_raw:
+                if isinstance(p, dict) and p.get("point"):
+                    points.append({
+                        "point": str(p.get("point", "")).strip()[:60],
+                        "conventional": str(p.get("conventional", "")).strip()[:200],
+                    })
     return points[:6]
 
 def _wild_seed(problem: str) -> str:
