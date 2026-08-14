@@ -566,7 +566,13 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     # Auto-chunk oversized messages before they bloat conversation history
     msgs = _chunk_large_messages(msgs)
     
-    opts = {"temperature": temperature}
+    # Muse Glimmer recommended sampling (model card): temperature=1.0, top_p=0.95,
+    # top_k=64. Env-overridable for tuning. Explicit per-call options still win.
+    opts = {
+        "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "1.0")),
+        "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),
+        "top_k": int(os.environ.get("MNEME_TOP_K", "64")),
+    }
     if options:
         opts.update(options)
     
