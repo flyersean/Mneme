@@ -221,6 +221,12 @@ db.executescript("""
         created_at    TEXT NOT NULL
     );
     
+    CREATE TABLE IF NOT EXISTS preferences (
+        pref_key   TEXT PRIMARY KEY,
+        pref_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
     CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
     CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
@@ -1223,8 +1229,8 @@ def build_context(query: str) -> Tuple[str, str]:
             strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
             for s in srows:
                 strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
-            return _meta_principles_block() + strat_text, ptype
-        return _meta_principles_block(), ptype
+            return _meta_principles_block() + strat_text + _preferences_block(), ptype
+        return _meta_principles_block() + _preferences_block(), ptype
     
     # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
@@ -1274,7 +1280,7 @@ def build_context(query: str) -> Tuple[str, str]:
 
     # Phase 5.1: prepend the fixed meta-principles block AFTER budget
     # accounting — it is constant and must not consume the dynamic token budget.
-    context = _meta_principles_block() + context
+    context = _meta_principles_block() + _preferences_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
     if INJECT_SYSTEM != "0":
@@ -1981,6 +1987,73 @@ def _layer2_adjust(grade: str, provenance_reply: str) -> str:
             downgraded = True
     return ("B" if grade == "A" else "C") if downgraded else grade
 
+def _declare_contract(problem: str) -> dict:
+    """Phase 3: model declares GOAL/SUCCESS/FAILURE BEFORE acting, so the run can
+    be graded against its own prediction. Text format (no JSON grammar)."""
+    q = [{"role": "user", "content": (
+        "Before you start, declare your intention for this task.\n\n"
+        f"TASK:\n{problem}\n\n"
+        "Write exactly three lines:\n"
+        "GOAL: <what you are trying to produce>\n"
+        "SUCCESS: <what a good outcome looks like, concretely>\n"
+        "FAILURE: <what a bad outcome looks like, concretely>\n"
+        "Keep each line one sentence."
+    )}]
+    r = query_model(q, timeout=NOVELTY_TIMEOUT)
+    text = r.get("content", "") or ""
+    out = {"goal": "", "success": "", "failure": "", "raw": text}
+    for line in text.splitlines():
+        line = line.strip()
+        for key in ("goal", "success", "failure"):
+            if line.upper().startswith(key.upper() + ":"):
+                out[key] = line.split(":", 1)[1].strip()
+                break
+    return out
+
+_PREFERENCE_PATTERNS = [
+    (r"\b(show me the code|code first|just the code|code only|show the code)\b", "code_first", "true"),
+    (r"\b(explain first|explain before|explanation first|explain then code)\b", "code_first", "false"),
+    (r"\b(be concise|be brief|less detail|keep it short|short answer|too verbose|too much detail)\b", "detail", "low"),
+    (r"\b(more detail|be thorough|in depth|be verbose|explain fully|more explanation)\b", "detail", "high"),
+    (r"\b(just do it|just fix it|go ahead and|stop asking and do)\b", "mode", "act"),
+    (r"\b(don't change anything|just explain|plan only|don't do it yet|don't touch)\b", "mode", "plan"),
+]
+
+def _detect_preferences(user_msg: str) -> list:
+    """Explicit user-preference signals -> [(key, value)] updates. Only literal
+    phrases the user actually typed; never inferred. Caller persists them."""
+    updates = []
+    low = (user_msg or "").lower()
+    for pat, key, val in _PREFERENCE_PATTERNS:
+        if re.search(pat, low):
+            updates.append((key, val))
+    return updates
+
+def _store_preferences(updates: list):
+    if not updates:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        for key, val in updates:
+            db.execute("INSERT OR REPLACE INTO preferences VALUES (?,?,?)", (key, val, now))
+        db.commit()
+        print(f"  [PREF] stored {[(k, v) for k, v in updates]}", flush=True)
+    except Exception as e:
+        _log_error("_store_preferences", e)
+
+def _preferences_block() -> str:
+    """Render stored preferences for injection into the system context."""
+    try:
+        rows = db.execute("SELECT pref_key, pref_value FROM preferences ORDER BY pref_key").fetchall()
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["\n=== USER PREFERENCES (learned from explicit requests — honor these) ==="]
+    for k, v in rows:
+        lines.append(f"- {k}: {v}")
+    return "\n".join(lines)
+
 def _has_specific_claims(text: str) -> bool:
     """Cheap pre-filter for provenance grading: does the text plausibly assert
     specific, checkable facts (names, numbers, addresses, versions, quotes)?
@@ -2261,7 +2334,12 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
       regenerated instead of passed to the lenient judge.
     """
     import json as _json
-    
+
+    # Phase 3: declare success/failure criteria BEFORE generating, so the run
+    # can be graded against its own prediction.
+    contract = _declare_contract(problem)
+    print(f"  [THINK] contract GOAL: {contract['goal'][:80]}", flush=True)
+
     # 1. Baseline — the modal answer
     print("  [THINK] generating baseline", flush=True)
     baseline_res = query_model([{"role": "user", "content": problem}], timeout=NOVELTY_TIMEOUT)
@@ -2416,6 +2494,11 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
 
     # 7. Return
     highlight = [r for r in results if r["different"] and r["valid"]]
+    # Phase 3: grade against the declared contract. contract_met = the run
+    # produced at least one novel, valid candidate (the objective success of a
+    # thinking run). A fuller semantic match to the declared SUCCESS text is a
+    # future refinement.
+    contract_met = len(highlight) > 0
     return {
         "problem": problem,
         "baseline": baseline,
@@ -2425,6 +2508,8 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
         "novel_winners": [r["idx"] for r in highlight],
         "saved_to": LEARNED_IDEAS_FILE,
         "saved_ids": saved_ids,
+        "contract": contract,
+        "contract_met": contract_met,
     }
 
 
@@ -2513,6 +2598,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # Advance chunked tool output if user said "continue"
     messages = _advance_chunk(messages)
+    
+    # Phase 4: learn explicit user-preference signals before building context,
+    # so newly-stored preferences are injected this same turn.
+    _store_preferences(_detect_preferences(user_msg))
     
     # Build injected memory (already includes Mneme instructions)
     context, ptype = build_context(user_msg)
@@ -3343,6 +3432,28 @@ if FLASK_OK:
         
         result = _novelty_thinking_mode(problem, iterations, custom_features)
         return _cors_response(result)
+
+    @app.route("/preferences", methods=["GET", "POST"])
+    def preferences():
+        """User-preference store: explicit ask/answer loop.
+        GET returns stored preferences; POST sets them.
+        POST body: {"key": "code_first", "value": "true"} or
+                   {"preferences": {"code_first": "true", "detail": "low"}}"""
+        try:
+            if request.method == "GET":
+                rows = db.execute("SELECT pref_key, pref_value FROM preferences ORDER BY pref_key").fetchall()
+                return _cors_response({"preferences": {k: v for k, v in rows}})
+            data = request.get_json(force=True)
+            updates = []
+            if "preferences" in data and isinstance(data["preferences"], dict):
+                updates = list(data["preferences"].items())
+            elif "key" in data and "value" in data:
+                updates = [(data["key"], str(data["value"]))]
+            _store_preferences(updates)
+            rows = db.execute("SELECT pref_key, pref_value FROM preferences ORDER BY pref_key").fetchall()
+            return _cors_response({"preferences": {k: v for k, v in rows}})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
 
 # ─── Startup ───────────────────────────────────────────────────
 
