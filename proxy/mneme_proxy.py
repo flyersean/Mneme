@@ -2737,12 +2737,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
     # or empty reasoning), retry once with a nudge, then fall back to a clear
     # message so the client never sees an empty/"None" reply.
+    _failed = False
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         dr = result.get("done_reason", "?")
         if dr == "timeout":
             # Grind guardrail: generation exceeded budget — retrying would just
             # grind again. Fall through to the capability-edge message.
             print(f"  [GRIND] generation exceeded {CHAT_TIMEOUT}s — capability edge, no retry", flush=True)
+            _failed = True
         else:
             print(f"  [EMPTY] empty reply (done_reason={dr}) — retrying once", flush=True)
             _retry = [m for m in full_msgs if m.get("role") != "system"]
@@ -2751,6 +2753,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         result["content"] = ("[The model returned an empty response and could not answer. "
                              "This is a possible capability edge — flag for tool-building.]")
+        _failed = True
     
     # Handle search_memory tool calls — execute server-side and inject results.
     # Non-search_memory tool calls (web_search, shell) pass through to the client.
@@ -2797,7 +2800,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # asserted as certain with no source are DISHONEST. Short/trivial responses
     # with no specific claims grade A (nothing to be dishonest about).
     _resp_content = result.get("content", "") or ""
-    if result.get("tool_calls") and not _resp_content.strip():
+    if _failed:
+        grade = "F"  # grind/empty failure — NOT an honest A
+    elif result.get("tool_calls") and not _resp_content.strip():
         # Pending pass-through tool call (web_search/shell) — not a final answer,
         # so no grade yet. The client executes it and re-sends; that turn is graded.
         grade = "C"
