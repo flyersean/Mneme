@@ -3600,6 +3600,44 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"error": str(e)}, status=500)
 
+    @app.route("/capabilities", methods=["GET", "POST"])
+    def capabilities():
+        """Capability-edge store. GET lists flagged + tracked problem types.
+        POST can clear a flag: {"clear": "compute"} or force one: {"flag": "compute"}."""
+        try:
+            if request.method == "GET":
+                rows = db.execute(
+                    "SELECT problem_type, attempts, failures, last_grade, flagged, updated_at "
+                    "FROM capability_edges ORDER BY failures DESC, problem_type"
+                ).fetchall()
+                edges = [
+                    {"problem_type": r[0], "attempts": r[1], "failures": r[2],
+                     "last_grade": r[3], "flagged": bool(r[4]), "updated_at": r[5]}
+                    for r in rows
+                ]
+                return _cors_response({"capability_edges": edges})
+            data = request.get_json(force=True)
+            if "clear" in data:
+                db.execute("UPDATE capability_edges SET flagged=0 WHERE problem_type=?", (data["clear"],))
+                db.commit()
+            elif "flag" in data:
+                now = datetime.now(timezone.utc).isoformat()
+                db.execute(
+                    "INSERT INTO capability_edges (problem_type, attempts, failures, last_grade, flagged, updated_at) "
+                    "VALUES (?,1,2,'F',1,?) ON CONFLICT(problem_type) DO UPDATE SET flagged=1, updated_at=excluded.updated_at",
+                    (data["flag"], now),
+                )
+                db.commit()
+            rows = db.execute(
+                "SELECT problem_type, attempts, failures, last_grade, flagged FROM capability_edges ORDER BY failures DESC"
+            ).fetchall()
+            return _cors_response({"capability_edges": [
+                {"problem_type": r[0], "attempts": r[1], "failures": r[2], "last_grade": r[3], "flagged": bool(r[4])}
+                for r in rows
+            ]})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
 # ─── Startup ───────────────────────────────────────────────────
 
 _load_index()
