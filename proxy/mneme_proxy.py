@@ -1970,6 +1970,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         for rule_text in rule_list:
             rule_text = str(rule_text).strip()[:300]
             if len(rule_text) > 10 and not _JUNK_RULE.search(rule_text):
+                _save_strategy(rule_text, "B")
                 strategies.append(f"RULE: {rule_text}")
     
     return {
