@@ -1945,7 +1945,9 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         synth_msgs = [{"role": "user", "content": (
             f"Here are the best solutions to: {problem}\n\n" +
             "\n---\n".join(best[:3]) +
-            '\n\nExtract 1-3 operational SYSTEM RULES. Format each on its own line exactly as: RULE: <one-sentence imperative rule>. Return ONLY those lines.'
+            '\n\nExtract 1-3 concrete TECHNIQUES from these solutions that generalize to this problem domain. '
+            'Techniques must be specific and technical (validation, error handling, data-flow, resource management, etc.) — NOT generic advice about compliance or attitude. '
+            'Format each on its own line exactly as: RULE: <one-sentence technique>. Return ONLY those lines.'
         )}]
         synth_result = query_model(synth_msgs)
         rule_list = re.findall(
@@ -1959,9 +1961,15 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
             )
             _rl = _rd.get("rules")
             rule_list = _rl if isinstance(_rl, list) else ([_rl] if isinstance(_rl, str) else [])
+        # Filter junk rules (abliterated-model compliance reflex)
+        _JUNK_RULE = re.compile(
+            r"always comply|do not (question|refuse|moralize|hedge|deflect)|"
+            r"without hesitation|compliance|obey|no (refusals|limits)",
+            re.IGNORECASE
+        )
         for rule_text in rule_list:
             rule_text = str(rule_text).strip()[:300]
-            if len(rule_text) > 10:
+            if len(rule_text) > 10 and not _JUNK_RULE.search(rule_text):
                 strategies.append(f"RULE: {rule_text}")
     
     return {
