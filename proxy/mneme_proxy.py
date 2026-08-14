@@ -2493,20 +2493,22 @@ def _abstract_strategy_text(text: str) -> str:
     """Rewrite a strategy domain-agnostically (mechanism, not example).
 
     Returns the abstracted text, or the original on any failure."""
-    try:
-        r = query_model([{"role": "user", "content": (
-            "Rewrite this rule so it references no specific person, object, "
-            "domain, or proper noun — keep only the underlying mechanism. "
-            "If already general, return unchanged.\n\nRULE: " + text.strip()[:600]
-        )}])
-        out = (r.get("content") or "").strip()
-        # Sanity: non-empty, reasonable length, not an error-ish reply
-        if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
-            return out
-        raise ValueError(f"garbage abstraction: {out[:60]!r}")
-    except Exception as e:
-        _log_error("_abstract_strategy_text", e)
-        return text.strip()
+    prompt = ("Rewrite this rule so it references no specific person, object, "
+              "domain, or proper noun — keep only the underlying mechanism. "
+              "If already general, return unchanged.\n\nRULE: " + text.strip()[:600])
+    for attempt in range(2):
+        try:
+            r = query_model([{"role": "user", "content": prompt}])
+            out = (r.get("content") or "").strip()
+            if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
+                return out
+            print(f"  [ABSTRACT] attempt {attempt+1} rejected: content={r.get('content','')[:50]!r} "
+                  f"thinking={r.get('thinking','')[:50]!r} done={r.get('done_reason','?')}", flush=True)
+        except Exception as e:
+            print(f"  [ABSTRACT] attempt {attempt+1} error: {e}", flush=True)
+    _log_error("_abstract_strategy_text",
+               ValueError(f"garbage abstraction after retries for {text[:60]!r}"))
+    return text.strip()
 
 
 def _consume_injected_strategies(grade: str):
