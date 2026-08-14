@@ -2652,8 +2652,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         result["content"] = ("[The model returned an empty response and could not answer. "
                              "This is a possible capability edge — flag for tool-building.]")
     
-    # Handle search_memory tool calls — execute and inject results
+    # Handle search_memory tool calls — execute server-side and inject results.
+    # Non-search_memory tool calls (web_search, shell) pass through to the client.
     if result.get("tool_calls") and not result.get("content"):
+        remaining_calls = []
         for tc in result["tool_calls"]:
             fn = tc.get("function", {})
             if fn.get("name") == "search_memory":
@@ -2684,13 +2686,23 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 else:
                     result["content"] = "No matching memories found."
                     print("  [SEARCH-TOOL] no results", flush=True)
+                # search_memory was executed server-side — do NOT hand it back to
+                # the client (a stale tool_calls delta is what broke Pi → "None").
+            else:
+                remaining_calls.append(tc)
+        result["tool_calls"] = remaining_calls
     
     # Grade by provenance honesty (Layer 1) — deterministic, not self-report.
     # Honest "I don't know" / flagged guesses never penalize; specific facts
     # asserted as certain with no source are DISHONEST. Short/trivial responses
     # with no specific claims grade A (nothing to be dishonest about).
     _resp_content = result.get("content", "") or ""
-    if not _resp_content.strip():
+    if result.get("tool_calls") and not _resp_content.strip():
+        # Pending pass-through tool call (web_search/shell) — not a final answer,
+        # so no grade yet. The client executes it and re-sends; that turn is graded.
+        grade = "C"
+        print("  [TOOL-CALL] passing tool call through to client (grade deferred)", flush=True)
+    elif not _resp_content.strip():
         grade = "F"  # empty/failed response — not an honest A
     elif _has_specific_claims(_resp_content):
         _prov = _extract_provenance(user_msg, _resp_content)
