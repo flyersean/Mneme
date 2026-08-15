@@ -555,7 +555,6 @@ def main():
                              prev_labeler or "qwen2.5:0.5b", prev)
         else:
             print("\n  Wiping existing DB and starting fresh...")
-            import shutil
             shutil.rmtree("/workspace/mneme_chunks", ignore_errors=True)
     
     # Cleanup from previous runs
