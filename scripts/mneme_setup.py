@@ -551,6 +551,7 @@ def main():
         print(f"\n  Existing memory DB found: {chunk_count} chunks")
         
         # Read previous config if available
+        prev = {}  # default — DB may exist without a config file (restored/backup)
         prev_embed = ""
         prev_labeler = ""
         prev_model = ""
