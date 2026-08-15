@@ -2888,21 +2888,27 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                              "This is a possible capability edge — flag for tool-building.]")
         _failed = True
     
-    # Handle search_memory tool calls — execute server-side and inject results.
+    # Handle search_memory tool calls — execute server-side, then RE-QUERY the
+    # model with the results so it synthesizes a tagged answer (not raw hits).
     # Non-search_memory tool calls (web_search, shell) pass through to the client.
     _trace_search_chunks = set()
     if result.get("tool_calls") and not result.get("content"):
-        remaining_calls = []
-        for tc in result["tool_calls"]:
-            fn = tc.get("function", {})
-            if fn.get("name") == "search_memory":
+        search_calls = [tc for tc in result["tool_calls"]
+                        if tc.get("function", {}).get("name") == "search_memory"]
+        remaining_calls = [tc for tc in result["tool_calls"]
+                           if tc.get("function", {}).get("name") != "search_memory"]
+
+        if search_calls:
+            result_texts = []
+            for tc in search_calls:
+                fn = tc.get("function", {})
                 q = fn.get("arguments", {}).get("query", "")
                 k = fn.get("arguments", {}).get("top_k", 5)
                 print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
                 hits = route_query(q, top_k=k)
                 _trace_search_chunks.update(hits)
                 if hits:
-                    lines = ["Search results from Mneme memory:\n"]
+                    lines = ["Search results from Mneme memory:"]
                     for h in hits:
                         cid = h  # route_query returns chunk_id strings, not tuples
                         crow = db.execute("SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
@@ -2918,16 +2924,24 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                             except Exception as e:
                                 _log_error("search_tool:parse_msgs", e)
                         lines.append("")
-                    inject = "\n".join(lines[:30])  # cap
-                    result["content"] = inject
-                    print(f"  [SEARCH-TOOL] injected {len(hits)} results ({len(inject)} chars)", flush=True)
+                    result_texts.append("\n".join(lines[:30]))  # cap
+                    print(f"  [SEARCH-TOOL] found {len(hits)} results", flush=True)
                 else:
-                    result["content"] = "No matching memories found."
+                    result_texts.append("No matching memories found.")
                     print("  [SEARCH-TOOL] no results", flush=True)
-                # search_memory was executed server-side — do NOT hand it back to
-                # the client (a stale tool_calls delta is what broke Pi → "None").
-            else:
-                remaining_calls.append(tc)
+
+            tool_result = "\n\n".join(result_texts)
+
+            # Re-query the model with the search result as a tool message so it
+            # synthesizes a final answer (with [source: mem_XXX] / [guess] tags)
+            # instead of echoing raw hits back to the user.
+            followup = list(full_msgs)
+            followup.append({"role": "assistant", "content": "",
+                             "tool_calls": search_calls})
+            followup.append({"role": "tool", "content": tool_result})
+            print(f"  [SYNTHESIS] re-querying model with search results ({len(tool_result)} chars)", flush=True)
+            result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
+
         result["tool_calls"] = remaining_calls
     
     # Grade by provenance honesty — pass/fail/great, deterministic from the
