@@ -72,9 +72,32 @@ def detect_gpu():
     except:
         return "Unknown", 0
 
+def start_ollama():
+    """Start ollama serve detached so it survives the wizard exiting."""
+    if not shutil.which("ollama"):
+        return False
+    # Already running? Skip.
+    if subprocess.run("curl -s --max-time 2 http://localhost:11434 >/dev/null",
+                      shell=True).returncode == 0:
+        return True
+    subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=open("/tmp/ollama.log", "ab"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    # Wait for it to come up
+    for _ in range(20):
+        if subprocess.run("curl -s --max-time 2 http://localhost:11434 >/dev/null",
+                          shell=True).returncode == 0:
+            return True
+        time.sleep(1)
+    return False
+
+
 def install_ollama():
     if shutil.which("ollama"):
-        run("ollama serve > /dev/null 2>&1 &")
+        start_ollama()
         return True
     print("Installing Ollama...")
     run("apt-get update -qq && apt-get install -y -qq zstd curl")
@@ -83,7 +106,7 @@ def install_ollama():
         print("  Ollama install failed. Check network and re-run.")
         sys.exit(1)
     print("  Ollama installed.")
-    run("ollama serve > /dev/null 2>&1 &")
+    start_ollama()
     time.sleep(3)
     return True
 
@@ -152,7 +175,7 @@ def get_pulled_models():
         return []
     
     # Start ollama if not running, poll until ready
-    run("ollama serve > /dev/null 2>&1 &")
+    start_ollama()
     for _ in range(20):
         time.sleep(1)
         try:
@@ -730,11 +753,7 @@ def main():
     else:
         print("  Python dependencies already installed, skipping.")
         # Still ensure Ollama is running
-        if shutil.which("ollama"):
-            if subprocess.run("curl -s --max-time 2 http://localhost:11434 >/dev/null", 
-                            shell=True).returncode != 0:
-                subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                time.sleep(3)
+        start_ollama()
     
     # Pull models
     print(f"\nPulling models (this may take a few minutes)...")
