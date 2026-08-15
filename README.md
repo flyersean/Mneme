@@ -40,8 +40,14 @@ anything already present. Safe to run repeatedly.
 rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
-Interactive 5-step wizard: model → context size → chat interface → embedding →
-labeling. Both scripts self-update on every run.
+Interactive wizard: model → context size → chat interface → embedding → labeling.
+Both scripts self-update on every run.
+
+The wizard's model menu includes a **Muse Glimmer 30B** option (recommended for
+this branch) that auto-provisions the model: it pulls the Blackfrost abliterated
+GGUF and applies the corrected chat template via `ollama create muse-glimmer:30b`
+(without this template the model stalls at ~3 tokens — see
+`docs/muse-glimmer-model.md`). Pick 32K context for Muse.
 
 After setup, the proxy is at `http://localhost:8080` with an OpenAI-compatible
 API at `/v1`.

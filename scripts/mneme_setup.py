@@ -480,6 +480,33 @@ def _reconfigure(existing_db, embed_model, label_model, prev_config):
   DB:      {os.path.dirname(existing_db)}
 """)
 
+MUSE_MODEL_NAME = "muse-glimmer:30b"
+MUSE_SOURCE = "hf.co/Blackfrost-AI/Muse-Glimmer-30B-Abliterated-GGUF:Q5_K_M"
+# Ollama auto-detects a WRONG template for this GGUF (stalls ~3 tokens). This is
+# the corrected template. See docs/muse-glimmer-model.md.
+MUSE_MODELFILE = '''FROM hf.co/Blackfrost-AI/Muse-Glimmer-30B-Abliterated-GGUF:Q5_K_M
+TEMPLATE """{{ if .System }}<|begin_of_text|><|start|>system<|message|>{{ .System }}
+
+Reasoning strength: high.
+
+# Valid recipients: "self", "user".<|eot|>{{ end }}{{ if .Prompt }}<|start|>user<|message|>{{ .Prompt }}<|eot|>{{ end }}<|start|>assistant"""
+PARAMETER stop "<|eot|>"
+PARAMETER stop "<|start|>user<|message|>"
+PARAMETER num_ctx 32768
+'''
+
+def setup_muse():
+    """Pull the Muse GGUF and create muse-glimmer:30b with the corrected template."""
+    pull_model(MUSE_SOURCE)
+    with open("/tmp/Modelfile.muse", "w") as f:
+        f.write(MUSE_MODELFILE)
+    r = run(f"ollama create {MUSE_MODEL_NAME} -f /tmp/Modelfile.muse", timeout=180)
+    if r.returncode != 0:
+        print(f"  Warning: muse create failed: {(r.stderr or '')[-200:]}")
+    else:
+        print(f"  ✓ {MUSE_MODEL_NAME} created with corrected template")
+    return MUSE_MODEL_NAME
+
 def main():
     banner()
     
@@ -565,6 +592,8 @@ def main():
             models.append(p)
     
     opts.append("── Other options ──")
+    models.append(("Muse Glimmer 30B (abliterated, agentic — recommended)", "__muse__"))
+    opts.append("Muse Glimmer 30B (abliterated, agentic — recommended)")
     models.append(("+ 129K Modelfile from a pulled model (creates custom high-context model)", "__120k__"))
     opts.append("+ 129K Modelfile from a pulled model (creates custom high-context model)")
     models.append(("Custom (enter any Ollama model name)", "__custom__"))
@@ -584,10 +613,14 @@ def main():
         print("Invalid selection")
         sys.exit(1)
     
+    is_muse = False
     if model_entry[1] == "__custom__":
         model_name = ask("Enter Ollama model name")
         if not model_name:
             sys.exit(1)
+    elif model_entry[1] == "__muse__":
+        model_name = MUSE_MODEL_NAME
+        is_muse = True
     elif model_entry[1] == "__120k__":
         # Use any already-pulled model as base for Modelfile
         base = None
@@ -706,7 +739,10 @@ def main():
     
     # Pull models
     print(f"\nPulling models (this may take a few minutes)...")
-    pull_model(model_name)
+    if is_muse:
+        model_name = setup_muse()
+    else:
+        pull_model(model_name)
     pull_model(embed_model)
     pull_model(label_model)
     print("  Models ready.")
