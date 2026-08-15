@@ -1951,6 +1951,115 @@ def _grade_from_provenance(reply: str) -> str:
         return "C"
     return "D"
 
+
+# ─── Pass/Fail/Great inline grading (the fast path) ─────────────────────
+#
+# The model tags its own specific claims inline ([source: X] / [guess]) as
+# part of the SAME generation — no second judge call. We parse the tags and
+# map to the three actions:
+#   F = fail  (fabricated / empty / grind / fake source)
+#   B = pass  (honest: sourced or flagged as guess)
+#   A = great (pass + crossed a previously-flagged capability edge)
+# Internally stored as A/B/F so the six existing grade consumers are unchanged.
+# Returns None only to signal "no tags + specific claims" -> caller falls back
+# to the slow _extract_provenance judge call.
+
+_INLINE_SOURCE_RE = re.compile(r"\[source:\s*([^\]]+)\]", re.IGNORECASE)
+_INLINE_GUESS_RE  = re.compile(r"\[(?:guess|unverified|uncertain)\]", re.IGNORECASE)
+
+
+def _parse_inline_provenance(content: str) -> dict:
+    """Extract inline [source: X] / [guess] tags from the model's own answer."""
+    content = content or ""
+    sources = [s.strip().strip("\"'") for s in _INLINE_SOURCE_RE.findall(content)]
+    sources = [s for s in sources if s]
+    guesses = len(_INLINE_GUESS_RE.findall(content))
+    return {"sources": sources, "guesses": guesses, "has_tags": bool(sources or guesses)}
+
+
+def _grade_inline(parsed: dict, content: str, was_edge: bool) -> str:
+    """Pass/fail/great from inline tags. Returns 'A'/'B'/'F', or None to
+    signal the caller to use the slow provenance judge (no tags present)."""
+    content = (content or "").strip()
+    if not content:
+        return "F"
+    if not parsed["has_tags"]:
+        # Model didn't tag. If it asserted specific facts anyway, we can't trust
+        # it without the judge — signal fallback. Trivial replies are an honest B.
+        return None if _has_specific_claims(content) else "B"
+    if was_edge and parsed["sources"]:
+        return "A"   # great: crossed a flagged edge by actually sourcing
+    return "B"       # pass: honest (sourced and/or flagged guesses)
+
+
+# ─── Trace cross-check (catches fabricated citations) ─────────────────────
+#
+# A [source: X] tag is only honest if the model actually had X this turn.
+# Two things are checkable deterministically:
+#   - mem_XXXX  -> must be in the injected context OR returned by search_memory.
+#   - http(s) URL -> its domain must appear somewhere in the conversation
+#                    (a tool call / tool result / injected memory) this turn.
+# Anything else (tool names, "memory", "training data") is accepted as a soft
+# admission and left to the [guess] path.
+
+_INLINE_MEM_RE  = re.compile(r"mem_[a-zA-Z0-9]+")
+_INLINE_URL_RE  = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _extract_mem_ids(text: str) -> set:
+    """Chunk IDs (mem_XXXX) present in a text blob (injected context, etc.)."""
+    return set(_INLINE_MEM_RE.findall(text or ""))
+
+
+def _extract_urls_from_toolcalls(tool_calls) -> set:
+    """URLs referenced in tool-call arguments (what the model asked to fetch)."""
+    urls = set()
+    for tc in (tool_calls or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {})
+        if not isinstance(fn, dict):
+            continue
+        args = fn.get("arguments", {})
+        args_str = json.dumps(args) if isinstance(args, (dict, list)) else str(args or "")
+        urls.update(m.group(0).rstrip(".,;)]}'\"") for m in _INLINE_URL_RE.finditer(args_str))
+    return urls
+
+
+def _extract_urls_from_messages(messages) -> set:
+    """URLs anywhere in the conversation: message text (tool results carry
+    fetched URLs) plus assistant tool-call arguments."""
+    urls = set()
+    for m in (messages or []):
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content", "")
+        if isinstance(content, str):
+            urls.update(x.group(0).rstrip(".,;)]}'\"") for x in _INLINE_URL_RE.finditer(content))
+        urls |= _extract_urls_from_toolcalls(m.get("tool_calls"))
+    return urls
+
+
+def _source_domain(url: str) -> str:
+    m = re.match(r"https?://([^/]+)", url)
+    return (m.group(1) if m else url).lower().rstrip(".")
+
+
+def _has_fake_source(parsed: dict, trace_chunks: set, trace_urls: set) -> bool:
+    """True if any [source: X] cites a mem chunk or URL the model did not
+    actually have this turn (a fabricated citation)."""
+    trace_domains = {_source_domain(u) for u in trace_urls}
+    for src in parsed["sources"]:
+        s = src.strip()
+        for mt in _INLINE_MEM_RE.findall(s):
+            if mt not in trace_chunks:
+                return True
+        if s.startswith(("http://", "https://")):
+            if _source_domain(s) not in trace_domains:
+                return True
+    return False
+
+
 _VERIFY_STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
     "have", "has", "had", "not", "but", "its", "his", "her", "their", "there",
@@ -2772,6 +2881,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     
     # Handle search_memory tool calls — execute server-side and inject results.
     # Non-search_memory tool calls (web_search, shell) pass through to the client.
+    _trace_search_chunks = set()
     if result.get("tool_calls") and not result.get("content"):
         remaining_calls = []
         for tc in result["tool_calls"]:
@@ -2781,6 +2891,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 k = fn.get("arguments", {}).get("top_k", 5)
                 print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
                 hits = route_query(q, top_k=k)
+                _trace_search_chunks.update(hits)
                 if hits:
                     lines = ["Search results from Mneme memory:\n"]
                     for h in hits:
@@ -2810,28 +2921,43 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 remaining_calls.append(tc)
         result["tool_calls"] = remaining_calls
     
-    # Grade by provenance honesty (Layer 1) — deterministic, not self-report.
-    # Honest "I don't know" / flagged guesses never penalize; specific facts
-    # asserted as certain with no source are DISHONEST. Short/trivial responses
-    # with no specific claims grade A (nothing to be dishonest about).
+    # Grade by provenance honesty — pass/fail/great, deterministic from the
+    # model's own inline [source:]/[guess] tags plus the trace. No second judge
+    # call on the hot path; only when the model asserted specific facts but
+    # emitted no tags do we fall back to the slow _extract_provenance judge.
     _resp_content = result.get("content", "") or ""
+    _was_edge = _is_capability_edge(cur_ptype)
     if _failed:
-        grade = "F"  # grind/empty failure — NOT an honest A
+        grade = "F"  # grind/empty failure — NOT an honest pass
     elif result.get("tool_calls") and not _resp_content.strip():
         # Pending pass-through tool call (web_search/shell) — not a final answer,
         # so no grade yet. The client executes it and re-sends; that turn is graded.
         grade = "C"
         print("  [TOOL-CALL] passing tool call through to client (grade deferred)", flush=True)
     elif not _resp_content.strip():
-        grade = "F"  # empty/failed response — not an honest A
-    elif _has_specific_claims(_resp_content):
-        _prov = _extract_provenance(user_msg, _resp_content)
-        grade = _layer2_adjust(_grade_from_provenance(_prov), _prov)
+        grade = "F"  # empty/failed response — not an honest pass
     else:
-        grade = "A"
+        _parsed = _parse_inline_provenance(_resp_content)
+        grade = _grade_inline(_parsed, _resp_content, _was_edge)
+        if grade is None:
+            # Model asserted specific facts but didn't tag them — slow judge path.
+            # The judge can only say pass/fail (no inline tags -> no "great").
+            _prov = _extract_provenance(user_msg, _resp_content)
+            _old = _layer2_adjust(_grade_from_provenance(_prov), _prov)
+            grade = "F" if _old in ("C", "D", "F") else "B"
+        elif _parsed["sources"]:
+            # Trace cross-check: a [source: X] the model did not actually have
+            # this turn is a fabricated citation -> fail. Only mem chunks and
+            # URLs are checkable; the rest is left to the [guess] path.
+            _trace_chunks = _extract_mem_ids(context) | _trace_search_chunks
+            _trace_urls = _extract_urls_from_messages(full_msgs) | _extract_urls_from_toolcalls(result.get("tool_calls"))
+            if _has_fake_source(_parsed, _trace_chunks, _trace_urls):
+                grade = "F"
+                print("  [FAKE-SOURCE] fabricated citation detected — grade fail", flush=True)
     if grade not in ("A", "B", "C", "D", "F"):
         grade = "C"
-    print(f"  [GRADE] provenance grade: {grade}", flush=True)
+    _glabel = {"A": "great", "B": "pass", "F": "fail"}.get(grade, grade)
+    print(f"  [GRADE] {_glabel}: {grade}", flush=True)
 
     # Capability-edge tracking: record this grade against the task's problem type.
     # A poor grade accumulates toward flagging the type as a known edge, which then
@@ -3061,7 +3187,10 @@ def _save_strategy(text, grade, existing_id=""):
 
 def _strategy_lifecycle(grade, messages):
     try:
-        if grade in ("A", "B"):
+        if grade == "A":
+            # Only a GREAT response (crossed a capability edge) is worth saving
+            # as a strategy. A pass (B) just archives — saving strategies from
+            # every ordinary correct answer filled the library with noise.
             q1 = [{"role": "user", "content": "You graded this response " + grade + ". Did you use a novel approach worth saving? Answer yes or no."}]
             r1 = query_model(q1)
             if "yes" not in (r1.get("content","") or "").strip().lower(): return
@@ -3168,7 +3297,10 @@ if FLASK_OK:
 
         _sm3 = re.findall(r"STRATEGY:\s*(.+?)(?:\]|$)", ct, re.IGNORECASE)
         sm_strategy = _sm3[0].strip() if _sm3 else ""
-        if sm_strategy:
+        # Strategies are only saved on a GREAT response (grade A) — a pass just
+        # archives; a fail records a capability edge. This keeps the strategy
+        # library from filling with "ordinary correct answer" noise.
+        if sm_strategy and grade == "A":
             try:
                 st = str(sm_strategy).strip()
                 sid = "strat_" + str(int(time.time()))
