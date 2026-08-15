@@ -2932,13 +2932,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
             tool_result = "\n\n".join(result_texts)
 
-            # Re-query the model with the search result as a tool message so it
-            # synthesizes a final answer (with [source: mem_XXX] / [guess] tags)
-            # instead of echoing raw hits back to the user.
+            # Re-query the model with the search result so it synthesizes a final
+            # answer (with [source: mem_XXX] / [guess] tags) instead of echoing
+            # raw hits. Appended as a USER message rather than a "tool" message:
+            # the Muse Modelfile template has no tool/response rendering, so a
+            # "tool" role message is dropped and trips llama-server's peg-native
+            # grammar on the follow-up generation.
             followup = list(full_msgs)
-            followup.append({"role": "assistant", "content": "",
-                             "tool_calls": search_calls})
-            followup.append({"role": "tool", "content": tool_result})
+            followup.append({"role": "user",
+                             "content": "search_memory results:\n" + tool_result})
             print(f"  [SYNTHESIS] re-querying model with search results ({len(tool_result)} chars)", flush=True)
             result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
 
