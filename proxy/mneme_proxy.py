@@ -526,6 +526,16 @@ def _load_system_prompt():
 
 SYSTEM_PROMPT = _load_system_prompt()
 
+
+def _finalize_context(ctx: str) -> str:
+    """Prepend Mneme instructions (system_prompt.md) unless MNEME_INJECT_SYSTEM=0.
+    Applied at EVERY return path of build_context so the instructions (memory
+    format, search_memory, source tagging) always reach the model — including on
+    an empty DB (fresh install), where the early returns previously skipped them."""
+    if INJECT_SYSTEM != "0":
+        return "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + ctx
+    return ctx
+
 MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
 )
@@ -1257,8 +1267,8 @@ def build_context(query: str) -> Tuple[str, str]:
             strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
             for s in srows:
                 strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
-            return _meta_principles_block() + strat_text + _preferences_block(), ptype
-        return _meta_principles_block() + _preferences_block(), ptype
+            return _finalize_context(_meta_principles_block() + strat_text + _preferences_block()), ptype
+        return _finalize_context(_meta_principles_block() + _preferences_block()), ptype
     
     # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
@@ -1311,8 +1321,7 @@ def build_context(query: str) -> Tuple[str, str]:
     context = _meta_principles_block() + _preferences_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
-    if INJECT_SYSTEM != "0":
-        context = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + context
+    context = _finalize_context(context)
     return context, ptype
 
 # ─── Staging Buffer ────────────────────────────────────────────
