@@ -3001,12 +3001,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     except Exception as e:
         _log_error("process_chat:suspect_grade", e)
 
+    # Flush BEFORE adding this turn — the idle check compares against the
+    # previous turn's last_activity, which staging.add() would otherwise reset
+    # (making the idle condition dead code).
+    if staging.should_flush():
+        _enqueue(archive_staging)
+
     staging.add("user", user_msg, source="user", session=session_id)
     if result["content"]:
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
-    
-    if staging.should_flush():
-        _enqueue(archive_staging)
 
     return {
         **result,
