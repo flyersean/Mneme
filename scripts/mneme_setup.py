@@ -357,9 +357,14 @@ def _reconfigure(existing_db, embed_model, label_model, prev_config):
     # Pick new model
     pulled = get_pulled_models()
     opts = []
-    models = [("── Keep current ──", prev_model)]
-    opts.append("── Keep current ──")
-    opts.append(f"{prev_model} (current)")
+    models = []
+    # "Keep current" only makes sense if a real model was previously configured.
+    # When the DB exists but setup_config.json was lost (restored/copied), prev_model
+    # is "unknown" — offering "keep current" would set model="unknown" and break the proxy.
+    if prev_model and prev_model != "unknown":
+        models.append(("── Keep current ──", prev_model))
+        opts.append("── Keep current ──")
+        opts.append(f"{prev_model} (current)")
     if pulled:
         opts.append("── Other pulled models ──")
         for p in pulled:

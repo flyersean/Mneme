@@ -16,19 +16,19 @@ Models with strong training data on a topic ignore injected 2026 data. Known acr
 ### P3: LoCoMo dataset in Qwen 3.6 training data
 Qwen 3.6 35B already knows LoCoMo conversations. Cannot use as a memory benchmark with this model. Custom 2026 events benchmark used instead.
 
-### P3: Hermes-native search_memory plugin (TODO)
+### P4: Hermes-native search_memory plugin (TODO)
 Hermes plugin to register `search_memory` as a native tool. ~10 lines: register tool → POST to `localhost:8080/search` → return results. Plugin goes in `~/.hermes/plugins/mneme_search/plugin.py`. No streaming issues expected (Hermes tools are synchronous).
 
-### P4: Labeler (qwen2.5:0.5b) produces inaccurate topic labels
+### P5: Labeler (qwen2.5:0.5b) produces inaccurate topic labels
 The 0.5B labeler misreads numbers (e.g., "180 contact tracers" labeled as "10 contact tracers"). Affects injection quality when model relies on labels rather than full message text. Consider upgrading labeler to a larger model or adding post-processing.
 
-### P4: Harness prompt competition (persistent)
+### P6: Harness prompt competition (persistent)
 Mneme's system prompt competes with agent harness prompts (Hermes ~78KB, Pi's coding persona). The v2 prompt partially mitigates by removing Mneme's persona, but per-harness prompt templates (Option C) remain the structural fix.
 
-### P5: Concurrent writer safety
+### P7: Concurrent writer safety
 SQLite WAL mode handles reads concurrently but writes are serialized. Multiple proxy instances sharing one DB confirmed working for reads, but concurrent writes from different instances could conflict.
 
-### P6: Per-model config file (sampling, context, output caps, quirks)
+### P8: Per-model config file (sampling, context, output caps, quirks)
 
 **Problem:** Model settings are currently global — a mix of env vars and
 hardcoded defaults. Different models need different settings, and applying one
@@ -81,7 +81,7 @@ size issues / runaway output": they drop a `small-model-Nb` entry with a tight
 decision (which branch is canonical) and on re-testing qwen3.6 + gemma4 against
 the recent grading/capability-edge/tool-call changes.
 
-### P7: Externalize all static injected prompts (hot-loadable files)
+### P9: Externalize all static injected prompts (hot-loadable files)
 
 **Problem:** Static prompts and system instructions that are injected on every
 turn are hardcoded in `mneme_proxy.py`. Editing them means changing code,
@@ -109,7 +109,7 @@ loss.
 **Status:** Rule documented; not implemented. `META_PRINCIPLES` is still a
 hardcoded list in the script.
 
-### P8: Hosted-model backend (OpenRouter / DeepSeek) — future feature
+### P10: Hosted-model backend (OpenRouter / DeepSeek) — future feature
 
 **Problem:** The proxy is OpenAI-compatible on the way OUT (Pi/Hermes connect to
 `localhost:8080/v1`), but on the way IN it talks to Ollama's *native* API, not
