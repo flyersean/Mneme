@@ -81,6 +81,34 @@ size issues / runaway output": they drop a `small-model-Nb` entry with a tight
 decision (which branch is canonical) and on re-testing qwen3.6 + gemma4 against
 the recent grading/capability-edge/tool-call changes.
 
+### P7: Externalize all static injected prompts (hot-loadable files)
+
+**Problem:** Static prompts and system instructions that are injected on every
+turn are hardcoded in `mneme_proxy.py`. Editing them means changing code,
+redeploying, and restarting the proxy — which loses the in-memory staging buffer
+and can force a DB clear. The Aug 15 meta-principles rewrite made this concrete:
+tuning the `META_PRINCIPLES` list (to fix the "reject the obvious answer" bias
+that caused 10-minute web-read grinds) required a script edit + scp + kill +
+restart + DB wipe, for what should have been a one-line text change.
+
+Currently hardcoded (violations of this rule):
+- `META_PRINCIPLES` — hardcoded list in mneme_proxy.py (the one that just bit us)
+- Pi system prompt — embedded in Pi's TypeScript source (see "Hot-Swappable
+  System Prompt" below)
+- Strategy/preference template blocks
+
+**Idea:** Every static prompt/instruction injected repeatedly lives in a plain
+file under `prompts/` (e.g. `prompts/meta_principles.md`, `prompts/system.md`,
+`prompts/preferences.md`), read once at startup, plus a `POST /admin/reload`
+endpoint to re-read them without a restart (mechanism already designed in the
+"Hot-Swappable System Prompt" section). Editing wording — like the
+verify-don't-reject meta-principles fix — becomes `vim prompts/meta_principles.md`
++ `curl -X POST localhost:8080/admin/reload`, no redeploy, no DB clear, no chunk
+loss.
+
+**Status:** Rule documented; not implemented. `META_PRINCIPLES` is still a
+hardcoded list in the script.
+
 ## Resolved (August 8, 2026)
 
 ### v2 Architecture
