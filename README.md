@@ -1,6 +1,13 @@
-# Mneme
+# Mneme — novelty-thinking (experimental)
 
-Conversational memory proxy between AI agents and Ollama. Transparent layer that archives conversations, classifies by topic, injects relevant past context, and evolves its own strategies through a self-improving feedback loop. Model-agnostic. Self-improving.
+> ⚠️ **This is the EXPERIMENTAL branch.** It includes the learning/strategy layer,
+> epistemic grading, and capability-edge tracking. For the stripped-down,
+> memory-only build, see the [`main` branch README](https://github.com/flyersean/Mneme/blob/main/README.md).
+
+Conversational memory proxy between AI agents and Ollama. Archives conversations,
+classifies by topic, injects relevant past context, and — in this branch — grades
+its own epistemic honesty and evolves strategies through a self-improving loop.
+Model-agnostic. Self-improving.
 
 ## How It Works
 
@@ -21,20 +28,23 @@ Every conversation turn is staged, then on save the proxy:
 ### Step 1: Install dependencies (pipe-safe, one command)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh | bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/install_deps.sh | bash
 ```
 
-Idempotent — installs Ollama, Python packages, proxy code. Detects and skips anything already present. Safe to run repeatedly.
+Idempotent — installs Ollama, Python packages, proxy code. Detects and skips
+anything already present. Safe to run repeatedly.
 
 ### Step 2: Run setup wizard
 
 ```bash
-rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py
+rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
-Interactive 5-step wizard: model → context size → chat interface → embedding → labeling. Both scripts self-update on every run.
+Interactive 5-step wizard: model → context size → chat interface → embedding →
+labeling. Both scripts self-update on every run.
 
-After setup, the proxy is at `http://localhost:8080` with an OpenAI-compatible API at `/v1`.
+After setup, the proxy is at `http://localhost:8080` with an OpenAI-compatible
+API at `/v1`.
 
 ### Local Connect
 
@@ -52,13 +62,14 @@ Prompts for pod IP/port, then:
 
 ```bash
 cd /workspace
-MNEME_MODEL="qwen3.6-35b-120k:latest" \
+MNEME_MODEL="muse-glimmer:30b" \
   OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
   OLLAMA_KEEP_ALIVE=24h PYTHONDONTWRITEBYTECODE=1 \
   python3 -uB proxy/mneme_proxy.py
 ```
 
-For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` before starting Ollama.
+For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and
+`OLLAMA_KV_CACHE_TYPE=q8_0` before starting Ollama.
 
 ## Features
 
@@ -69,47 +80,41 @@ For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_T
 - Recency-weighted scoring (cycle-based, not wall-clock)
 - Source tracking (user, model, tool:*, page:*, document:*)
 
-**Self-Grading & Strategy Learning**
-- Models append `[GRADE: A-F]` after every response
-- Proxy parses grades from model output, stores in DB
-- Proxy-driven strategy lifecycle: success (A/B) triggers mini-convo, failure (C/D/F) auto-creates boilerplate with FAISS dedup
+**Learning & Strategy Layer** (experimental — this branch)
+- Proxy-driven strategy lifecycle: success triggers mini-convo, failure
+  auto-creates boilerplate with FAISS dedup
+- Epistemic grading (two-layer): the model tags provenance and grades *honesty*,
+  not answer correctness — "I don't know" beats fabrication. See
+  `docs/grading-redesign.md`.
+- Layer 2 verification: proxy independently checks cited claims against sources
+  before the grade is finalized
+- Pre-declared contract (Phase 3): the model states goal + success criteria
+  before answering, then grades against its own contract
+- User-preference store (Phase 4): detects and persists stable user preferences
+
+**Capability-Edge Tracking**
+- Every graded turn records a competence edge per problem type (`compute`,
+  `code`, `web_retrieval`, `memory_operation`, …). Two poor grades flag the edge;
+  the next similar task injects a "propose the tool, don't grind" directive. See
+  `docs/capability-edge-tracking.md`.
+
+**Novelty & Divergence Modes** (experimental)
+- `/mode/think`, `/mode/divergent`, and adversarial-collaboration endpoints that
+  push the model off modal/average answers and grade novelty objectively (embedding
+  distance + pairwise judge), not by self-report. See
+  `docs/learning-critical-modes.md`.
 
 **v2 Architecture (persona-free)**
-- No "You are..." identity in system prompt — Mneme describes itself as a system, not a personality
-- `<<COMMAND>>` stripping — `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>` processed server-side, stripped from model context
-- Content normalization — handles both string and array content formats (OpenAI, Pi, Hermes)
+- No "You are..." identity — Mneme describes itself as a system, not a personality
+- `<<COMMAND>>` stripping — `<<SAVE>>`, `<<DETAIL>>`, `<<REVISE>>` processed
+  server-side, stripped from model context
+- Content normalization — handles string and array content (OpenAI, Pi, Hermes)
 
 **Harness Integration**
-- **Hermes**: Full support with all tools, memory, compression enabled. SEARCH_MEMORY_TOOL appended by proxy (Hermes doesn't validate tools client-side).
-- **Pi**: Streaming support with search_memory via extension + proxy intercept. Extension at `extensions/pi/mneme-search-tool.ts`.
-- **Any OpenAI client**: Connect to `http://localhost:8080/v1`
-
-## Benchmarks
-
-**LoCoMo (Long Conversation Memory) benchmark — August 2026:**
-
-| Conversations | Questions | Model | Result |
-|--------------|-----------|-------|--------|
-| 1 | 5 (session summaries) | Qwen 3.6 35B (32K) | 100% (5/5) |
-| 1 | 10 (individual turns) | Qwen 3.6 35B (32K) | 100% (10/10)* |
-
-*\*Later determined LoCoMo is in Qwen's training data — results not meaningful for memory testing.*
-
-**Custom 2026 Events benchmark (post-training-cutoff data) — August 2026:**
-
-20 questions across 4 types: needle-in-haystack, temporal reasoning, trick questions, cross-conversation.
-
-| Type | Score |
-|------|-------|
-| Needle (fact recall) | 10/15 (67%) |
-| Trick (contradictions) | 2/2 (100%) |
-| Cross-conversation | 0/1 (0%) |
-| Temporal | 0/2 (0%) |
-| **Total** | **12/20 (60%)** |
-
-Judge: gpt-4o-mini via OpenRouter. Model: Qwen 3.6 35B (32K). 3 conversations, 20 individual turns ingested, 29 DB chunks.
-
-Benchmark runner: `benchmarks/locomo_runner.py`
+- **Hermes**: full support with all tools, memory, compression enabled
+- **Pi**: `search_memory` + `web_search`/`web_scrape` via extensions
+  (`extensions/pi/`), with proxy intercept + pass-through tool calls
+- **Any OpenAI client**: connect to `http://localhost:8080/v1`
 
 ## Endpoints
 
@@ -120,12 +125,12 @@ Benchmark runner: `benchmarks/locomo_runner.py`
 | POST | `/search` | Search memory: `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
 | GET | `/list` | List all chunks with metadata |
-| GET | `/search?q=...` | GET-based keyword search |
-| GET | `/detail/<chunk_id>` | Full JSON for one chunk |
+| GET | `/capabilities` | List capability-edge records (GET) / flag or clear (POST) |
 
 ## Architecture
 
-Single-file Flask proxy. Module-level state (FAISS index, SQLite connection, staging buffer). Threaded server with daemon archival threads.
+Single-file Flask proxy. Module-level state (FAISS index, SQLite connection,
+staging buffer). Threaded server with daemon archival threads.
 
 **Required Ollama models:**
 - Main model (any): via `MNEME_MODEL` env var
@@ -134,8 +139,10 @@ Single-file Flask proxy. Module-level state (FAISS index, SQLite connection, sta
 
 ## Branches
 
-- `main` — stable release
-- `build-roadmap` — active development (v3 architecture, strategy directives, multi-writer FAISS, learning mode)
-- `dev-chunks` — previous development branch (v2 architecture)
-- `pi` — Pi-specific extension and testing
-- `dev-v2` — restore point, do not modify
+- `main` — **stable, stripped-down memory-only build** (no learning/strategy
+  layer). Use this for a simple, dependable setup. Start here if you're new.
+- `novelty-thinking` — **this branch.** Experimental: learning/strategy layer,
+  epistemic grading, capability-edge tracking, novelty modes.
+- `build-roadmap` — previous development branch (legacy).
+- `dev-chunks` — previous development branch (v2 architecture).
+- `dev-v2` — restore point, do not modify.

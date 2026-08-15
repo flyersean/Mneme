@@ -5,7 +5,7 @@
 # Self-update: always fetch latest version before running.
 if [ -z "${MNEME_DEPS_UPDATED:-}" ]; then
     export MNEME_DEPS_UPDATED=1
-    _URL="https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/install_deps.sh"
+    _URL="https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/install_deps.sh"
     if curl -sSL --fail -o /tmp/mneme_install.sh "$_URL?$(date +%s)" 2>/dev/null; then
         if [ -s /tmp/mneme_install.sh ]; then
             exec bash /tmp/mneme_install.sh
@@ -92,7 +92,7 @@ DOWNLOAD_OK=0
 # Try git clone first (gets all files at once, faster for updates)
 if command -v git >/dev/null 2>&1; then
     rm -rf /tmp/mneme_repo_install 2>/dev/null
-    if git clone -b build-roadmap --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null; then
+    if git clone -b novelty-thinking --depth 1 https://github.com/flyersean/Mneme.git /tmp/mneme_repo_install 2>/dev/null; then
         cp -f /tmp/mneme_repo_install/proxy/mneme_proxy.py   /workspace/proxy/mneme_proxy.py
         cp -f /tmp/mneme_repo_install/proxy/system_prompt.md /workspace/proxy/system_prompt.md
         cp -f /tmp/mneme_repo_install/extensions/pi/mneme-search-tool.ts /workspace/mneme-search-tool.ts
@@ -106,10 +106,10 @@ fi
 # Fallback: direct curl (with cache busting)
 if [ "$DOWNLOAD_OK" = "0" ]; then
     _TS=$(date +%s)
-    curl -sSL --fail -o /workspace/proxy/mneme_proxy.py   "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/mneme_proxy.py?$_TS" || true
-    curl -sSL --fail -o /workspace/proxy/system_prompt.md "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/proxy/system_prompt.md?$_TS" || true
-    curl -sSL --fail -o /workspace/mneme-search-tool.ts    "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-search-tool.ts?$_TS" || true
-    curl -sSL --fail -o /workspace/mneme-web-tools.ts      "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/extensions/pi/mneme-web-tools.ts?$_TS" || true
+    curl -sSL --fail -o /workspace/proxy/mneme_proxy.py   "https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/proxy/mneme_proxy.py?$_TS" || true
+    curl -sSL --fail -o /workspace/proxy/system_prompt.md "https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/proxy/system_prompt.md?$_TS" || true
+    curl -sSL --fail -o /workspace/mneme-search-tool.ts    "https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/extensions/pi/mneme-search-tool.ts?$_TS" || true
+    curl -sSL --fail -o /workspace/mneme-web-tools.ts      "https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/extensions/pi/mneme-web-tools.ts?$_TS" || true
     echo "  ✓ curl download OK"
 fi
 
@@ -136,11 +136,11 @@ echo "════════════════════════�
 echo "  Dependencies ready."
 echo
 echo "  Now run the setup wizard:"
-echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo
 echo "  Or pull models first, then run the wizard:"
 echo "    ollama pull fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest"
 echo "    ollama pull snowflake-arctic-embed2:latest"
 echo "    ollama pull qwen2.5:0.5b"
-echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    rm -f /tmp/setup.py; curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo "══════════════════════════════════════════"

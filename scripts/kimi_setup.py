@@ -26,8 +26,8 @@ LOG = "/tmp/mneme.log"
 HEALTH_URL = "http://localhost:8080/health"
 
 REPO = "https://github.com/flyersean/Mneme.git"
-BRANCH = "build-roadmap"
-RAW = "https://raw.githubusercontent.com/flyersean/Mneme/build-roadmap"
+BRANCH = "novelty-thinking"
+RAW = "https://raw.githubusercontent.com/flyersean/Mneme/novelty-thinking"
 
 EMBED_CHOICES = [
     ("snowflake-arctic-embed2:latest", "Snowflake Arctic Embed 2 (required for DB compat)"),
