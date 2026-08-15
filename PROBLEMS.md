@@ -28,6 +28,59 @@ Mneme's system prompt competes with agent harness prompts (Hermes ~78KB, Pi's co
 ### P5: Concurrent writer safety
 SQLite WAL mode handles reads concurrently but writes are serialized. Multiple proxy instances sharing one DB confirmed working for reads, but concurrent writes from different instances could conflict.
 
+### P6: Per-model config file (sampling, context, output caps, quirks)
+
+**Problem:** Model settings are currently global — a mix of env vars and
+hardcoded defaults. Different models need different settings, and applying one
+model's tuning to another degrades output or breaks generation:
+
+- **Sampling.** Muse Glimmer wants `temp=1.0, top_p=0.95, top_k=64` (its model
+  card). Qwen 3.6 and Gemma 4 have different optima. As of now the Muse params
+  are the *global default* in `query_model`, so every other model inherits
+  Muse's tuning.
+- **Context size.** A 30B fits 129K ctx on an A40, but a 7B/3B model may not,
+  and a tiny labeler doesn't need it. `num_ctx` is set per-model today via
+  Modelfile, not in one place.
+- **Output cap (`max_tokens` / `num_predict`).** Smaller models — or any model
+  on a small-context box — can runaway-generate (see the SHA-256 grind that ran
+  15+ min). A per-model `max_tokens` cap is a cheap guardrail and also stops
+  tiny models that don't know when to stop.
+
+**Idea:** A single per-model config file (e.g. `models.yaml` or
+`model_config.json`) keyed by model name, merged with env overrides. Sketch:
+
+```yaml
+muse-glimmer:30b:
+  temperature: 1.0
+  top_p: 0.95
+  top_k: 64
+  num_ctx: 32768        # matches our custom Modelfile
+  max_tokens: 2048
+  quirks: ["peg-native bug fixed in Ollama 0.32.13+ — update Ollama, not the model"]
+qwen3.6-35b:
+  temperature: 0.8      # TBD — needs re-testing vs the new grading code
+  top_p: 0.9
+  num_ctx: 129000
+  max_tokens: 4096
+gemma4:
+  temperature: 0.7      # TBD
+  # thinking→content fallback already handled in query_model
+small-model-7b:
+  temperature: 0.5      # small models drift at high temp
+  num_ctx: 8192
+  max_tokens: 512       # cap output: stops runaway + preserves context
+```
+
+The proxy resolves settings at startup (or per-request) for the active
+`MNEME_MODEL`, falling back to env vars, then hardcoded defaults. This is also
+the answer to "someone wants to run a much smaller model and is hitting context
+size issues / runaway output": they drop a `small-model-Nb` entry with a tight
+`num_ctx` + `max_tokens` and it just works.
+
+**Status:** Idea only — not implemented, no code touched. Blocks on the branch
+decision (which branch is canonical) and on re-testing qwen3.6 + gemma4 against
+the recent grading/capability-edge/tool-call changes.
+
 ## Resolved (August 8, 2026)
 
 ### v2 Architecture
