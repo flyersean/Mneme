@@ -58,8 +58,21 @@ fi
 
 # ── 2. Ollama
 echo; echo "[2/4] Ollama"
+# Minimum version with the peg-native grammar fix (thinking-model tool calling).
+# Below this, Muse tool calls fail with "peg-native format" errors.
+MIN_OLLAMA="0.32.13"
 if command -v ollama >/dev/null 2>&1; then
-    echo "  ✓ ollama found ($(ollama --version 2>/dev/null || echo 'installed'))"
+    VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    echo "  ollama found (${VER:-unknown})"
+    if [ -z "$VER" ] || [ "$(printf '%s\n' "$VER" "$MIN_OLLAMA" | sort -V | head -1)" != "$MIN_OLLAMA" ]; then
+        echo "  ⚠ ollama ${VER:-unknown} < $MIN_OLLAMA — updating in place (Muse tool-calling needs it)..."
+        curl -fsSL https://ollama.com/install.sh | sh
+        pkill -f "ollama serve" 2>/dev/null || true
+        sleep 2
+        echo "  ✓ ollama updated"
+    else
+        echo "  ✓ ollama >= $MIN_OLLAMA — OK"
+    fi
 else
     echo "  Installing Ollama..."
     apt-get update -qq 2>/dev/null || true
