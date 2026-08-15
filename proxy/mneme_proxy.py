@@ -3070,8 +3070,15 @@ def _strategy_lifecycle(grade, messages):
             q3 = [{"role": "user", "content": "Describe the approach in 2-3 sentences."}]
             r3 = query_model(q3)
             if r3.get("content"): _save_strategy(r3["content"].strip(), grade, r2.get("content","").strip())
-        elif grade in ("C", "D", "F"):
-            # Extract an imperative directive instead of boilerplate
+        elif grade in ("D", "F"):
+            # Extract an imperative directive instead of boilerplate.
+            # NOTE: grade C = tool-call deferred (model used a tool, answer
+            # pending) — normal agentic behavior, NOT a failure. Spawning a
+            # "prevent this failure" directive from every C turn produced
+            # counterproductive rules (e.g. "ALWAYS verify existence before
+            # reading") that injected on later turns and added redundant steps,
+            # stalling web reads. Learning keys off the FINAL answer (A/B or
+            # D/F), not the intermediate tool call.
             try:
                 msgs_text = "\n".join(
                     f"{m['role']}: {_extract_text(m.get('content',''))[:MAX_ABSTRACT_INPUT]}"
