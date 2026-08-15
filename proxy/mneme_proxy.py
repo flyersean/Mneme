@@ -255,6 +255,7 @@ for migration in (
     "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
     "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
     "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
 ):
     try:
         db.execute(migration)
@@ -1012,8 +1013,13 @@ def get_siblings_batch(chunk_ids: List[str]) -> Dict[str, List[str]]:
     return result
 
 def get_strategies(problem_type=None, limit=3):
+    # Grade-first, then cost (cheaper wins) — so a discovered technique (grade A)
+    # is injected ahead of failure-derived rules, and the cheaper of two
+    # competing techniques (e.g. API JSON vs full-HTML scrape) wins the slot.
     rows = db.execute(
-        "SELECT strategy_text FROM strategies ORDER BY effective_grade DESC, use_count DESC LIMIT ?",
+        "SELECT strategy_text FROM strategies WHERE retired=0 "
+        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, "
+        "cost ASC, effective_grade DESC, use_count DESC LIMIT ?",
         (limit,)
     ).fetchall()
     return [r[0] for r in rows]
@@ -2069,6 +2075,105 @@ def _has_fake_source(parsed: dict, trace_chunks: set, trace_urls: set) -> bool:
     return False
 
 
+# ─── Novel-procedure detection (trace-based "great" signal) ─────────────
+# A "great" grade should ALSO fire when the model discovers a NEW technique that
+# works — not only when it crosses a previously-flagged capability edge. Detected
+# from the tool trace: a tool call using a non-standard technique (custom HTTP
+# header, site API endpoint, method override) whose result verified. Observable
+# behavior, not self-report — consistent with "grade the trace, not the content".
+
+_NOVEL_TECHNIQUE_MARKERS = [
+    (r'-H\s+["\']?[A-Za-z][A-Za-z-]*:', "add a custom HTTP header (curl -H, e.g. a User-Agent) to bypass bot-blocks"),
+    (r'--user-agent|--header\b', "add a custom HTTP header to bypass bot-blocks"),
+    (r'-A\s+\S+', "set a custom User-Agent (curl -A)"),
+    (r'api\.php|action=\w+|rest\.php|w/api', "use the site's API endpoint instead of scraping raw HTML"),
+    (r'-X\s+(POST|PUT|DELETE|PATCH)', "override the HTTP method"),
+    (r'--compressed|--location|--max-time', "use curl efficiency flags (compression/redirects/timeout)"),
+]
+
+_EXPLORE_PHRASES = (
+    "try a new", "try a different", "different method", "different way",
+    "another approach", "not in your strateg", "new approach", "novel",
+    "find a better", "a way not", "without using your",
+)
+
+
+def _extract_tool_commands(messages) -> list:
+    """Recent (name, command) pairs the model issued via bash-style tools."""
+    cmds = []
+    for m in reversed(messages or []):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+            name = fn.get("name", "")
+            args = fn.get("arguments", {})
+            cmd = ""
+            if isinstance(args, dict):
+                cmd = args.get("command") or args.get("cmd") or ""
+            elif isinstance(args, str):
+                cmd = args
+            if cmd:
+                cmds.append((name, cmd))
+    return cmds
+
+
+def _tool_result_verified(messages) -> bool:
+    """The most recent tool result is non-empty and not an obvious error."""
+    err = ("403", "404", "forbidden", "not found", "traceback", "error:",
+           "access denied", "rate limit", "connection refused", "timed out",
+           "no route to host", "dns")
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") in ("tool", "function"):
+            c = _extract_text(m.get("content", "")).strip()
+            if not c:
+                return False
+            low = c[:4000].lower()
+            return not any(e in low for e in err)
+    return False
+
+
+def _tool_result_cost(messages) -> int:
+    """Cost proxy = size of the last tool result (full HTML scrape >> API JSON)."""
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") in ("tool", "function"):
+            return len(_extract_text(m.get("content", "")))
+    return 0
+
+
+def _detect_novel_procedure(messages):
+    """Return (technique_desc, command) if the trace shows a novel technique
+    whose result verified; else (None, None)."""
+    if not _tool_result_verified(messages):
+        return None, None
+    for name, cmd in _extract_tool_commands(messages):
+        for pattern, desc in _NOVEL_TECHNIQUE_MARKERS:
+            if re.search(pattern, cmd, re.IGNORECASE):
+                return desc, cmd[:200]
+    return None, None
+
+
+def _save_novel_strategy(desc: str, cmd: str, problem_type: str, cost: int):
+    text = f"Technique: {desc}. Example: {cmd}"
+    _save_strategy(text, "A", problem_type=problem_type, cost=cost)
+
+
+def _explore_directive(user_msg: str) -> str:
+    """If the user explicitly asked for a new/different method, return a
+    directive that overrides the "reuse the proven strategy" default. This is
+    the explore trigger — it must be paired with the novel-procedure grader so
+    the found method actually persists."""
+    if any(p in (user_msg or "").lower() for p in _EXPLORE_PHRASES):
+        return (
+            "\n\n=== EXPLORE DIRECTIVE (user-requested) ===\n"
+            "The user explicitly asked you to try a NEW method not covered by your "
+            "saved strategies. Do NOT reuse a known strategy — find a different "
+            "technique. A novel method that works is graded 'great' and saved for "
+            "future reuse.\n"
+        )
+    return ""
+
+
 _VERIFY_STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
     "have", "has", "had", "not", "but", "its", "his", "her", "their", "there",
@@ -2847,9 +2952,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     context, ptype = build_context(user_msg)
     cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (instructions + memory + capability-edge directive) as a system
-    # message after Hermes
-    mneme_system = context + _capability_directive(cur_ptype)
+    # Insert Mneme (instructions + memory + capability-edge directive + optional
+    # explore directive) as a system message after Hermes
+    mneme_system = context + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
     insert_at = 0
     for i, m in enumerate(messages):
         if m.get("role") == "system":
@@ -2981,6 +3086,21 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 print("  [FAKE-SOURCE] fabricated citation detected — grade fail", flush=True)
     if grade not in ("A", "B", "C", "D", "F"):
         grade = "C"
+
+    # Novel-procedure detection: a working NEW technique (custom header, API
+    # endpoint, method override) is a "great" outcome even without a pre-flagged
+    # capability edge. Grade it A and persist it so the model can reuse it.
+    if grade == "B":
+        _np_desc, _np_cmd = _detect_novel_procedure(messages)
+        if _np_desc:
+            grade = "A"
+            try:
+                _np_cost = _tool_result_cost(messages)
+                _save_novel_strategy(_np_desc, _np_cmd, cur_ptype, _np_cost)
+                print(f"  [NOVEL-PROCEDURE] {_np_desc} (cost={_np_cost}) — saved strategy, grade great", flush=True)
+            except Exception as e:
+                _log_error("process_chat:novel_save", e)
+
     _glabel = {"A": "great", "B": "pass", "F": "fail"}.get(grade, grade)
     print(f"  [GRADE] {_glabel}: {grade}", flush=True)
 
@@ -3171,7 +3291,7 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
-def _save_strategy(text, grade, existing_id=""):
+def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example
     try:
@@ -3197,9 +3317,9 @@ def _save_strategy(text, grade, existing_id=""):
         clean_id = str(existing_id).replace("strat_", "").strip()
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
-    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, "model", text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
-         new_version, parent, 0.0, 0, 0, 0, ""))
+    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, problem_type, text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
+         new_version, parent, 0.0, 0, 0, 0, "", cost))
     db.commit()
     try:
         svec = embed(text.strip())
