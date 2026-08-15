@@ -1265,7 +1265,7 @@ def build_context(query: str) -> Tuple[str, str]:
         srows = db.execute(
             "SELECT strategy_id, strategy_text FROM strategies "
             "WHERE (retired IS NULL OR retired = 0) "
-            "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
         ).fetchall()
         if srows:
             _INJECTED_STRATEGY_IDS.clear()
@@ -1296,7 +1296,7 @@ def build_context(query: str) -> Tuple[str, str]:
     srows = db.execute(
         "SELECT strategy_id, strategy_text FROM strategies "
         "WHERE (retired IS NULL OR retired = 0) "
-        "ORDER BY effective_grade DESC, use_count DESC LIMIT 3"
+        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
     ).fetchall()
     if srows:
         _INJECTED_STRATEGY_IDS.clear()
