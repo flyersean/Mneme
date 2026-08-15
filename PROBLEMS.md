@@ -109,6 +109,49 @@ loss.
 **Status:** Rule documented; not implemented. `META_PRINCIPLES` is still a
 hardcoded list in the script.
 
+### P8: Hosted-model backend (OpenRouter / DeepSeek) — future feature
+
+**Problem:** The proxy is OpenAI-compatible on the way OUT (Pi/Hermes connect to
+`localhost:8080/v1`), but on the way IN it talks to Ollama's *native* API, not
+an OpenAI-compatible one. `query_model` POSTs `{OLLAMA_URL}/api/chat` with an
+Ollama payload (`options`, `message.thinking`, dict tool-call arguments) and
+parses an Ollama response. So pointing the proxy at a hosted model is not a
+one-line `base_url` change — the LLM call, the embedding call, and the labeler
+call are all Ollama-native.
+
+**Scope (3 call sites + config):**
+- `query_model` → `/api/chat` (main LLM)
+- `embed` → `/api/embeddings` (memory vectors, snowflake-arctic-embed2)
+- labeler/topic-gen → `/api/generate` (qwen2.5:0.5b)
+- `OLLAMA_URL` (line 31) + `MODEL` (line 32)
+
+**Idea:** Add a backend adapter in `query_model` that maps Ollama-native ↔
+OpenAI format, plus env config for base URL, API key, and model name
+(`deepseek-chat`, `deepseek/deepseek-chat`, etc.):
+
+- Payload: `options` (temp/top_p/top_k) → OpenAI params (top_k dropped).
+- Response: `choices[0].message` → `{content, tool_calls}`; `finish_reason` →
+  `done_reason`; `usage.completion_tokens` → `eval_count`.
+- Tool-call arguments: OpenAI returns a JSON string, Ollama a dict → json.loads
+  on the way out (reverse conversion already exists on the way in).
+- `thinking`: Ollama `message.thinking` → DeepSeek `reasoning_content` /
+  OpenRouter `reasoning`.
+
+**Hybrid (recommended):** swap only the LLM; keep embeddings + labeler on local
+Ollama. DeepSeek has no embeddings endpoint, and swapping the embedder would
+mean re-embedding the whole FAISS store (1024-dim snowflake-arctic-embed2).
+Dropping Ollama entirely is what pushes this from "low" to "moderate".
+
+**Tuning caveat:** the grading/novelty/source-tagging pipeline is tuned to
+Muse's behavior (emits `[source: X]`/`[guess]` tags, has a `thinking` field,
+abliterated). A hosted `deepseek-chat` will comply differently, so the
+source-tagging prompt and inline-grade thresholds likely need re-tuning to hit
+the same honesty yield. The `peg-native` workaround (deliver search results as a
+user message, not a tool message) was an Ollama/llama.cpp quirk and could be
+removed on a hosted backend.
+
+**Status:** Future feature — assessed, not implemented. No code touched.
+
 ## Resolved (August 8, 2026)
 
 ### v2 Architecture
