@@ -858,7 +858,7 @@ def _generate_topic_label(text):
     """
     clean = _clean_content(text)[:2000].lower()
     keywords = []
-    dates = _tlre.findall(r"(20\d{2})", clean)
+    dates = re.findall(r"(20\d{2})", clean)
     if dates:
         keywords.append(dates[0])
     locations = {"spain":"Spain","morocco":"Morocco","ceuta":"Ceuta","melilla":"Melilla","france":"France","italy":"Italy","japan":"Japan","china":"China","russia":"Russia","canada":"Canada","mexico":"Mexico","brazil":"Brazil","kumamoto":"Kumamoto"}
