@@ -271,11 +271,11 @@ DEFAULT_GRADE   = "C"
 # turn independent of memory retrieval. Deliberately short and constant —
 # NOT counted against the dynamic MAX_INJECTED_TOKENS budget.
 META_PRINCIPLES = [
-    "The first answer is the mode — generate an alternative before committing.",
-    "State the conventional answer, then find the assumption that makes it conventional.",
-    "Ask what would make the obvious answer wrong before accepting it.",
-    "Prefer the mechanism over the example — name the underlying rule, not the surface detail.",
-    "If the reply feels automatic, it is suspect — slow down and re-derive.",
+    "Answer directly and concisely. A straightforward answer is usually correct — do not reject an answer merely because it came quickly.",
+    "Run one quick sanity check before committing: is there a concrete reason this is wrong? If not, give the answer and stop.",
+    "Only explore alternatives when the question is genuinely ambiguous, explicitly asks for options, or the sanity check found a real flaw. Do not brainstorm as a default ritual.",
+    "Prefer the mechanism over the example — name the underlying rule, not just the surface detail.",
+    "State your confidence honestly: if unsure, say so plainly instead of padding the answer with extra reasoning.",
 ]
 
 def grade_priority(chunk_id: str) -> int:
