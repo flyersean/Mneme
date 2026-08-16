@@ -32,6 +32,7 @@ OLLAMA_URL  = "http://localhost:11434"
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
+PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
 # Ollama config — let the model use its defaults
@@ -4067,7 +4068,7 @@ print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
 
 if __name__ == "__main__":
     if FLASK_OK:
-        app.run(host="0.0.0.0", port=8080, threaded=True)
+        app.run(host="0.0.0.0", port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",
               flush=True)

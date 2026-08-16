@@ -77,6 +77,38 @@ MNEME_MODEL="muse-glimmer:30b" \
 For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and
 `OLLAMA_KV_CACHE_TYPE=q8_0` before starting Ollama.
 
+### Multi-Instance (shared DB)
+
+Run several proxy instances — e.g. one per model — against a single memory DB.
+Each instance is a separate process on its own port, all pointing at the same
+`MNEME_CHUNK_DIR`; the proxy coordinates them with fcntl locks on FAISS, a
+disk-persisted index, and SQLite WAL mode. Chunks written by any instance are
+visible to all.
+
+**Add a second model via the wizard (easiest):** re-run the setup script on a
+pod that already has a DB. It detects the existing DB and offers "Add another
+model (new proxy instance sharing this DB)", which launches a new instance on
+the next free port (8081, 8082, …) and leaves the running instance untouched.
+
+**Manual** — give each instance a distinct `MNEME_PORT` and the same
+`MNEME_CHUNK_DIR`:
+
+```bash
+# Instance 1 — model A on 8080
+MNEME_PORT=8080 MNEME_MODEL="muse-glimmer:30b" \
+  MNEME_CHUNK_DIR=/workspace/mneme_chunks \
+  python3 -uB proxy/mneme_proxy.py
+
+# Instance 2 — model B on 8081, same DB
+MNEME_PORT=8081 MNEME_MODEL="qwen3.6-35b" \
+  MNEME_CHUNK_DIR=/workspace/mneme_chunks \
+  python3 -uB proxy/mneme_proxy.py
+```
+
+Clients connect to the port for the model they want. All instances must use the
+**same embedder and labeler** — the embeddings share one FAISS index with a
+fixed dimension, and the startup health check will flag a dim mismatch.
+
 ## Features
 
 **Core Memory**
