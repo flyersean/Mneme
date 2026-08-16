@@ -30,6 +30,24 @@ import requests
 # ─── Config ────────────────────────────────────────────────────
 OLLAMA_URL  = "http://localhost:11434"
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
+
+# OpenRouter backend (MNEME_BACKEND=openrouter) — fully hosted, no local Ollama.
+# Swaps all three roles (main LLM, embedder, labeler) to OpenRouter's
+# OpenAI-compatible API. Set OPENROUTER_API_KEY and pick OpenRouter model IDs
+# for MNEME_MODEL / EMBED_MODEL / LABEL_MODEL.
+MNEME_BACKEND = os.environ.get("MNEME_BACKEND", "ollama")  # "ollama" | "openrouter"
+OR_API_KEY    = os.environ.get("OPENROUTER_API_KEY", "")
+OR_BASE_URL   = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+
+
+def _or_headers() -> dict:
+    """Headers for OpenRouter's OpenAI-compatible API."""
+    return {
+        "Authorization": f"Bearer {OR_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://localhost/mneme",
+        "X-Title": "Mneme",
+    }
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
@@ -428,14 +446,25 @@ def pool_embeddings(vectors: List[np.ndarray]) -> np.ndarray:
     return centroid / (np.linalg.norm(centroid) + 1e-8)
 
 def _embed_single(text: str) -> np.ndarray:
-    """Raw Ollama /api/embeddings call for one chunk. Raises on failure."""
-    r = requests.post(
-        f"{OLLAMA_URL}/api/embeddings",
-        json={"model": EMBED_MODEL, "prompt": text},
-        timeout=60,
-    )
-    r.raise_for_status()
-    v = np.array(r.json()["embedding"], dtype=np.float32)
+    """Embed one chunk. Ollama /api/embeddings by default; OpenRouter
+    /embeddings when MNEME_BACKEND=openrouter. Raises on failure."""
+    if MNEME_BACKEND == "openrouter":
+        r = requests.post(
+            f"{OR_BASE_URL}/embeddings",
+            headers=_or_headers(),
+            json={"model": EMBED_MODEL, "input": text},
+            timeout=60,
+        )
+        r.raise_for_status()
+        v = np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
+    else:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json={"model": EMBED_MODEL, "prompt": text},
+            timeout=60,
+        )
+        r.raise_for_status()
+        v = np.array(r.json()["embedding"], dtype=np.float32)
     return v / (np.linalg.norm(v) + 1e-8)
 
 def embed(text: str):
@@ -561,6 +590,68 @@ MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
 )
 
+def _query_openrouter(msgs, opts, tools=None, format_schema=None,
+                      max_tokens=-1, timeout=600) -> dict:
+    """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
+    dict shape as the Ollama path: {content, thinking, tool_calls, eval_count,
+    done_reason}. OpenRouter normalizes thinking models' reasoning into
+    message.reasoning; tool-call arguments arrive as JSON strings and are
+    json.loads'd back to dicts to match the Ollama path."""
+    payload = {
+        "model": MODEL,
+        "stream": False,
+        "messages": msgs,
+        "temperature": opts.get("temperature"),
+        "top_p": opts.get("top_p"),
+    }
+    if max_tokens and max_tokens > 0:
+        payload["max_tokens"] = max_tokens
+    if tools:
+        payload["tools"] = tools
+    if format_schema:
+        payload["response_format"] = {"type": "json_schema", "json_schema": format_schema}
+    try:
+        r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
+                          json=payload, timeout=timeout)
+    except requests.exceptions.ReadTimeout:
+        print(f"  [GRIND-GUARD] OpenRouter generation exceeded {timeout}s — aborting", flush=True)
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+    try:
+        d = r.json()
+    except Exception:
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
+    if "error" in d:
+        print(f"  [ERROR] OpenRouter returned: {d['error']}", flush=True)
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
+    choice = (d.get("choices") or [{}])[0]
+    msg = choice.get("message", {})
+    content = msg.get("content") or ""
+    thinking = msg.get("reasoning") or ""  # OpenRouter normalizes thinking → "reasoning"
+    tool_calls = []
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+        tool_calls.append({"function": {"name": fn.get("name"), "arguments": args}})
+    # Reasoning models sometimes leave content empty and put the answer in
+    # reasoning. Fall back (unless there are tool calls, which must stay calls).
+    if not content and thinking and not tool_calls:
+        content = thinking
+    finish = choice.get("finish_reason", "?")
+    done_reason = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(finish, finish)
+    return {
+        "content": content,
+        "thinking": thinking,
+        "tool_calls": tool_calls,
+        "eval_count": d.get("usage", {}).get("completion_tokens", 0),
+        "done_reason": done_reason,
+    }
+
+
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
                 timeout: int = 600, format_schema=None) -> dict:
@@ -645,6 +736,8 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         msgs = sys_msgs + non_sys
         print(f"  [WARN] Trimmed to {total} chars ({len(non_sys)} messages, limit {MAX_PROMPT_CHARS})", flush=True)
     
+    if MNEME_BACKEND == "openrouter":
+        return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout)
     try:
         r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     except requests.exceptions.ReadTimeout:
@@ -841,22 +934,37 @@ def _llm_topic_label(text: str) -> str:
     if not clean.strip():
         return "untitled"
     try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": LABEL_MODEL,
-                "prompt": LABEL_PROMPT + clean,
-                "stream": False,
-                "options": {
-                    "num_predict": 15,
-                    "num_ctx": 512,
+        if MNEME_BACKEND == "openrouter":
+            r = requests.post(
+                f"{OR_BASE_URL}/chat/completions",
+                headers=_or_headers(),
+                json={
+                    "model": LABEL_MODEL,
+                    "messages": [{"role": "user", "content": LABEL_PROMPT + clean}],
                     "temperature": 0.0,
+                    "max_tokens": 15,
                 },
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        label = r.json().get("response", "").strip()
+                timeout=30,
+            )
+            r.raise_for_status()
+            label = ((r.json().get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
+        else:
+            r = requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": LABEL_MODEL,
+                    "prompt": LABEL_PROMPT + clean,
+                    "stream": False,
+                    "options": {
+                        "num_predict": 15,
+                        "num_ctx": 512,
+                        "temperature": 0.0,
+                    },
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            label = r.json().get("response", "").strip()
         # Sanitize: strip quotes, collapse whitespace, cap length
         label = re.sub(r'["\']', '', label)
         label = re.sub(r'\s+', ' ', label).strip()
@@ -2993,14 +3101,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     messages.insert(insert_at, {"role": "system", "content": mneme_system})
     full_msgs = messages
     
-    # If chunks are pending, loop internally until all consumed
-    # DEBUG
-    with open("/workspace/sys_dump.txt","w") as f:
-        for m in full_msgs:
-            if m.get("role") == "system":
-                f.write("=== SYSTEM MSG ===\n")
-                f.write(m["content"][:600])
-                f.write("\n...\n")
+    # Optional debug dump of the system messages (off by default; set
+    # MNEME_DEBUG_DUMP=1 to enable). Was previously an unconditional write to
+    # the hardcoded /workspace/sys_dump.txt, which breaks local runs.
+    if os.environ.get("MNEME_DEBUG_DUMP") == "1":
+        try:
+            with open("/tmp/mneme_sys_dump.txt", "w") as f:
+                for m in full_msgs:
+                    if m.get("role") == "system":
+                        f.write("=== SYSTEM MSG ===\n")
+                        f.write(m["content"][:600])
+                        f.write("\n...\n")
+        except Exception:
+            pass
     result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
     # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
     # or empty reasoning), retry once with a nudge, then fall back to a clear
