@@ -1,8 +1,8 @@
 # Mneme — Issue Tracker
 
-## Status (August 15, 2026)
+## Status (August 16, 2026)
 
-`novelty-thinking` branch (experimental learning/strategy layer) on Muse Glimmer 30B (abliterated, corrected template). Pass/fail/great honesty grading with inline source tags + trace cross-check; novel-procedure detection with cost-ranked strategies; embedding health check + `pending_embed` recovery. Verified end-to-end on RunPod A40 with Pi (search_memory → synthesis → save/recall with cited sources). Qwen 3.6 35B was the earlier dev model.
+`openrouter-backend` branch — the `novelty-thinking` learning/strategy layer running on a fully hosted OpenRouter backend (no Ollama, no GPU, local-machine friendly). Main LLM `deepseek/deepseek-v4-flash`, embedder `voyageai/voyage-4-lite` (1024-dim), labeler `meta-llama/llama-3.2-3b-instruct`. All three roles verified end-to-end locally: source tagging (`[source: X]`/`[guess]`), FAISS save/search, tool-calling round-trip (`search_memory` → synthesis), and the `mneme_setup_openrouter.py` wizard (key validation/save → venv → launch). `novelty-thinking` (Muse 30B on RunPod A40) remains the Ollama/local reference.
 
 ## Active Issues
 
@@ -151,7 +151,7 @@ the same honesty yield. The `peg-native` workaround (deliver search results as a
 user message, not a tool message) was an Ollama/llama.cpp quirk and could be
 removed on a hosted backend.
 
-**Status:** Future feature — assessed, not implemented. No code touched.
+**Status:** **Implemented on `openrouter-backend`.** `MNEME_BACKEND=openrouter` routes all three call sites to OpenRouter's OpenAI-compatible API (`query_model` → `/chat/completions`, `embed` → `/embeddings`, labeler → `/chat/completions`); `MNEME_BACKEND=ollama` (default) is unchanged. Verified locally end-to-end — see P13 for the caveats that surfaced.
 
 ### P11: Frontier-model strategy distillation (future goal)
 
@@ -221,6 +221,33 @@ a stronger model ignores that line while Muse acts on the leaked token.
 **Fix (not applied):** strip from the message that actually contains the command
    (not `messages[-1]`), and drop the `if cleaned:` guard so bare commands are
    removed (writing an empty user message is fine).
+
+### P13: OpenRouter backend caveats (surfaced during local build/test)
+
+**Problem:** The hosted-backend swap (P10) works, but four issues surfaced during local testing:
+
+1. **Labeler must be non-thinking.** A thinking model (deepseek-v4-flash) with
+   `max_tokens=15` burns its budget on reasoning and returns `content: null` for the
+   trivial "3-5 word label" task, so `_llm_topic_label` fell back to the heuristic every
+   time. Fixed by using `meta-llama/llama-3.2-3b-instruct` (non-thinking) plus a
+   defensive `(msg.get("content") or "")` guard. Any future labeler must be non-thinking.
+
+2. **Embedding endpoint transient timeouts.** One `voyage-4-lite` embed call hit a 60s
+   `ReadTimeout` during a busy turn (concurrent main-model + embed + label calls). The
+   fail-loud path handled it correctly (`pending_embed=1`, no dead vector), but a
+   one-shot retry (or a higher timeout) would smooth this over. Not a blocker; watch for
+   recurrence.
+
+3. **`format_schema` mapping is best-effort.** The Ollama `format` field is mapped to
+   OpenAI `response_format={"type":"json_schema",...}` but is untested — it's only used
+   on a few novelty/grading paths, not the main memory path. May need the schema shape
+   adjusted for OpenRouter.
+
+4. **Grading thresholds are Muse-tuned.** deepseek-v4-flash emitted `[guess]`/`[source]`
+   tags correctly (grading works), but the inline-grade thresholds and pass/fail
+   distribution were tuned for Muse 30B. Re-tune if the grade mix looks off.
+
+**Status:** Known caveats, documented. Item 1 fixed; 2-4 open.
 
 ## Resolved (August 15, 2026)
 
