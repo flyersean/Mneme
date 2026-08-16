@@ -456,6 +456,7 @@ def _reconfigure(existing_db, embed_model, label_model, prev_config):
     env["OLLAMA_FLASH_ATTENTION"] = "1"
     env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
     env["MNEME_MODEL"] = proxy_model
+    env["MNEME_PORT"] = "8080"
     env["EMBED_MODEL"] = embed_model
     env["LABEL_MODEL"] = label_model
     env["MNEME_CHUNK_DIR"] = "/workspace/mneme_chunks"
@@ -805,6 +806,7 @@ def main():
     env["OLLAMA_FLASH_ATTENTION"] = "1"
     env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
     env["MNEME_MODEL"] = proxy_model
+    env["MNEME_PORT"] = "8080"
     env["EMBED_MODEL"] = embed_model
     env["LABEL_MODEL"] = label_model
     env["OLLAMA_KEEP_ALIVE"] = "24h"
