@@ -256,6 +256,9 @@ for migration in (
     "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
     "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
     "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
+    "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
 ):
     try:
         db.execute(migration)
@@ -355,10 +358,13 @@ def _load_index():
             _index.reset()
         for cid, blob in rows:
             vec = _blob_to_vec(blob)
-            if vec is not None:
+            if vec is not None and vec.shape[0] == DIM:
                 if FAISS_OK and _index is not None:
                     _index.add(vec.reshape(1, -1))
                 _id_map.append(cid)
+            elif vec is not None:
+                print(f"  [HEALTH] skipping {cid}: dim {vec.shape[0]} != {DIM} (embedder changed?)",
+                      flush=True)
         _save_index()
     print(f"[mokv] FAISS loaded {len(_id_map)} vectors", flush=True)
 
@@ -429,19 +435,19 @@ def _embed_single(text: str) -> np.ndarray:
     v = np.array(r.json()["embedding"], dtype=np.float32)
     return v / (np.linalg.norm(v) + 1e-8)
 
-def embed(text: str) -> np.ndarray:
+def embed(text: str):
     """Embed text via snowflake-arctic-embed2 with chunk+pool for long input.
 
     - Short text (<= CHUNK_CHARS): single embedding call.
     - Long text: split into overlapping windows, embed each, mean-pool to
       a single 1024-dim centroid.
-    - On ANY failure (Ollama down, model missing, network error, bad JSON)
-      log and return a zero vector so the proxy never 500s on archival.
-      A zero vector simply won't match anything in FAISS — the chunk is
-      still stored in SQLite and can be re-embedded later.
+    - On ANY failure (empty text, Ollama down, model missing, bad JSON) returns
+      None — NOT a zero vector. A zero vector was silently unretrievable; None
+      is an explicit "not embedded" signal so callers can mark the chunk
+      pending_embed instead of storing a dead vector that never matches.
     """
     if not text or not text.strip():
-        return np.zeros(DIM, dtype=np.float32)
+        return None
     try:
         chunks = chunk_text(text)
         if len(chunks) == 1:
@@ -452,13 +458,24 @@ def embed(text: str) -> np.ndarray:
               f"-> pooled centroid", flush=True)
         return pooled
     except Exception as e:
-        print(f"  [EMBED][ERROR] {type(e).__name__}: {e} — returning zero vector",
+        print(f"  [EMBED][ERROR] {type(e).__name__}: {e} — returning None (pending_embed)",
               flush=True)
-        return np.zeros(DIM, dtype=np.float32)
+        return None
+
+
+def _embed_or_zeros(text: str) -> np.ndarray:
+    """embed() with a zero-vector fallback for non-save paths (novelty scoring)
+    that already treat a zero vector as 'no embedding'."""
+    v = embed(text)
+    return v if v is not None else np.zeros(DIM, dtype=np.float32)
 
 def _cosine_search(query_vec: np.ndarray, top_k: int, threshold: float):
     """Search FAISS with file lock — loads index from disk, searches, releases.
-    Multi-writer safe: any proxy with the lock sees the latest index state."""
+    Multi-writer safe: any proxy with the lock sees the latest index state.
+    Returns [] when the query vector is None (embed failure) so callers fall
+    back to keyword search instead of crashing."""
+    if query_vec is None:
+        return []
     with faiss_lock():
         _load_index_from_disk()  # Always fresh from disk
         if not _id_map:
@@ -721,41 +738,52 @@ def _check_belief_evolution(new_chunk_id: str, topic_label: str):
 
 # ─── Native streaming query (SSE passthrough from Ollama) ─────
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
-               vector: np.ndarray, thinking: str = "", strategy: str = "",
+               vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
                outcome: str = "", problem_type: str = "other",
                source: str = "unknown", session_id: str = "default"):
-    """Insert chunk into SQLite + FAISS."""
+    """Insert chunk into SQLite + FAISS.
+
+    vector=None means the embed failed — the chunk is STORED in SQLite with
+    pending_embed=1 and no vector, so it is not lost, but it is also not added
+    to FAISS until a background job re-embeds it. This replaces the old silent
+    zero-vector behavior (a zero vector stored fine but never matched anything).
+    """
     # Source-tiered indexing: only index user/page/tool content, not model hallucinations
     is_indexable = True
     if source and source.startswith("model"):
         if grade in ("C", "D", "F"):
             is_indexable = False
-    blob = _vec_to_blob(vector)
+    pending = 1 if vector is None else 0
+    blob = _vec_to_blob(vector) if vector is not None else None
     msgs_json = json.dumps(
         [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
     )
 
     db.execute("""
         INSERT OR REPLACE INTO chunks
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
           blob, grade, consensus, outcome, problem_type,
-          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id, 1 if is_indexable else 0, ""))
+          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
+          1 if is_indexable else 0, "",
+          pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0))
 
     db.commit()
     
-    # Add to FAISS (only if indexable) — multi-writer safe via file lock
-    if is_indexable:
+    # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
+    if is_indexable and vector is not None:
         with faiss_lock():
             _load_index_from_disk()
             if FAISS_OK and _index is not None:
                 _index.add(vector.reshape(1, -1))
             _id_map.append(chunk_id)
             _save_index()
+    elif pending:
+        print(f"  [EMBED-PENDING] {chunk_id} stored unembedded — will retry", flush=True)
     
     # Async belief evolution: check if this chunk supersedes older ones
-    if is_indexable:
+    if is_indexable and vector is not None:
         _enqueue(_check_belief_evolution, chunk_id, topic_label)
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
@@ -1054,12 +1082,11 @@ def _chunk_large_messages(msgs: list) -> list:
                 chunk_num = (i // CHUNK_SIZE) + 1
                 chunk_id = f"{base_id}:{chunk_num}"
                 
-                # Save to DB + FAISS
+                # Save to DB + FAISS (save_chunk handles vec=None -> pending_embed)
                 vec = embed(piece)
-                if vec is not None:
-                    save_chunk(chunk_id, f"auto_chunk_{base_id}",
-                        [{"role": m["role"], "content": piece}],
-                        vec, source="tool:chunked", grade="B")
+                save_chunk(chunk_id, f"auto_chunk_{base_id}",
+                    [{"role": m["role"], "content": piece}],
+                    vec, source="tool:chunked", grade="B")
                 
                 # Brief summary of this chunk for the index
                 preview = piece[:120].replace("\n", " ").strip()
@@ -2689,7 +2716,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     print("  [THINK] generating baseline", flush=True)
     baseline_res = query_model([{"role": "user", "content": problem}], timeout=NOVELTY_TIMEOUT)
     baseline = baseline_res.get("content", "")
-    base_vec = embed(baseline)
+    base_vec = _embed_or_zeros(baseline)
 
     # 2. Decompose into decision points + conventional choices to forbid
     if custom_features:
@@ -2703,7 +2730,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     # 3. Wild seed — the outlandish steering outlier
     print("  [THINK] generating wild seed (temp 1.7)", flush=True)
     wild = _wild_seed(problem)
-    wild_vec = embed(wild)
+    wild_vec = _embed_or_zeros(wild)
     print(f"  [THINK] wild seed ready ({len(wild)} chars)", flush=True)
 
     # 4. Diverge with temperature variation + wild steering + ACCUMULATING forbidding.
@@ -2746,7 +2773,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
                 print(f"  [THINK] candidate {i} retry failed: {type(e).__name__}", flush=True)
                 content = ""
 
-        vec = embed(content)
+        vec = _embed_or_zeros(content)
         d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
         d_wild = 1.0 - _cosine(vec, wild_vec) if np.any(wild_vec) else 0.0
 
@@ -2764,7 +2791,7 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
             res = query_model([{"role": "user", "content": retry_prompt}],
                               options={"temperature": 1.6, "top_p": 0.98}, timeout=NOVELTY_TIMEOUT)
             content = res.get("content", "")
-            vec = embed(content)
+            vec = _embed_or_zeros(content)
             d_base = 1.0 - _cosine(vec, base_vec) if np.any(vec) else 1.0
             d_wild = 1.0 - _cosine(vec, wild_vec) if np.any(wild_vec) else 0.0
             regenerated = True
@@ -3945,10 +3972,93 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"error": str(e)}, status=500)
 
+# ─── Embedding health + recovery ──────────────────────────────
+
+def _reembed_pending(limit: int = 200):
+    """Re-embed chunks stored unembedded (pending_embed=1) due to an embed
+    failure. Runs at startup; returns number re-embedded."""
+    rows = db.execute(
+        "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
+        (limit,),
+    ).fetchall()
+    fixed = 0
+    for cid, msgs_json in rows:
+        try:
+            msgs = json.loads(msgs_json)
+        except Exception:
+            continue
+        text = " ".join(
+            _extract_text(m.get("content", ""))
+            for m in msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool")
+        )
+        if not text.strip():
+            continue
+        vec = embed(text)
+        if vec is None:
+            continue  # embedder still down — leave pending, retry next startup
+        db.execute(
+            "UPDATE chunks SET vector=?, pending_embed=0, embed_model=?, dim=? WHERE chunk_id=?",
+            (_vec_to_blob(vec), EMBED_MODEL, DIM, cid),
+        )
+        db.commit()
+        with faiss_lock():
+            _load_index_from_disk()
+            if FAISS_OK and _index is not None:
+                _index.add(vec.reshape(1, -1))
+            if cid not in _id_map:
+                _id_map.append(cid)
+            _save_index()
+        fixed += 1
+        print(f"  [EMBED-RETRY] {cid} re-embedded ({len(text)} chars)", flush=True)
+    if fixed:
+        print(f"  [EMBED-RETRY] re-embedded {fixed} pending chunks", flush=True)
+    return fixed
+
+
+def _embedding_health_check() -> bool:
+    """Startup: verify the embedder returns DIM-dim vectors and no stored vector
+    has a conflicting dim. Fails loudly instead of letting FAISS raise a
+    confusing 'dimension mismatch' later."""
+    ok = True
+    # 1. Probe the embedder
+    probe = embed("__mneme_health_probe__")
+    if probe is None:
+        print("  [HEALTH][FATAL] Embedder not responding (Ollama down / model missing). "
+              "New chunks will be stored pending_embed until it recovers.", flush=True)
+        ok = False
+    elif probe.shape[0] != DIM:
+        print(f"  [HEALTH][FATAL] Embedder returned dim {probe.shape[0]}, expected {DIM}. "
+              f"All embeds will mismatch the FAISS index.", flush=True)
+        ok = False
+    else:
+        print(f"  [HEALTH] embedder OK: {EMBED_MODEL} dim={probe.shape[0]}", flush=True)
+    # 2. Detect stored vectors with a conflicting dim (embedder changed mid-life)
+    bad = db.execute(
+        "SELECT COUNT(*) FROM chunks WHERE vector IS NOT NULL AND length(vector) != ?",
+        (DIM * 4,),
+    ).fetchone()[0]
+    if bad:
+        print(f"  [HEALTH][FATAL] {bad} stored vectors have a different dim than {DIM}. "
+              f"FAISS add/search will fail — re-embed them or restore the matching "
+              f"embedder.", flush=True)
+        ok = False
+    # 3. Backfill embed_model/dim metadata on existing chunks
+    n = db.execute(
+        "UPDATE chunks SET embed_model=?, dim=? WHERE vector IS NOT NULL AND dim=0",
+        (EMBED_MODEL, DIM),
+    ).rowcount
+    db.commit()
+    if n:
+        print(f"  [HEALTH] backfilled embed_model/dim on {n} chunks", flush=True)
+    return ok
+
+
 # ─── Startup ───────────────────────────────────────────────────
 
+_embedding_health_check()
 _load_index()
 _seed_chunk_seq()
+_reembed_pending()
 # Calibrate noise baseline AFTER FAISS is loaded
 BASELINE_NOISE = _calibrate_noise()
 print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
