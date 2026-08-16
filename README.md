@@ -85,18 +85,24 @@ For large context windows, set `OLLAMA_FLASH_ATTENTION=1` and
 - Noise-floor calibration at startup (subtracts baseline from cosine scores)
 - Recency-weighted scoring (cycle-based, not wall-clock)
 - Source tracking (user, model, tool:*, page:*, document:*)
+- Embedding reliability: startup health check probes the embedder and fails
+  loudly on a dim mismatch; a failed embed is stored `pending_embed` and
+  re-embedded on the next startup (no silent dead vectors)
 
 **Learning & Strategy Layer** (experimental — this branch)
-- Proxy-driven strategy lifecycle: success triggers mini-convo, failure
-  auto-creates boilerplate with FAISS dedup
-- Epistemic grading (two-layer): the model tags provenance and grades *honesty*,
-  not answer correctness — "I don't know" beats fabrication. See
-  `docs/grading-redesign.md`.
-- Layer 2 verification: proxy independently checks cited claims against sources
-  before the grade is finalized
-- Pre-declared contract (Phase 3): the model states goal + success criteria
-  before answering, then grades against its own contract
-- User-preference store (Phase 4): detects and persists stable user preferences
+- Pass/fail/great grading: the model tags provenance (`[source: X]` / `[guess]`)
+  and is graded on *honesty*, not answer correctness — "I don't know" beats
+  fabrication. See `docs/grading-redesign.md`.
+- Trace cross-check: any `[source: mem_XXX]` or URL the model cites is verified
+  against what it actually had this turn; a fabricated citation grades fail.
+- Novel-procedure detection: a working NEW technique (custom HTTP header, site
+  API endpoint, method override) is detected from the tool trace, graded
+  "great", and saved as a strategy with cost metadata — so the model reuses a
+  trick it discovered instead of re-finding it each session.
+- Strategy ranking: injected grade-first, then cheaper-wins, so a lower-cost
+  technique (API JSON vs full-HTML scrape) takes the injection slot.
+- Failure extraction: a D/F turn distills one imperative directive to prevent
+  the same failure next time.
 
 **Capability-Edge Tracking**
 - Every graded turn records a competence edge per problem type (`compute`,

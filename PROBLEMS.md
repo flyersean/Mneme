@@ -1,8 +1,8 @@
 # Mneme — Issue Tracker
 
-## Status (August 8, 2026)
+## Status (August 15, 2026)
 
-v2 architecture deployed on dev-chunks. Persona-free prompt, proxy-driven strategy lifecycle, COMMAND stripping, content normalization. Testing with Hermes + Pi on RunPod A40 with Qwen 3.6 35B.
+`novelty-thinking` branch (experimental learning/strategy layer) on Muse Glimmer 30B (abliterated, corrected template). Pass/fail/great honesty grading with inline source tags + trace cross-check; novel-procedure detection with cost-ranked strategies; embedding health check + `pending_embed` recovery. Verified end-to-end on RunPod A40 with Pi (search_memory → synthesis → save/recall with cited sources). Qwen 3.6 35B was the earlier dev model.
 
 ## Active Issues
 
@@ -77,9 +77,10 @@ the answer to "someone wants to run a much smaller model and is hitting context
 size issues / runaway output": they drop a `small-model-Nb` entry with a tight
 `num_ctx` + `max_tokens` and it just works.
 
-**Status:** Idea only — not implemented, no code touched. Blocks on the branch
-decision (which branch is canonical) and on re-testing qwen3.6 + gemma4 against
-the recent grading/capability-edge/tool-call changes.
+**Status:** Idea only — not implemented, no code touched. `novelty-thinking` is
+now the active branch (the earlier branch-decision blocker is gone); still
+pending re-testing qwen3.6 + gemma4 against the recent grading/novel-procedure
+changes.
 
 ### P9: Externalize all static injected prompts (hot-loadable files)
 
@@ -151,6 +152,30 @@ user message, not a tool message) was an Ollama/llama.cpp quirk and could be
 removed on a hosted backend.
 
 **Status:** Future feature — assessed, not implemented. No code touched.
+
+## Resolved (August 15, 2026)
+
+### Novel-procedure detection + cost-ranked strategies
+- **Root cause:** "great" grade only fired on "crossed a previously-flagged capability edge", so a genuinely novel successful technique (curl + User-Agent header, MediaWiki API) was graded "pass" and dropped — the strategy table only filled with failure-derived directives.
+- **Fix:** detect a working non-standard technique from the tool trace (custom header, API endpoint, method override), grade it "great", save as a strategy with a `cost` column (tool-result size). `get_strategies` + `build_context` rank grade-first then cheaper-wins.
+
+### Embedding path fails loudly (was silent zero-vector)
+- **Root cause:** `embed()` returned a zero vector on any failure; the chunk was stored but never matched in FAISS, with no signal. A 768-vs-1024 dim mismatch would crash FAISS with a confusing error.
+- **Fix:** `embed()` returns None on failure; `save_chunk()` stores `pending_embed=1` (no dead vector); a startup job re-embeds pending chunks; `_embedding_health_check()` probes the embedder and reports dim mismatch at startup. New columns: `pending_embed`, `embed_model`, `dim`.
+
+### Setup script fixes
+- UnboundLocalError `prev` when the DB exists but `setup_config.json` was lost (restored/copied) — fixed by initializing `prev = {}`.
+- "Keep current" offered `unknown (current)` when config was missing — now only offered when a real model was configured.
+
+### Empty-DB instruction injection
+- The empty-DB early-return path skipped `system_prompt.md` injection, so a fresh pod never saw the Source Tagging instruction. All return paths now route through `_finalize_context`.
+
+### Synthesis after search_memory
+- Re-query the model with search results so it produces a tagged answer instead of echoing raw hits. Results delivered as a USER message (not a `tool` role) to avoid the Muse Modelfile's peg-native grammar bug.
+
+### Save-pipeline fixes
+- `_generate_topic_label` NameError (`_tlre` → `re`) that crashed `archive_staging`.
+- Idle staging flush was dead code (checked after `staging.add()` reset `last_activity`); fixed by flushing before adding.
 
 ## Resolved (August 8, 2026)
 
