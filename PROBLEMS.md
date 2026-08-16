@@ -153,6 +153,46 @@ removed on a hosted backend.
 
 **Status:** Future feature — assessed, not implemented. No code touched.
 
+### P11: Frontier-model strategy distillation (future goal)
+
+**Idea:** Use a hosted frontier model (OpenRouter / DeepSeek / Anthropic) as a
+strategy *author* for the 30B local executor. Point the frontier model at the
+capability edges where the 30B grades D/F, let it discover techniques —
+novel-procedure detection already harvests them from the tool trace — and
+inject the resulting strategies to the 30B on similar tasks. Strategies are
+model-agnostic ("use the site's API endpoint" works for any executor that can
+follow it), so most of the plumbing already exists.
+
+**Two gaps that block this:**
+
+1. **The "great" grade is author-relative, not executor-relative.** Today the
+   model that discovers a strategy is the same one that reuses it, so "novel
+   and it worked" is a valid signal. With separate author/executor roles, a
+   frontier model emits many techniques that are trivial for it but impossible
+   for a 30B (parallel tool calls, multi-step self-verification, "write a
+   script to do X"). Those would be saved as "great" and injected to the 30B,
+   which flounders — and the D/F extraction may write anti-strategies that
+   fight the frontier strategies (feedback loop). Fix: validate each frontier
+   strategy against the 30B before injecting; grade = "did it lift the 30B's
+   grade", not "did the frontier model invent it".
+
+2. **Cost is the wrong metric for an executor.** Cost is tool-result bytes. For
+   a 30B executor the real cost is cognitive load / step count — how reliably
+   the small model can follow the recipe. Add a difficulty/steps axis.
+
+**Framing:** frontier model as a one-shot or periodic offline strategy author
+(not a live replacement — see P10 for the backend swap), run only against weak
+edges. Pay frontier tokens once per domain, reuse for free at inference.
+
+**Validation test:** pick one failing capability edge, run the frontier model on
+N tasks, capture strategies, then A/B the 30B with vs. without each strategy.
+The transfer yield (fraction that improve the 30B's grade) is the go/no-go
+number. Prior: high for procedural/web/tool techniques, near zero for
+reasoning-heavy capability.
+
+**Status:** Idea only — not implemented. Depends on P10 (hosted-model backend
+for the author side) plus executor-relative validation.
+
 ## Resolved (August 15, 2026)
 
 ### Novel-procedure detection + cost-ranked strategies
