@@ -293,7 +293,9 @@ def grade_priority(chunk_id: str) -> int:
 # NOTE: existing vectors in the DB are 768-dim and incompatible. Wipe
 # mneme_chunks/mneme.db (or run a migration) before starting with
 # the new embedder, otherwise FAISS will reject add/search on shape mismatch.
-EMBED_MODEL = "snowflake-arctic-embed2"
+# EMBED_MODEL is env-overridable so a DB can move between machines with
+# different embedders (the startup health check re-embeds mismatched chunks).
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "snowflake-arctic-embed2")
 DIM = 1024
 try:
     import faiss
@@ -4017,9 +4019,11 @@ def _reembed_pending(limit: int = 200):
 
 
 def _embedding_health_check() -> bool:
-    """Startup: verify the embedder returns DIM-dim vectors and no stored vector
-    has a conflicting dim. Fails loudly instead of letting FAISS raise a
-    confusing 'dimension mismatch' later."""
+    """Startup: verify the embedder returns DIM-dim vectors, and detect any
+    stored vector that can't be used with the current embedder — a conflicting
+    dim, or a different embedding model (same dim but a different semantic
+    space). Those chunks are marked pending_embed and re-embedded on startup,
+    so a DB copied between machines with different embedders self-heals."""
     ok = True
     # 1. Probe the embedder
     probe = embed("__mneme_health_probe__")
@@ -4033,17 +4037,29 @@ def _embedding_health_check() -> bool:
         ok = False
     else:
         print(f"  [HEALTH] embedder OK: {EMBED_MODEL} dim={probe.shape[0]}", flush=True)
-    # 2. Detect stored vectors with a conflicting dim (embedder changed mid-life)
+    # 2. Conflicting dim: wrong-length vectors are unusable — mark for re-embed.
     bad = db.execute(
-        "SELECT COUNT(*) FROM chunks WHERE vector IS NOT NULL AND length(vector) != ?",
+        "UPDATE chunks SET vector=NULL, pending_embed=1 "
+        "WHERE vector IS NOT NULL AND length(vector) != ?",
         (DIM * 4,),
-    ).fetchone()[0]
+    ).rowcount
+    db.commit()
     if bad:
-        print(f"  [HEALTH][FATAL] {bad} stored vectors have a different dim than {DIM}. "
-              f"FAISS add/search will fail — re-embed them or restore the matching "
-              f"embedder.", flush=True)
+        print(f"  [HEALTH][MIGRATE] {bad} chunks had a different dim ({DIM} expected) — "
+              f"marked pending_embed for re-embedding", flush=True)
         ok = False
-    # 3. Backfill embed_model/dim metadata on existing chunks
+    # 3. Different embedding model (same dim, different semantic space): the
+    # vectors are meaningless against the current model — mark for re-embed.
+    migrated = db.execute(
+        "UPDATE chunks SET vector=NULL, pending_embed=1 "
+        "WHERE vector IS NOT NULL AND embed_model != '' AND embed_model != ?",
+        (EMBED_MODEL,),
+    ).rowcount
+    db.commit()
+    if migrated:
+        print(f"  [HEALTH][MIGRATE] {migrated} chunks were embedded with a different "
+              f"model (now {EMBED_MODEL}) — marked pending_embed for re-embedding", flush=True)
+    # 4. Backfill embed_model/dim metadata on remaining (correctly-embedded) chunks
     n = db.execute(
         "UPDATE chunks SET embed_model=?, dim=? WHERE vector IS NOT NULL AND dim=0",
         (EMBED_MODEL, DIM),
