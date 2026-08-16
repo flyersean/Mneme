@@ -570,6 +570,8 @@ def main():
             prev_labeler = prev.get("label_model", "")
             prev_model = prev.get("model", "")
         
+        print("  Note: 'Add another model' keeps running instances running;\n"
+              "        'Reconfigure' and 'Start fresh' stop them (pkill).")
         opts = [
             "Add another model (new proxy instance sharing this DB)",
             "Reconfigure existing installation (change model, settings, keep DB)",

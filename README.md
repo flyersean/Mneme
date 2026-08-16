@@ -85,13 +85,19 @@ Each instance is a separate process on its own port, all pointing at the same
 disk-persisted index, and SQLite WAL mode. Chunks written by any instance are
 visible to all.
 
-**Add a second model via the wizard (easiest):** re-run the setup script on a
-pod that already has a DB. It detects the existing DB and offers "Add another
-model (new proxy instance sharing this DB)", which launches a new instance on
-the next free port (8081, 8082, …) and leaves the running instance untouched.
+The wizard's existing-DB menu offers three choices, and they differ in whether
+they stop running instances:
 
-**Manual** — give each instance a distinct `MNEME_PORT` and the same
-`MNEME_CHUNK_DIR`:
+- **Add another model** — does NOT stop anything. Spins up a new instance on
+  the next free port (8081, 8082, …) and leaves the current instance running.
+  Safe for growing the fleet.
+- **Reconfigure existing installation** — `pkill`s ALL running proxies, then
+  restarts the main instance. Use only when you're fine stopping everything.
+- **Start fresh** — `pkill`s everything and wipes the DB.
+
+**Add or change a model WITHOUT stopping anything (no pkill)** — start
+instances manually. Give each a distinct `MNEME_PORT` and the same
+`MNEME_CHUNK_DIR`; this never kills other processes, so you decide what stays up:
 
 ```bash
 # Instance 1 — model A on 8080
@@ -104,6 +110,10 @@ MNEME_PORT=8081 MNEME_MODEL="qwen3.6-35b" \
   MNEME_CHUNK_DIR=/workspace/mneme_chunks \
   python3 -uB proxy/mneme_proxy.py
 ```
+
+To swap one instance's model, stop only that instance (`kill <pid>` — find it
+with `ss -tlnp | grep <port>`) and re-run the manual command with the new
+`MNEME_MODEL`. Don't use `pkill -f mneme_proxy.py`, which stops every instance.
 
 Clients connect to the port for the model they want. All instances must use the
 **same embedder and labeler** — the embeddings share one FAISS index with a
@@ -157,7 +167,14 @@ fixed dimension, and the startup health check will flag a dim mismatch.
 **Harness Integration**
 - **Hermes**: full support with all tools, memory, compression enabled
 - **Pi**: `search_memory` + `web_search`/`web_scrape` via extensions
-  (`extensions/pi/`), with proxy intercept + pass-through tool calls
+  (`extensions/pi/`), with proxy intercept + pass-through tool calls:
+  ```bash
+  pi --provider mneme --model text-mneme:64k \
+    --extension /workspace/mneme-search-tool.ts \
+    --extension /workspace/mneme-web-tools.ts
+  ```
+  (the `--extension` flags are appended by the setup script; omit the
+  `mneme-web-tools.ts` flag if web tools aren't installed)
 - **Any OpenAI client**: connect to `http://localhost:8080/v1`
 
 ## Endpoints
