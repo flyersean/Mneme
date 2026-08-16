@@ -193,6 +193,35 @@ reasoning-heavy capability.
 **Status:** Idea only — not implemented. Depends on P10 (hosted-model backend
 for the author side) plus executor-relative validation.
 
+### P12: Bare `<<COMMAND>>` leaks through to the model (e.g. `<<SAVE>>`)
+
+**Symptom:** In Pi, a bare `<<SAVE>>` reaches the model as a message instead of
+being intercepted by the proxy. The model interprets it as an instruction to
+save the conversation and writes files about it. Muse-specific: the system
+prompt documents `<<SAVE>>` (line 71-73, "you do not need to do anything"), and
+a stronger model ignores that line while Muse acts on the leaked token.
+
+**Root cause — two bugs in `process_chat` command handling:**
+
+1. Detection and stripping target different messages. `<<SAVE>>` is detected in
+   `full_user_msg` (the last *user* message, ~line 2899), but stripped from
+   `messages[-1]` (the last message, *any* role, ~line 2929). If the
+   conversation ends with a non-user message (trailing tool result, assistant
+   echo), the strip writes the wrong message and the bare `<<SAVE>>` survives.
+
+2. The fallback strip loop refuses to strip a bare command. The `if cleaned:`
+   guard (~line 2950) skips any message whose stripped result is empty — a
+   message that is exactly `<<SAVE>>` (or `<<DETAIL ...>>`, `<<REVISE>>`) is
+   never cleaned by the fallback, so it can't catch what bug 1 missed.
+
+**Diagnostic:** check the proxy log for `[SAVE] Triggered by user`. Present →
+   detection + archive worked and the leak is purely in the strip path; absent
+   → `<<SAVE>>` was never detected (content-extraction/regex mismatch).
+
+**Fix (not applied):** strip from the message that actually contains the command
+   (not `messages[-1]`), and drop the `if cleaned:` guard so bare commands are
+   removed (writing an empty user message is fine).
+
 ## Resolved (August 15, 2026)
 
 ### Novel-procedure detection + cost-ranked strategies
