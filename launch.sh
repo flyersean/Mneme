@@ -43,6 +43,8 @@ export EMBED_MODEL="${EMBED_MODEL:-voyageai/voyage-4-lite}"
 export LABEL_MODEL="${LABEL_MODEL:-meta-llama/llama-3.2-3b-instruct}"
 export MNEME_CHUNK_DIR="$CHUNK_DIR"
 export MNEME_PORT="$PORT"
+export MNEME_CTX_TOKENS="${MNEME_CTX_TOKENS:-256000}"
+export MNEME_CHAT_TIMEOUT="${MNEME_CHAT_TIMEOUT:-600}"
 export PYTHONDONTWRITEBYTECODE=1
 
 mkdir -p "$CHUNK_DIR"

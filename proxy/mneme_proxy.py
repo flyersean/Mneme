@@ -707,34 +707,45 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     if format_schema:
         payload["format"] = format_schema
     
-    # Smarter truncation: keep first user message (task context) + last 2 turns
-    MAX_MSG_CHARS = 0  # disabled
-    trimmed_msgs = []
-    for m in msgs:
-        content = m.get("content", "")
-        if MAX_MSG_CHARS > 0 and isinstance(content, str) and len(content) > MAX_MSG_CHARS:
-            trimmed_msgs.append({**m, "content": content[:MAX_MSG_CHARS] + "..."})
-        else:
-            trimmed_msgs.append(m)
-    
-    sys_msgs = [m for m in trimmed_msgs if m.get("role") == "system"]
-    non_sys = [m for m in trimmed_msgs if m.get("role") != "system"]
-    
-    if len(non_sys) > 4:
-        first_user = [m for m in non_sys if m.get("role") == "user"][:1]  # task context
-        recent = non_sys[-4:]  # last 2 turns
-        msgs = sys_msgs + first_user + recent
-    else:
-        msgs = sys_msgs + non_sys
-    
-    total = sum(len(m.get("content","")) for m in msgs)
-    if total > MAX_PROMPT_CHARS:
-        # Trim oldest non-system messages until under limit, keeping at least 5
-        while len(non_sys) > 5 and total > MAX_PROMPT_CHARS:
-            removed = non_sys.pop(0)
-            total -= len(removed.get("content", ""))
-        msgs = sys_msgs + non_sys
-        print(f"  [WARN] Trimmed to {total} chars ({len(non_sys)} messages, limit {MAX_PROMPT_CHARS})", flush=True)
+    # ── Context-window-aware trimming (replaces the hard "last 2 turns" cut) ──
+    # Previously this kept only first-user + last 4 messages regardless of the
+    # real context window, which discarded chained tool-call history and made
+    # "continue" answer from stale context. Now trim by a real token budget,
+    # never split an assistant(tool_calls)/tool-result pair, and always keep
+    # the newest message.
+    ctx_tokens = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))  # 256k default; deepseek-v4-flash has 1M ctx
+    reserve    = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
+    budget     = max(4096, ctx_tokens - reserve)
+
+    def _tok(m):
+        text = _extract_text(m.get("content", ""))
+        est = max(len(text) // 4, int(len(text.split()) * 1.3))
+        if m.get("tool_calls"):
+            try:
+                est += len(json.dumps(m["tool_calls"])) // 4
+            except Exception:
+                pass
+        return est
+
+    sys_msgs = [m for m in msgs if m.get("role") == "system"]
+    non_sys  = [m for m in msgs if m.get("role") != "system"]
+    total = sum(_tok(m) for m in sys_msgs) + sum(_tok(m) for m in non_sys)
+
+    if total > budget:
+        while len(non_sys) > 1 and total > budget:
+            # Drop the oldest message; if it's an assistant tool-call, also drop
+            # its following tool results so no orphaned "tool" message remains.
+            doomed = [non_sys[0]]
+            if non_sys[0].get("role") == "assistant" and non_sys[0].get("tool_calls"):
+                j = 1
+                while j < len(non_sys) and non_sys[j].get("role") == "tool":
+                    doomed.append(non_sys[j]); j += 1
+            for m in doomed:
+                total -= _tok(m)
+                non_sys.remove(m)
+            if len(non_sys) <= 1:
+                break
+    msgs = sys_msgs + non_sys
     
     if MNEME_BACKEND == "openrouter":
         return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout)
@@ -2802,7 +2813,7 @@ _NOVELTY_TEMP_SCHEDULE = [
 
 NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))  # seconds, for slow 26B generations
-CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "240"))  # seconds, anti-grind guardrail for chat
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "600"))  # seconds, anti-grind guardrail for chat (thinking models run long)
 
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
     """Diverge → measure → gate → judge → save.
