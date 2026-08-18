@@ -65,7 +65,9 @@ Change a model by overriding the env var before launching:
     MNEME_MODEL=deepseek/deepseek-chat ~/Mneme-build/launch.sh
     # deepseek-chat = V3, non-thinking: faster but weaker reasoning
 
-Other overrides: EMBED_MODEL, LABEL_MODEL, MNEME_PORT, MNEME_CHUNK_DIR.
+Other overrides: EMBED_MODEL, LABEL_MODEL, MNEME_PORT, MNEME_CHUNK_DIR,
+MNEME_CTX_TOKENS (context trim budget, default 256000), MNEME_CHAT_TIMEOUT
+(seconds, default 120).
 
 ## Troubleshooting
 
@@ -75,9 +77,11 @@ Other overrides: EMBED_MODEL, LABEL_MODEL, MNEME_PORT, MNEME_CHUNK_DIR.
 - Pi refuses to start with a "Tool conflicts" error — the extensions are loaded twice
   (auto-discovery at ~/.pi/agent/extensions/ AND the --extension flags). Remove one.
 
-- Feels stalled / slow — deepseek-v4-flash is a thinking model; it reasons before
-  answering and can take 30s-2min on big prompts. Wait it out, or switch to
-  deepseek/deepseek-chat for speed. The proxy auto-aborts a hung call after 10 minutes.
+- Feels stalled / slow — deepseek-v4-flash is a thinking model but answers fast (~2s
+  typical). A genuinely hung OpenRouter call is now aborted after 2 minutes
+  (MNEME_CHAT_TIMEOUT, default 120s) and returns a clean message, rather than
+  freezing for 10 minutes or returning a 500. For fewer reasoning tokens, switch to
+  deepseek/deepseek-chat.
 
 - Port 8080 already in use — stop the old proxy first (see "Stop the proxy" above).
 
