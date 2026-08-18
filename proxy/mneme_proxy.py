@@ -613,8 +613,12 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
                           json=payload, timeout=timeout)
-    except requests.exceptions.ReadTimeout:
-        print(f"  [GRIND-GUARD] OpenRouter generation exceeded {timeout}s — aborting", flush=True)
+    except requests.exceptions.RequestException as e:
+        # Catch the base class: with stream=False, a read timeout during body
+        # download surfaces as ConnectionError (wrapping urllib3's
+        # ReadTimeoutError), NOT ReadTimeout. Catching only ReadTimeout left
+        # those uncaught and returned a 500 to the client.
+        print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
     try:
         d = r.json()
@@ -636,7 +640,15 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 args = json.loads(args)
             except Exception:
                 args = {}
-        tool_calls.append({"function": {"name": fn.get("name"), "arguments": args}})
+        # Preserve id/type so the follow-up tool result can associate with this
+        # call (OpenAI format matches tool_result.tool_call_id to tool_call.id).
+        # Dropping the id orphaned tool results and confused the model into
+        # emitting malformed follow-up calls.
+        tool_calls.append({
+            "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+            "type": tc.get("type", "function"),
+            "function": {"name": fn.get("name"), "arguments": args},
+        })
     # Reasoning models sometimes leave content empty and put the answer in
     # reasoning. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:
@@ -678,11 +690,20 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     for m in trimmed:
             mc = _extract_text(m.get("content", ""))
             new_m = {"role": m["role"], "content": mc}
-            # Preserve tool_calls on assistant messages so Ollama can associate a
-            # follow-up tool result with its call (critical for multi-turn tool use
-            # in Pi). Dropping this is what broke tool calls → "None".
+            # Preserve tool_calls on assistant messages so the model can associate
+            # a follow-up tool result with its call (critical for multi-turn tool
+            # use in Pi). Dropping this is what broke tool calls → "None".
             if m.get("role") == "assistant" and m.get("tool_calls"):
                 new_m["tool_calls"] = m["tool_calls"]
+            # Preserve tool_call_id (and optional name) on tool messages — the
+            # OpenAI-compatible format (OpenRouter) requires a tool result to carry
+            # the id of the assistant tool_call it answers. Dropping it orphaned
+            # tool results and confused the model into malformed follow-up calls.
+            if m.get("role") == "tool":
+                if m.get("tool_call_id"):
+                    new_m["tool_call_id"] = m["tool_call_id"]
+                if m.get("name"):
+                    new_m["name"] = m["name"]
             msgs.append(new_m)
     
     # Auto-chunk oversized messages before they bloat conversation history
@@ -2813,7 +2834,7 @@ _NOVELTY_TEMP_SCHEDULE = [
 
 NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))  # seconds, for slow 26B generations
-CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "600"))  # seconds, anti-grind guardrail for chat (thinking models run long)
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "120"))  # seconds, anti-grind guardrail for chat (model answers ~2s; fail fast on hangs)
 
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
     """Diverge → measure → gate → judge → save.

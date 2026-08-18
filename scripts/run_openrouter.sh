@@ -20,7 +20,7 @@ export LABEL_MODEL="${LABEL_MODEL:-meta-llama/llama-3.2-3b-instruct}"
 export MNEME_CHUNK_DIR="${MNEME_CHUNK_DIR:-$HOME/mneme_chunks}"
 export MNEME_PORT="${MNEME_PORT:-8080}"
 export MNEME_CTX_TOKENS="${MNEME_CTX_TOKENS:-256000}"   # context trim budget (tokens)
-export MNEME_CHAT_TIMEOUT="${MNEME_CHAT_TIMEOUT:-600}"   # seconds, anti-grind guardrail
+export MNEME_CHAT_TIMEOUT="${MNEME_CHAT_TIMEOUT:-120}"   # seconds, anti-grind guardrail (model answers ~2s; fail fast on hangs)
 export PYTHONDONTWRITEBYTECODE=1
 
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
