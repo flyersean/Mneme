@@ -256,7 +256,11 @@ ROUTE_THRESHOLD    = float(os.environ.get("MNEME_ROUTE_THRESHOLD", "0.08"))  # t
 BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fallback — overridden at startup by _calibrate_noise()
 AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recency half-life in days — newer chunks get a bonus
 
-# Network timeouts for the embedding and labeling calls (background work)
+# Network timeouts (seconds). CHAT_TIMEOUT is the anti-grind guardrail for
+# foreground/strategy calls; NOVELTY_TIMEOUT is for slow multi-iteration
+# exploration (novelty/learning modes, 26B+ local models).
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "120"))
+NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))
 EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
 LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 
@@ -776,12 +780,13 @@ MEMORY_DISCLAIMER = (
 )
 
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
-                      max_tokens=-1, timeout=600) -> dict:
+                      max_tokens=-1, timeout=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
     dict shape as the Ollama path: {content, thinking, tool_calls, eval_count,
     done_reason}. OpenRouter normalizes thinking models' reasoning into
     message.reasoning; tool-call arguments arrive as JSON strings and are
     json.loads'd back to dicts to match the Ollama path."""
+    if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
         "model": MODEL,
         "stream": False,
@@ -866,7 +871,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 
 def _query_model_impl(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: int = 600, format_schema=None) -> dict:
+                timeout: Optional[int] = None, format_schema=None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
@@ -875,6 +880,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     """
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
+    if timeout is None: timeout = CHAT_TIMEOUT  # fail fast on provider hangs (was 600s default)
     
     # Trim to last MAX_HISTORY_MESSAGES, but always keep the system prompt (first message if system role)
     trimmed = list(messages)
@@ -1007,7 +1013,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: int = 600, format_schema=None) -> dict:
+                timeout: Optional[int] = None, format_schema=None) -> dict:
     """Timing wrapper around _query_model_impl — logs one line per model call.
 
     Fields: caller (function that invoked query_model), tid (bg = _BG_QUEUE
@@ -2339,7 +2345,7 @@ def _extract_provenance(problem: str, answer: str) -> str:
         "Use VERDICT values HONEST-SOURCED, HONEST-GUESS, or DISHONEST.\n"
         "If there are no specific claims, write exactly: NO SPECIFIC CLAIMS"
     )}]
-    r = query_model(q)
+    r = query_model(q, max_tokens=512)  # bounded — the judge only emits short verdict lines; prevents reasoning tangents
     return r.get("content", "") or ""
 
 
@@ -2842,7 +2848,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         msgs = [{"role": "user", "content": prompt}]
         
         # Query with varied parameters
-        result = query_model(msgs, options=params)
+        result = query_model(msgs, options=params, timeout=NOVELTY_TIMEOUT)
         
         # Grade by provenance honesty (Layer 1) — deterministic, not self-report.
         # Honest "I don't know" / flagged guesses never penalize; specific facts
@@ -2875,7 +2881,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
                 f"Return ONLY those lines, nothing else.\n\n"
                 f"ANSWER: {result.get('content', '')[:MAX_STORY_CHARS_ALT]}"
             )}]
-            strat_result = query_model(strat_msgs)
+            strat_result = query_model(strat_msgs, timeout=NOVELTY_TIMEOUT)
             strat_list = re.findall(
                 r"STRATEGY:\s*(.+?)(?:\n|$)", strat_result.get("content", ""),
                 re.IGNORECASE
@@ -2905,7 +2911,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
             'Techniques must be specific and technical (validation, error handling, data-flow, resource management, etc.) — NOT generic advice about compliance or attitude. '
             'Format each on its own line exactly as: RULE: <one-sentence technique>. Return ONLY those lines.'
         )}]
-        synth_result = query_model(synth_msgs)
+        synth_result = query_model(synth_msgs, timeout=NOVELTY_TIMEOUT)
         rule_list = re.findall(
             r"RULE:\s*(.+?)(?:\n|$)", synth_result.get("content", ""),
             re.IGNORECASE
@@ -3075,8 +3081,6 @@ _NOVELTY_TEMP_SCHEDULE = [
 ]
 
 NOVELTY_MIN_DIST = float(os.environ.get("MNEME_NOVELTY_MIN_DIST", "0.35"))
-NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))  # seconds, for slow 26B generations
-CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "120"))  # seconds, anti-grind guardrail for chat (model answers ~2s; fail fast on hangs)
 
 def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: list = None) -> dict:
     """Diverge → measure → gate → judge → save.
@@ -3310,6 +3314,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     SAVE_TRIGGER = "<<SAVE>>"
     if SAVE_TRIGGER in full_user_msg:
         user_msg = user_msg.replace(SAVE_TRIGGER, "").strip()
+        if not user_msg:
+            user_msg = "Memory save triggered."
         messages[-1]["content"] = user_msg
         _enqueue(archive_staging)
         print("  [SAVE] Triggered by user — archiving in background", flush=True)

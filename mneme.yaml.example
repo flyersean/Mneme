@@ -1,6 +1,12 @@
 # Mneme proxy config — example. Copy to $MNEME_CHUNK_DIR/mneme.yaml and edit.
 # Precedence: environment variable > this file > built-in default.
 # Unknown keys fail loud at startup. Full reference: docs/config-spec.md
+#
+# NOTE: sampling/retrieval values below are tuned for the OpenRouter lineup
+# (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed
+# by asking the model itself. A global max_tokens cap is intentionally OMITTED —
+# it truncated thorough document summaries (done=length). Anti-grind is enforced
+# by timeouts; the provenance judge has its own bounded cap in code.
 
 backend:
   type: openai          # "ollama" | "openai"  (openai = any OpenAI-compatible provider)
@@ -16,21 +22,20 @@ providers:
     model: deepseek/deepseek-v4-flash
     embed_model: voyageai/voyage-4-lite
     label_model: meta-llama/llama-3.2-3b-instruct
-    # headers: { HTTP-Referer: https://localhost/mneme, X-Title: Mneme }  # optional
   deepseek:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     model: deepseek-chat
-    embed_model: ""                   # no embeddings -> disable / reuse another provider
+    embed_model: ""
     label_model: meta-llama/llama-3.2-3b-instruct
 
 sampling:
-  temperature: 0.3
-  top_p: 0.95
-  top_k: 64                # ollama only
+  temperature: 0.2      # model recommends 0.2 — less repetition
+  top_p: 0.9            # model recommends 0.9 — trims the improbable tail
+  top_k: 64             # ollama only
   ctx_tokens: 256000
   completion_reserve: 8192
-  max_tokens: 2048         # output cap for the OpenAI path
+  # max_tokens: leave unset — a global cap truncates long summaries
 
 timeouts:
   chat_timeout: 120
@@ -44,12 +49,12 @@ storage:
   chunk_dir: ~/mneme_chunks
   port: 8080
   inject_system: true
-  staging_turns: 6         # flush cadence
-  staging_idle: 120        # idle seconds before flush
-  belief_evolution: false  # off by default — floods the backend
+  staging_turns: 6
+  staging_idle: 120
+  belief_evolution: false
 
 retrieval:
-  max_injected_tokens: 6000
+  max_injected_tokens: 8000   # model recommends 8000 — 6-8 chunks of context
   route_threshold: 0.08
   classify_threshold: 0.78
   baseline_noise: 0.20
@@ -63,13 +68,12 @@ caps:
   db_msg_cap: 8000
   compress_threshold: 500
   compress_max_tok: 2048
-  chunk_size: 3000
+  chunk_size: 4000          # model recommends 4000-5000 — fuller chunks
 
 models:
-  # Per-model sampling overrides (P8). Keyed by model name.
   deepseek/deepseek-v4-flash:
-    temperature: 0.3
-    max_tokens: 2048
+    temperature: 0.2
+    top_p: 0.9
   muse-glimmer:30b:
     temperature: 1.0
     top_k: 64
