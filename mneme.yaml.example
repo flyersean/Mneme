@@ -38,7 +38,9 @@ sampling:
   # max_tokens: leave unset — a global cap truncates long summaries
 
 timeouts:
-  chat_timeout: 120
+  chat_timeout: 60        # OpenAI-style read/generation timeout (fast hang recovery)
+  ollama_chat_timeout: 120  # Ollama — cold-start model load delays the first token
+  first_token_timeout: 30   # OpenAI-style time-to-first-token (abort a hung provider fast)
   novelty_timeout: 600
   embed_timeout: 60
   label_timeout: 30

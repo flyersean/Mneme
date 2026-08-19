@@ -50,6 +50,8 @@ _CONFIG_ENV_MAP = {
     "sampling.completion_reserve": "MNEME_COMPLETION_RESERVE",
     "sampling.max_tokens": "MNEME_MAX_TOKENS",
     "timeouts.chat_timeout": "MNEME_CHAT_TIMEOUT",
+    "timeouts.ollama_chat_timeout": "MNEME_OLLAMA_CHAT_TIMEOUT",
+    "timeouts.first_token_timeout": "MNEME_FIRST_TOKEN_TIMEOUT",
     "timeouts.novelty_timeout": "MNEME_NOVELTY_TIMEOUT",
     "timeouts.embed_timeout": "MNEME_EMBED_TIMEOUT",
     "timeouts.label_timeout": "MNEME_LABEL_TIMEOUT",
@@ -257,9 +259,14 @@ BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fa
 AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recency half-life in days — newer chunks get a bonus
 
 # Network timeouts (seconds). CHAT_TIMEOUT is the anti-grind guardrail for
-# foreground/strategy calls; NOVELTY_TIMEOUT is for slow multi-iteration
+# foreground/strategy calls on OpenAI-style backends (fast hang recovery);
+# OLLAMA_CHAT_TIMEOUT is longer because cold-start model loading legitimately
+# delays the first token; NOVELTY_TIMEOUT is for slow multi-iteration
 # exploration (novelty/learning modes, 26B+ local models).
-CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "120"))
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "60"))
+OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "120"))
+FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "30"))
+CONNECT_TIMEOUT = 15  # TCP+TLS connect timeout for OpenAI-style calls
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))
 EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
 LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
@@ -789,7 +796,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
         "model": MODEL,
-        "stream": False,
+        "stream": True,
         "messages": msgs,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
@@ -814,58 +821,125 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             json.dump(payload, _f)
     except Exception:
         pass
+    # Two-phase timeout: short for the first token (detect a hung provider fast),
+    # then the full `timeout` for the rest (steady generation). A single
+    # non-stream request can't do this — the body is buffered server-side until
+    # the provider finishes, so a hung provider burns the entire read timeout.
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                          json=payload, timeout=timeout)
+                          json=payload, stream=True, timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT))
     except requests.exceptions.RequestException as e:
-        # Catch the base class: with stream=False, a read timeout during body
-        # download surfaces as ConnectionError (wrapping urllib3's
-        # ReadTimeoutError), NOT ReadTimeout. Catching only ReadTimeout left
-        # those uncaught and returned a 500 to the client.
         print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
-    try:
-        d = r.json()
-    except Exception:
-        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
-    if "error" in d:
-        print(f"  [ERROR] OpenRouter returned: {d['error']}", flush=True)
-        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
-    choice = (d.get("choices") or [{}])[0]
-    msg = choice.get("message", {})
-    content = msg.get("content") or ""
-    thinking = msg.get("reasoning") or ""  # OpenRouter normalizes thinking → "reasoning"
-    tool_calls = []
-    for tc in msg.get("tool_calls") or []:
-        fn = tc.get("function", {})
-        args = fn.get("arguments")
-        if isinstance(args, str):
+
+    content_parts = []
+    reasoning_parts = []
+    tc_slots = {}          # index -> accumulator for streamed tool-call deltas
+    finish_reason = None
+    provider = "?"
+    completion_tokens = 0
+    got_first = False
+
+    def _bump_socket():
+        # After the first token, extend the read timeout from the short TTFT to
+        # the full timeout so a steady-but-slow generation isn't cut off. Best
+        # effort — if the socket handle can't be reached, keep the short timeout
+        # (harmless for the fast cloud models on this path).
+        try:
+            r.raw._fp.fp.raw._sock.settimeout(timeout)
+        except Exception:
             try:
-                args = json.loads(args)
+                r.raw._fp.fp.raw.settimeout(timeout)
             except Exception:
-                args = {}
-        # Preserve id/type so the follow-up tool result can associate with this
-        # call (OpenAI format matches tool_result.tool_call_id to tool_call.id).
-        # Dropping the id orphaned tool results and confused the model into
-        # emitting malformed follow-up calls.
+                pass
+
+    try:
+        for raw in r.iter_lines(decode_unicode=True):
+            if not got_first:
+                got_first = True
+                _bump_socket()
+            if not raw:
+                continue
+            raw = raw.strip()
+            if not raw.startswith("data:"):
+                continue
+            data = raw[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except Exception:
+                continue
+            if obj.get("provider"):
+                provider = obj["provider"]
+            if obj.get("usage"):
+                completion_tokens = obj["usage"].get("completion_tokens", completion_tokens)
+            choices = obj.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            if delta.get("content"):
+                content_parts.append(delta["content"])
+            if delta.get("reasoning"):
+                reasoning_parts.append(delta["reasoning"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                slot = tc_slots.setdefault(idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                if tc.get("type"):
+                    slot["type"] = tc["type"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+            fr = choices[0].get("finish_reason")
+            if fr:
+                finish_reason = fr
+    except requests.exceptions.RequestException as e:
+        # No first token -> hung provider. Mid-stream stall -> incomplete answer.
+        # Both are retryable: signal "timeout" with 0 tokens so the retry logic
+        # (which keys off done_reason=="timeout" and eval_count==0) fires.
+        tag = "no first token" if not got_first else "mid-response stall"
+        print(f"  [GRIND-GUARD] OpenRouter stream aborted ({tag}) ({type(e).__name__}: {e}) — aborting", flush=True)
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+
+    content = "".join(content_parts)
+    thinking = "".join(reasoning_parts)
+    tool_calls = []
+    for idx in sorted(tc_slots):
+        slot = tc_slots[idx]
+        args_raw = slot["function"].get("arguments", "")
+        try:
+            args = json.loads(args_raw) if args_raw else {}
+        except Exception:
+            args = {}
         tool_calls.append({
-            "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
-            "type": tc.get("type", "function"),
-            "function": {"name": fn.get("name"), "arguments": args},
+            "id": slot.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+            "type": slot.get("type", "function"),
+            "function": {"name": slot["function"].get("name", ""), "arguments": args},
         })
     # Reasoning models sometimes leave content empty and put the answer in
     # reasoning. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:
         content = thinking
-    finish = choice.get("finish_reason", "?")
-    done_reason = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(finish, finish)
+    if finish_reason:
+        done_reason = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(finish_reason, finish_reason)
+    else:
+        done_reason = "tool_calls" if tool_calls else "stop"
     return {
         "content": content,
         "thinking": thinking,
         "tool_calls": tool_calls,
-        "eval_count": d.get("usage", {}).get("completion_tokens", 0),
+        "eval_count": completion_tokens,
         "done_reason": done_reason,
-        "provider": d.get("provider", "?"),
+        "provider": provider,
     }
 
 
@@ -880,7 +954,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     """
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
-    if timeout is None: timeout = CHAT_TIMEOUT  # fail fast on provider hangs (was 600s default)
+    if timeout is None: timeout = OLLAMA_CHAT_TIMEOUT if not _backend_is_openai() else CHAT_TIMEOUT  # backend-aware fail-fast (was 600s default)
     
     # Trim to last MAX_HISTORY_MESSAGES, but always keep the system prompt (first message if system role)
     trimmed = list(messages)
@@ -4522,7 +4596,7 @@ def _dump_config():
         print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
     print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','256000')}", flush=True)
-    print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
+    print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
 
