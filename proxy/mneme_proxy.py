@@ -75,6 +75,7 @@ _CONFIG_ENV_MAP = {
     "caps.db_msg_cap": "MNEME_DB_MSG_CAP",
     "caps.compress_threshold": "MNEME_COMPRESS_THRESHOLD",
     "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
+    "caps.max_tool_forward": "MNEME_MAX_TOOL_FORWARD",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
@@ -244,7 +245,8 @@ OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
 MAX_HISTORY_MESSAGES = int(os.environ.get("MNEME_MAX_HISTORY_MESSAGES", "32"))  # trim conversation to keep predict budget free
 CHUNK_SIZE   = int(os.environ.get("MNEME_CHUNK_SIZE", "3000"))  # chars per chunk (was defined twice: 2000 then 3000 — collapsed)
 DB_MSG_CAP   = int(os.environ.get("MNEME_DB_MSG_CAP", "8000"))  # chars per message stored in SQLite (full content)
-COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get compressed
+COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get staged
+MAX_TOOL_FORWARD = int(os.environ.get("MNEME_MAX_TOOL_FORWARD", "12000"))  # chars — cap on a tool result forwarded to the model (head+tail window)
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
@@ -2292,12 +2294,15 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
 
 
 def compress_large_tool_results(messages: list) -> list:
-    """Silently stage large tool outputs for archival.
-    
-    Splits outputs > COMPRESS_THRESHOLD chars into chunks and adds each
-    to the staging buffer. Model sees unchanged output — no chunk markers,
-    no "continue" loops. Useful flag prevents repeated staging of same content.
-    
+    """Stage large tool outputs for archival AND bound what the model sees.
+
+    Splits outputs > COMPRESS_THRESHOLD chars into chunks and stages each to the
+    buffer (full text preserved in memory). Tool results longer than
+    MAX_TOOL_FORWARD chars are also truncated to a head+tail window in the
+    forwarded message, with a note pointing at search_memory for the rest — the
+    same bounded-output + retrieval pattern Hermes uses for large web pages,
+    instead of dumping a 50k-char blob into the model's context.
+
     Source auto-tagging: scans messages for last browser_navigate call,
     extracts domain from URL, tags staged content as page:{domain}.
     """
@@ -2314,46 +2319,54 @@ def compress_large_tool_results(messages: list) -> list:
                     page_source = f"page:{urls[0]}"
                 break
     
+    import hashlib
     for msg in messages:
         if msg.get("role") != "tool":
             continue
         content = msg.get("content", "")
         if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
             continue
-        if not isinstance(content, str):
-            continue
         
-        # Dedup: don't stage the same page twice in same session
-        import hashlib
+        # Dedup: don't stage the same content twice in same session
         h = hashlib.md5(content[:200].encode()).hexdigest()
-        if h in _staged_hashes:
-            continue
-        _staged_hashes.add(h)
+        if h not in _staged_hashes:
+            _staged_hashes.add(h)
+            
+            # Determine source for this tool output
+            tool_source = page_source or "tool:unknown"
+            if not page_source:
+                # Try to identify tool from content
+                for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
+                    if tool in content[:200]:
+                        tool_source = f"tool:{tool}"
+                        break
+            
+            # Split into chunks and stage each with source metadata
+            for i in range(0, len(content), CHUNK_SIZE):
+                chunk = content[i:i+CHUNK_SIZE]
+                staging.add("assistant", chunk, source=tool_source)
+            
+            print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks (source={tool_source})", flush=True)
+            
+            # Trigger archive if buffer has substantial content
+            if staging.should_flush():
+                import threading
+                _enqueue(archive_staging)
+                print(f"  [STAGE] Auto-flushed staging buffer", flush=True)
         
-        # Determine source for this tool output
-        tool_source = page_source or "tool:unknown"
-        if not page_source:
-            # Try to identify tool from content
-            for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
-                if tool in content[:200]:
-                    tool_source = f"tool:{tool}"
-                    break
-        
-        # Split into chunks and stage each with source metadata
-        for i in range(0, len(content), CHUNK_SIZE):
-            chunk = content[i:i+CHUNK_SIZE]
-            staging.add("assistant", chunk, source=tool_source)
-        
-        print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks (source={tool_source})", flush=True)
-        
-        # Trigger archive if buffer has substantial content
-        if staging.should_flush():
-            import threading
-            _enqueue(archive_staging)
-            print(f"  [STAGE] Auto-flushed staging buffer", flush=True)
+        # Bound what the model sees: head+tail window, full text retrievable via
+        # search_memory (Hermes-style bounded output — no summarization).
+        if len(content) > MAX_TOOL_FORWARD:
+            head_len = MAX_TOOL_FORWARD * 3 // 4
+            tail_len = MAX_TOOL_FORWARD - head_len
+            msg["content"] = (
+                content[:head_len]
+                + f"\n\n[... content truncated: {len(content)} chars total, showing first {head_len} + last {tail_len}. Full text stored to memory — use search_memory to retrieve the sections you need.]\n\n"
+                + content[-tail_len:]
+            )
     
     compress_large_tool_results._staged_hashes = _staged_hashes
-    return messages  # unchanged — model sees full tool output
+    return messages  # bounded tool outputs; full text staged to memory
 
 
 # ─── ORIGINAL CHUNKING (disabled) ───

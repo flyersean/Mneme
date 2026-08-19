@@ -70,6 +70,7 @@ caps:
   db_msg_cap: 8000
   compress_threshold: 500
   compress_max_tok: 2048
+  max_tool_forward: 12000   # cap on tool result forwarded to the model (head+tail window)
   chunk_size: 4000          # model recommends 4000-5000 — fuller chunks
 
 models:
