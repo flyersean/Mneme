@@ -1,0 +1,230 @@
+# Mneme Config Spec — `unified_mneme` branch
+
+Single-file configuration for the Mneme proxy. Consolidates the four
+scattered config surfaces (env vars, hardcoded constants,
+`setup_config.json`, launch scripts) into one `mneme.yaml` the proxy
+actually loads at startup.
+
+Status: SPEC ONLY — no code written yet. This is the design reference for
+the refactor.
+
+## Design goals
+
+1. One file (`$MNEME_CHUNK_DIR/mneme.yaml`) holds every knob we tune.
+2. Backend choice (`ollama` vs `openai`-compatible) is a config entry, not a
+   branch. Adding an OpenAI-standard provider is a config change only.
+3. Fail loud on unknown/typo'd keys (no silent ignore).
+
+## Precedence
+
+```
+config file  <  environment variable  <  per-request override
+```
+
+Env vars win over the file, so `launch.sh` / generated `start_proxy.sh`
+keep working unchanged. A config value is used only when the matching env
+var is unset. Per-request overrides (e.g. `temperature` passed to
+`query_model`) win over both.
+
+## Schema
+
+```yaml
+# mneme.yaml — lives next to the DB, e.g. ~/mneme_chunks/mneme.yaml
+
+backend:
+  type: openai              # "ollama" | "openai"   (openai = OpenAI-compatible)
+  provider: openrouter      # key into `providers:` (ignored when type=ollama)
+  ollama_url: http://localhost:11434
+
+providers:                  # OpenAI-compatible providers. Add one -> new backend.
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY       # read key from this env var
+    model: deepseek/deepseek-v4-flash
+    embed_model: voyageai/voyage-4-lite
+    label_model: meta-llama/llama-3.2-3b-instruct
+    headers: {}              # optional extra headers (e.g. HTTP-Referer/X-Title)
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    model: deepseek-chat
+    embed_model: ""          # no embeddings -> set "" to disable / reuse another
+    label_model: meta-llama/llama-3.2-3b-instruct
+    headers: {}
+  # groq / openai / together / mistral / xai / fireworks ... same shape
+
+sampling:                    # defaults; per-model overrides live under `models:`
+  temperature: 0.3
+  top_p: 0.95
+  top_k: 64                  # ollama-only (ignored by openai path)
+  ctx_tokens: 256000
+  completion_reserve: 8192
+  max_tokens: 2048           # output cap — currently unset for chat
+
+timeouts:
+  chat_timeout: 120          # anti-grind guardrail (foreground turns)
+  novelty_timeout: 600
+  embed_timeout: 60
+  label_timeout: 30
+  edge_failures: 2
+  edge_ratio: 0.5
+
+storage:
+  chunk_dir: ~/mneme_chunks
+  port: 8080
+  inject_system: true
+  staging_turns: 6           # flush cadence (the every-6-turns knob)
+  staging_idle: 120          # seconds of inactivity before flush
+  belief_evolution: false    # gated off by default — floods the backend
+
+retrieval:
+  max_injected_tokens: 6000
+  route_threshold: 0.08
+  classify_threshold: 0.78
+  baseline_noise: 0.20       # fallback only; _calibrate_noise() overrides at startup
+  age_decay_days: 7
+  max_siblings: 3
+  max_chunk_words: 500
+  max_chunk_size: 10000
+
+caps:                        # rarely-tuned char/truncation limits
+  max_history_messages: 32
+  db_msg_cap: 8000
+  compress_threshold: 500
+  compress_max_tok: 2048
+
+models:                      # P8 per-model overrides, keyed by model name
+  deepseek/deepseek-v4-flash:
+    temperature: 0.3
+    max_tokens: 2048
+    reasoning_field: reasoning        # where the provider puts chain-of-thought
+    quirks: ["empty-query search_memory guard", "thinking->content fallback"]
+  muse-glimmer:30b:
+    temperature: 1.0
+    top_k: 64
+    num_ctx: 32768
+    reasoning_field: thinking
+    quirks: ["peg-native bug fixed in Ollama 0.32.13+"]
+  meta-llama/llama-3.2-3b-instruct:
+    temperature: 0.0                  # labeler — deterministic
+    max_tokens: 15
+```
+
+## Key reference
+
+`[env]` = already env-backed today. `[const]` = hardcoded constant today
+(needs promotion). `[new]` = new key introduced by this refactor.
+
+### backend (refactor: replaces `MNEME_BACKEND=ollama|openrouter`)
+| key | default | today | notes |
+|---|---|---|---|
+| type | `openai` | [env] `MNEME_BACKEND` | `ollama` \| `openai`; `openai` = any OpenAI-compatible provider |
+| provider | `openrouter` | [new] | selects a `providers:` entry |
+| ollama_url | `http://localhost:11434` | [const] `OLLAMA_URL` | ollama path only |
+
+### providers (refactor: new)
+Per-provider `base_url` + `api_key_env` + 3 model names. OpenRouter's
+`HTTP-Referer`/`X-Title` headers move into `headers:`. The `reasoning_field`
+quirk moves to `models:` (field name is per-model, not per-provider).
+
+### sampling
+| key | default | today |
+|---|---|---|
+| temperature | 0.3 | [env] `MNEME_TEMPERATURE` (note: global default is currently 0.3 = `OLLAMA_TEMP`; P8 flags that Muse's 1.0 leaked globally) |
+| top_p | 0.95 | [env] `MNEME_TOP_P` |
+| top_k | 64 | [env] `MNEME_TOP_K` (ollama only) |
+| ctx_tokens | 256000 | [env] `MNEME_CTX_TOKENS` |
+| completion_reserve | 8192 | [env] `MNEME_COMPLETION_RESERVE` |
+| max_tokens | 2048 | [new] output cap |
+
+### timeouts
+| key | default | today |
+|---|---|---|
+| chat_timeout | 120 | [env] `MNEME_CHAT_TIMEOUT` |
+| novelty_timeout | 600 | [env] `MNEME_NOVELTY_TIMEOUT` |
+| embed_timeout | 60 | [const] hardcoded in `_embed_single` |
+| label_timeout | 30 | [const] hardcoded in `_llm_topic_label` |
+| edge_failures | 2 | [env] `MNEME_EDGE_FAILURES` |
+| edge_ratio | 0.5 | [env] `MNEME_EDGE_RATIO` |
+
+### storage
+| key | default | today |
+|---|---|---|
+| chunk_dir | `~/mneme_chunks` | [env] `MNEME_CHUNK_DIR` |
+| port | 8080 | [env] `MNEME_PORT` |
+| inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
+| staging_turns | 6 | [const] `STAGING_TURNS` |
+| staging_idle | 120 | [const] `STAGING_IDLE` |
+| belief_evolution | false | [env] `MNEME_BELIEF_EVOLUTION` (just added) |
+
+### retrieval
+| key | default | today |
+|---|---|---|
+| max_injected_tokens | 6000 | [const] `MAX_INJECTED_TOKENS` |
+| route_threshold | 0.08 | [const] `ROUTE_THRESHOLD` |
+| classify_threshold | 0.78 | [const] `CLASSIFY_THRESHOLD` |
+| baseline_noise | 0.20 | [const] `BASELINE_NOISE` (fallback; calibrated at startup) |
+| age_decay_days | 7 | [const] `AGE_DECAY_DAYS` |
+| max_siblings | 3 | [const] `MAX_SIBLINGS` |
+| max_chunk_words | 500 | [const] `MAX_CHUNK_WORDS` |
+| max_chunk_size | 10000 | [const] `MAX_CHUNK_SIZE` |
+
+### caps (char/truncation limits — rarely tuned, still promoted for completeness)
+| key | default | today |
+|---|---|---|
+| max_history_messages | 32 | [const] `MAX_HISTORY_MESSAGES` |
+| db_msg_cap | 8000 | [const] `DB_MSG_CAP` |
+| compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
+| compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
+
+## Known gotchas to fix during the sweep
+
+- **Duplicate `CHUNK_SIZE`** — defined twice (line 62 = 2000, line 1259 =
+  3000; the second wins). Collapse into one config key.
+- **`BASELINE_NOISE`** — set to 0.20 then overwritten by `_calibrate_noise()`
+  at startup. Treat the config value as fallback only, and log the calibrated
+  value at startup.
+- **`DIM`** — hardcoded 1024 (embedding dimension). Must match the configured
+  `embed_model`; a mismatched embedder breaks the FAISS index (the
+  auto-re-embed path from commit 53f996c mitigates, but it's a migration).
+- **Env-var mapping** — use `MNEME_*` snake_case for every promoted constant,
+  e.g. `MNEME_STAGING_TURNS`, `MNEME_ROUTE_THRESHOLD`, `MNEME_MAX_INJECTED_TOKENS`.
+
+## Backend generalization (how "add a provider" becomes config-only)
+
+Today the dispatch is `MNEME_BACKEND == "openrouter"` at three call sites
+(query/embed/label). The refactor changes the concept to
+`backend.type: ollama | openai`, where `openai` is any OpenAI-standard
+provider selected from `providers:`. Three OpenRouter-isms move out of code
+into config:
+
+1. `_or_headers()`'s `HTTP-Referer`/`X-Title` → `providers.<name>.headers`.
+2. The `reasoning` field name (deepseek-v4-flash streams `delta.reasoning`;
+   other providers use `reasoning_content` or nothing) → `models.<name>.reasoning_field`.
+3. Tool-call argument JSON-string handling → already tolerates dict vs string.
+
+Providers this makes config-only (OpenAI-standard, Bearer auth):
+OpenAI, DeepSeek, Groq, Together, Fireworks, Mistral, xAI, Perplexity,
+OpenRouter.
+
+Providers that still need a NEW adapter branch (not OpenAI-standard):
+Anthropic (`x-api-key` + `anthropic-version`), Google Gemini, AWS Bedrock
+(SigV4).
+
+## Implementation phases
+
+- **Phase 1 (LOW, ~1-2h):** `load_config()` reads `mneme.yaml` into
+  `os.environ` defaults at startup, before constants are read. Covers the ~21
+  already-env-backed vars with zero downstream changes.
+- **Phase 2 (LOW-MEDIUM, ~2-3h):** promote the ~20 `[const]` values to
+  env-backed in one sweep, with a startup `[CONFIG]` dump logging every
+  resolved setting (so a missed promotion is visible, not silent).
+- **Phase 3 (MEDIUM):** `backend.type`/`providers:` refactor + per-model
+  `models:` merge (P8) + prompt hot-reload (P9 `POST /admin/reload`).
+
+## Branch note
+
+`unified_mneme` is forked from `openrouter-backend` (which already carries
+both backends behind `MNEME_BACKEND` plus the Aug 18 hardening fixes). The
+branch merge is therefore a strategy-layer reconciliation (port the
+`novelty-thinking` fixes/features onto this tree), not a backend rewrite.
