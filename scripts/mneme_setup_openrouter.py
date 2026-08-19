@@ -217,7 +217,7 @@ def ensure_venv():
         print(f"  ✗ Failed to create venv: {r.stderr[:300]}")
         print("    Try: sudo apt install python3-venv  (Debian/Ubuntu) and re-run.")
         sys.exit(1)
-    r = run(f"{py} -m pip install --quiet --no-cache-dir faiss-cpu numpy flask flask-cors requests", timeout=600)
+    r = run(f"{py} -m pip install --quiet --no-cache-dir faiss-cpu numpy flask flask-cors requests pyyaml", timeout=600)
     if r.returncode != 0:
         print(f"  ✗ pip install failed: {r.stderr[:500]}")
         sys.exit(1)

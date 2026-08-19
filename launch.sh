@@ -4,8 +4,10 @@
 # Exiting Pi (or Ctrl+C) stops the proxy automatically.
 #
 # Idempotent: sources the saved API key and creates the venv if missing.
-# To change models/port, override env vars (MNEME_MODEL, EMBED_MODEL,
-# LABEL_MODEL, MNEME_PORT, MNEME_CHUNK_DIR) before running.
+# Config: the proxy auto-loads $MNEME_CHUNK_DIR/mneme.yaml (see docs/config-spec.md).
+# Env vars exported below still override the config file (env > config > default).
+# To change models/port, either edit mneme.yaml or override the env vars
+# (MNEME_MODEL, EMBED_MODEL, LABEL_MODEL, MNEME_PORT, MNEME_CHUNK_DIR).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -32,7 +34,7 @@ fi
 if [ ! -x "$VENV/bin/python" ]; then
   echo "venv not found — creating $VENV (one-time, ~250MB)..."
   python3 -m venv "$VENV"
-  "$VENV/bin/pip" install --quiet --no-cache-dir faiss-cpu numpy flask flask-cors requests
+  "$VENV/bin/pip" install --quiet --no-cache-dir faiss-cpu numpy flask flask-cors requests pyyaml
 fi
 
 # --- 3. Start the proxy in the background ---

@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, sqlite3, threading, time, uuid, struct, queue
+import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -27,53 +27,238 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 import requests
 
+# ─── Config file loading ────────────────────────────────────────
+# A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
+# constants below so config values flow into them via env-var defaults.
+# Precedence: environment variable > config file > built-in default.
+# See docs/config-spec.md for the full schema.
+
+CONFIG_PATH: Optional[str] = None
+CONFIG_DATA: Dict = {}           # raw sections for runtime lookup (providers, models)
+_PROVIDER_HEADERS: Dict = {}     # extra headers from the active provider block
+
+# Flat map: "section.key" -> env var. Only keys listed here are honored from the
+# file; anything else fails loud (typo guard).
+_CONFIG_ENV_MAP = {
+    "backend.type": "MNEME_BACKEND",
+    "backend.provider": "MNEME_PROVIDER",
+    "backend.ollama_url": "MNEME_OLLAMA_URL",
+    "sampling.temperature": "MNEME_TEMPERATURE",
+    "sampling.top_p": "MNEME_TOP_P",
+    "sampling.top_k": "MNEME_TOP_K",
+    "sampling.ctx_tokens": "MNEME_CTX_TOKENS",
+    "sampling.completion_reserve": "MNEME_COMPLETION_RESERVE",
+    "sampling.max_tokens": "MNEME_MAX_TOKENS",
+    "timeouts.chat_timeout": "MNEME_CHAT_TIMEOUT",
+    "timeouts.novelty_timeout": "MNEME_NOVELTY_TIMEOUT",
+    "timeouts.embed_timeout": "MNEME_EMBED_TIMEOUT",
+    "timeouts.label_timeout": "MNEME_LABEL_TIMEOUT",
+    "timeouts.edge_failures": "MNEME_EDGE_FAILURES",
+    "timeouts.edge_ratio": "MNEME_EDGE_RATIO",
+    "storage.chunk_dir": "MNEME_CHUNK_DIR",
+    "storage.port": "MNEME_PORT",
+    "storage.inject_system": "MNEME_INJECT_SYSTEM",
+    "storage.staging_turns": "MNEME_STAGING_TURNS",
+    "storage.staging_idle": "MNEME_STAGING_IDLE",
+    "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
+    "retrieval.max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
+    "retrieval.route_threshold": "MNEME_ROUTE_THRESHOLD",
+    "retrieval.classify_threshold": "MNEME_CLASSIFY_THRESHOLD",
+    "retrieval.baseline_noise": "MNEME_BASELINE_NOISE",
+    "retrieval.age_decay_days": "MNEME_AGE_DECAY_DAYS",
+    "retrieval.max_siblings": "MNEME_MAX_SIBLINGS",
+    "retrieval.max_chunk_words": "MNEME_MAX_CHUNK_WORDS",
+    "retrieval.max_chunk_size": "MNEME_MAX_CHUNK_SIZE",
+    "caps.max_history_messages": "MNEME_MAX_HISTORY_MESSAGES",
+    "caps.db_msg_cap": "MNEME_DB_MSG_CAP",
+    "caps.compress_threshold": "MNEME_COMPRESS_THRESHOLD",
+    "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
+    "caps.chunk_size": "MNEME_CHUNK_SIZE",
+    # top-level backward-compat keys (old flat env-var names)
+    "model": "MNEME_MODEL",
+    "embed_model": "EMBED_MODEL",
+    "label_model": "LABEL_MODEL",
+    "ollama_url": "MNEME_OLLAMA_URL",
+    "openrouter_api_key": "OPENROUTER_API_KEY",
+    "openrouter_base_url": "OPENROUTER_BASE_URL",
+}
+
+_STRUCTURAL_SECTIONS = {"providers", "models"}
+
+
+def _config_scalar(v) -> str:
+    if v is True:
+        return "1"
+    if v is False:
+        return "0"
+    return str(v)
+
+
+def _find_config_path():
+    for i, a in enumerate(sys.argv):
+        if a == "--config" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if a.startswith("--config="):
+            return a.split("=", 1)[1]
+    if os.environ.get("MNEME_CONFIG"):
+        return os.environ["MNEME_CONFIG"]
+    cd = os.environ.get("MNEME_CHUNK_DIR")
+    if cd and os.path.exists(os.path.join(cd, "mneme.yaml")):
+        return os.path.join(cd, "mneme.yaml")
+    for name in ("mneme.yaml", "mneme.json"):
+        p = os.path.join(os.path.expanduser("~/mneme_chunks"), name)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _parse_config_file(path: str) -> Dict:
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    if path.endswith((".yaml", ".yml")):
+        try:
+            import yaml  # optional dependency
+        except ImportError:
+            raise SystemExit(
+                f"[CONFIG] {path} is YAML but PyYAML is not installed. "
+                f"pip install pyyaml  (or use a .json config file)"
+            )
+        data = yaml.safe_load(text) or {}
+    else:
+        data = json.loads(text)
+    if not isinstance(data, dict):
+        raise SystemExit(f"[CONFIG] {path}: top level must be a mapping, got {type(data).__name__}")
+    return data
+
+
+def _apply_config(data: Dict, path: str):
+    for section, val in data.items():
+        if section in _STRUCTURAL_SECTIONS:
+            CONFIG_DATA[section] = val or {}
+            continue
+        if section in _CONFIG_ENV_MAP:               # top-level scalar key
+            env = _CONFIG_ENV_MAP[section]
+            if os.environ.get(env) is None and val is not None:
+                os.environ[env] = _config_scalar(val)
+            continue
+        if not isinstance(val, dict):
+            raise SystemExit(f"[CONFIG] {path}: section '{section}' must be a mapping")
+        for key, v in val.items():
+            flat = f"{section}.{key}"
+            env = _CONFIG_ENV_MAP.get(flat)
+            if env is None:
+                raise SystemExit(
+                    f"[CONFIG] {path}: unknown key '{flat}' (typo?) — see docs/config-spec.md"
+                )
+            if os.environ.get(env) is None and v is not None:
+                os.environ[env] = _config_scalar(v)
+
+
+def _resolve_provider():
+    """Resolve the active OpenAI-compatible provider's connection details into
+    the flat env vars the code reads (base URL, API key, model names)."""
+    global _PROVIDER_HEADERS
+    backend_type = os.environ.get("MNEME_BACKEND", "ollama")
+    if backend_type not in ("openai", "openrouter"):
+        return
+    name = os.environ.get("MNEME_PROVIDER", "openrouter")
+    prov = (CONFIG_DATA.get("providers") or {}).get(name) or {}
+    if not prov:
+        return  # providers not configured — rely on env vars directly (back-compat)
+
+    def _set(env, pkey):
+        if os.environ.get(env) is None and prov.get(pkey):
+            os.environ[env] = _config_scalar(prov[pkey])
+
+    _set("OPENROUTER_BASE_URL", "base_url")
+    _set("MNEME_MODEL", "model")
+    _set("EMBED_MODEL", "embed_model")
+    _set("LABEL_MODEL", "label_model")
+    api_key_env = prov.get("api_key_env")
+    if api_key_env:
+        k = os.environ.get(api_key_env)
+        if k and os.environ.get("OPENROUTER_API_KEY") is None:
+            os.environ["OPENROUTER_API_KEY"] = k
+    _PROVIDER_HEADERS = prov.get("headers") or {}
+
+
+def load_config():
+    global CONFIG_PATH
+    path = _find_config_path()
+    if not path:
+        return
+    CONFIG_PATH = path
+    data = _parse_config_file(path)
+    _apply_config(data, path)
+    _resolve_provider()
+    # Expand ~ in the chunk dir (config files are the natural place to fix the
+    # pod-path default /workspace/mneme_chunks on a laptop).
+    cd = os.environ.get("MNEME_CHUNK_DIR")
+    if cd and cd.startswith("~"):
+        os.environ["MNEME_CHUNK_DIR"] = os.path.expanduser(cd)
+    print(f"  [CONFIG] loaded {path}", flush=True)
+
+
 # ─── Config ────────────────────────────────────────────────────
-OLLAMA_URL  = "http://localhost:11434"
+load_config()
+
+OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 
-# OpenRouter backend (MNEME_BACKEND=openrouter) — fully hosted, no local Ollama.
-# Swaps all three roles (main LLM, embedder, labeler) to OpenRouter's
-# OpenAI-compatible API. Set OPENROUTER_API_KEY and pick OpenRouter model IDs
-# for MNEME_MODEL / EMBED_MODEL / LABEL_MODEL.
-MNEME_BACKEND = os.environ.get("MNEME_BACKEND", "ollama")  # "ollama" | "openrouter"
+# Backend: "ollama" (native API) | "openai"/"openrouter" (OpenAI-compatible, hosted).
+# "openrouter" is an alias for "openai" — OpenRouter is just an OpenAI-compatible
+# aggregator. Provider connection details come from the config `providers:` block
+# or env vars (OPENROUTER_BASE_URL / OPENROUTER_API_KEY / model names).
+MNEME_BACKEND = os.environ.get("MNEME_BACKEND", "ollama")
 OR_API_KEY    = os.environ.get("OPENROUTER_API_KEY", "")
 OR_BASE_URL   = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 
+def _backend_is_openai() -> bool:
+    return MNEME_BACKEND in ("openai", "openrouter")
+
+
 def _or_headers() -> dict:
-    """Headers for OpenRouter's OpenAI-compatible API."""
-    return {
-        "Authorization": f"Bearer {OR_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://localhost/mneme",
-        "X-Title": "Mneme",
-    }
+    """Headers for the OpenAI-compatible backend. Provider-specific extra headers
+    (e.g. OpenRouter's HTTP-Referer/X-Title) come from config `providers.<name>.headers`;
+    OpenRouter attribution headers are added only when talking to OpenRouter."""
+    h = {"Authorization": f"Bearer {OR_API_KEY}", "Content-Type": "application/json"}
+    if _PROVIDER_HEADERS:
+        h.update(_PROVIDER_HEADERS)
+    elif OR_BASE_URL.startswith("https://openrouter.ai"):
+        h.update({"HTTP-Referer": "https://localhost/mneme", "X-Title": "Mneme"})
+    return h
+
+
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
-# Ollama config — let the model use its defaults
-OLLAMA_TEMP    = 0.3
+# Sampling defaults (per-model overrides live in config `models:`)
+OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
 
 # ─── Multi-pass compression config ───
-# CLASSIFY_MODEL removed — using embedding-based classification
-MAX_HISTORY_MESSAGES = 32  # trim conversation to keep predict budget free
-CHUNK_SIZE = 2000   # chars per chunk for splitting large tool outputs
-DB_MSG_CAP  = 8000  # chars per message stored in SQLite (full content)
-COMPRESS_THRESHOLD = 500    # chars — tool results larger than this get compressed
+MAX_HISTORY_MESSAGES = int(os.environ.get("MNEME_MAX_HISTORY_MESSAGES", "32"))  # trim conversation to keep predict budget free
+CHUNK_SIZE   = int(os.environ.get("MNEME_CHUNK_SIZE", "3000"))  # chars per chunk (was defined twice: 2000 then 3000 — collapsed)
+DB_MSG_CAP   = int(os.environ.get("MNEME_DB_MSG_CAP", "8000"))  # chars per message stored in SQLite (full content)
+COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get compressed
 COMPRESS_MODEL     = MODEL   # use same model for compression
-COMPRESS_MAX_TOK   = 2048    # max tokens for compression response
+COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
 # Staging: archive after N user turns or idle seconds
-STAGING_TURNS  = 6
-STAGING_IDLE   = 120
+STAGING_TURNS  = int(os.environ.get("MNEME_STAGING_TURNS", "6"))
+STAGING_IDLE   = int(os.environ.get("MNEME_STAGING_IDLE", "120"))
 
 # Routing thresholds (same as KV version)
-CLASSIFY_THRESHOLD = 0.78
-ROUTE_THRESHOLD    = 0.08  # tunable: raise for stricter matching, lower for more recall
-BASELINE_NOISE     = 0.20  # fallback — overridden at startup by _calibrate_noise()
-AGE_DECAY_DAYS     = 7     # recency half-life in days — newer chunks get a bonus
+CLASSIFY_THRESHOLD = float(os.environ.get("MNEME_CLASSIFY_THRESHOLD", "0.78"))
+ROUTE_THRESHOLD    = float(os.environ.get("MNEME_ROUTE_THRESHOLD", "0.08"))  # tunable: raise for stricter matching, lower for more recall
+BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fallback — overridden at startup by _calibrate_noise()
+AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recency half-life in days — newer chunks get a bonus
+
+# Network timeouts for the embedding and labeling calls (background work)
+EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
+LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
 MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
@@ -448,12 +633,12 @@ def pool_embeddings(vectors: List[np.ndarray]) -> np.ndarray:
 def _embed_single(text: str) -> np.ndarray:
     """Embed one chunk. Ollama /api/embeddings by default; OpenRouter
     /embeddings when MNEME_BACKEND=openrouter. Raises on failure."""
-    if MNEME_BACKEND == "openrouter":
+    if _backend_is_openai():
         r = requests.post(
             f"{OR_BASE_URL}/embeddings",
             headers=_or_headers(),
             json={"model": EMBED_MODEL, "input": text},
-            timeout=60,
+            timeout=EMBED_TIMEOUT,
         )
         r.raise_for_status()
         v = np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
@@ -461,7 +646,7 @@ def _embed_single(text: str) -> np.ndarray:
         r = requests.post(
             f"{OLLAMA_URL}/api/embeddings",
             json={"model": EMBED_MODEL, "prompt": text},
-            timeout=60,
+            timeout=EMBED_TIMEOUT,
         )
         r.raise_for_status()
         v = np.array(r.json()["embedding"], dtype=np.float32)
@@ -604,8 +789,12 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
     }
-    if max_tokens and max_tokens > 0:
-        payload["max_tokens"] = max_tokens
+    _mt = max_tokens if (max_tokens and max_tokens > 0) else None
+    if _mt is None:
+        _mc = (CONFIG_DATA.get("models") or {}).get(MODEL) or {}
+        _mt = _mc.get("max_tokens") or int(os.environ.get("MNEME_MAX_TOKENS", "0"))
+    if _mt and int(_mt) > 0:
+        payload["max_tokens"] = int(_mt)
     if tools:
         payload["tools"] = tools
     if format_schema:
@@ -720,13 +909,17 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # Auto-chunk oversized messages before they bloat conversation history
     msgs = _chunk_large_messages(msgs)
     
-    # Muse Glimmer recommended sampling (model card): temperature=1.0, top_p=0.95,
-    # top_k=64. Env-overridable for tuning. Explicit per-call options still win.
+    # Sampling defaults come from env/config, then per-model overrides from the
+    # config `models:` block (P8). Explicit per-call `options` still win.
+    _model_cfg = (CONFIG_DATA.get("models") or {}).get(MODEL) or {}
     opts = {
-        "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "1.0")),
+        "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),
         "top_k": int(os.environ.get("MNEME_TOP_K", "64")),
     }
+    for _k in ("temperature", "top_p", "top_k"):
+        if _model_cfg.get(_k) is not None:
+            opts[_k] = float(_model_cfg[_k])
     if options:
         opts.update(options)
     
@@ -779,7 +972,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
                 break
     msgs = sys_msgs + non_sys
     
-    if MNEME_BACKEND == "openrouter":
+    if _backend_is_openai():
         return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout)
     try:
         r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
@@ -1015,7 +1208,7 @@ def _llm_topic_label(text: str) -> str:
     if not clean.strip():
         return "untitled"
     try:
-        if MNEME_BACKEND == "openrouter":
+        if _backend_is_openai():
             r = requests.post(
                 f"{OR_BASE_URL}/chat/completions",
                 headers=_or_headers(),
@@ -1025,7 +1218,7 @@ def _llm_topic_label(text: str) -> str:
                     "temperature": 0.0,
                     "max_tokens": 15,
                 },
-                timeout=30,
+                timeout=LABEL_TIMEOUT,
             )
             r.raise_for_status()
             label = ((r.json().get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
@@ -1042,7 +1235,7 @@ def _llm_topic_label(text: str) -> str:
                         "temperature": 0.0,
                     },
                 },
-                timeout=30,
+                timeout=LABEL_TIMEOUT,
             )
             r.raise_for_status()
             label = r.json().get("response", "").strip()
@@ -1251,12 +1444,12 @@ def get_strategies(problem_type=None, limit=3):
 # Set via MNEME_MAX_PROMPT_CHARS env var, defaults to 200000.
 MAX_PROMPT_CHARS = int(os.environ.get("MNEME_MAX_PROMPT_CHARS", "200000"))
 # Token budget for injected memory. Model context minus system prompt + live convo.
-MAX_INJECTED_TOKENS = 6000
+MAX_INJECTED_TOKENS = int(os.environ.get("MNEME_MAX_INJECTED_TOKENS", "6000"))
 
 # Auto-chunking: messages over this fraction of MAX_PROMPT_CHARS get split
 # into memory chunks and replaced with an index the model can search.
-CHUNK_FRACTION = 0.25
-CHUNK_SIZE = 3000  # chars per chunk — small enough for easy retrieval
+CHUNK_FRACTION = float(os.environ.get("MNEME_CHUNK_FRACTION", "0.25"))
+# CHUNK_SIZE is defined above (config) — the old duplicate here was removed.
 
 def _chunk_large_messages(msgs: list) -> list:
     """Scan for oversized messages, chunk into memory, replace with index.
@@ -1312,8 +1505,8 @@ SEARCH_MEMORY_TOOL = {
         }
     }
 }
-MAX_SIBLINGS        = 3      # max chunks per topic (was 5 — caps sibling blowup)
-MAX_CHUNK_WORDS     = 500    # split user messages longer than this
+MAX_SIBLINGS        = int(os.environ.get("MNEME_MAX_SIBLINGS", "3"))      # max chunks per topic (was 5 — caps sibling blowup)
+MAX_CHUNK_WORDS     = int(os.environ.get("MNEME_MAX_CHUNK_WORDS", "500"))    # split user messages longer than this
 
 def _estimate_tokens(text: str) -> int:
     """Rough token count: ~1.3 tokens per word for English text."""
@@ -1670,7 +1863,7 @@ def _merge_small_groups(groups: list) -> list:
     return result
 
 
-MAX_CHUNK_SIZE = 10000  # chars per chunk for embedding
+MAX_CHUNK_SIZE = int(os.environ.get("MNEME_MAX_CHUNK_SIZE", "10000"))  # chars per chunk for embedding
 
 
 def _archive_group(topic_label: str, msgs: list) -> int:
@@ -4314,6 +4507,20 @@ def _embedding_health_check() -> bool:
 
 # ─── Startup ───────────────────────────────────────────────────
 
+def _dump_config():
+    """Print the effective resolved config so a missed/typo'd value is visible."""
+    print(f"  [CONFIG] file={CONFIG_PATH or '(none — env/defaults)'}", flush=True)
+    print(f"  [CONFIG] backend={MNEME_BACKEND} provider={os.environ.get('MNEME_PROVIDER', 'openrouter')}", flush=True)
+    print(f"  [CONFIG] model={MODEL} embed={EMBED_MODEL} label={LABEL_MODEL}", flush=True)
+    if _backend_is_openai():
+        print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
+    print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
+    print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','256000')}", flush=True)
+    print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
+    print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
+    print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
+
+
 _embedding_health_check()
 _load_index()
 _seed_chunk_seq()
@@ -4321,6 +4528,7 @@ _reembed_pending()
 # Calibrate noise baseline AFTER FAISS is loaded
 BASELINE_NOISE = _calibrate_noise()
 print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
+_dump_config()
 print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
 

@@ -115,8 +115,8 @@ def install_python_deps():
     
     # Try pip with visible output so we can see errors
     for args in [
-        [sys.executable, "-m", "pip", "install", "flask", "flask-cors", "faiss-cpu", "numpy", "requests"],
-        [sys.executable, "-m", "pip", "install", "--break-system-packages", "flask", "flask-cors", "faiss-cpu", "numpy", "requests"],
+        [sys.executable, "-m", "pip", "install", "flask", "flask-cors", "faiss-cpu", "numpy", "requests", "pyyaml"],
+        [sys.executable, "-m", "pip", "install", "--break-system-packages", "flask", "flask-cors", "faiss-cpu", "numpy", "requests", "pyyaml"],
     ]:
         print(f"  Running: {' '.join(args)}")
         r = subprocess.run(args, capture_output=True, text=True)
@@ -140,7 +140,7 @@ def install_python_deps():
     subprocess.run(["apt-get", "update", "-qq"], capture_output=True)
     subprocess.run(["apt-get", "install", "-y", "-qq", "python3-flask", "python3-requests", "python3-numpy"], capture_output=True)
     # pip install faiss-cpu (not in apt)
-    subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "faiss-cpu", "flask-cors"], capture_output=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "faiss-cpu", "flask-cors", "pyyaml"], capture_output=True)
     
     # Check via subprocess
     r = subprocess.run([sys.executable, "-c", "import flask"], capture_output=True)
@@ -148,7 +148,7 @@ def install_python_deps():
         print("  Dependencies OK (apt)")
     else:
         print("  WARNING: Flask not importable. Proxy will fail to start.")
-        print("  Manual fix: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests")
+        print("  Manual fix: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml")
 
 def pull_model(name):
     """Pull a model if not already present. Retries ollama list in case server is busy."""

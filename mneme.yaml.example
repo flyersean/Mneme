@@ -1,0 +1,76 @@
+# Mneme proxy config — example. Copy to $MNEME_CHUNK_DIR/mneme.yaml and edit.
+# Precedence: environment variable > this file > built-in default.
+# Unknown keys fail loud at startup. Full reference: docs/config-spec.md
+
+backend:
+  type: openai          # "ollama" | "openai"  (openai = any OpenAI-compatible provider)
+  provider: openrouter  # key into `providers:` (ignored when type=ollama)
+  ollama_url: http://localhost:11434   # used only when type=ollama
+
+providers:
+  # Add an entry here to switch backends — no code changes needed for any
+  # OpenAI-standard provider (OpenAI, DeepSeek, Groq, Together, Mistral, ...).
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY   # key is read from this env var, never stored here
+    model: deepseek/deepseek-v4-flash
+    embed_model: voyageai/voyage-4-lite
+    label_model: meta-llama/llama-3.2-3b-instruct
+    # headers: { HTTP-Referer: https://localhost/mneme, X-Title: Mneme }  # optional
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    model: deepseek-chat
+    embed_model: ""                   # no embeddings -> disable / reuse another provider
+    label_model: meta-llama/llama-3.2-3b-instruct
+
+sampling:
+  temperature: 0.3
+  top_p: 0.95
+  top_k: 64                # ollama only
+  ctx_tokens: 256000
+  completion_reserve: 8192
+  max_tokens: 2048         # output cap for the OpenAI path
+
+timeouts:
+  chat_timeout: 120
+  novelty_timeout: 600
+  embed_timeout: 60
+  label_timeout: 30
+  edge_failures: 2
+  edge_ratio: 0.5
+
+storage:
+  chunk_dir: ~/mneme_chunks
+  port: 8080
+  inject_system: true
+  staging_turns: 6         # flush cadence
+  staging_idle: 120        # idle seconds before flush
+  belief_evolution: false  # off by default — floods the backend
+
+retrieval:
+  max_injected_tokens: 6000
+  route_threshold: 0.08
+  classify_threshold: 0.78
+  baseline_noise: 0.20
+  age_decay_days: 7
+  max_siblings: 3
+  max_chunk_words: 500
+  max_chunk_size: 10000
+
+caps:
+  max_history_messages: 32
+  db_msg_cap: 8000
+  compress_threshold: 500
+  compress_max_tok: 2048
+  chunk_size: 3000
+
+models:
+  # Per-model sampling overrides (P8). Keyed by model name.
+  deepseek/deepseek-v4-flash:
+    temperature: 0.3
+    max_tokens: 2048
+  muse-glimmer:30b:
+    temperature: 1.0
+    top_k: 64
+    num_ctx: 32768

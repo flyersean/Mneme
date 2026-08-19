@@ -5,8 +5,10 @@ scattered config surfaces (env vars, hardcoded constants,
 `setup_config.json`, launch scripts) into one `mneme.yaml` the proxy
 actually loads at startup.
 
-Status: SPEC ONLY — no code written yet. This is the design reference for
-the refactor.
+Status: IMPLEMENTED — `load_config()` + env promotion + backend generalization
+(`type: ollama|openai` + `providers:` registry) + per-model sampling are live in
+`proxy/mneme_proxy.py`. This doc is the schema reference. See
+`mneme.yaml.example` for a copy-able config.
 
 ## Design goals
 
