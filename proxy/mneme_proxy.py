@@ -610,6 +610,16 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         payload["tools"] = tools
     if format_schema:
         payload["response_format"] = {"type": "json_schema", "json_schema": format_schema}
+    if tools:
+        _tnames = [t.get("function", {}).get("name", "?") for t in tools]
+        print(f"  [TOOLS] forwarding {len(tools)} tools ({len(json.dumps(tools))}B): {_tnames}", flush=True)
+    try:
+        _sum = " | ".join(f"{m.get('role')}:{len(str(m.get('content','')))}c{'+tc' if m.get('tool_calls') else ''}" for m in msgs)
+        print(f"  [PAYLOAD] {_sum}", flush=True)
+        with open(f"/tmp/proxy_payload_{int(time.time())}.json", "w") as _f:
+            json.dump(payload, _f)
+    except Exception:
+        pass
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
                           json=payload, timeout=timeout)
@@ -661,10 +671,11 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "tool_calls": tool_calls,
         "eval_count": d.get("usage", {}).get("completion_tokens", 0),
         "done_reason": done_reason,
+        "provider": d.get("provider", "?"),
     }
 
 
-def query_model(messages: list, system: str = None, temperature: float = None,
+def _query_model_impl(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
                 timeout: int = 600, format_schema=None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
@@ -801,6 +812,40 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     return result
 
 
+def query_model(messages: list, system: str = None, temperature: float = None,
+                max_tokens: int = None, tools: list = None, options: dict = None,
+                timeout: int = 600, format_schema=None) -> dict:
+    """Timing wrapper around _query_model_impl — logs one line per model call.
+
+    Fields: caller (function that invoked query_model), tid (bg = _BG_QUEUE
+    daemon worker, req = request thread), model, backend, duration, done_reason,
+    output-token count (eval_count), and char lengths of reasoning vs content.
+    This is the diagnosis hook for "which call is slow / hanging / empty"."""
+    import inspect as _inspect
+    _t0 = time.time()
+    try:
+        _caller = _inspect.currentframe().f_back.f_code.co_name
+    except Exception:
+        _caller = "?"
+    _tid = "bg" if threading.current_thread().name.startswith("mneme-bg") else "req"
+    res = _query_model_impl(messages, system, temperature, max_tokens, tools,
+                            options, timeout, format_schema)
+    _dur = time.time() - _t0
+    if isinstance(res, dict):
+        _done = res.get("done_reason", "?")
+        _tok = res.get("eval_count", 0)
+        _think = len(res.get("thinking") or "")
+        _content = len(res.get("content") or "")
+        _prov = res.get("provider", "?")
+    else:
+        _done, _tok, _think, _content, _prov = "?", 0, 0, 0, "?"
+    print(f"  [QMODEL] {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} "
+          f"caller={_caller} tid={_tid} model={MODEL} backend={MNEME_BACKEND} "
+          f"dur={_dur:.2f}s done={_done} n_tok={_tok} think={_think} content={_content} provider={_prov}",
+          flush=True)
+    return res
+
+
 # ─── Belief Evolution ───────────────────────────────────────────
 
 def _check_belief_evolution(new_chunk_id: str, topic_label: str):
@@ -910,8 +955,12 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     elif pending:
         print(f"  [EMBED-PENDING] {chunk_id} stored unembedded — will retry", flush=True)
     
-    # Async belief evolution: check if this chunk supersedes older ones
-    if is_indexable and vector is not None:
+    # Async belief evolution: check if this chunk supersedes older ones.
+    # Disabled by default (MNEME_BELIEF_EVOLUTION=1 to enable) — it fires a full
+    # model call (with heavy reasoning) per archived chunk, which on a hosted
+    # backend is expensive AND floods OpenRouter with concurrent requests that
+    # starve the foreground chat turn (the cause of the web-read synthesis hang).
+    if is_indexable and vector is not None and os.environ.get("MNEME_BELIEF_EVOLUTION", "0") == "1":
         _enqueue(_check_belief_evolution, chunk_id, topic_label)
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
@@ -1434,7 +1483,7 @@ def build_context(query: str) -> Tuple[str, str]:
         # No memory chunks — inject strategies as fallback context
         srows = db.execute(
             "SELECT strategy_id, strategy_text FROM strategies "
-            "WHERE (retired IS NULL OR retired = 0) "
+            "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
             "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
         ).fetchall()
         if srows:
@@ -1465,7 +1514,7 @@ def build_context(query: str) -> Tuple[str, str]:
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
     srows = db.execute(
         "SELECT strategy_id, strategy_text FROM strategies "
-        "WHERE (retired IS NULL OR retired = 0) "
+        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
         "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
     ).fetchall()
     if srows:
@@ -1804,11 +1853,11 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         
         new_version = existing_version + 1
         db.execute(
-            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ptype, strategy, chunk_id, "B",
              datetime.now(timezone.utc).isoformat(),
              new_version, sid if existing_version > 0 else "",
-             0.0, 0, 0, 0, "")
+             0.0, 0, 0, 0, "", 0)
         )
         db.commit()
         print(f"  [STRATEGY] v{new_version} {strategy[:60]}...", flush=True)
@@ -3153,7 +3202,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _failed = False
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         dr = result.get("done_reason", "?")
-        if dr == "timeout":
+        if dr == "timeout" and not result.get("eval_count"):
+            # Provider hang (zero tokens received) — NOT a grind. OpenRouter
+            # occasionally drops large synthesis requests without a single byte;
+            # retry once on a fresh connection before declaring a capability edge.
+            print(f"  [TIMEOUT-RETRY] provider hang (0 tokens) — retrying once", flush=True)
+            result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
+            if not (result.get("content") or "").strip() and not result.get("tool_calls"):
+                _failed = True
+        elif dr == "timeout":
             # Grind guardrail: generation exceeded budget — retrying would just
             # grind again. Fall through to the capability-edge message.
             print(f"  [GRIND] generation exceeded {CHAT_TIMEOUT}s — capability edge, no retry", flush=True)
@@ -3182,9 +3239,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             result_texts = []
             for tc in search_calls:
                 fn = tc.get("function", {})
-                q = fn.get("arguments", {}).get("query", "")
+                q = (fn.get("arguments", {}).get("query", "") or "").strip()
                 k = fn.get("arguments", {}).get("top_k", 5)
                 print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
+                if not q:
+                    # Reasoning model emitted search_memory with no query — don't
+                    # burn a no-op search; nudge it to retry with specific terms.
+                    result_texts.append("search_memory requires a non-empty query — retry with specific search terms.")
+                    print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
+                    continue
                 hits = route_query(q, top_k=k)
                 _trace_search_chunks.update(hits)
                 if hits:
@@ -3226,6 +3289,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
         result["tool_calls"] = remaining_calls
     
+    # Whether the failure (if any) was an infrastructure timeout rather than a
+    # genuine model mistake. Timeouts carry no introspectable lesson, so the
+    # strategy layer must not try to extract a directive from them.
+    _infra_failure = result.get("done_reason") == "timeout"
+
     # Grade by provenance honesty — pass/fail/great, deterministic from the
     # model's own inline [source:]/[guess] tags plus the trace. No second judge
     # call on the hot path; only when the model asserted specific facts but
@@ -3312,6 +3380,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         "context_injected": bool(context),
         "problem_type": ptype,
         "_grade": grade,
+        "_infra_failure": _infra_failure,
     }
 
 # ─── Model Spoofing (for Hermes compatibility) ──────────────────
@@ -3350,7 +3419,7 @@ def _abstract_strategy_text(text: str) -> str:
               "If already general, return unchanged.\n\nRULE: " + text.strip()[:600])
     for attempt in range(2):
         try:
-            r = query_model([{"role": "user", "content": prompt}])
+            r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
             out = (r.get("content") or "").strip()
             if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
                 return out
@@ -3508,21 +3577,42 @@ def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0):
     except Exception as e:
         _log_error("_save_strategy:faiss_add", e)
 
-def _strategy_lifecycle(grade, messages):
+# Compliance boilerplate + tautological "just do the task" rules are not lessons.
+# A failure directive must name a specific, non-obvious technique to be worth
+# storing — the model confabulates these when asked to explain a timeout it
+# cannot introspect.
+_JUNK_DIRECTIVE_RE = re.compile(
+    r"always comply|do not (question|refuse|moralize|hedge|deflect)|without hesitation|"
+    r"compliance|obey|no (refusals|limits)|immediately|just (do|execute|answer|retrieve)",
+    re.IGNORECASE)
+
+
+def _is_junk_directive(text: str) -> bool:
+    return bool(_JUNK_DIRECTIVE_RE.search(text or ""))
+
+
+def _strategy_lifecycle(grade, messages, infra_failure=False):
     try:
         if grade == "A":
             # Only a GREAT response (crossed a capability edge) is worth saving
             # as a strategy. A pass (B) just archives — saving strategies from
             # every ordinary correct answer filled the library with noise.
             q1 = [{"role": "user", "content": "You graded this response " + grade + ". Did you use a novel approach worth saving? Answer yes or no."}]
-            r1 = query_model(q1)
+            r1 = query_model(q1, timeout=CHAT_TIMEOUT)
             if "yes" not in (r1.get("content","") or "").strip().lower(): return
             q2 = [{"role": "user", "content": "If this improves an existing strategy state the strategy ID (strat_XXX). If new, say new. One word only."}]
-            r2 = query_model(q2)
+            r2 = query_model(q2, timeout=CHAT_TIMEOUT)
             q3 = [{"role": "user", "content": "Describe the approach in 2-3 sentences."}]
-            r3 = query_model(q3)
+            r3 = query_model(q3, timeout=CHAT_TIMEOUT)
             if r3.get("content"): _save_strategy(r3["content"].strip(), grade, r2.get("content","").strip())
         elif grade in ("D", "F"):
+            if infra_failure:
+                # A timeout/grind is an infrastructure failure, not a model
+                # mistake — there is no introspectable lesson to extract, and
+                # asking the model to invent one produced tautological junk
+                # ("immediately execute the retrieval"). Capability-edge
+                # tracking (_record_capability) already handles timeouts.
+                return
             # Extract an imperative directive instead of boilerplate.
             # NOTE: grade C = tool-call deferred (model used a tool, answer
             # pending) — normal agentic behavior, NOT a failure. Spawning a
@@ -3551,7 +3641,7 @@ def _strategy_lifecycle(grade, messages):
                     "- The failure was caused by... (descriptive, not prescriptive)\n\n"
                     "Respond with ONLY the rule, nothing else."
                 )}]
-                r = query_model(q)
+                r = query_model(q, timeout=CHAT_TIMEOUT)
                 if r.get("content"):
                     directive = r["content"].strip()[:300]
                     # Strip common prefixes the model might add
@@ -3559,8 +3649,11 @@ def _strategy_lifecycle(grade, messages):
                         if directive.startswith(prefix):
                             directive = directive[len(prefix):].strip()
                     if len(directive) > 10:  # Sanity check
-                        _save_strategy(directive, grade)
-                        print(f"  [STRATEGY-DIRECTIVE] {directive[:80]}...", flush=True)
+                        if _is_junk_directive(directive):
+                            print(f"  [STRATEGY-DIRECTIVE][REJECT] {directive[:80]}...", flush=True)
+                        else:
+                            _save_strategy(directive, grade)
+                            print(f"  [STRATEGY-DIRECTIVE] {directive[:80]}...", flush=True)
             except Exception as e:
                 print(f"  [STRATEGY-DIRECTIVE][ERR] {str(e)[:100]}", flush=True)
     except Exception as e:
@@ -3643,11 +3736,11 @@ if FLASK_OK:
                 except Exception:
                     pass
                 new_version = existing_version + 1
-                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (sid, "model", st, "", "A",
                      datetime.now(timezone.utc).isoformat(),
                      new_version, sid if existing_version > 0 else "",
-                     0.0, 0, 0, 0, ""))
+                     0.0, 0, 0, 0, "", 0))
                 db.commit()
                 print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
                 # Add to FAISS for future dedup
@@ -3774,7 +3867,7 @@ if FLASK_OK:
             _check_suspect_grade(grade, ct, messages)
         except Exception as e:
             _log_error("chat_stream:suspect_grade", e)
-        _enqueue(_strategy_lifecycle, grade, messages)
+        _enqueue(_strategy_lifecycle, grade, messages, result.get("_infra_failure", False))
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
 
@@ -3789,8 +3882,12 @@ if FLASK_OK:
                 for tc in tool_calls:
                     fn = tc.get("function", {})
                     if fn.get("name") == "search_memory":
-                        q = fn.get("arguments", {}).get("query", "")
+                        q = (fn.get("arguments", {}).get("query", "") or "").strip()
                         k = fn.get("arguments", {}).get("top_k", 5)
+                        if not q:
+                            result["content"] = "search_memory requires a non-empty query — retry with specific search terms."
+                            print("  [STREAM-SEARCH] empty query — skipped (nudging model)", flush=True)
+                            continue
                         hits = route_query(q, top_k=k)
                         if hits:
                             lines = ["Search results:\n"]
