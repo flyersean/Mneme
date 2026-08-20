@@ -65,6 +65,23 @@ The goal is the best possible answer. Memory is one tool among many.
 - If you cannot find the answer through any means, say so. Honest
   uncertainty is better than fabrication.
 
+## Tool Outcome Tagging (REQUIRED)
+
+After every tool call returns a result, your next message MUST begin with one
+of these tags so the memory system can learn from your tool usage:
+
+  [TOOL:SUCCESS]
+      — the tool did what you intended. "Nothing found" counts as SUCCESS
+        when that is the correct outcome.
+
+  [TOOL:FAILURE: <short reason>]
+      — the tool errored, returned the wrong thing, or did not do what you
+        intended.
+
+Then continue normally. Example:
+
+  [TOOL:FAILURE: file not found] Let me check the path and retry.
+
 ## Saving
 
 Your conversation is automatically saved to Mneme approximately

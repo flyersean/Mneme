@@ -3426,6 +3426,99 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
     }
 
 
+# ─── Tool Outcome Learning ──────────────────────────────────────────────
+# The model tags each tool outcome as [TOOL:SUCCESS] / [TOOL:FAILURE: reason]
+# (instructed in system_prompt.md). The proxy reads those tags — it never judges
+# success/failure itself, because only the model has the expectation to compare
+# the result against. From the trail the proxy (a) nudges the model out of
+# failure loops and (b) learns "method X failed, method Y worked" as a strategy.
+
+_TOOL_TAG_RE = re.compile(r'\[TOOL:\s*(SUCCESS|FAILURE)\s*(?::\s*([^\]]*?))?\]', re.IGNORECASE)
+
+
+def _extract_tool_tags(messages, since_last_user=False):
+    """Scan assistant messages for [TOOL:SUCCESS]/[TOOL:FAILURE: reason] tags.
+
+    Returns [(status, reason), ...] in conversation order. status is 'SUCCESS'
+    or 'FAILURE'. since_last_user scopes to the current task's tool-call loop.
+    """
+    tags = []
+    start = 0
+    if since_last_user:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                start = i
+                break
+    for m in messages[start:]:
+        if m.get("role") != "assistant":
+            continue
+        content = _extract_text(m.get("content", "") or "")
+        for match in _TOOL_TAG_RE.finditer(content):
+            tags.append((match.group(1).upper(), (match.group(2) or "").strip()))
+    return tags
+
+
+def _tool_failure_nudge(messages):
+    """Return a nudge when the recent tag trail shows repeated failures.
+
+    The proxy observes the failure (it never judges success itself); the nudge
+    asks the MODEL to diagnose and change approach — it does not prescribe one.
+    Empty string when the trail looks healthy.
+    """
+    tags = _extract_tool_tags(messages)
+    if not tags:
+        return ""
+    streak = 0
+    for status, _ in reversed(tags):
+        if status == "FAILURE":
+            streak += 1
+        else:
+            break
+    if streak >= 3:
+        return ("You have had several tool failures in a row. Stop retrying and "
+                "diagnose the root cause, then switch to a fundamentally different method.")
+    if streak >= 2:
+        return ("Your last two tool calls failed. Diagnose why before retrying, "
+                "and change your approach instead of repeating the same call.")
+    return ""
+
+
+def _learn_from_tool_trail(trail_tags, answer, grade, ptype):
+    """Turn a failure->success tool trail into a reusable strategy (background).
+
+    Fires when the current task's trail has one or more FAILUREs followed by a
+    SUCCESS and the turn was graded honestly. Asks the model to extract the
+    method that worked vs. the one that didn't, tagged to ptype for reuse on
+    similar tasks.
+    """
+    if grade not in ("A", "B"):
+        return
+    statuses = [s for s, _ in trail_tags]
+    if "SUCCESS" not in statuses:
+        return
+    last_success = max(i for i, s in enumerate(statuses) if s == "SUCCESS")
+    if not any(s == "FAILURE" for s in statuses[:last_success]):
+        return
+    trail = "; ".join(f"{s}{':' + r if r else ''}" for s, r in trail_tags[-8:])
+    answer_clean = _TOOL_TAG_RE.sub("", answer or "").strip()
+    prompt = (
+        "You attempted a task and had some tool failures before succeeding.\n"
+        f"Tool trail: {trail}\n"
+        f"Final answer: {answer_clean[:MAX_ABSTRACT_INPUT]}\n\n"
+        "Extract ONE imperative rule of the form 'WHEN doing <task>, use <method "
+        "that worked> (the method <that failed> failed)'. Short, specific, "
+        "actionable. Respond with ONLY the rule."
+    )
+    try:
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+        rule = (r.get("content") or "").strip()
+        if len(rule) > 10 and not _is_junk_directive(rule):
+            _save_strategy(rule, "B", problem_type=ptype or "other")
+            print(f"  [TOOL-TRAIL-LEARN] {rule[:70]}...", flush=True)
+    except Exception as e:
+        _log_error("_learn_from_tool_trail", e)
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -3525,6 +3618,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Insert Mneme (instructions + memory + capability-edge directive + optional
     # explore directive) as a system message after Hermes
     mneme_system = context + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
+    _nudge = _tool_failure_nudge(messages)
+    if _nudge:
+        mneme_system += "\n\n" + _nudge
+        print(f"  [TOOL-NUDGE] {_nudge[:60]}...", flush=True)
     insert_at = 0
     for i, m in enumerate(messages):
         if m.get("role") == "system":
@@ -3702,6 +3799,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # A poor grade accumulates toward flagging the type as a known edge, which then
     # triggers a tool-build directive on the next encounter.
     _record_capability(cur_ptype, grade)
+
+    # Tool-outcome learning: a failure->success trail becomes a reusable
+    # strategy for similar tasks. Extracted tags + this turn's answer are passed
+    # (cheap, sync); the model extraction + save run in the background.
+    try:
+        _trail_tags = _extract_tool_tags(messages, since_last_user=True)
+        _answer = result.get("content", "")
+        for _m in _TOOL_TAG_RE.finditer(_answer or ""):
+            _trail_tags.append((_m.group(1).upper(), (_m.group(2) or "").strip()))
+        _statuses = [s for s, _ in _trail_tags]
+        if "FAILURE" in _statuses and "SUCCESS" in _statuses:
+            _enqueue(_learn_from_tool_trail, _trail_tags, _answer, grade, cur_ptype)
+    except Exception as e:
+        _log_error("process_chat:tool_trail_enqueue", e)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
     try:
