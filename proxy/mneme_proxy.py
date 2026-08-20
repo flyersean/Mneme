@@ -788,65 +788,6 @@ MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
 )
 
-# Known model tool-call malformations -> deterministic lessons. The strategy
-# system learns from FINAL outcomes, so intermediate tool-call mistakes were
-# invisible to it. This layer catches a known class of model shortcoming, fixes
-# the call so the current turn still works, and records the lesson for injection
-# on future turns (abstract -> transfer -> refine).
-_TOOL_CALL_LESSONS = {
-    "nested_arguments": (
-        "ALWAYS emit tool-call arguments as a flat JSON object with the "
-        "parameter names at the top level (e.g. {\"path\": \"...\"}) — never "
-        "wrap them under an extra \"arguments\" key."
-    ),
-}
-_TOOL_LESSON_RECORDED = set()  # in-memory throttle; FAISS dedup handles restarts
-
-
-def _normalize_tool_calls(tool_calls: list):
-    """Detect and fix known model tool-call malformations.
-
-    Returns (tool_calls, issues). Issues are short keys into _TOOL_CALL_LESSONS.
-    Fixing here means the current turn still works; recording the issue lets the
-    strategy system teach the model to stop making it.
-    """
-    issues = []
-    for tc in (tool_calls or []):
-        fn = tc.get("function", {})
-        args = fn.get("arguments")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-                fn["arguments"] = args
-            except Exception:
-                continue
-        if isinstance(args, dict) and set(args.keys()) == {"arguments"} and isinstance(args.get("arguments"), dict):
-            # Model wrapped the arguments under an extra "arguments" key.
-            fn["arguments"] = args["arguments"]
-            issues.append("nested_arguments")
-    return tool_calls, issues
-
-
-def _learn_tool_call_issues(issues: list):
-    """Record deterministic lessons for detected tool-call malformations.
-
-    Saved once per session (in-memory throttle); _save_strategy's FAISS dedup
-    prevents duplicate rows across restarts. Lessons are saved with grade B so
-    they are injected (injection gates on grade IN A/B), and
-    _consume_injected_strategies retires them if they don't help.
-    """
-    for issue in set(issues or []):
-        lesson = _TOOL_CALL_LESSONS.get(issue)
-        if not lesson or issue in _TOOL_LESSON_RECORDED:
-            continue
-        _TOOL_LESSON_RECORDED.add(issue)
-        try:
-            _save_strategy(lesson, "B", problem_type="tool_call", abstract=False)
-            print(f"  [TOOL-LEARN] recorded lesson for '{issue}': {lesson[:70]}...", flush=True)
-        except Exception as e:
-            print(f"  [TOOL-LEARN][ERR] {e}", flush=True)
-
-
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                       max_tokens=-1, timeout=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
@@ -986,9 +927,6 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             "type": slot.get("type", "function"),
             "function": {"name": slot["function"].get("name", ""), "arguments": args},
         })
-    tool_calls, _issues = _normalize_tool_calls(tool_calls)
-    if _issues:
-        _learn_tool_call_issues(_issues)
     # Reasoning models sometimes leave content empty and put the answer in
     # reasoning. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:
@@ -1131,9 +1069,6 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     content = msg.get("content", "")
     thinking = msg.get("thinking", "")
     tool_calls = msg.get("tool_calls", [])
-    tool_calls, _issues = _normalize_tool_calls(tool_calls)
-    if _issues:
-        _learn_tool_call_issues(_issues)
     # Reasoning models (gemma4) sometimes put the answer in "thinking" and leave
     # "content" empty. Fall back to thinking so generations aren't dropped.
     # BUT NOT when the model emitted tool_calls — those must stay tool_calls
