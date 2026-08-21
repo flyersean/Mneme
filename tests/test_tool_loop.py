@@ -409,6 +409,28 @@ def test_record_overcome_updates_edge():
 
 
 @test
+def test_instruction_sync_no_orphans_no_missing():
+    """Sync check: every _load_instruction call site references a defined default,
+    every defined default is injected somewhere (no orphans), and every
+    instruction is documented in the README map."""
+    import re as _re
+    import glob as _glob
+    from mneme.instructions import DEFAULT_INSTRUCTIONS
+    names = set(DEFAULT_INSTRUCTIONS)
+    call_re = _re.compile(r'_load_instruction\(\s*[\'"]([a-z_]+)[\'"]')
+    used = set()
+    paths = [os.path.join(_PROXY_DIR, "mneme_proxy.py")]
+    paths += _glob.glob(os.path.join(_PROXY_DIR, "mneme", "*.py"))
+    for p in paths:
+        used.update(call_re.findall(open(p).read()))
+    assert not (used - names), f"injection sites reference undefined instructions: {used - names}"
+    assert not (names - used), f"defined instructions never injected anywhere: {names - used}"
+    readme = open(os.path.join(os.path.dirname(_PROXY_DIR), "docs", "instructions.md")).read()
+    undocumented = [n for n in names if f"`{n}`" not in readme]
+    assert not undocumented, f"instructions missing from the README map: {undocumented}"
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()
