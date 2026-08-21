@@ -216,3 +216,12 @@ Pragmatic module-level globals, initialized by the orchestrator at startup (matc
 2. Preserve the live DB (`~/mneme_chunks/mneme.db`) — all migrations additive.
 3. After each module lands: run the offline suite, then a live smoke test through Pi.
 4. Merge to `unified_mneme` only when all tests pass and a live session still works.
+
+## Execution & delegation plan
+
+- **Scaffolding — not delegated.** The orchestrator creates the `mneme/` package, the facade re-export, and the module-state init. This is the foundation and the highest-risk wiring; it needs full conversation context.
+- **Delegation — sequential, not parallel.** Subagents run as `moonshotai/kimi-k3` via OpenRouter (already pinned in `delegation.model/provider`). Each chunk is a tight brief: point at `docs/spec.md` + the symbols to move + "preserve the `_real_*` test hooks, re-export everything through the facade."
+- **Order:** scaffolding (facade + `util.py`) → `tool_trail.py` (first extraction, establishes the pattern) → `instructions.py` (new) → `overcome.py` (new) → `capability.py` → `grading.py`.
+- **Verification — mine, not the subagent's.** After each chunk: `py_compile`, then the offline suite (must still `import mneme_proxy as mp` unchanged), then a live Pi smoke test. Never trust a subagent self-report.
+- **Merge** to `unified_mneme` only after every chunk is verified.
+
