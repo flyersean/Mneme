@@ -12,13 +12,15 @@ A missing or malformed file falls back to the code default and logs loudly — a
 bad instruction file degrades to the shipped default, never to a broken
 injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 
-## The seven Tier-1 instructions
+## The Tier-1 instructions
 
 | name                    | when injected                                        | vars                          | used_by                |
 |-------------------------|------------------------------------------------------|-------------------------------|------------------------|
 | `explore`               | user explicitly asks for a NEW method                | —                             | `_explore_directive`   |
 | `capability_edge`       | task's problem type is a flagged capability edge     | `{{problem_type}}`            | `_capability_directive`|
 | `overcome`              | model is stuck (2 failures / 6 rounds), hard stop    | `{{problem_type}}`, `{{reason}}` | `_overcome_directive` |
+| `overcome_build`        | model chose build_tool — one bounded build iteration | `{{iteration}}`, `{{max}}`    | `_build_directive`     |
+| `overcome_build_exhausted` | build iterations exhausted — force declare_edge    | `{{max}}`                     | `_build_exhausted_directive` |
 | `tool_failure_nudge`    | ≥2 consecutive tool failures (soft, before overcome) | `{{count}}`                   | `_tool_failure_nudge`  |
 | `meta_principles_header`| always — header above the meta-principles            | —                             | `_meta_principles_block`|
 | `user_preferences_header`| stored preferences exist                             | —                             | `_preferences_block`   |

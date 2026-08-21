@@ -409,6 +409,32 @@ def test_record_overcome_updates_edge():
 
 
 @test
+def test_in_build_mode_and_iterations():
+    msgs = [
+        {"role": "user", "content": "scrape the blocked site"},
+        {"role": "system", "content": "=== OVERCOME MODE ===\nSTOP. You are stuck."},
+        {"role": "assistant", "content": "DECISION: build_tool\nPLAN: write a curl script"},
+    ]
+    assert mp._in_build_mode(msgs) is True
+    msgs.append({"role": "system", "content": mp._build_directive(1, 3)})
+    assert mp._build_iterations(msgs) == 1
+    msgs.append({"role": "system", "content": mp._build_directive(2, 3)})
+    assert mp._build_iterations(msgs) == 2
+    # resolution -> no longer in build mode
+    msgs.append({"role": "assistant", "content": "TOOL_SAVE: scraper :: a scraper :: /tmp/scraper.sh"})
+    assert mp._in_build_mode(msgs) is False
+
+
+@test
+def test_build_directive_and_exhausted():
+    d = mp._build_directive(2, 3)
+    assert "BUILD MODE" in d and "iteration 2/3" in d
+    e = mp._build_exhausted_directive(3)
+    assert "EXHAUSTED" in e and "declare_edge" in e
+    assert mp._build_iterations([]) == 0  # no markers -> zero iterations
+
+
+@test
 def test_instruction_sync_no_orphans_no_missing():
     """Sync check: every _load_instruction call site references a defined default,
     every defined default is injected somewhere (no orphans), and every

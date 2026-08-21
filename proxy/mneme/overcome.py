@@ -28,6 +28,7 @@ STUCK_MAX_TOOL_ROUNDS = int(os.environ.get("MNEME_STUCK_MAX_TOOL_ROUNDS", "6"))
 BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
+_BUILD_MARKER = "=== BUILD MODE (iteration "
 _DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge)\b', re.IGNORECASE)
 _PLAN_RE = re.compile(r'PLAN\s*:\s*(.+)', re.IGNORECASE)
 _MISSING_RE = re.compile(r'MISSING\s*:\s*(.+)', re.IGNORECASE)
@@ -103,6 +104,39 @@ def _overcome_active(messages):
         if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt:
             seen_resolution = True
     return seen_overcome and not seen_resolution
+
+
+def _in_build_mode(messages):
+    """True if the model decided build_tool and is still building (no resolution)."""
+    start = _last_user_index(messages)
+    seen_build = False
+    seen_resolution = False
+    for m in messages[start:]:
+        txt = _extract_text(m.get("content", "") or "")
+        if "DECISION: build_tool" in txt:
+            seen_build = True
+        if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt:
+            seen_resolution = True
+    return seen_build and not seen_resolution
+
+
+def _build_iterations(messages):
+    """Count the BUILD MODE markers already injected this task (one per build turn)."""
+    start = _last_user_index(messages)
+    count = 0
+    for m in messages[start:]:
+        count += _extract_text(m.get("content", "") or "").count(_BUILD_MARKER)
+    return count
+
+
+def _build_directive(iteration, max_iterations):
+    """The '=== BUILD MODE (iteration K/M) ===' directive for one build turn."""
+    return _load_instruction("overcome_build", vars={"iteration": str(iteration), "max": str(max_iterations)})
+
+
+def _build_exhausted_directive(max_iterations):
+    """Force declare_edge once the build loop has exhausted its budget."""
+    return _load_instruction("overcome_build_exhausted", vars={"max": str(max_iterations)})
 
 
 def _save_tool(db, problem_type, name, description, script_path):

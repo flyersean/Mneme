@@ -43,10 +43,15 @@ from mneme.overcome import (
     _overcome_directive,
     _parse_deliberation,
     _overcome_active,
+    _in_build_mode,
+    _build_iterations,
+    _build_directive,
+    _build_exhausted_directive,
     _save_tool,
     _record_overcome,
     _tool_directive,
     _handle_overcome_reply,
+    BUILD_MAX_ITERATIONS,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -3343,7 +3348,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # soft nudge — it forces a decision (build a tool or declare the edge).
     mneme_system = context + _tool_directive(db, cur_ptype) + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
     _stuck, _stuck_reason = _detect_stuck(messages)
-    if _stuck and not _overcome_active(messages):
+    if _in_build_mode(messages):
+        _it = _build_iterations(messages)
+        if _it >= BUILD_MAX_ITERATIONS:
+            mneme_system += "\n\n" + _build_exhausted_directive(BUILD_MAX_ITERATIONS)
+            print(f"  [BUILD-EXHAUSTED] {_it} iterations — forcing declare_edge", flush=True)
+        else:
+            mneme_system += "\n\n" + _build_directive(_it + 1, BUILD_MAX_ITERATIONS)
+            print(f"  [BUILD] iteration {_it + 1}/{BUILD_MAX_ITERATIONS}", flush=True)
+    elif _stuck and not _overcome_active(messages):
         mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
         print(f"  [OVERCOME] {_stuck_reason} — injecting overcome directive", flush=True)
     else:
