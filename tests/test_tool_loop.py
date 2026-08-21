@@ -318,6 +318,34 @@ def test_classify_tool_outcome_no_false_positive_on_content():
 
 
 @test
+def test_load_instruction_default_and_substitution():
+    # code default when no override file exists
+    assert "EXPLORE DIRECTIVE" in mp._load_instruction("explore")
+    # {{var}} substitution
+    ce = mp._load_instruction("capability_edge", vars={"problem_type": "compute"})
+    assert "compute" in ce and "{{" not in ce
+    # unknown placeholder -> fail loud (KeyError), not silent broken text
+    try:
+        mp._load_instruction("capability_edge", vars={})
+        assert False, "expected KeyError for missing placeholder"
+    except KeyError:
+        pass
+
+
+@test
+def test_load_instruction_override_wins():
+    d = os.path.join(os.environ.get("MNEME_CHUNK_DIR", ""), "instructions", "default")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, "explore.txt")
+    with open(p, "w") as f:
+        f.write("# when: user asked to explore\n# used_by: _explore_directive\n\nCUSTOM EXPLORE OVERRIDE")
+    try:
+        assert mp._load_instruction("explore") == "CUSTOM EXPLORE OVERRIDE"
+    finally:
+        os.remove(p)
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()

@@ -37,6 +37,7 @@ from mneme.tool_trail import (
     _extract_combined_tool_trail,
     _tool_failure_nudge,
 )
+from mneme.instructions import _load_instruction
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -2690,15 +2691,9 @@ def _explore_directive(user_msg: str) -> str:
     """If the user explicitly asked for a new/different method, return a
     directive that overrides the "reuse the proven strategy" default. This is
     the explore trigger — it must be paired with the novel-procedure grader so
-    the found method actually persists."""
+    the found method actually persists. Text externalized to mneme/instructions.py."""
     if any(p in (user_msg or "").lower() for p in _EXPLORE_PHRASES):
-        return (
-            "\n\n=== EXPLORE DIRECTIVE (user-requested) ===\n"
-            "The user explicitly asked you to try a NEW method not covered by your "
-            "saved strategies. Do NOT reuse a known strategy — find a different "
-            "technique. A novel method that works is graded 'great' and saved for "
-            "future reuse.\n"
-        )
+        return _load_instruction("explore")
     return ""
 
 
@@ -2883,16 +2878,11 @@ def _is_capability_edge(problem_type: str) -> bool:
 
 def _capability_directive(problem_type: str) -> str:
     """Injected directive when the incoming task is a known capability edge: instead of
-    guessing/grinding, the model should propose (or defer to) a tool/script."""
+    guessing/grinding, the model should propose (or defer to) a tool/script. Text
+    externalized to mneme/instructions.py."""
     if not _is_capability_edge(problem_type):
         return ""
-    return (
-        f"\n=== CAPABILITY EDGE ==="
-        f"\nYou have previously failed or performed poorly on tasks of type '{problem_type}'."
-        f"\nDo NOT attempt this again from memory alone. Either (a) propose the exact tool, "
-        f"command, or script that would answer it correctly, or (b) state clearly that you "
-        f"cannot answer it and what capability is missing."
-    )
+    return _load_instruction("capability_edge", vars={"problem_type": problem_type})
 
 def _classify_problem_type(text: str) -> str:
     """Deterministic coarse problem-type classifier (keyword heuristic).
