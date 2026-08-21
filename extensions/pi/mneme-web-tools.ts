@@ -44,9 +44,11 @@ export default function (pi: ExtensionAPI) {
         });
         const html = await resp.text();
         
-        // Extract result blocks
+        // Extract result blocks. DDG changed the container class from
+        // class="result" to class="result results_links ... web-result ", so
+        // split on `class="result` followed by a space or quote to match both.
         const results: { title: string; url: string; snippet: string }[] = [];
-        const blocks = html.split('class="result"');
+        const blocks = html.split(/class="result[\s"]/);
         for (let i = 1; i < blocks.length && results.length < limit; i++) {
           const b = blocks[i];
           const titleMatch = b.match(/class="result__a"[^>]*>([^<]+)</);
