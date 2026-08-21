@@ -1,78 +1,117 @@
-# Mneme proxy config — example. Copy to $MNEME_CHUNK_DIR/mneme.yaml and edit.
-# Precedence: environment variable > this file > built-in default.
-# Unknown keys fail loud at startup. Full reference: docs/config-spec.md
+# ============================================================================
+#  Mneme proxy config — EXAMPLE (copy to $MNEME_CHUNK_DIR/mneme.yaml and edit)
+# ============================================================================
 #
-# NOTE: sampling/retrieval values below are tuned for the OpenRouter lineup
-# (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed
-# by asking the model itself. A global max_tokens cap is intentionally OMITTED —
-# it truncated thorough document summaries (done=length). Anti-grind is enforced
-# by timeouts; the provenance judge has its own bounded cap in code.
+#  WHAT THIS FILE IS
+#    The single place to tune how the Mneme memory proxy behaves. Copy it next
+#    to the database as mneme.yaml; the proxy reads it ONCE at startup.
+#
+#  HOW A SETTING IS RESOLVED (highest wins)
+#    1. Environment variable (MNEME_*)
+#    2. This file
+#    3. Built-in default
+#    An env var overrides whatever you write here. Watch the startup log's
+#    [CONFIG] lines to see the FINAL resolved value of every setting.
+#
+#  HOW TO APPLY A CHANGE
+#    Edit, then RESTART the proxy. Nothing here is hot-reloaded.
+#
+#  FULL REFERENCE
+#    docs/config-spec.md in the repo is the complete schema reference.
+#
+#  TUNING CHEAT-SHEET
+#    * retrieval.inject_min_similarity  — the "how similar before I inject a
+#      memory" gate. RAISE -> fewer / only high-confidence memories; LOWER ->
+#      more recall (and more noise).
+#    * sampling.temperature             — creativity. Lower = more deterministic.
+#    * retrieval.max_injected_tokens    — how much memory to stuff into the prompt.
+#
+#  NOTE: the values below are tuned for the OpenRouter lineup
+#  (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed
+#  by asking the model itself. A global max_tokens cap is intentionally OMITTED —
+#  it truncated thorough document summaries. Anti-hang is enforced by timeouts.
+# ============================================================================
 
+# Which backend to talk to. `openai` here means "any OpenAI-compatible
+# provider" (selected in `providers:`), NOT literally OpenAI.
 backend:
-  type: openai          # "ollama" | "openai"  (openai = any OpenAI-compatible provider)
-  provider: openrouter  # key into `providers:` (ignored when type=ollama)
+  type: openai          # "ollama" | "openai"
+  provider: openrouter  # which `providers:` entry to use (ignored when type=ollama)
   ollama_url: http://localhost:11434   # used only when type=ollama
 
+# Providers. Adding a new OpenAI-standard provider (OpenAI, DeepSeek, Groq,
+# Together, Mistral, ...) is just a new block here — no code changes.
 providers:
-  # Add an entry here to switch backends — no code changes needed for any
-  # OpenAI-standard provider (OpenAI, DeepSeek, Groq, Together, Mistral, ...).
   openrouter:
     base_url: https://openrouter.ai/api/v1
-    api_key_env: OPENROUTER_API_KEY   # key is read from this env var, never stored here
-    model: deepseek/deepseek-v4-flash
-    embed_model: voyageai/voyage-4-lite
-    label_model: meta-llama/llama-3.2-3b-instruct
+    api_key_env: OPENROUTER_API_KEY       # key is read from THIS env var, never stored here
+    model: deepseek/deepseek-v4-flash     # chat model
+    embed_model: voyageai/voyage-4-lite   # model that turns text into searchable vectors
+    label_model: meta-llama/llama-3.2-3b-instruct  # model that writes short topic labels
   deepseek:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     model: deepseek-chat
-    embed_model: ""
+    embed_model: ""                       # empty -> disable embeddings (reuse another's)
     label_model: meta-llama/llama-3.2-3b-instruct
 
+# Default generation settings. Per-model overrides under `models:` beat these.
 sampling:
-  temperature: 0.2      # model recommends 0.2 — less repetition
-  top_p: 0.9            # model recommends 0.9 — trims the improbable tail
-  top_k: 64             # ollama only
-  ctx_tokens: 256000
-  completion_reserve: 8192
-  # max_tokens: leave unset — a global cap truncates long summaries
+  temperature: 0.2      # randomness; 0.2 = fairly deterministic (less repetition)
+  top_p: 0.9            # nucleus sampling — cut off the improbable tail
+  top_k: 64             # ollama only (ignored by the openai path)
+  ctx_tokens: 256000    # context window size handed to the model
+  completion_reserve: 8192  # tokens reserved for the model's reply, out of ctx_tokens
+  # max_tokens: leave unset — a global output cap truncates long summaries
 
+# Anti-hang guardrails, not tuning knobs — leave unless a provider is flaky.
 timeouts:
-  chat_timeout: 60        # OpenAI-style read/generation timeout (fast hang recovery)
-  ollama_chat_timeout: 120  # Ollama — cold-start model load delays the first token
-  first_token_timeout: 30   # OpenAI-style time-to-first-token (abort a hung provider fast)
-  novelty_timeout: 600
-  embed_timeout: 60
-  label_timeout: 30
-  edge_failures: 2
-  edge_ratio: 0.5
+  chat_timeout: 60        # seconds to wait for a chat reply (OpenAI-style backends)
+  ollama_chat_timeout: 120  # Ollama — cold-start model loading delays the first token
+  first_token_timeout: 30   # abort if no first token arrives (hung provider)
+  novelty_timeout: 600    # timeout for the slower multi-step novelty/strategy calls
+  embed_timeout: 60       # embedding request timeout
+  label_timeout: 30       # topic-labeling request timeout
+  edge_failures: 2        # consecutive failures before treating a model as an "edge case"
+  edge_ratio: 0.5         # fraction of recent turns failing that trips the edge-case detector
 
+# Where things live and how memory is staged.
 storage:
-  chunk_dir: ~/mneme_chunks
-  port: 8080
-  inject_system: true
-  staging_turns: 6
-  staging_idle: 120
-  belief_evolution: false
+  chunk_dir: ~/mneme_chunks  # where the SQLite DB + FAISS index live (put mneme.yaml here too)
+  port: 8080                 # HTTP port the proxy listens on
+  inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
+  staging_turns: 6           # flush the recent conversation into a memory chunk every N turns
+  staging_idle: 120          # ...or after this many seconds of silence (whichever first)
+  belief_evolution: false    # experimental — OFF (floods the backend)
 
+# Memory retrieval: what gets injected into the prompt each turn.
 retrieval:
-  max_injected_tokens: 8000   # model recommends 8000 — 6-8 chunks of context
-  route_threshold: 0.08
-  classify_threshold: 0.78
-  baseline_noise: 0.20
-  age_decay_days: 7
-  max_siblings: 3
-  max_chunk_words: 500
-  max_chunk_size: 10000
+  max_injected_tokens: 8000  # token budget for memory stuffed into the prompt (~6-8 chunks)
+  inject_min_similarity: 0.62  # THE main knob: absolute similarity floor. A memory is injected
+                               # only if it scores >= this. Below it -> inject NOTHING. Tune per setup
+                               # (embedders have different similarity scales). RAISE = stricter/fewer,
+                               # LOWER = more recall.
+  keyword_fallback: false    # pad sparse FAISS with LIKE-substring matches. OFF by default —
+                             # substring hits have no semantic score and pollute context.
+  route_threshold: 0.08      # DEPRECATED for retrieval (route_query keys on inject_min_similarity);
+                             # still referenced by the /search debug endpoint.
+  classify_threshold: 0.78   # UNUSED (dead config) — no "is this a memory query?" gate yet.
+  baseline_noise: 0.20       # fallback only — auto-calibrated at startup (_calibrate_noise()).
+  age_decay_days: 7          # recency half-life (days) — newer memories rank higher
+  max_siblings: 3            # max sibling chunks pulled in per topic when a hit is expanded
+  max_chunk_words: 500       # split user messages longer than this many words
+  max_chunk_size: 10000      # chars per chunk for embedding; overflow becomes sibling chunks
 
+# Character/truncation limits. Rarely tuned.
 caps:
-  max_history_messages: 32
-  db_msg_cap: 8000
-  compress_threshold: 500
-  compress_max_tok: 2048
-  max_tool_forward: 12000   # cap on tool result forwarded to the model (head+tail window)
-  chunk_size: 4000          # model recommends 4000-5000 — fuller chunks
+  max_history_messages: 32   # how many recent messages are sent to the model
+  db_msg_cap: 8000           # chars per message stored in SQLite
+  compress_threshold: 500    # tool results longer than this (chars) get staged/compressed
+  compress_max_tok: 2048     # max tokens for the compression summarizer
+  max_tool_forward: 12000    # cap on a tool result forwarded to the model (head+tail window)
+  chunk_size: 4000           # chars per staged memory chunk
 
+# Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.
 models:
   deepseek/deepseek-v4-flash:
     temperature: 0.2

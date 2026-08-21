@@ -84,6 +84,8 @@ retrieval:
   route_threshold: 0.08
   classify_threshold: 0.78
   baseline_noise: 0.20       # fallback only; _calibrate_noise() overrides at startup
+  inject_min_similarity: 0.62  # absolute cosine floor — below this, nothing is injected
+  keyword_fallback: false      # pad sparse FAISS with LIKE-substring matches (junk-prone)
   age_decay_days: 7
   max_siblings: 3
   max_chunk_words: 500
@@ -166,6 +168,8 @@ quirk moves to `models:` (field name is per-model, not per-provider).
 | route_threshold | 0.08 | [const] `ROUTE_THRESHOLD` |
 | classify_threshold | 0.78 | [const] `CLASSIFY_THRESHOLD` |
 | baseline_noise | 0.20 | [const] `BASELINE_NOISE` (fallback; calibrated at startup) |
+| inject_min_similarity | 0.62 | [const] `INJECT_MIN_SIMILARITY` — absolute cosine floor; below it, nothing is injected |
+| keyword_fallback | false | [const] `KEYWORD_FALLBACK` — pad sparse FAISS with LIKE-substring matches (off by default) |
 | age_decay_days | 7 | [const] `AGE_DECAY_DAYS` |
 | max_siblings | 3 | [const] `MAX_SIBLINGS` |
 | max_chunk_words | 500 | [const] `MAX_CHUNK_WORDS` |

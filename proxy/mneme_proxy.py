@@ -67,6 +67,8 @@ _CONFIG_ENV_MAP = {
     "retrieval.route_threshold": "MNEME_ROUTE_THRESHOLD",
     "retrieval.classify_threshold": "MNEME_CLASSIFY_THRESHOLD",
     "retrieval.baseline_noise": "MNEME_BASELINE_NOISE",
+    "retrieval.inject_min_similarity": "MNEME_INJECT_MIN_SIMILARITY",
+    "retrieval.keyword_fallback": "MNEME_KEYWORD_FALLBACK",
     "retrieval.age_decay_days": "MNEME_AGE_DECAY_DAYS",
     "retrieval.max_siblings": "MNEME_MAX_SIBLINGS",
     "retrieval.max_chunk_words": "MNEME_MAX_CHUNK_WORDS",
@@ -258,6 +260,16 @@ STAGING_IDLE   = int(os.environ.get("MNEME_STAGING_IDLE", "120"))
 CLASSIFY_THRESHOLD = float(os.environ.get("MNEME_CLASSIFY_THRESHOLD", "0.78"))
 ROUTE_THRESHOLD    = float(os.environ.get("MNEME_ROUTE_THRESHOLD", "0.08"))  # tunable: raise for stricter matching, lower for more recall
 BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fallback — overridden at startup by _calibrate_noise()
+# Absolute injection floor: a chunk is injected only if its raw cosine similarity
+# is >= this value; below it, nothing is injected. Tunable per setup — embedder and
+# corpus similarity scales differ, so this needs hand-tuning on each deployment.
+# Default 0.62 sits above the voyage-4-lite noise floor (~0.48) and below its
+# relevant-signal band (~0.70-0.72).
+INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.62"))
+# Keyword fallback: when FAISS returns fewer than top_k hits, pad the result list
+# with SQLite LIKE-substring matches. OFF by default — substring hits carry no
+# semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").
+KEYWORD_FALLBACK = os.environ.get("MNEME_KEYWORD_FALLBACK", "0") == "1"
 AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recency half-life in days — newer chunks get a bonus
 
 # Network timeouts (seconds). CHAT_TIMEOUT is the anti-grind guardrail for
@@ -749,13 +761,15 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
     return results[:top_k]
 
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
-    """Fill FAISS results with keyword matches if below threshold.
-    
-    Returns list of (score, chunk_id, method) tuples.
+    """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
+
+    Returns list of (score, chunk_id, method) tuples. Keyword matches carry a
+    score of 0.0 (no semantic signal), so this is gated behind KEYWORD_FALLBACK
+    (default off) — substring hits pollute context otherwise.
     """
     faiss_ids = {cid for _, cid in faiss_results}
     combined = [(s, cid, "faiss") for s, cid in faiss_results]
-    if len(combined) < top_k:
+    if KEYWORD_FALLBACK and len(combined) < top_k:
         needed = top_k - len(combined)
         kw_results = _keyword_search(query, needed, exclude_ids=faiss_ids)
         combined.extend([(s, cid, "keyword") for s, cid in kw_results])
@@ -1412,8 +1426,10 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     Dynamic K: adjusts retrieval count based on score spread above noise floor."""
     q_vec = embed(query)
     scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
-    # Normalize: subtract baseline noise, filter negative
-    scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
+    # Injection gate: absolute similarity floor. A chunk below INJECT_MIN_SIMILARITY
+    # is never injected — this is the on/off knob (tunable in config). If nothing
+    # clears it, `scored` is empty and we inject nothing.
+    scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s >= INJECT_MIN_SIMILARITY]
     
     # Dynamic K: adjust retrieval count based on signal strength
     if scored:
@@ -1749,7 +1765,12 @@ def build_context(query: str) -> Tuple[str, str]:
         if chunk.get("strategy"):
             msg_text += f"\n[learned strategy: {chunk['strategy']}]"
         # Add next-chunk hint for sequential navigation
-        next_seq = f"mem_{int(cid.split('_')[1]) + 1}" if cid.startswith('mem_') else None
+        next_seq = None
+        if cid.startswith('mem_'):
+            try:
+                next_seq = f"mem_{int(cid.split('_')[1]) + 1}"
+            except (ValueError, IndexError):
+                next_seq = None  # non-numeric / malformed chunk id — skip the hint
         if next_seq:
             msg_text += f"\n[see also: {next_seq}]"
         parts.append(msg_text)
@@ -3454,6 +3475,54 @@ def _learn_from_tool_trail(trail_tags, answer, grade, ptype):
         _log_error("_learn_from_tool_trail", e)
 
 
+def _execute_search_tool_calls(search_calls):
+    """Resolve a batch of search_memory tool calls server-side.
+
+    Returns (result_text, trace_chunk_ids). result_text is the formatted
+    "Search results from Mneme memory:" block handed back to the model;
+    trace_chunk_ids is the set of chunk ids surfaced, used by provenance
+    grading to distinguish a real recall from a fabricated [source: ...].
+    """
+    result_texts = []
+    trace = set()
+    for tc in search_calls:
+        fn = tc.get("function", {})
+        q = (fn.get("arguments", {}).get("query", "") or "").strip()
+        k = fn.get("arguments", {}).get("top_k", 5)
+        print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
+        if not q:
+            # Reasoning model emitted search_memory with no query — don't
+            # burn a no-op search; nudge it to retry with specific terms.
+            result_texts.append("search_memory requires a non-empty query — retry with specific search terms.")
+            print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
+            continue
+        hits = route_query(q, top_k=k)
+        trace.update(hits)
+        if hits:
+            lines = ["Search results from Mneme memory:"]
+            for h in hits:
+                cid = h  # route_query returns chunk_id strings, not tuples
+                crow = db.execute("SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
+                if crow:
+                    label, grd, msgs_json = crow[0], crow[1], crow[2]
+                    lines.append(f"[{cid} | G:{grd}] {label}")
+                    try:
+                        msgs = json.loads(msgs_json)
+                        for m in msgs[:5]:
+                            c = m.get("content", "")[:MAX_PREVIEW_CHARS]
+                            if c:
+                                lines.append(f"  {m['role']}: {c}")
+                    except Exception as e:
+                        _log_error("search_tool:parse_msgs", e)
+                lines.append("")
+            result_texts.append("\n".join(lines[:30]))  # cap
+            print(f"  [SEARCH-TOOL] found {len(hits)} results", flush=True)
+        else:
+            result_texts.append("No matching memories found.")
+            print("  [SEARCH-TOOL] no results", flush=True)
+    return "\n\n".join(result_texts), trace
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -3611,66 +3680,55 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Handle search_memory tool calls — execute server-side, then RE-QUERY the
     # model with the results so it synthesizes a tagged answer (not raw hits).
     # Non-search_memory tool calls (web_search, shell) pass through to the client.
+    #
+    # This is a LOOP, not a single pass: the model frequently needs more than one
+    # round of memory search before it either answers or hands off to another
+    # tool. Invariant: every tool call the model emits ends up EITHER resolved
+    # here (search_memory) OR forwarded to the client (everything else). The old
+    # code did `result["tool_calls"] = remaining_calls`, which overwrote the
+    # re-query's tool calls with the FIRST query's non-search calls and silently
+    # dropped a follow-up call — grading the turn F.
     _trace_search_chunks = set()
-    if result.get("tool_calls") and not result.get("content"):
-        search_calls = [tc for tc in result["tool_calls"]
+    passthrough_calls = []
+    _MAX_SEARCH_ROUNDS = 4
+    for _round in range(_MAX_SEARCH_ROUNDS):
+        tcs = result.get("tool_calls") or []
+        content = (result.get("content") or "").strip()
+        search_calls = [tc for tc in tcs
                         if tc.get("function", {}).get("name") == "search_memory"]
-        remaining_calls = [tc for tc in result["tool_calls"]
-                           if tc.get("function", {}).get("name") != "search_memory"]
+        other_calls = [tc for tc in tcs
+                       if tc.get("function", {}).get("name") != "search_memory"]
+        passthrough_calls.extend(other_calls)
+        if content or not search_calls:
+            break
 
-        if search_calls:
-            result_texts = []
-            for tc in search_calls:
-                fn = tc.get("function", {})
-                q = (fn.get("arguments", {}).get("query", "") or "").strip()
-                k = fn.get("arguments", {}).get("top_k", 5)
-                print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
-                if not q:
-                    # Reasoning model emitted search_memory with no query — don't
-                    # burn a no-op search; nudge it to retry with specific terms.
-                    result_texts.append("search_memory requires a non-empty query — retry with specific search terms.")
-                    print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
-                    continue
-                hits = route_query(q, top_k=k)
-                _trace_search_chunks.update(hits)
-                if hits:
-                    lines = ["Search results from Mneme memory:"]
-                    for h in hits:
-                        cid = h  # route_query returns chunk_id strings, not tuples
-                        crow = db.execute("SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
-                        if crow:
-                            label, grd, msgs_json = crow[0], crow[1], crow[2]
-                            lines.append(f"[{cid} | G:{grd}] {label}")
-                            try:
-                                msgs = json.loads(msgs_json)
-                                for m in msgs[:5]:
-                                    c = m.get("content", "")[:MAX_PREVIEW_CHARS]
-                                    if c:
-                                        lines.append(f"  {m['role']}: {c}")
-                            except Exception as e:
-                                _log_error("search_tool:parse_msgs", e)
-                        lines.append("")
-                    result_texts.append("\n".join(lines[:30]))  # cap
-                    print(f"  [SEARCH-TOOL] found {len(hits)} results", flush=True)
-                else:
-                    result_texts.append("No matching memories found.")
-                    print("  [SEARCH-TOOL] no results", flush=True)
+        tool_result, _trace = _execute_search_tool_calls(search_calls)
+        _trace_search_chunks.update(_trace)
 
-            tool_result = "\n\n".join(result_texts)
+        # Re-query the model with the search result so it synthesizes a final
+        # answer (with [source: mem_XXX] / [guess] tags) instead of echoing
+        # raw hits. Appended as a USER message rather than a "tool" message:
+        # the Muse Modelfile template has no tool/response rendering, so a
+        # "tool" role message is dropped and trips llama-server's peg-native
+        # grammar on the follow-up generation.
+        followup = list(full_msgs)
+        followup.append({"role": "user",
+                         "content": "search_memory results:\n" + tool_result})
+        print(f"  [SYNTHESIS] re-querying model with search results ({len(tool_result)} chars)", flush=True)
+        result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
+    else:
+        # Ran out of search rounds (model kept searching without answering).
+        # Resolve the final search server-side and return the results as
+        # content — the client's search_memory tool is an empty shim, so
+        # forwarding it would be a silent no-op and the turn would stall.
+        _final_search = [tc for tc in (result.get("tool_calls") or [])
+                         if tc.get("function", {}).get("name") == "search_memory"]
+        if _final_search and not (result.get("content") or "").strip():
+            _tool_result, _trace = _execute_search_tool_calls(_final_search)
+            _trace_search_chunks.update(_trace)
+            result["content"] = _tool_result
 
-            # Re-query the model with the search result so it synthesizes a final
-            # answer (with [source: mem_XXX] / [guess] tags) instead of echoing
-            # raw hits. Appended as a USER message rather than a "tool" message:
-            # the Muse Modelfile template has no tool/response rendering, so a
-            # "tool" role message is dropped and trips llama-server's peg-native
-            # grammar on the follow-up generation.
-            followup = list(full_msgs)
-            followup.append({"role": "user",
-                             "content": "search_memory results:\n" + tool_result})
-            print(f"  [SYNTHESIS] re-querying model with search results ({len(tool_result)} chars)", flush=True)
-            result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
-
-        result["tool_calls"] = remaining_calls
+    result["tool_calls"] = passthrough_calls
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the
@@ -3942,6 +4000,14 @@ def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0, ab
             text = _abstract_strategy_text(text)
         except Exception as e:
             _log_error("_save_strategy:abstract", e)
+    # Single choke point: never store a junk directive (compliance boilerplate,
+    # meta rules about the model's own output, hallucinated evasion). Applied
+    # AFTER abstraction so the final stored text is what gets judged. This one
+    # guard covers every save path (grade-A novel technique, D/F failure
+    # directive, tool-trail learning, novel-procedure).
+    if _is_junk_directive(text):
+        print(f"  [STRATEGY][REJECT] junk directive: {text.strip()[:80]!r}", flush=True)
+        return
     sid = "strat_" + str(int(_t.time()))
     new_version = 1
     parent = ""
@@ -3977,14 +4043,43 @@ def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0, ab
     except Exception as e:
         _log_error("_save_strategy:faiss_add", e)
 
-# Compliance boilerplate + tautological "just do the task" rules are not lessons.
-# A failure directive must name a specific, non-obvious technique to be worth
-# storing — the model confabulates these when asked to explain a timeout it
-# cannot introspect.
+# A strategy must encode a SPECIFIC, domain-grounded technique — not a rule
+# about the assistant's own output, and not compliance/evasion boilerplate. The
+# model confabulates these when asked to explain a failure or a "novel approach"
+# it cannot introspect (a timeout, an empty reply, a hard prompt). Matching is
+# deliberately lexical: each group below is a tell that the directive describes
+# the model's behavior or a hallucinated "technique" rather than a reusable task
+# mechanism. NOTE: "verify the container IP" is a GOOD directive, so we only
+# match "verify/check the <response|output|answer>", never "verify the <thing>".
 _JUNK_DIRECTIVE_RE = re.compile(
-    r"always comply|do not (question|refuse|moralize|hedge|deflect)|without hesitation|"
-    r"compliance|obey|no (refusals|limits)|immediately|just (do|execute|answer|retrieve)",
-    re.IGNORECASE)
+    # (1) Compliance / refusal-bypass boilerplate.
+    r"always comply|without hesitation|\bobey\b|compliance|no (refusals|limits)|"
+    r"do not (question|refuse|moralize|hedge|deflect)|"
+    # (2) Tautological "just do the task" restatements.
+    r"immediately|\bjust (do|execute|answer|retrieve|attempt)\b|"
+    # (3) Rules about the model's OWN output being empty/absent/None — these
+    #     cannot transfer because they describe the assistant, not the task.
+    r"empty (response|output|reply|or null|or \"?none\"?)|"
+    r"\bno (content|output|response|text)\b|absence of a (value|content)|"
+    r"null (state|result)|indicates? the absence|content is absent|"
+    r"indication that content|placeholder word|"
+    # (4) "Verify/check the <own output>" — meta, not a domain object.
+    r"verify the (response|output|answer|earliest|first)|"
+    r"check the (response|output|answer|first line)|\bfirst line\b|"
+    r"externally introduced|pre-populated|injected (content|tool results?)|"
+    # (5) Politeness/acknowledgment boilerplate.
+    r"acknowledge its (purpose|value)|incorporate .{0,20}?feedback|"
+    r"confirm (their|your|the user'?s|the) intent|"
+    r"before (continuing|discussing|offering details|output|responding)|"
+    r"as a (complete|final) response|fully generated|send a visible response|"
+    # (6) Hallucinated "evasion" techniques.
+    r"\bbypass\b|circumvent|\bevade\b|automated request filtering|user-agent|"
+    r"custom (http )?header|anti-?bot|captcha|"
+    # (7) Infra advice the model can't act on (it does not control the proxy's
+    #     socket timeouts) — confabulated when a timeout has no introspectable cause.
+    r"client-side timeout|prevent (indefinite )?hangs?|configure a .{0,20}?timeout",
+    re.IGNORECASE,
+)
 
 
 def _is_junk_directive(text: str) -> bool:
@@ -4160,13 +4255,9 @@ if FLASK_OK:
         
         print(f"  [GRADE] Parsed: {grade}", flush=True)
 
-        # Phase 4.2/4.3: telemetry on injected strategies (non-stream path;
-        # process_chat already consumed, this is a safety net for alternate flows)
-        try:
-            _consume_injected_strategies(grade)
-        except Exception as e:
-            _log_error("chat:consume_strategies", e)
-        
+        # (Injected-strategy telemetry is consumed inside process_chat — a
+        # second call here would be a no-op and double-log the [CONSUME] line.)
+
         # Update effectiveness of strategies referenced in this response
         try:
             # Find strategy IDs mentioned in response
@@ -4257,11 +4348,8 @@ if FLASK_OK:
         result = process_chat(messages, tools=tools, session_id=session_id)
         ct = result.get("content", "")
         grade = result.get("_grade", "C")
-        # Phase 4.2/4.3: telemetry on injected strategies (streaming path)
-        try:
-            _consume_injected_strategies(grade)
-        except Exception as e:
-            _log_error("chat_stream:consume_strategies", e)
+        # (Injected-strategy telemetry is consumed inside process_chat — a
+        # second call here would be a no-op and double-log the [CONSUME] line.)
         # Phase 5.2: embedding-distance check on self-reported A/B grades
         try:
             _check_suspect_grade(grade, ct, messages)
@@ -4271,41 +4359,10 @@ if FLASK_OK:
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
 
-        # Handle search_memory server-side for streaming clients
-        if tool_calls and not content:
-            has_search = any(
-                tc.get("function", {}).get("name") == "search_memory"
-                for tc in tool_calls
-            )
-            if has_search:
-                # Execute search_memory, inject results, re-query
-                for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    if fn.get("name") == "search_memory":
-                        q = (fn.get("arguments", {}).get("query", "") or "").strip()
-                        k = fn.get("arguments", {}).get("top_k", 5)
-                        if not q:
-                            result["content"] = "search_memory requires a non-empty query — retry with specific search terms."
-                            print("  [STREAM-SEARCH] empty query — skipped (nudging model)", flush=True)
-                            continue
-                        hits = route_query(q, top_k=k)
-                        if hits:
-                            lines = ["Search results:\n"]
-                            for h in hits:
-                                cid = h  # route_query returns chunk_id strings, not tuples
-                                crow = db.execute(
-                                    "SELECT topic_label, grade, messages FROM chunks WHERE chunk_id=?",
-                                    (cid,)
-                                ).fetchone()
-                                if crow:
-                                    label, grd, msgs_json = crow
-                                    lines.append(f"[{cid} | G:{grd}] {label}")
-                            result["content"] = "\n".join(lines)
-                            print(f"  [STREAM-SEARCH] {len(hits)} results for '{q[:60]}'", flush=True)
-                        else:
-                            result["content"] = "No matching memories found."
-                content = result["content"]
-                tool_calls = []  # Don't send to client
+        # (search_memory is resolved inside process_chat — its bounded loop and
+        # fallback already handle memory search server-side, so there is nothing
+        # left to do here. Forwarding a search_memory to the client would hit the
+        # empty shim and stall.)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         
         def generate():
@@ -4725,7 +4782,7 @@ def _dump_config():
     print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','256000')}", flush=True)
     print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
-    print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
+    print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
 
 
 _embedding_health_check()
