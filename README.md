@@ -1,147 +1,194 @@
-# Mneme — openrouter-backend (hosted, no local models)
+# Mneme — conversational memory proxy
 
-> ⚠️ **This is the OpenRouter backend branch.** It forks from `novelty-thinking`
-> (learning/strategy layer, epistemic grading, capability-edge tracking) but swaps
-> all three model roles — main LLM, embedder, and labeler — to **OpenRouter**.
-> No Ollama, no GPU, no model downloads. Runs on a laptop.
+A proxy that sits between an AI agent and its model backend, archives every
+conversation into searchable memory, and injects relevant past context on each
+turn. It grades its own epistemic honesty (provenance, not answer-correctness)
+and evolves strategies through a self-improving loop.
 
-Conversational memory proxy between AI agents and OpenRouter. Archives conversations,
-classifies by topic, injects relevant past context, and — like the parent branch —
-grades its own epistemic honesty and evolves strategies through a self-improving loop.
-Model-agnostic. Self-improving.
-
-## How It Works
+**Backend-agnostic.** One config file chooses the backend — local
+[Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter,
+OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads
+required when running against a hosted provider.
 
 ```
-Any OpenAI client → Mneme Proxy (:8080) → OpenRouter (hosted models)
-                         ↕
-                 SQLite + FAISS memory
+Any OpenAI client ──▶ Mneme Proxy (:8080) ──▶ your model backend (Ollama or OpenAI-compatible)
+                           │
+                           └──▶ SQLite + FAISS memory (injected back into the prompt)
 ```
 
-Every conversation turn is staged, then on save the proxy:
-1. Classifies messages into topic groups via LLM labeling (`meta-llama/llama-3.2-3b-instruct`)
-2. Embeds each group with `voyageai/voyage-4-lite` (1024-dim)
-3. Stores in SQLite (chunks table) + FAISS (IndexFlatIP)
-4. On future requests: searches FAISS + keyword fallback, injects top matches
+---
 
-The main model (`deepseek/deepseek-v4-flash` by default) does the chatting, the
-grading, and the strategy discovery. All three roles are hosted — nothing runs locally
-except the proxy itself.
+## Getting started
 
-## Getting Started (local machine)
-
-### Step 1: Clone and run the setup wizard
+### 1. Clone
 
 ```bash
-git clone --branch openrouter-backend https://github.com/flyersean/Mneme.git
+git clone --branch unified_mneme https://github.com/flyersean/Mneme.git
 cd Mneme
-python3 scripts/mneme_setup_openrouter.py
 ```
 
-The wizard:
+### 2. One-time setup: API key + venv
 
-1. **Asks for your OpenRouter API key**, validates it against OpenRouter, shows your
-   remaining credit balance, and saves it to `~/.mneme/openrouter.env` (`chmod 600` —
-   it is never written into the repo).
-2. Lets you pick the main / embedder / labeler models (sensible cheap defaults).
-3. Creates a venv (`~/mneme-venv`) with faiss/numpy/flask/requests if missing.
-4. Writes `setup_config.json` + a `start_proxy.sh` next to the memory DB, launches the
-   proxy, and health-checks it.
-
-Alternatively, run it via curl (the script auto-clones the repo if it can't find one):
+The proxy needs a Python venv with a few deps, and (for hosted backends) an API key.
 
 ```bash
-curl -sSL -o /tmp/setup_or.py https://raw.githubusercontent.com/flyersean/Mneme/openrouter-backend/scripts/mneme_setup_openrouter.py && python3 /tmp/setup_or.py
+# venv (one-time, ~250MB)
+python3 -m venv ~/mneme-venv
+~/mneme-venv/bin/pip install faiss-cpu numpy flask flask-cors requests pyyaml
+
+# API key — pick ONE:
+#   a) save it where launch.sh looks for it (chmod 600):
+#        echo 'OPENROUTER_API_KEY=sk-...' > ~/.mneme/openrouter.env
+#   b) or just export it each time:
+#        export OPENROUTER_API_KEY=sk-...
 ```
 
-After setup the proxy is at `http://localhost:8080` with an OpenAI-compatible API at `/v1`.
+The API key is never written into the repo — it lives in an env var or a
+`~/.mneme/openrouter.env` file that is gitignored by convention.
 
-### Step 2: Connect an agent
+> `scripts/mneme_setup_openrouter.py` also exists and can validate your key and
+> show your credit balance, but it writes a legacy `setup_config.json`. The
+> proxy now reads `mneme.yaml` (below) instead — prefer the manual steps above.
+
+### 3. Configure (optional)
+
+The proxy auto-loads a config file from next to the memory DB
+(`$MNEME_CHUNK_DIR/mneme.yaml`, default `~/mneme_chunks/mneme.yaml`). Copy the
+example to get started:
+
+```bash
+mkdir -p ~/mneme_chunks
+cp mneme.yaml.example ~/mneme_chunks/mneme.yaml
+```
+
+The example is fully commented — every setting explains what it does. The
+defaults already point at OpenRouter with `deepseek/deepseek-v4-flash`, so a
+fresh copy works as-is for a hosted setup. See **Configuration** below for the
+knobs you'll actually tune.
+
+### 4. Launch
+
+```bash
+./launch.sh
+```
+
+This starts the proxy (backgrounded, logging to `~/mneme_chunks/mneme.log`),
+waits for it to be healthy, then launches Pi with the Mneme search extensions.
+Exiting Pi stops the proxy. To run the proxy alone:
+
+```bash
+scripts/run_openrouter.sh        # proxy only, no Pi
+```
+
+The proxy is OpenAI-compatible at `http://localhost:8080/v1`. Verify with
+`curl http://localhost:8080/health`.
+
+### Connect any OpenAI client
 
 - **Pi**: `pi --provider mneme --model text-mneme:64k --extension extensions/pi/mneme-search-tool.ts --extension extensions/pi/mneme-web-tools.ts`
-  (point Pi's `mneme` provider at `http://localhost:8080/v1`, `api: openai-completions`.)
-- **Hermes / any OpenAI client**: connect to `http://localhost:8080/v1`.
+  (point Pi's `mneme` provider at `http://localhost:8080/v1`.)
+- **Hermes / anything OpenAI-compatible**: set the base URL to `http://localhost:8080/v1`.
 
-### Manual start
+---
 
-```bash
-export OPENROUTER_API_KEY=$(grep -iE '^OPENROUTER_API_KEY=' ~/.hermes/profiles/deep1/.env | cut -d= -f2-)
-scripts/run_openrouter.sh
-```
+## Configuration
 
-Or use the generated `~/mneme_chunks/start_proxy.sh` (sources the saved key for you).
+Everything is one file — `$MNEME_CHUNK_DIR/mneme.yaml` — plus a few env vars.
+Settings are resolved **env var > config file > built-in default**, and the
+proxy logs a `[CONFIG]` line at startup showing the final value of every
+setting, so a typo or an overriding env var is visible, not silent.
 
-### Multi-instance (shared DB)
+The knobs you'll actually touch (see `mneme.yaml.example` for full comments):
 
-Run several proxy instances against one memory DB by giving each a distinct
-`MNEME_PORT` and the same `MNEME_CHUNK_DIR`. Nothing is killed — you decide what stays up:
+| Setting | Default | What it does |
+|---|---|---|
+| `backend.type` / `backend.provider` | `openai` / `openrouter` | which backend + which `providers:` entry to use |
+| `providers.<name>.model` | `deepseek/deepseek-v4-flash` | main chat model |
+| `providers.<name>.embed_model` | `voyageai/voyage-4-lite` | embedding model (must be 1024-dim) |
+| `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (must be non-thinking) |
+| `sampling.temperature` | `0.2` | creativity — lower is more deterministic |
+| `retrieval.inject_min_similarity` | `0.62` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall |
+| `retrieval.max_injected_tokens` | `8000` | token budget for memory stuffed into the prompt |
 
-```bash
-MNEME_PORT=8080 scripts/run_openrouter.sh   # instance 1
-MNEME_PORT=8081 scripts/run_openrouter.sh   # instance 2, same DB
-```
+Full reference: [`docs/config-spec.md`](docs/config-spec.md).
 
-All instances must use the **same embedder and labeler** — the embeddings share one
-FAISS index with a fixed 1024 dimension.
+> Note: `route_threshold` and `classify_threshold` in the config are legacy —
+> `route_threshold` is only used by the `/search` debug endpoint and
+> `classify_threshold` is unused. Injection is governed by
+> `inject_min_similarity`. (This is called out in the example's comments too.)
 
-## Models
+---
 
-| Role     | Default                            | Notes |
-|----------|------------------------------------|-------|
-| Main LLM | `deepseek/deepseek-v4-flash`       | cheap thinking MoE ($0.064/M in) |
-| Embedder | `voyageai/voyage-4-lite`           | 1024-dim (matches FAISS), $0.02/M |
-| Labeler  | `meta-llama/llama-3.2-3b-instruct` | small, non-thinking |
+## How memory works
 
-The labeler **must be non-thinking** — a thinking model (e.g. deepseek-v4-flash) burns
-its token budget on reasoning and returns empty `content` for a trivial "3-5 word label"
-task, so labels fall back to the heuristic. The embedder **must output 1024-dim**
-(or you must change `DIM` and re-embed).
+Every turn is staged, then on save the proxy:
 
-## Portability (local ↔ pod, different embedders)
+1. **Labels** message groups into topics with the labeler model.
+2. **Embeds** each group with the embedder (1024-dim).
+3. **Stores** in SQLite (`chunks` table) + a FAISS `IndexFlatIP`.
+4. On the next request: embeds the query, finds FAISS nearest neighbours, and
+   injects the chunks whose similarity clears `inject_min_similarity`.
 
-Memory is portable between machines even when they use different embedding models,
-as long as both are 1024-dim. On startup the proxy compares each chunk's stored
-`embed_model` against the current `EMBED_MODEL`; mismatched chunks (and wrong-dim
-vectors) are marked `pending_embed` and re-embedded automatically. So:
+The retrieval gate is an **absolute similarity floor**, not a relative one:
+if nothing in memory scores above `inject_min_similarity`, nothing is injected
+(no "best guess" noise). A substring keyword fallback exists but is **off by
+default** (`keyword_fallback: false`) because it has no semantic score and
+pollutes context (e.g. "tool" matching an unrelated "Paramotor Tool" memory).
 
-```
-scp the .db from the pod to your laptop → restart → it self-heals
-```
+Memory is **portable** across machines and even across 1024-dim embedders: on
+startup the proxy re-embeds any chunk whose stored `embed_model` doesn't match
+the current one, so you can `scp` the `.db` from a pod to a laptop and it
+self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
-Text, grades, and strategies survive; only the vectors regenerate.
+---
 
 ## Features
 
-**Core Memory**
+**Core memory**
 - Topic-aware chunking with automatic LLM labeling
-- FAISS vector search + SQLite keyword fallback (hybrid retrieval)
-- Noise-floor calibration at startup (subtracts baseline from cosine scores)
+- FAISS vector search gated by an absolute `inject_min_similarity` floor
 - Recency-weighted scoring (cycle-based, not wall-clock)
 - Source tracking (user, model, tool:*, page:*, document:*)
-- Embedding reliability: startup health check probes the embedder and fails loudly on a
-  dim mismatch; a failed embed is stored `pending_embed` and re-embedded on next startup
-  (no silent dead vectors)
+- Embedding reliability: startup health check probes the embedder and fails
+  loud on a dim mismatch; a failed embed is stored `pending_embed` and
+  re-embedded on next startup (no silent dead vectors)
 
-**Learning & Strategy Layer** (inherited from `novelty-thinking`)
-- Pass/fail/great grading: the model tags provenance (`[source: X]` / `[guess]`) and is
-  graded on *honesty*, not answer correctness — "I don't know" beats fabrication.
-- Trace cross-check: any `[source: mem_XXX]` or URL the model cites is verified against
-  what it actually had this turn; a fabricated citation grades fail.
-- Novel-procedure detection: a working NEW technique is detected from the tool trace,
-  graded "great", and saved as a strategy with cost metadata.
-- Strategy ranking: injected grade-first, then cheaper-wins.
-- Failure extraction: a D/F turn distills one imperative directive to prevent recurrence.
+**Learning & strategy layer**
+- Provenance grading: the model tags its sources (`[source: X]` / `[guess]`) and
+  is graded on *honesty*, not answer-correctness — "I don't know" beats
+  fabrication.
+- Trace cross-check: any cited `[source: mem_XXX]` or URL is verified against
+  what the model actually had this turn; a fabricated citation fails.
+- Novel-procedure detection: a working new technique is detected from the tool
+  trace, graded "great", and saved as a strategy.
+- Failure extraction: a D/F turn distills one imperative directive to prevent
+  recurrence — filtered through a junk-directive guard so hallucinated
+  "strategies" never enter memory.
 
-**Capability-Edge Tracking** — records a competence edge per problem type; two poor
-grades flag it and the next similar task injects a "propose the tool, don't grind"
-directive.
+**Capability-edge tracking** — records a competence edge per problem type; two
+poor grades flag it and the next similar task injects a "propose the tool,
+don't grind" directive.
 
-**Novelty & Divergence Modes** — `/mode/think`, `/mode/divergent`, and
-adversarial-collaboration endpoints that grade novelty objectively (embedding distance +
-pairwise judge), not by self-report.
+**Thinking & learning modes** — `/mode/think` (novelty: generate a baseline,
+forbid its modal features, diverge, and grade novelty objectively via embedding
+distance + pairwise judge — not self-report) and `/mode/learn` (parameter
+cycling + strategy extraction).
 
-**v2 Architecture** — persona-free system prompt, `<<COMMAND>>` stripping, content
-normalization (string and array content).
+---
+
+## Testing
+
+```bash
+~/mneme-venv/bin/python tests/test_tool_loop.py
+```
+
+Deterministic regression tests — no live model or network. A scripted model
+stands in for the LLM, and the real SQLite/FAISS + retrieval paths run against
+an in-memory DB. They cover the tool-calling loop (search → answer, search →
+web_search hand-off, search-loop exhaustion) and the injection gate
+(`inject_min_similarity` floor, keyword fallback off).
+
+---
 
 ## Endpoints
 
@@ -149,23 +196,34 @@ normalization (string and array content).
 |--------|------|-------------|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat |
 | POST | `/save` | Flush staging buffer to persistent storage |
-| POST | `/search` | Search memory: `{"query": "...", "top_k": 3}` |
+| POST | `/search` | Debug search: `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
 | GET | `/list` | List all chunks with metadata |
-| GET | `/capabilities` | List capability-edge records (GET) / flag or clear (POST) |
+| GET/POST | `/capabilities` | List capability-edge records / flag or clear |
+| POST | `/mode/think` | Novelty thinking mode (escape mode collapse) |
+| POST | `/mode/learn` | Learning mode (parameter cycling + strategy extraction) |
+| GET/POST | `/preferences` | Read / set user preferences |
+
+---
 
 ## Architecture
 
-Single-file Flask proxy (`proxy/mneme_proxy.py`). Module-level state (FAISS index,
-SQLite connection, staging buffer). Threaded server with daemon archival threads.
-`MNEME_BACKEND=openrouter` routes `query_model` → OpenRouter `/chat/completions`,
-`embed` → `/embeddings`, and the labeler → `/chat/completions` (all OpenAI-compatible);
-the default `MNEME_BACKEND=ollama` path is unchanged and still works.
+Single-file Flask proxy (`proxy/mneme_proxy.py`) with module-level state (FAISS
+index, SQLite connection, staging buffer) and threaded daemon archival. The
+backend is selected by config (`backend.type` + `providers:`); `query_model`
+→ chat completions, `embed` → embeddings, and the labeler → chat completions,
+all OpenAI-compatible, so swapping providers is a config edit, not a code change.
+
+---
 
 ## Branches
 
-- `main` — stable, stripped-down memory-only build (Ollama). Start here if you're new.
+- `main` — stable, stripped-down memory-only build (Ollama). Start here if you
+  only want memory.
+- `unified_mneme` — **current branch.** `novelty-thinking`'s learning/strategy
+  layer on top of the config-file + backend generalization (one `mneme.yaml`,
+  `providers:` registry, `ollama | openai`). This README describes it.
 - `novelty-thinking` — experimental learning/strategy layer (Ollama, Muse 30B).
-- `openrouter-backend` — **this branch.** `novelty-thinking` on a fully hosted OpenRouter
-  backend (no Ollama, no GPU). Local-machine friendly.
+- `openrouter-backend` — earlier hosted-OpenRouter branch (superseded by
+  `unified_mneme`'s provider registry).
 - `build-roadmap`, `dev-chunks`, `dev-v2` — legacy / restore points.
