@@ -34,6 +34,23 @@ TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
 db = None          # sqlite3.Connection
 embed = None       # callable: str -> np.ndarray (normalized) | None
 
+
+def reload_config():
+    """Re-read the tools config from env.
+
+    mneme_proxy imports this module BEFORE load_config() applies the config file
+    (which sets the MNEME_* env vars), so the module-level defaults above are
+    stale. mneme_proxy calls this right after load_config() to refresh them.
+    """
+    global NATIVE_TOOLS_MODE, TOOLS_DIR, BASH_TIMEOUT
+    global TOOL_INJECT_MIN_SIM, TOOL_INJECT_MAX, TOOL_INJECT_TOKENS
+    NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
+    TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme_chunks/tools"))
+    BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
+    TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
+    TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
+    TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
+
 # ─── Tool definitions (OpenAI function-calling format) ──────────────────
 
 SEARCH_MEMORY_TOOL = {

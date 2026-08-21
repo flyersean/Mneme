@@ -262,6 +262,7 @@ def load_config():
 
 # ─── Config ────────────────────────────────────────────────────
 load_config()
+mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
 
 OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
