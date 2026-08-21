@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Chat</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e5e7eb;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --user-bubble: #2563eb;
+    --user-text: #ffffff;
+    --assistant-bubble: #ffffff;
+    --code-bg: #f3f4f6;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  header .title { font-weight: 600; font-size: 16px; }
+  header .model { font-size: 12px; color: var(--muted); }
+  header button {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  header button:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .inner { max-width: 760px; margin: 0 auto; width: 100%; display: flex; flex-direction: column; gap: 14px; }
+
+  .row { display: flex; }
+  .row.user { justify-content: flex-end; }
+  .row.assistant { justify-content: flex-start; }
+
+  .bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    line-height: 1.5;
+    font-size: 15px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .row.user .bubble { background: var(--user-bubble); color: var(--user-text); border-bottom-right-radius: 4px; }
+  .row.assistant .bubble { background: var(--assistant-bubble); color: var(--text); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+
+  .bubble code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+  }
+  .row.user .bubble code { background: rgba(255,255,255,0.22); }
+  .bubble pre {
+    background: var(--code-bg);
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    margin: 8px 0;
+  }
+  .row.user .bubble pre { background: rgba(255,255,255,0.18); }
+
+  .thinking { color: var(--muted); font-style: italic; font-size: 14px; padding: 8px 4px; }
+  .thinking .dot { animation: blink 1.2s infinite; }
+  @keyframes blink { 0%,100% { opacity: .2; } 50% { opacity: 1; } }
+
+  details.reasoning { margin: 4px 0; }
+  details.reasoning summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details.reasoning .body { color: var(--muted); font-size: 13px; white-space: pre-wrap; border-left: 2px solid var(--border); padding-left: 10px; margin-top: 6px; }
+
+  footer {
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+  }
+  .composer {
+    max-width: 760px; margin: 0 auto;
+    display: flex; gap: 10px; align-items: flex-end;
+  }
+  textarea {
+    flex: 1;
+    resize: none;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 11px 14px;
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1.5;
+    max-height: 160px;
+    outline: none;
+    background: var(--panel);
+    color: var(--text);
+  }
+  textarea:focus { border-color: var(--accent); }
+  #send {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    padding: 11px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #send:hover { background: #1d4ed8; }
+  #send:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="title">Mneme</div>
+    <div class="model" id="model-label">connecting…</div>
+  </div>
+  <button id="new-chat" title="Start a new conversation">New chat</button>
+</header>
+
+<div id="chat"><div class="inner" id="thread"></div></div>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Ask something… (Enter to send, Shift+Enter for a new line)"></textarea>
+    <button id="send">Send</button>
+  </div>
+</footer>
+
+<script>
+const MODEL = "text-mneme:64k";
+const thread = document.getElementById("thread");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const modelLabel = document.getElementById("model-label");
+const chat = document.getElementById("chat");
+
+let history = [];   // [{role, content}]
+let busy = false;
+
+// ── helpers ──────────────────────────────────────────────────────
+function scrollDown() { chat.scrollTop = chat.scrollHeight; }
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+// Minimal markdown: escape HTML, then ```blocks```, `inline`, **bold**.
+function renderMarkdown(src) {
+  const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // split out fenced code blocks first
+  const parts = String(src).split(/```/);
+  let html = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      // code block (strip a leading language tag like "python")
+      const code = parts[i].replace(/^[a-zA-Z0-9_+-]*\n/, "");
+      html += "<pre>" + escapeHtml(code) + "</pre>";
+    } else {
+      html += escapeHtml(parts[i])
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+  }
+  return html;
+}
+
+function appendMessage(role, content, reasoning) {
+  const row = el("div", "row " + role);
+  const bubble = el("div", "bubble");
+  bubble.innerHTML = renderMarkdown(content);
+  row.appendChild(bubble);
+  thread.appendChild(row);
+
+  if (reasoning && reasoning.trim()) {
+    const det = el("details", "reasoning");
+    const sum = el("summary", null, "thinking");
+    const body = el("div", "body", reasoning.trim());
+    det.appendChild(sum); det.appendChild(body);
+    const rrow = el("div", "row assistant");
+    const wrap = el("div", "bubble");
+    wrap.appendChild(det);
+    rrow.appendChild(wrap);
+    thread.appendChild(rrow);
+  }
+  scrollDown();
+}
+
+function appendThinking() {
+  const row = el("div", "row assistant");
+  const t = el("div", "thinking", "thinking");
+  const dots = el("span", "dot", " . . .");
+  t.appendChild(dots);
+  row.appendChild(t);
+  thread.appendChild(row);
+  scrollDown();
+  return row;
+}
+
+// ── send ─────────────────────────────────────────────────────────
+async function send() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  input.value = "";
+  input.style.height = "auto";
+  appendMessage("user", text);
+  history.push({ role: "user", content: text });
+
+  busy = true;
+  sendBtn.disabled = true;
+  const thinkingRow = appendThinking();
+
+  try {
+    const resp = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: MODEL, messages: history, stream: false })
+    });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    thinkingRow.remove();
+
+    const msg = data.choices && data.choices[0] && data.choices[0].message;
+    let content = (msg && msg.content) || "";
+    const reasoning = (msg && msg.reasoning) || "";
+    if (!content && msg && msg.tool_calls) {
+      content = "_(tool call: " + msg.tool_calls.map(t => t.function.name).join(", ") + ")_";
+    }
+    if (!content) content = "(no response)";
+    appendMessage("assistant", content, reasoning);
+    history.push({ role: "assistant", content: content });
+  } catch (e) {
+    thinkingRow.remove();
+    appendMessage("assistant", "(error: " + e.message + ")");
+  } finally {
+    busy = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+// ── wiring ───────────────────────────────────────────────────────
+sendBtn.addEventListener("click", send);
+
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+});
+
+document.getElementById("new-chat").addEventListener("click", () => {
+  history = [];
+  thread.innerHTML = "";
+  appendMessage("assistant", "Hi — I'm Mneme, a memory-augmented assistant. I can search my memory, build small tools to work around limits, and grade my own answers for honesty. What should we work on?");
+  input.focus();
+});
+
+// ── boot ─────────────────────────────────────────────────────────
+async function boot() {
+  try {
+    const r = await fetch("/health");
+    const h = await r.json();
+    modelLabel.textContent = (h.model || MODEL) + "  ·  backend " + (h.backend || "?");
+  } catch (e) {
+    modelLabel.textContent = MODEL;
+  }
+  appendMessage("assistant", "Hi — I'm Mneme, a memory-augmented assistant. I can search my memory, build small tools to work around limits, and grade my own answers for honesty. What should we work on?");
+  input.focus();
+}
+boot();
+</script>
+</body>
+</html>

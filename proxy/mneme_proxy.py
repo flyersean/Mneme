@@ -3987,6 +3987,19 @@ if FLASK_OK:
         resp.headers["Access-Control-Allow-Methods"] = "*"
         return resp, status
     
+    # ── Chat UI: simple light-theme HTML front end (thin client -> /v1/chat/completions) ──
+    _CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "chat.html")
+
+    @app.route("/", methods=["GET"])
+    @app.route("/chat", methods=["GET"])
+    def chat_ui():
+        try:
+            with open(_CHAT_HTML_PATH, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except Exception as e:
+            print(f"  [CHAT-UI][ERR] {str(e)[:100]}", flush=True)
+            return _cors_response({"error": "chat UI not found"}, status=404)
+    
     # ── OPTIONS preflight for all routes ──
     @app.route("/v1/chat/completions", methods=["OPTIONS"])
     @app.route("/api/chat/completions", methods=["OPTIONS"])

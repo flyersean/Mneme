@@ -83,6 +83,13 @@ scripts/run_openrouter.sh        # proxy only, no Pi
 The proxy is OpenAI-compatible at `http://localhost:8080/v1`. Verify with
 `curl http://localhost:8080/health`.
 
+### Built-in chat UI
+
+The proxy serves a simple light-theme chat page at `http://localhost:8080/`
+(or `/chat`) — no client or extension needed. It's a thin front end over
+`/v1/chat/completions` and exercises the full native toolset out of the box
+(memory search, built-tool registry, native `bash`/`write`).
+
 ### Connect any OpenAI client
 
 - **Pi**: `pi --provider mneme --model text-mneme:64k --extension extensions/pi/mneme-search-tool.ts --extension extensions/pi/mneme-web-tools.ts`
