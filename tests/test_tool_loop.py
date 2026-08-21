@@ -666,8 +666,8 @@ def test_retrieve_relevant_tools_gating():
     tmp = tempfile.mkdtemp(prefix="mneme_tools_")
     db = _tools_db(tmp)
     s = os.path.join(tmp, "s.py"); open(s, "w").write("x=1")
-    orig_db, orig_embed, orig_min = mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM
-    mt.db, mt.TOOL_INJECT_MIN_SIM = db, 0.5
+    orig_db, orig_embed, orig_min, orig_dir = mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM, mt.TOOLS_DIR
+    mt.db, mt.TOOL_INJECT_MIN_SIM, mt.TOOLS_DIR = db, 0.5, tmp
     e1 = np.zeros(mp.DIM, dtype=np.float32); e1[0] = 1.0
     e2 = np.zeros(mp.DIM, dtype=np.float32); e2[1] = 1.0
     try:
@@ -681,7 +681,7 @@ def test_retrieve_relevant_tools_gating():
         inj = mt.inject_relevant_tools("scrape a salary")
         assert "scrape_salary" in inj and "Built tools you can reuse" in inj
     finally:
-        mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM = orig_db, orig_embed, orig_min
+        mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM, mt.TOOLS_DIR = orig_db, orig_embed, orig_min, orig_dir
 
 
 @test
