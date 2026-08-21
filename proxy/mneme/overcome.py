@@ -27,9 +27,10 @@ from mneme.tools import save_tool as _save_tool_to_registry
 STUCK_CONSECUTIVE_FAILURES = int(os.environ.get("MNEME_STUCK_CONSECUTIVE_FAILURES", "2"))
 STUCK_MAX_TOOL_ROUNDS = int(os.environ.get("MNEME_STUCK_MAX_TOOL_ROUNDS", "6"))
 BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
+# Each build iteration = one write + one bash (a single build-and-test attempt).
+BUILD_MAX_TOOL_CALLS = BUILD_MAX_ITERATIONS * 2
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
-_BUILD_MARKER = "=== BUILD MODE (iteration "
 _DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)
 _PLAN_RE = re.compile(r'PLAN\s*:\s*(.+)', re.IGNORECASE)
 _MISSING_RE = re.compile(r'MISSING\s*:\s*(.+)', re.IGNORECASE)
@@ -124,12 +125,21 @@ def _in_reuse_mode(messages):
     return seen_reuse and not seen_resolution
 
 
-def _build_iterations(messages):
-    """Count the BUILD MODE markers already injected this task (one per build turn)."""
+def _build_tool_calls(messages):
+    """Count write/bash tool calls since the last user turn (build progress).
+
+    This is the UNIFIED build-progress counter for both modes:
+      * harness mode — counts the client-echoed write/bash tool calls in the
+        incoming message history;
+      * native mode — the orchestrator counts native write/bash executions in
+        its internal loop and compares against the same BUILD_MAX_TOOL_CALLS.
+    """
     start = _last_user_index(messages)
     count = 0
     for m in messages[start:]:
-        count += _extract_text(m.get("content", "") or "").count(_BUILD_MARKER)
+        for tc in (m.get("tool_calls") or []):
+            if tc.get("function", {}).get("name") in ("write", "bash"):
+                count += 1
     return count
 
 

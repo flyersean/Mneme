@@ -201,6 +201,10 @@ def test_search_loop_exhaustion_returns_results_as_content():
         _search_call("mneme tool calling bug", id="call_5"),
         _search_call("mneme tool calling bug", id="call_6"),
         _search_call("mneme tool calling bug", id="call_7"),
+        _search_call("mneme tool calling bug", id="call_8"),
+        _search_call("mneme tool calling bug", id="call_9"),
+        _search_call("mneme tool calling bug", id="call_10"),
+        _search_call("mneme tool calling bug", id="call_11"),
         # The fallback content (raw search results) has no provenance tags, so
         # the grading path makes one slow provenance-judge call on it.
         _answer("NO SPECIFIC CLAIMS"),
@@ -411,17 +415,23 @@ def test_record_overcome_updates_edge():
 
 
 @test
-def test_in_build_mode_and_iterations():
+def test_in_build_mode_and_build_tool_calls():
     msgs = [
         {"role": "user", "content": "scrape the blocked site"},
         {"role": "system", "content": "=== OVERCOME MODE ===\nSTOP. You are stuck."},
         {"role": "assistant", "content": "DECISION: build_tool\nPLAN: write a curl script"},
     ]
     assert mp._in_build_mode(msgs) is True
-    msgs.append({"role": "system", "content": mp._build_directive(1, 3)})
-    assert mp._build_iterations(msgs) == 1
-    msgs.append({"role": "system", "content": mp._build_directive(2, 3)})
-    assert mp._build_iterations(msgs) == 2
+    msgs.append({"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "write", "arguments": {}}}]})
+    assert mp._build_tool_calls(msgs) == 1
+    msgs.append({"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c2", "type": "function", "function": {"name": "bash", "arguments": {}}}]})
+    assert mp._build_tool_calls(msgs) == 2
+    # non-build tools (web_search) do not count toward the build budget
+    msgs.append({"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c3", "type": "function", "function": {"name": "web_search", "arguments": {}}}]})
+    assert mp._build_tool_calls(msgs) == 2
     # resolution -> no longer in build mode
     msgs.append({"role": "assistant", "content": "TOOL_SAVE: scraper :: a scraper :: /tmp/scraper.sh"})
     assert mp._in_build_mode(msgs) is False
@@ -429,11 +439,13 @@ def test_in_build_mode_and_iterations():
 
 @test
 def test_build_directive_and_exhausted():
-    d = mp._build_directive(2, 3)
-    assert "BUILD MODE" in d and "iteration 2/3" in d
+    d = mp._build_directive(2, 6)
+    assert "BUILD MODE" in d and "step 2/6" in d
     e = mp._build_exhausted_directive(3)
     assert "EXHAUSTED" in e and "declare_edge" in e
-    assert mp._build_iterations([]) == 0  # no markers -> zero iterations
+    assert mp._build_tool_calls([]) == 0
+    # unified bound: the tool-call budget is derived from the iteration knob
+    assert mp.BUILD_MAX_TOOL_CALLS == mp.BUILD_MAX_ITERATIONS * 2
 
 
 @test

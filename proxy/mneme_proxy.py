@@ -43,7 +43,7 @@ from mneme.overcome import (
     _overcome_directive,
     _parse_deliberation,
     _in_build_mode,
-    _build_iterations,
+    _build_tool_calls,
     _build_directive,
     _build_exhausted_directive,
     _in_reuse_mode,
@@ -54,6 +54,7 @@ from mneme.overcome import (
     _tool_directive,
     _handle_overcome_reply,
     BUILD_MAX_ITERATIONS,
+    BUILD_MAX_TOOL_CALLS,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -3373,13 +3374,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _in_reuse = _in_reuse_mode(messages)
     _deliberate = _stuck and not _in_build and not _in_reuse  # hard stop: force deliberation, not another retry
     if _in_build:
-        _it = _build_iterations(messages)
-        if _it >= BUILD_MAX_ITERATIONS:
+        _calls = _build_tool_calls(messages)
+        if _calls >= BUILD_MAX_TOOL_CALLS:
             mneme_system += "\n\n" + _build_exhausted_directive(BUILD_MAX_ITERATIONS)
-            print(f"  [BUILD-EXHAUSTED] {_it} iterations — forcing declare_edge", flush=True)
+            print(f"  [BUILD-EXHAUSTED] {_calls} build tool calls — forcing declare_edge", flush=True)
         else:
-            mneme_system += "\n\n" + _build_directive(_it + 1, BUILD_MAX_ITERATIONS)
-            print(f"  [BUILD] iteration {_it + 1}/{BUILD_MAX_ITERATIONS}", flush=True)
+            mneme_system += "\n\n" + _build_directive(_calls + 1, BUILD_MAX_TOOL_CALLS)
+            print(f"  [BUILD] build step {_calls + 1}/{BUILD_MAX_TOOL_CALLS}", flush=True)
     elif _in_reuse:
         _rname, _rpath = _reuse_tool_info(messages, db)
         mneme_system += "\n\n" + _reuse_directive(_rname, _rpath)
@@ -3456,7 +3457,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # dropped a follow-up call — grading the turn F.
     _trace_search_chunks = set()
     passthrough_calls = []
-    _MAX_SERVER_ROUNDS = 6
+    _build_calls = 0  # native write/bash executions this turn (bounded by BUILD_MAX_TOOL_CALLS)
+    _MAX_SERVER_ROUNDS = BUILD_MAX_TOOL_CALLS + 4  # build budget + search/registry headroom
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _server_names = {"search_memory", "list_tools", "read_tool"} | _native_names
     for _round in range(_MAX_SERVER_ROUNDS):
@@ -3473,15 +3475,22 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
         followup = list(full_msgs)
 
-        # Native bash/write: proper OpenAI protocol (assistant tool_calls + tool result).
+        # Native bash/write: bounded by BUILD_MAX_TOOL_CALLS (the unified knob —
+        # same bound the harness-mode build loop enforces via _build_tool_calls).
         if native_calls:
-            followup.append({"role": "assistant", "content": None, "tool_calls": native_calls})
-            for tc in native_calls:
-                nm = tc["function"]["name"]
-                args = tc["function"].get("arguments", {}) or {}
-                res = mntools.execute_native_tool(nm, args)
-                print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
-                followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
+            if _build_calls >= BUILD_MAX_TOOL_CALLS:
+                # Budget spent: don't execute more; force the model to declare.
+                followup.append({"role": "user", "content": _build_exhausted_directive(BUILD_MAX_ITERATIONS)})
+                print(f"  [BUILD-EXHAUSTED] native build budget ({BUILD_MAX_TOOL_CALLS}) reached", flush=True)
+            else:
+                _build_calls += len(native_calls)
+                followup.append({"role": "assistant", "content": None, "tool_calls": native_calls})
+                for tc in native_calls:
+                    nm = tc["function"]["name"]
+                    args = tc["function"].get("arguments", {}) or {}
+                    res = mntools.execute_native_tool(nm, args)
+                    print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
+                    followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
 
         # search_memory: user-message feedback (Muse-template workaround — the
         # Ollama path drops a "tool" role message and trips the peg grammar).

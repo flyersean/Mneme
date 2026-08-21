@@ -77,14 +77,14 @@ DEFAULT_INSTRUCTIONS = {
         "If it works, answer directly. If it fails, say so and reconsider (build a new tool or declare the edge)."
     ),
     "overcome_build": (
-        "\n=== BUILD MODE (iteration {{iteration}}/{{max}}) ===\n"
-        "Build the tool from your plan: write it under ~/mneme_chunks/tools/ using the write tool, "
-        "then test it against the task with bash. When it produces the correct result, output "
-        "\"TOOL_SAVE: <name> :: <description> :: <path>\". If it still fails, fix it and retry."
+        "\n=== BUILD MODE (step {{iteration}}/{{max}}) ===\n"
+        "Build the tool from your plan: write it under the tools directory using write, then test it "
+        "with bash. When it works, output \"TOOL_SAVE: <name> :: <description> :: <path>\". "
+        "If it fails, fix and retry — you have a limited number of build steps before you must declare the edge."
     ),
     "overcome_build_exhausted": (
         "\n=== BUILD EXHAUSTED ===\n"
-        "You have used all {{max}} build iterations without a working tool. Stop building. "
+        "You have used all {{max}} build attempts without a working tool. Stop building. "
         "Answer honestly: state what you could not achieve and which capability is missing "
         "(output \"DECISION: declare_edge\" and a \"MISSING:\" note)."
     ),
