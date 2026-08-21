@@ -46,6 +46,9 @@ from mneme.overcome import (
     _build_iterations,
     _build_directive,
     _build_exhausted_directive,
+    _in_reuse_mode,
+    _reuse_directive,
+    _reuse_tool_info,
     _save_tool,
     _record_overcome,
     _tool_directive,
@@ -72,6 +75,7 @@ from mneme.grading import (
     _has_fake_source,
     _has_specific_claims,
 )
+import mneme.tools as mntools
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -125,6 +129,12 @@ _CONFIG_ENV_MAP = {
     "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
     "caps.max_tool_forward": "MNEME_MAX_TOOL_FORWARD",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
+    "tools.native": "MNEME_NATIVE_TOOLS",
+    "tools.dir": "MNEME_TOOLS_DIR",
+    "tools.bash_timeout": "MNEME_TOOLS_BASH_TIMEOUT",
+    "tools.inject_min_similarity": "MNEME_TOOL_INJECT_MIN_SIMILARITY",
+    "tools.inject_max": "MNEME_TOOL_INJECT_MAX",
+    "tools.inject_tokens": "MNEME_TOOL_INJECT_TOKENS",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
     "embed_model": "EMBED_MODEL",
@@ -458,6 +468,7 @@ db = sqlite3.connect(DB_PATH, check_same_thread=False)
 db.execute("PRAGMA journal_mode=WAL")
 db.execute("PRAGMA synchronous=NORMAL")
 capability.db = db  # bind the extracted capability module's db handle
+mntools.db = db      # bind the tool system's db handle
 
 db.executescript("""
     CREATE TABLE IF NOT EXISTS chunks (
@@ -538,6 +549,9 @@ for migration in (
     "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
     "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
     "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
+    "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
+    "ALTER TABLE tools ADD COLUMN embedding BLOB",
+    "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
 ):
     try:
         db.execute(migration)
@@ -753,6 +767,9 @@ def embed(text: str):
         print(f"  [EMBED][ERROR] {type(e).__name__}: {e} — returning None (pending_embed)",
               flush=True)
         return None
+
+
+mntools.embed = embed  # bind the tool system's embed function
 
 
 def _embed_or_zeros(text: str) -> np.ndarray:
@@ -3312,9 +3329,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     user_msgs2 = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages) if m.get("role") == "user"][:3]
     user_msg = " ".join(reversed(user_msgs2))
 
-    msg_tools = tools if tools else []
-    # Always include search_memory tool — never let Hermes tools override it
-    pass  # SEARCH_MEMORY_TOOL handled by harness
+    # Full tool list = read-only server tools (search_memory/list_tools/read_tool)
+    # + native bootstrap (bash/write, flag-gated) + client passthrough, deduped.
+    msg_tools = mntools.assemble_tools(tools)
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
     for m in messages:
         for tc in m.get("tool_calls", []):
@@ -3346,9 +3363,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # If the model is stuck, inject the hard OVERCOME directive instead of the
     # soft nudge — it forces a decision (build a tool or declare the edge).
     mneme_system = context + _tool_directive(db, cur_ptype) + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
+    _tool_injection = mntools.inject_relevant_tools(user_msg)
+    if _tool_injection:
+        mneme_system += "\n" + _tool_injection
+        print("  [TOOL-INJECT] injected relevant built tools", flush=True)
     _stuck, _stuck_reason = _detect_stuck(messages)
     _in_build = _in_build_mode(messages)
-    _deliberate = _stuck and not _in_build  # hard stop: force deliberation, not another retry
+    _in_reuse = _in_reuse_mode(messages)
+    _deliberate = _stuck and not _in_build and not _in_reuse  # hard stop: force deliberation, not another retry
     if _in_build:
         _it = _build_iterations(messages)
         if _it >= BUILD_MAX_ITERATIONS:
@@ -3357,6 +3379,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         else:
             mneme_system += "\n\n" + _build_directive(_it + 1, BUILD_MAX_ITERATIONS)
             print(f"  [BUILD] iteration {_it + 1}/{BUILD_MAX_ITERATIONS}", flush=True)
+    elif _in_reuse:
+        _rname, _rpath = _reuse_tool_info(messages, db)
+        mneme_system += "\n\n" + _reuse_directive(_rname, _rpath)
+        print(f"  [REUSE] run existing tool '{_rname}'", flush=True)
     elif _deliberate:
         mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
         print(f"  [OVERCOME] {_stuck_reason} — hard stop, tools removed", flush=True)
@@ -3429,37 +3455,55 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # dropped a follow-up call — grading the turn F.
     _trace_search_chunks = set()
     passthrough_calls = []
-    _MAX_SEARCH_ROUNDS = 4
-    for _round in range(_MAX_SEARCH_ROUNDS):
+    _MAX_SERVER_ROUNDS = 6
+    _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
+    _server_names = {"search_memory", "list_tools", "read_tool"} | _native_names
+    for _round in range(_MAX_SERVER_ROUNDS):
         tcs = result.get("tool_calls") or []
         content = (result.get("content") or "").strip()
-        search_calls = [tc for tc in tcs
-                        if tc.get("function", {}).get("name") == "search_memory"]
-        other_calls = [tc for tc in tcs
-                       if tc.get("function", {}).get("name") != "search_memory"]
+        search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
+        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool")]
+        native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
+        other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
-        if content or not search_calls:
+
+        if content or not (search_calls or registry_calls or native_calls):
             break
 
-        tool_result, _trace = _execute_search_tool_calls(search_calls)
-        _trace_search_chunks.update(_trace)
-
-        # Re-query the model with the search result so it synthesizes a final
-        # answer (with [source: mem_XXX] / [guess] tags) instead of echoing
-        # raw hits. Appended as a USER message rather than a "tool" message:
-        # the Muse Modelfile template has no tool/response rendering, so a
-        # "tool" role message is dropped and trips llama-server's peg-native
-        # grammar on the follow-up generation.
         followup = list(full_msgs)
-        followup.append({"role": "user",
-                         "content": "search_memory results:\n" + tool_result})
-        print(f"  [SYNTHESIS] re-querying model with search results ({len(tool_result)} chars)", flush=True)
+
+        # Native bash/write: proper OpenAI protocol (assistant tool_calls + tool result).
+        if native_calls:
+            followup.append({"role": "assistant", "content": None, "tool_calls": native_calls})
+            for tc in native_calls:
+                nm = tc["function"]["name"]
+                args = tc["function"].get("arguments", {}) or {}
+                res = mntools.execute_native_tool(nm, args)
+                print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
+                followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
+
+        # search_memory: user-message feedback (Muse-template workaround — the
+        # Ollama path drops a "tool" role message and trips the peg grammar).
+        if search_calls:
+            tool_result, _trace = _execute_search_tool_calls(search_calls)
+            _trace_search_chunks.update(_trace)
+            followup.append({"role": "user", "content": "search_memory results:\n" + tool_result})
+
+        # Registry tools (list_tools/read_tool): user-message feedback.
+        for tc in registry_calls:
+            nm = tc["function"]["name"]
+            args = tc["function"].get("arguments", {}) or {}
+            res = mntools.execute_readonly_tool(nm, args)
+            print(f"  [TOOL-REGISTRY] {nm} -> {res[:90]!r}", flush=True)
+            followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
+
+        print(f"  [SYNTHESIS] re-querying model "
+              f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)
         result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
     else:
-        # Ran out of search rounds (model kept searching without answering).
-        # Resolve the final search server-side and return the results as
-        # content — the client's search_memory tool is an empty shim, so
-        # forwarding it would be a silent no-op and the turn would stall.
+        # Ran out of server rounds (model kept calling server tools without
+        # answering). Resolve any remaining search_memory server-side; native/
+        # registry calls that never converged are dropped (bounded loop).
         _final_search = [tc for tc in (result.get("tool_calls") or [])
                          if tc.get("function", {}).get("name") == "search_memory"]
         if _final_search and not (result.get("content") or "").strip():
@@ -3556,7 +3600,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # already inside an overcome episode), parse its reply and record the
     # decision — build_tool (attempted), declare_edge (confirmed), or a
     # TOOL_SAVE marker (overcame + saved tool).
-    if _stuck or _in_build:
+    if _stuck or _in_build or _in_reuse:
         try:
             _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)
             if _oo != "none":

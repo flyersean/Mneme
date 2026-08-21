@@ -64,10 +64,17 @@ DEFAULT_INSTRUCTIONS = {
         "You are stuck: {{reason}}. STOP — do NOT make any more tool calls, searches, or fetch "
         "attempts. Retrying will not help.\n"
         "You cannot call tools right now. Respond with plain text ONLY, choosing exactly one of:\n"
+        "  - \"DECISION: reuse_tool\" plus \"TOOL: <name>\" (if a listed built tool already solves this)\n"
         "  - \"DECISION: build_tool\" plus a \"PLAN:\" (the tool/script that would solve this, and how to build and test it)\n"
         "  - \"DECISION: declare_edge\" plus a \"MISSING:\" note (the capability you lack)\n"
         "(\"build a tool\" means write a script you can run via bash — you cannot add or modify the fixed "
         "harness tools: read, bash, edit, write, search_memory, web_search, web_scrape.)"
+    ),
+    "overcome_reuse": (
+        "\n=== REUSE MODE ===\n"
+        "You chose to reuse the existing tool '{{tool}}'. Run it with bash and use its output to "
+        "answer the user. The tool is at: {{path}}\n"
+        "If it works, answer directly. If it fails, say so and reconsider (build a new tool or declare the edge)."
     ),
     "overcome_build": (
         "\n=== BUILD MODE (iteration {{iteration}}/{{max}}) ===\n"

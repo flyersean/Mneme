@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from mneme.util import _extract_text
 from mneme.tool_trail import _extract_combined_tool_trail
 from mneme.instructions import _load_instruction
+from mneme.tools import save_tool as _save_tool_to_registry
 
 
 # Tunables (env-overridable; mneme.yaml knobs can be layered on later)
@@ -29,9 +30,10 @@ BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
 _BUILD_MARKER = "=== BUILD MODE (iteration "
-_DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge)\b', re.IGNORECASE)
+_DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)
 _PLAN_RE = re.compile(r'PLAN\s*:\s*(.+)', re.IGNORECASE)
 _MISSING_RE = re.compile(r'MISSING\s*:\s*(.+)', re.IGNORECASE)
+_TOOL_RE = re.compile(r'TOOL\s*:\s*(\S+)', re.IGNORECASE)
 _TOOL_SAVE_RE = re.compile(r'TOOL_SAVE\s*:\s*([^:]+?)\s*::\s*([^:]+?)\s*::\s*(\S+)', re.IGNORECASE)
 
 
@@ -80,15 +82,17 @@ def _overcome_directive(problem_type, reason):
 
 
 def _parse_deliberation(reply):
-    """Parse a model reply for DECISION / PLAN / MISSING markers."""
+    """Parse a model reply for DECISION / PLAN / MISSING / TOOL markers."""
     reply = reply or ""
     dm = _DECISION_RE.search(reply)
     plan = _PLAN_RE.search(reply)
     missing = _MISSING_RE.search(reply)
+    tool = _TOOL_RE.search(reply)
     return {
         "decision": (dm.group(1).lower() if dm else ""),
         "plan": (plan.group(1).strip() if plan else ""),
         "missing": (missing.group(1).strip() if missing else ""),
+        "tool": (tool.group(1).strip() if tool else ""),
     }
 
 
@@ -104,6 +108,20 @@ def _in_build_mode(messages):
         if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt:
             seen_resolution = True
     return seen_build and not seen_resolution
+
+
+def _in_reuse_mode(messages):
+    """True if the model decided reuse_tool and is still reusing (no resolution)."""
+    start = _last_user_index(messages)
+    seen_reuse = False
+    seen_resolution = False
+    for m in messages[start:]:
+        txt = _extract_text(m.get("content", "") or "")
+        if "DECISION: reuse_tool" in txt:
+            seen_reuse = True
+        if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt or "DECISION: build_tool" in txt:
+            seen_resolution = True
+    return seen_reuse and not seen_resolution
 
 
 def _build_iterations(messages):
@@ -125,20 +143,38 @@ def _build_exhausted_directive(max_iterations):
     return _load_instruction("overcome_build_exhausted", vars={"max": str(max_iterations)})
 
 
+def _reuse_directive(tool_name, tool_path):
+    """Instruct the model to run an existing tool (reuse path) and use its output."""
+    return _load_instruction("overcome_reuse", vars={"tool": tool_name or "?", "path": tool_path or "?"})
+
+
+def _reuse_tool_info(messages, db):
+    """Extract the reuse tool name from the model's decision and look up its path.
+
+    Returns (name, path). Path comes from the registry (empty if not found —
+    the model still knows the name and can list_tools/read_tool to recover it).
+    """
+    name = ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            d = _parse_deliberation(_extract_text(m.get("content", "") or ""))
+            if d["decision"] == "reuse_tool":
+                name = d["tool"]
+                break
+    path = ""
+    if name and db is not None:
+        try:
+            row = db.execute("SELECT script_path FROM tools WHERE name=? AND retired=0", (name,)).fetchone()
+            if row:
+                path = row[0] or ""
+        except Exception:
+            pass
+    return name, path
+
+
 def _save_tool(db, problem_type, name, description, script_path):
-    """Persist a working tool into the tools table. Returns tool_id or None."""
-    if db is None:
-        return None
-    tool_id = f"tool_{int(time.time() * 1000)}_{os.urandom(3).hex()}"
-    now = datetime.now(timezone.utc).isoformat()
-    db.execute(
-        "INSERT INTO tools (tool_id, problem_type, name, description, script_path, tested_at, success_count, retired) "
-        "VALUES (?,?,?,?,?,?,1,0)",
-        (tool_id, problem_type, name, description, script_path, now),
-    )
-    db.commit()
-    print(f"  [TOOL-SAVED] {name} -> {script_path} (for '{problem_type}')", flush=True)
-    return tool_id
+    """Persist a working tool into the registry (delegates to mneme.tools)."""
+    return _save_tool_to_registry(problem_type, name, description, script_path, db_=db)
 
 
 def _record_overcome(db, problem_type, outcome):
@@ -193,8 +229,10 @@ def _handle_overcome_reply(db, problem_type, reply):
     - TOOL_SAVE marker -> _save_tool + record 'overcame'
     - DECISION: declare_edge -> record 'confirmed'
     - DECISION: build_tool -> record 'attempted' (the build proceeds over later
-      turns via the passthrough write/bash tools)
-    Returns a status string ('overcame'/'confirmed'/'build_tool'/'none').
+      turns via the passthrough/native write/bash tools)
+    - DECISION: reuse_tool -> record 'attempted' (reuse proceeds: run the
+      existing tool over later turns)
+    Returns a status string ('overcame'/'confirmed'/'build_tool'/'reuse_tool'/'none').
     """
     if not (reply or "").strip():
         return "none"
@@ -211,4 +249,7 @@ def _handle_overcome_reply(db, problem_type, reply):
     if delib["decision"] == "build_tool":
         _record_overcome(db, problem_type, "attempted")
         return "build_tool"
+    if delib["decision"] == "reuse_tool":
+        _record_overcome(db, problem_type, "attempted")
+        return "reuse_tool"
     return "none"

@@ -183,6 +183,16 @@ quirk moves to `models:` (field name is per-model, not per-provider).
 | compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
 | compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
 
+### tools (native bootstrap + built-tool registry — see docs/tool-system.md)
+| key | default | today |
+|---|---|---|
+| native | auto | `NATIVE_TOOLS_MODE` (auto/on/off) — inject proxy-owned bash/write unless the client supplied its own |
+| dir | ~/mneme_chunks/tools | `TOOLS_DIR` — canonical directory built tools are stored in + run from |
+| bash_timeout | 30 | `BASH_TIMEOUT` — seconds before a native bash command is killed |
+| inject_min_similarity | 0.75 | `TOOL_INJECT_MIN_SIM` — stricter than retrieval; a built tool is auto-injected only above this |
+| inject_max | 3 | `TOOL_INJECT_MAX` — max built tools auto-injected per turn |
+| inject_tokens | 600 | `TOOL_INJECT_TOKENS` — token budget for injected tool descriptions |
+
 ## Known gotchas to fix during the sweep
 
 - **Duplicate `CHUNK_SIZE`** — defined twice (line 62 = 2000, line 1259 =

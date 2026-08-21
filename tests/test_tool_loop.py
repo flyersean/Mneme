@@ -199,6 +199,8 @@ def test_search_loop_exhaustion_returns_results_as_content():
         _search_call("mneme tool calling bug", id="call_3"),
         _search_call("mneme tool calling bug", id="call_4"),
         _search_call("mneme tool calling bug", id="call_5"),
+        _search_call("mneme tool calling bug", id="call_6"),
+        _search_call("mneme tool calling bug", id="call_7"),
         # The fallback content (raw search results) has no provenance tags, so
         # the grading path makes one slow provenance-judge call on it.
         _answer("NO SPECIFIC CLAIMS"),
@@ -555,6 +557,149 @@ def test_strategy_lifecycle_failure_rejects_junk_directive():
     )
     n = mp.db.execute("SELECT COUNT(*) FROM strategies").fetchone()[0]
     assert n == 0, f"junk failure directive was saved ({n} rows)"
+
+
+# ── 4b. Tool system (native tools + registry + injection) ──────────────────
+_TOOLS_SCHEMA = (
+    "CREATE TABLE tools (tool_id TEXT PRIMARY KEY, problem_type TEXT, name TEXT, "
+    "description TEXT, script_path TEXT, script_source TEXT, tested_at TEXT, "
+    "success_count INTEGER DEFAULT 0, retired INTEGER DEFAULT 0, embedding BLOB, last_used_at TEXT)"
+)
+
+
+def _tools_db(tmp):
+    import sqlite3
+    db = sqlite3.connect(os.path.join(tmp, "t.db"))
+    db.execute(_TOOLS_SCHEMA)
+    db.commit()
+    return db
+
+
+@test
+def test_native_exec_names_flag_logic():
+    mt = mp.mntools
+    orig = mt.NATIVE_TOOLS_MODE
+    try:
+        mt.NATIVE_TOOLS_MODE = "on"
+        assert mt.native_exec_names([]) == {"bash", "write"}
+        mt.NATIVE_TOOLS_MODE = "off"
+        assert mt.native_exec_names([]) == set()
+        mt.NATIVE_TOOLS_MODE = "auto"
+        assert mt.native_exec_names([]) == {"bash", "write"}          # thin client -> inject both
+        pi = [{"type": "function", "function": {"name": "bash"}},
+              {"type": "function", "function": {"name": "write"}}]
+        assert mt.native_exec_names(pi) == set()                      # Pi harness -> inject neither
+    finally:
+        mt.NATIVE_TOOLS_MODE = orig
+
+
+@test
+def test_assemble_tools_dedup():
+    mt = mp.mntools
+    orig = mt.NATIVE_TOOLS_MODE
+    try:
+        mt.NATIVE_TOOLS_MODE = "auto"
+        names = [t["function"]["name"] for t in mt.assemble_tools([])]
+        assert names == ["search_memory", "list_tools", "read_tool", "bash", "write"], names
+        client = [
+            {"type": "function", "function": {"name": "bash"}},
+            {"type": "function", "function": {"name": "write"}},
+            {"type": "function", "function": {"name": "web_search"}},
+        ]
+        names = [t["function"]["name"] for t in mt.assemble_tools(client)]
+        assert names == ["search_memory", "list_tools", "read_tool", "bash", "write", "web_search"], names
+    finally:
+        mt.NATIVE_TOOLS_MODE = orig
+
+
+@test
+def test_save_tool_registry():
+    mt = mp.mntools
+    tmp = tempfile.mkdtemp(prefix="mneme_tools_")
+    db = _tools_db(tmp)
+    script = os.path.join(tmp, "scrape.py")
+    with open(script, "w") as f:
+        f.write("print('hello')\n")
+    orig_dir = mt.TOOLS_DIR
+    mt.TOOLS_DIR = tmp
+    try:
+        e1 = np.zeros(mp.DIM, dtype=np.float32); e1[0] = 1.0
+        tid = mt.save_tool("live_data", "scrape_salary", "scrape a salary", script, db_=db, embed_=lambda t: e1)
+        assert tid, "save_tool returned no id"
+        row = db.execute(
+            "SELECT name, script_path, script_source, embedding FROM tools WHERE name='scrape_salary'"
+        ).fetchone()
+        assert row and row[0] == "scrape_salary"
+        assert row[2] == "print('hello')\n", f"script_source not stored: {row[2]!r}"
+        assert row[3] is not None, "embedding not stored"
+        # canonical copy materialized into the tools dir
+        assert os.path.exists(os.path.join(tmp, "scrape_salary")), "canonical copy missing"
+    finally:
+        mt.TOOLS_DIR = orig_dir
+
+
+@test
+def test_list_tools_read_tool_shapes():
+    mt = mp.mntools
+    tmp = tempfile.mkdtemp(prefix="mneme_tools_")
+    db = _tools_db(tmp)
+    s1 = os.path.join(tmp, "a.py"); open(s1, "w").write("print('a')")
+    s2 = os.path.join(tmp, "b.py"); open(s2, "w").write("print('b')")
+    orig_db, orig_dir = mt.db, mt.TOOLS_DIR
+    mt.db, mt.TOOLS_DIR = db, tmp
+    try:
+        mt.save_tool("live_data", "a_tool", "fetch A", s1, db_=db, embed_=lambda t: None)
+        mt.save_tool("live_data", "b_tool", "fetch B", s2, db_=db, embed_=lambda t: None)
+        lst = mt._exec_list_tools()
+        assert "Tool registry" in lst and "a_tool" in lst and "b_tool" in lst
+        rd = mt._exec_read_tool("a_tool")
+        assert "print('a')" in rd
+        miss = mt._exec_read_tool("nope")
+        assert "No tool named" in miss
+    finally:
+        mt.db, mt.TOOLS_DIR = orig_db, orig_dir
+
+
+@test
+def test_retrieve_relevant_tools_gating():
+    mt = mp.mntools
+    tmp = tempfile.mkdtemp(prefix="mneme_tools_")
+    db = _tools_db(tmp)
+    s = os.path.join(tmp, "s.py"); open(s, "w").write("x=1")
+    orig_db, orig_embed, orig_min = mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM
+    mt.db, mt.TOOL_INJECT_MIN_SIM = db, 0.5
+    e1 = np.zeros(mp.DIM, dtype=np.float32); e1[0] = 1.0
+    e2 = np.zeros(mp.DIM, dtype=np.float32); e2[1] = 1.0
+    try:
+        mt.save_tool("live_data", "scrape_salary", "scrape a salary", s, db_=db, embed_=lambda t: e1)
+        mt.embed = lambda q: e1
+        hits = mt._retrieve_relevant_tools("scrape a salary")
+        assert len(hits) == 1 and hits[0][1] == "scrape_salary", hits
+        mt.embed = lambda q: e2
+        assert mt._retrieve_relevant_tools("unrelated") == []
+        mt.embed = lambda q: e1
+        inj = mt.inject_relevant_tools("scrape a salary")
+        assert "scrape_salary" in inj and "Built tools you can reuse" in inj
+    finally:
+        mt.db, mt.embed, mt.TOOL_INJECT_MIN_SIM = orig_db, orig_embed, orig_min
+
+
+@test
+def test_parse_reuse_tool_decision():
+    d = mp._parse_deliberation("DECISION: reuse_tool\nTOOL: scrape_salary")
+    assert d["decision"] == "reuse_tool"
+    assert d["tool"] == "scrape_salary"
+
+
+@test
+def test_in_reuse_mode():
+    msgs = [
+        {"role": "user", "content": "scrape it"},
+        {"role": "assistant", "content": "DECISION: reuse_tool\nTOOL: scrape_salary"},
+    ]
+    assert mp._in_reuse_mode(msgs) is True
+    msgs.append({"role": "assistant", "content": "TOOL_SAVE: x :: y :: /tmp/z"})
+    assert mp._in_reuse_mode(msgs) is False
 
 
 # ── 5. Runner ───────────────────────────────────────────────────────────────
