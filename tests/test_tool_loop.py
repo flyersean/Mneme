@@ -346,6 +346,69 @@ def test_load_instruction_override_wins():
 
 
 @test
+def test_detect_stuck_consecutive_failures():
+    msgs = [
+        {"role": "user", "content": "scrape the blocked site"},
+        {"role": "assistant", "content": "trying", "tool_calls": []},
+        {"role": "tool", "content": "blocked by cloudflare"},
+        {"role": "assistant", "content": "retrying", "tool_calls": []},
+        {"role": "tool", "content": "blocked by cloudflare"},
+    ]
+    stuck, reason = mp._detect_stuck(msgs)
+    assert stuck and "consecutive" in reason, reason
+
+
+@test
+def test_detect_stuck_not_on_fail_then_success():
+    msgs = [
+        {"role": "user", "content": "scrape this"},
+        {"role": "assistant", "content": "trying", "tool_calls": []},
+        {"role": "tool", "content": "blocked"},
+        {"role": "assistant", "content": "recovered", "tool_calls": []},
+        {"role": "tool", "content": "here is a complete and correct result with plenty of useful content for you to use"},
+    ]
+    stuck, _ = mp._detect_stuck(msgs)
+    assert not stuck
+
+
+@test
+def test_detect_stuck_on_tool_rounds():
+    msgs = [{"role": "user", "content": "scrape this"}]
+    for i in range(6):
+        msgs.append({"role": "assistant", "content": f"attempt {i}", "tool_calls": []})
+        msgs.append({"role": "tool", "content": "short"})  # unclassified -> no failure streak
+    stuck, reason = mp._detect_stuck(msgs)
+    assert stuck and "rounds" in reason, reason
+
+
+@test
+def test_parse_deliberation():
+    d = mp._parse_deliberation("DECISION: build_tool\nPLAN: write a curl script\nok")
+    assert d["decision"] == "build_tool" and "curl" in d["plan"]
+    d2 = mp._parse_deliberation("DECISION: declare_edge\nMISSING: no API access")
+    assert d2["decision"] == "declare_edge" and d2["missing"] == "no API access"
+
+
+@test
+def test_save_tool_and_directive_roundtrip():
+    tid = mp._save_tool(mp.db, "live_data", "price_scraper", "scrapes live prices", "/tmp/price_scraper.sh")
+    assert tid
+    d = mp._tool_directive(mp.db, "live_data")
+    assert "SAVED TOOL" in d and "price_scraper" in d
+    assert mp._tool_directive(mp.db, "code") == ""  # unrelated type -> no directive
+
+
+@test
+def test_record_overcome_updates_edge():
+    mp._record_capability("compute", "F")
+    mp._record_overcome(mp.db, "compute", "overcame")
+    row = mp.db.execute(
+        "SELECT overcome_attempts, overcome_success FROM capability_edges WHERE problem_type='compute'"
+    ).fetchone()
+    assert row is not None and row[0] == 1 and row[1] == 1
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()

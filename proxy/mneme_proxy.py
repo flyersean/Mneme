@@ -38,6 +38,16 @@ from mneme.tool_trail import (
     _tool_failure_nudge,
 )
 from mneme.instructions import _load_instruction
+from mneme.overcome import (
+    _detect_stuck,
+    _overcome_directive,
+    _parse_deliberation,
+    _overcome_active,
+    _save_tool,
+    _record_overcome,
+    _tool_directive,
+    _handle_overcome_reply,
+)
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -477,9 +487,21 @@ db.executescript("""
         updated_at   TEXT NOT NULL
     );
     
+    CREATE TABLE IF NOT EXISTS tools (
+        tool_id       TEXT PRIMARY KEY,
+        problem_type  TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        description   TEXT DEFAULT '',
+        script_path   TEXT DEFAULT '',
+        tested_at     TEXT DEFAULT '',
+        success_count INTEGER DEFAULT 0,
+        retired       INTEGER DEFAULT 0
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
     CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
     CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
+    CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type);
 """)
 
 # ─── Schema migrations for existing DBs ─────────────────────────
@@ -500,6 +522,9 @@ for migration in (
     "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
     "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
     "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
 ):
     try:
         db.execute(migration)
@@ -3560,13 +3585,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     context, ptype = build_context(user_msg)
     cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (instructions + memory + capability-edge directive + optional
-    # explore directive) as a system message after Hermes
-    mneme_system = context + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
-    _nudge = _tool_failure_nudge(messages)
-    if _nudge:
-        mneme_system += "\n\n" + _nudge
-        print(f"  [TOOL-NUDGE] {_nudge[:60]}...", flush=True)
+    # Insert Mneme (instructions + memory + saved-tool directive + capability-edge
+    # directive + optional explore directive) as a system message after Hermes.
+    # If the model is stuck, inject the hard OVERCOME directive instead of the
+    # soft nudge — it forces a decision (build a tool or declare the edge).
+    mneme_system = context + _tool_directive(db, cur_ptype) + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
+    _stuck, _stuck_reason = _detect_stuck(messages)
+    if _stuck and not _overcome_active(messages):
+        mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
+        print(f"  [OVERCOME] {_stuck_reason} — injecting overcome directive", flush=True)
+    else:
+        _nudge = _tool_failure_nudge(messages)
+        if _nudge:
+            mneme_system += "\n\n" + _nudge
+            print(f"  [TOOL-NUDGE] {_nudge[:60]}...", flush=True)
     insert_at = 0
     for i, m in enumerate(messages):
         if m.get("role") == "system":
@@ -3753,6 +3785,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             and grade not in ("D", "F")):
         _eff_grade = "F"
     _record_capability(cur_ptype, _eff_grade)
+
+    # Overcome-mode outcome: if the model was deliberating (stuck now, or
+    # already inside an overcome episode), parse its reply and record the
+    # decision — build_tool (attempted), declare_edge (confirmed), or a
+    # TOOL_SAVE marker (overcame + saved tool).
+    if _stuck or _overcome_active(messages):
+        try:
+            _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)
+            if _oo != "none":
+                print(f"  [OVERCOME-OUTCOME] {_oo}", flush=True)
+        except Exception as e:
+            _log_error("process_chat:overcome_outcome", e)
 
     # Tool-outcome learning: a failure->success trail becomes a reusable
     # strategy for similar tasks. The combined trail (deterministic outcomes +

@@ -59,6 +59,18 @@ DEFAULT_INSTRUCTIONS = {
         "command, or script that would answer it correctly, or (b) state clearly that you "
         "cannot answer it and what capability is missing."
     ),
+    "overcome": (
+        "\n=== OVERCOME MODE ===\n"
+        "STOP. You are stuck: {{reason}}. Do not retry the same approach.\n"
+        "The fixed harness tools are: read, bash, edit, write, search_memory, web_search, web_scrape. "
+        "You cannot add or modify harness tools; \"build a tool\" means write a script or command you can "
+        "run via bash, save it, and invoke it. Do not attempt to extend the harness itself.\n"
+        "Think, then decide:\n"
+        "  - If you can build a tool that would solve this, output \"DECISION: build_tool\" and a \"PLAN:\" "
+        "(what it does, how it's built, how it's tested).\n"
+        "  - Otherwise output \"DECISION: declare_edge\" and a \"MISSING:\" note naming the capability that is absent.\n"
+        "Prefer an existing harness tool first; build only when none of them can do it."
+    ),
 }
 
 
