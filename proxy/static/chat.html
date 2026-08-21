@@ -17,6 +17,7 @@
     --user-text: #ffffff;
     --assistant-bubble: #ffffff;
     --code-bg: #f3f4f6;
+    --tool-bg: #f8fafc;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -34,11 +35,11 @@
     padding: 12px 20px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
   }
   header .title { font-weight: 600; font-size: 16px; }
   header .model { font-size: 12px; color: var(--muted); }
+  header .spacer { flex: 1; }
   header button {
     border: 1px solid var(--border);
     background: var(--panel);
@@ -49,6 +50,27 @@
     cursor: pointer;
   }
   header button:hover { background: var(--accent-soft); border-color: var(--accent); }
+  header #settings-btn { font-size: 16px; padding: 6px 10px; }
+
+  /* settings popover */
+  #settings {
+    position: absolute;
+    top: 52px;
+    right: 20px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.10);
+    padding: 12px 14px;
+    font-size: 14px;
+    display: none;
+    z-index: 10;
+    min-width: 200px;
+  }
+  #settings.open { display: block; }
+  #settings label { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+  #settings input[type=checkbox] { accent-color: var(--accent); }
+  #settings .heading { font-weight: 600; margin-bottom: 4px; color: var(--text); }
 
   #chat {
     flex: 1;
@@ -103,6 +125,52 @@
   details.reasoning summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   details.reasoning .body { color: var(--muted); font-size: 13px; white-space: pre-wrap; border-left: 2px solid var(--border); padding-left: 10px; margin-top: 6px; }
 
+  /* tool-call trace */
+  .toolcalls {
+    display: flex; flex-direction: column; gap: 6px;
+    max-width: 760px; margin: 0 auto; width: 100%;
+  }
+  .toolcall {
+    background: var(--tool-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid #9ca3af;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .toolcall.blocked { border-left-color: #dc2626; }
+  .toolcall summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    color: var(--text);
+  }
+  .toolcall summary::-webkit-details-marker { display: none; }
+  .toolcall .tname {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 7px;
+    border-radius: 5px;
+  }
+  .toolcall.blocked .tname { color: #dc2626; background: #fef2f2; }
+  .toolcall .targs { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toolcall .ttime { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .toolcall .tbody {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: var(--code-bg);
+    border-radius: 6px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+
   footer {
     background: var(--panel);
     border-top: 1px solid var(--border);
@@ -149,8 +217,16 @@
     <div class="title">Mneme</div>
     <div class="model" id="model-label">connecting…</div>
   </div>
+  <div class="spacer"></div>
+  <button id="settings-btn" title="Display settings">⚙</button>
   <button id="new-chat" title="Start a new conversation">New chat</button>
 </header>
+
+<div id="settings">
+  <div class="heading">Display</div>
+  <label><input type="checkbox" id="opt-thinking" checked> Show thinking (reasoning)</label>
+  <label><input type="checkbox" id="opt-tools" checked> Show tool calls</label>
+</div>
 
 <div id="chat"><div class="inner" id="thread"></div></div>
 
@@ -168,9 +244,23 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const modelLabel = document.getElementById("model-label");
 const chat = document.getElementById("chat");
+const settingsPanel = document.getElementById("settings");
+const optThinking = document.getElementById("opt-thinking");
+const optTools = document.getElementById("opt-tools");
 
 let history = [];   // [{role, content}]
 let busy = false;
+
+// persisted display settings
+function loadSetting(key, def) {
+  try { const v = localStorage.getItem(key); return v === null ? def : v === "1"; }
+  catch (e) { return def; }
+}
+function saveSetting(key, val) { try { localStorage.setItem(key, val ? "1" : "0"); } catch (e) {} }
+optThinking.checked = loadSetting("mneme.showThinking", true);
+optTools.checked = loadSetting("mneme.showTools", true);
+optThinking.addEventListener("change", () => saveSetting("mneme.showThinking", optThinking.checked));
+optTools.addEventListener("change", () => saveSetting("mneme.showTools", optTools.checked));
 
 // ── helpers ──────────────────────────────────────────────────────
 function scrollDown() { chat.scrollTop = chat.scrollHeight; }
@@ -185,12 +275,10 @@ function el(tag, cls, text) {
 // Minimal markdown: escape HTML, then ```blocks```, `inline`, **bold**.
 function renderMarkdown(src) {
   const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  // split out fenced code blocks first
   const parts = String(src).split(/```/);
   let html = "";
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 1) {
-      // code block (strip a leading language tag like "python")
       const code = parts[i].replace(/^[a-zA-Z0-9_+-]*\n/, "");
       html += "<pre>" + escapeHtml(code) + "</pre>";
     } else {
@@ -202,6 +290,17 @@ function renderMarkdown(src) {
   return html;
 }
 
+function argsSummary(args) {
+  if (!args) return "";
+  const parts = [];
+  for (const [k, v] of Object.entries(args)) {
+    if (v === null || v === undefined || v === "") continue;
+    const s = String(v);
+    parts.push(k + "=" + (s.length > 60 ? s.slice(0, 60) + "…" : s));
+  }
+  return parts.join("  ");
+}
+
 function appendMessage(role, content, reasoning) {
   const row = el("div", "row " + role);
   const bubble = el("div", "bubble");
@@ -209,7 +308,7 @@ function appendMessage(role, content, reasoning) {
   row.appendChild(bubble);
   thread.appendChild(row);
 
-  if (reasoning && reasoning.trim()) {
+  if (reasoning && reasoning.trim() && optThinking.checked) {
     const det = el("details", "reasoning");
     const sum = el("summary", null, "thinking");
     const body = el("div", "body", reasoning.trim());
@@ -220,6 +319,24 @@ function appendMessage(role, content, reasoning) {
     rrow.appendChild(wrap);
     thread.appendChild(rrow);
   }
+  scrollDown();
+}
+
+function appendToolCalls(trace) {
+  if (!optTools.checked || !trace || !trace.length) return;
+  const wrap = el("div", "toolcalls");
+  for (const t of trace) {
+    const det = el("details", "toolcall" + (t.blocked ? " blocked" : ""));
+    const sum = el("summary");
+    sum.appendChild(el("span", "tname", t.tool));
+    const targs = el("span", "targs", argsSummary(t.args));
+    sum.appendChild(targs);
+    sum.appendChild(el("span", "ttime", (t.elapsed_ms || 0) + "ms"));
+    det.appendChild(sum);
+    det.appendChild(el("div", "tbody", (t.result || "(no output)").trim()));
+    wrap.appendChild(det);
+  }
+  thread.appendChild(wrap);
   scrollDown();
 }
 
@@ -264,6 +381,8 @@ async function send() {
       content = "_(tool call: " + msg.tool_calls.map(t => t.function.name).join(", ") + ")_";
     }
     if (!content) content = "(no response)";
+
+    appendToolCalls(data.tool_trace);
     appendMessage("assistant", content, reasoning);
     history.push({ role: "assistant", content: content });
   } catch (e) {
@@ -296,6 +415,15 @@ document.getElementById("new-chat").addEventListener("click", () => {
   thread.innerHTML = "";
   appendMessage("assistant", "Hi — I'm Mneme, a memory-augmented assistant. I can search my memory, build small tools to work around limits, and grade my own answers for honesty. What should we work on?");
   input.focus();
+});
+
+// settings popover
+document.getElementById("settings-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  settingsPanel.classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  if (!settingsPanel.contains(e.target)) settingsPanel.classList.remove("open");
 });
 
 // ── boot ─────────────────────────────────────────────────────────

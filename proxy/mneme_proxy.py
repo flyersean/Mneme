@@ -3461,6 +3461,24 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _MAX_SERVER_ROUNDS = BUILD_MAX_TOOL_CALLS + 4  # build budget + search/registry headroom
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _server_names = {"search_memory", "list_tools", "read_tool"} | _native_names
+    _tool_trace = []  # debug: server-side tool activity surfaced to the client
+
+    def _trace(tool, args, res, t0, blocked=False):
+        """Compact entry for the tool trace (truncate long args/results)."""
+        a = {}
+        for k, v in (args or {}).items():
+            if isinstance(v, str) and len(v) > 160:
+                a[k] = v[:160] + f"... ({len(v)} chars)"
+            else:
+                a[k] = v
+        return {
+            "tool": tool,
+            "args": a,
+            "result": ("" if res is None else (res if isinstance(res, str) else str(res)))[:600],
+            "elapsed_ms": int((time.time() - t0) * 1000),
+            "blocked": bool(blocked),
+        }
+
     for _round in range(_MAX_SERVER_ROUNDS):
         tcs = result.get("tool_calls") or []
         content = (result.get("content") or "").strip()
@@ -3481,6 +3499,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             if _build_calls >= BUILD_MAX_TOOL_CALLS:
                 # Budget spent: don't execute more; force the model to declare.
                 followup.append({"role": "user", "content": _build_exhausted_directive(BUILD_MAX_ITERATIONS)})
+                for tc in native_calls:
+                    nm = tc["function"]["name"]
+                    args = tc["function"].get("arguments", {}) or {}
+                    _tool_trace.append(_trace(nm, args, "build budget exhausted — not executed", time.time(), blocked=True))
                 print(f"  [BUILD-EXHAUSTED] native build budget ({BUILD_MAX_TOOL_CALLS}) reached", flush=True)
             else:
                 _build_calls += len(native_calls)
@@ -3488,22 +3510,30 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 for tc in native_calls:
                     nm = tc["function"]["name"]
                     args = tc["function"].get("arguments", {}) or {}
+                    _t0 = time.time()
                     res = mntools.execute_native_tool(nm, args)
+                    _tool_trace.append(_trace(nm, args, res, _t0))
                     print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
                     followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
 
         # search_memory: user-message feedback (Muse-template workaround — the
         # Ollama path drops a "tool" role message and trips the peg grammar).
         if search_calls:
-            tool_result, _trace = _execute_search_tool_calls(search_calls)
-            _trace_search_chunks.update(_trace)
+            _t0 = time.time()
+            tool_result, _trace_chunks = _execute_search_tool_calls(search_calls)
+            _trace_search_chunks.update(_trace_chunks)
+            for tc in search_calls:
+                args = tc["function"].get("arguments", {}) or {}
+                _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
             followup.append({"role": "user", "content": "search_memory results:\n" + tool_result})
 
         # Registry tools (list_tools/read_tool): user-message feedback.
         for tc in registry_calls:
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
+            _t0 = time.time()
             res = mntools.execute_readonly_tool(nm, args)
+            _tool_trace.append(_trace(nm, args, res, _t0))
             print(f"  [TOOL-REGISTRY] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
 
@@ -3522,6 +3552,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             result["content"] = _tool_result
 
     result["tool_calls"] = passthrough_calls
+    result["tool_trace"] = _tool_trace
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the
@@ -4147,6 +4178,7 @@ if FLASK_OK:
                 "system_fingerprint": "fp_ollama",
                 "created": int(time.time()),
                 "model": FAKE_MODEL_ID,
+                "tool_trace": result.get("tool_trace", []),
                 "choices": [{
                     "index": 0,
                     "message": msg_obj,
@@ -4166,6 +4198,7 @@ if FLASK_OK:
                 "session_id": session_id,
                 "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "message": msg,
+                "tool_trace": result.get("tool_trace", []),
                 "done": True,
                 "done_reason": result.get("done_reason", "stop"),
                 "total_duration": int(time.time() * 1e9) % 1000000000,
