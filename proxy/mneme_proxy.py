@@ -844,6 +844,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
                           json=payload, stream=True, timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT))
+        # OpenRouter streams text/event-stream with no charset, so requests falls
+        # back to ISO-8859-1 for iter_lines(decode_unicode=True) and mojibakes
+        # every multi-byte UTF-8 char (— -> â, ° -> Â°). Force UTF-8 before reading.
+        r.encoding = "utf-8"
     except requests.exceptions.RequestException as e:
         print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
