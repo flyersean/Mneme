@@ -1711,7 +1711,7 @@ def _meta_principles_block() -> str:
     against the dynamic MAX_INJECTED_TOKENS budget."""
     try:
         lines = "\n".join(f"PRINCIPLE: {p}" for p in META_PRINCIPLES)
-        return "\n=== META-PRINCIPLES (always apply) ===\n" + lines + "\n"
+        return _load_instruction("meta_principles_header") + lines + "\n"
     except Exception as e:
         _log_error("_meta_principles_block", e)
         return ""
@@ -1813,7 +1813,7 @@ def build_context(query: str) -> Tuple[str, str]:
         if srows:
             _INJECTED_STRATEGY_IDS.clear()
             _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
-            strat_text = "\n\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
+            strat_text = "\n\n" + _load_instruction("system_directives_header") + "\n"
             for s in srows:
                 strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
             return _finalize_context(_meta_principles_block() + strat_text + _preferences_block()), ptype
@@ -1844,7 +1844,7 @@ def build_context(query: str) -> Tuple[str, str]:
     if srows:
         _INJECTED_STRATEGY_IDS.clear()
         _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
-        directives = "\n=== SYSTEM DIRECTIVES (learned from past experience) ===\n"
+        directives = "\n" + _load_instruction("system_directives_header") + "\n"
         for s in srows:
             directives += "DIRECTIVE: " + s[1][:200] + "\n"
         # Strategies go at TOP — above memory, below system prompt
@@ -2848,7 +2848,7 @@ def _preferences_block() -> str:
         return ""
     if not rows:
         return ""
-    lines = ["\n=== USER PREFERENCES (learned from explicit requests — honor these) ==="]
+    lines = [_load_instruction("user_preferences_header")]
     for k, v in rows:
         lines.append(f"- {k}: {v}")
     return "\n".join(lines)

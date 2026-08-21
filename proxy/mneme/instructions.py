@@ -71,6 +71,13 @@ DEFAULT_INSTRUCTIONS = {
         "  - Otherwise output \"DECISION: declare_edge\" and a \"MISSING:\" note naming the capability that is absent.\n"
         "Prefer an existing harness tool first; build only when none of them can do it."
     ),
+    "tool_failure_nudge": (
+        "You have had {{count}} tool failures in a row. Stop retrying and diagnose the "
+        "root cause, then switch to a fundamentally different method."
+    ),
+    "meta_principles_header": "\n=== META-PRINCIPLES (always apply) ===\n",
+    "user_preferences_header": "\n=== USER PREFERENCES (learned from explicit requests — honor these) ===",
+    "system_directives_header": "=== SYSTEM DIRECTIVES (learned from past experience) ===",
 }
 
 

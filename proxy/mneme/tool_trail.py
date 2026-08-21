@@ -14,6 +14,7 @@ fail->success strategy learner (still in the orchestrator) reuses it too.
 import re
 
 from mneme.util import _extract_text
+from mneme.instructions import _load_instruction
 
 
 _TOOL_TAG_RE = re.compile(r'\[TOOL:\s*(SUCCESS|FAILURE)\s*(?::\s*([^\]]*?))?\]', re.IGNORECASE)
@@ -153,10 +154,6 @@ def _tool_failure_nudge(messages):
             streak += 1
         else:
             break
-    if streak >= 3:
-        return ("You have had several tool failures in a row. Stop retrying and "
-                "diagnose the root cause, then switch to a fundamentally different method.")
     if streak >= 2:
-        return ("Your last two tool calls failed. Diagnose why before retrying, "
-                "and change your approach instead of repeating the same call.")
+        return _load_instruction("tool_failure_nudge", vars={"count": str(streak)})
     return ""
