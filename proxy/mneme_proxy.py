@@ -3436,6 +3436,11 @@ _FAILURE_MARKERS = (
     "permission denied", "cancelled", "canceled",
     "403 forbidden", "404 not found", "429 too many", "502 bad gateway",
     "503 service unavailable",
+    # exact strings the Pi web extensions emit when they throw (so a real
+    # thrown error is caught, not just a clean "no results"/"blocked" reply)
+    "web_search failed", "web_scrape failed", "fetch failed",
+    "getaddrinfo", "enotfound", "eai_again", "econnrefused", "econnreset",
+    "no text content found",
 )
 
 

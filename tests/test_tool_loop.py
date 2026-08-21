@@ -293,6 +293,31 @@ def test_combined_tool_trail_merges_deterministic_and_tags():
 
 
 @test
+def test_classify_tool_outcome_real_error_strings():
+    """The exact failure strings the Pi web extensions throw must be caught."""
+    real_errors = [
+        "web_scrape failed: fetch failed",
+        "web_search failed: fetch failed",
+        "web_scrape failed: getaddrinfo ENOTFOUND nonexistent.example.com",
+        "web_scrape failed: connect ECONNREFUSED 127.0.0.1:8080",
+        "web_scrape failed: fetch failed: cause: Error: EAI_AGAIN",
+        "(no text content found)",
+    ]
+    for err in real_errors:
+        cls = mp._classify_tool_outcome(err)
+        assert cls is not None and cls[0] == "FAILURE", f"{err!r} not classified FAILURE, got {cls!r}"
+
+
+@test
+def test_classify_tool_outcome_no_false_positive_on_content():
+    """Legit content that merely mentions fetch/error must NOT be a failure."""
+    ok = ("Tomorrow's forecast: mostly sunny, high 80F. The weather service "
+          "fetches data hourly. Chance of rain 3%. Wind N 7 mph.")
+    cls = mp._classify_tool_outcome(ok)
+    assert cls is None or cls[0] != "FAILURE", f"false positive on legit content: {cls!r}"
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()
