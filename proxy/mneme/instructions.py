@@ -61,15 +61,13 @@ DEFAULT_INSTRUCTIONS = {
     ),
     "overcome": (
         "\n=== OVERCOME MODE ===\n"
-        "STOP. You are stuck: {{reason}}. Do not retry the same approach.\n"
-        "The fixed harness tools are: read, bash, edit, write, search_memory, web_search, web_scrape. "
-        "You cannot add or modify harness tools; \"build a tool\" means write a script or command you can "
-        "run via bash, save it, and invoke it. Do not attempt to extend the harness itself.\n"
-        "Think, then decide:\n"
-        "  - If you can build a tool that would solve this, output \"DECISION: build_tool\" and a \"PLAN:\" "
-        "(what it does, how it's built, how it's tested).\n"
-        "  - Otherwise output \"DECISION: declare_edge\" and a \"MISSING:\" note naming the capability that is absent.\n"
-        "Prefer an existing harness tool first; build only when none of them can do it."
+        "You are stuck: {{reason}}. STOP — do NOT make any more tool calls, searches, or fetch "
+        "attempts. Retrying will not help.\n"
+        "You cannot call tools right now. Respond with plain text ONLY, choosing exactly one of:\n"
+        "  - \"DECISION: build_tool\" plus a \"PLAN:\" (the tool/script that would solve this, and how to build and test it)\n"
+        "  - \"DECISION: declare_edge\" plus a \"MISSING:\" note (the capability you lack)\n"
+        "(\"build a tool\" means write a script you can run via bash — you cannot add or modify the fixed "
+        "harness tools: read, bash, edit, write, search_memory, web_search, web_scrape.)"
     ),
     "overcome_build": (
         "\n=== BUILD MODE (iteration {{iteration}}/{{max}}) ===\n"

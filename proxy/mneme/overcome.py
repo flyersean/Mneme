@@ -92,20 +92,6 @@ def _parse_deliberation(reply):
     }
 
 
-def _overcome_active(messages):
-    """True if an overcome directive has fired this task and is unresolved."""
-    start = _last_user_index(messages)
-    seen_overcome = False
-    seen_resolution = False
-    for m in messages[start:]:
-        txt = _extract_text(m.get("content", "") or "")
-        if m.get("role") == "system" and _OVERCOME_MARKER in txt:
-            seen_overcome = True
-        if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt:
-            seen_resolution = True
-    return seen_overcome and not seen_resolution
-
-
 def _in_build_mode(messages):
     """True if the model decided build_tool and is still building (no resolution)."""
     start = _last_user_index(messages)

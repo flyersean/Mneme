@@ -42,7 +42,6 @@ from mneme.overcome import (
     _detect_stuck,
     _overcome_directive,
     _parse_deliberation,
-    _overcome_active,
     _in_build_mode,
     _build_iterations,
     _build_directive,
@@ -3348,7 +3347,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # soft nudge — it forces a decision (build a tool or declare the edge).
     mneme_system = context + _tool_directive(db, cur_ptype) + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
     _stuck, _stuck_reason = _detect_stuck(messages)
-    if _in_build_mode(messages):
+    _in_build = _in_build_mode(messages)
+    _deliberate = _stuck and not _in_build  # hard stop: force deliberation, not another retry
+    if _in_build:
         _it = _build_iterations(messages)
         if _it >= BUILD_MAX_ITERATIONS:
             mneme_system += "\n\n" + _build_exhausted_directive(BUILD_MAX_ITERATIONS)
@@ -3356,9 +3357,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         else:
             mneme_system += "\n\n" + _build_directive(_it + 1, BUILD_MAX_ITERATIONS)
             print(f"  [BUILD] iteration {_it + 1}/{BUILD_MAX_ITERATIONS}", flush=True)
-    elif _stuck and not _overcome_active(messages):
+    elif _deliberate:
         mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
-        print(f"  [OVERCOME] {_stuck_reason} — injecting overcome directive", flush=True)
+        print(f"  [OVERCOME] {_stuck_reason} — hard stop, tools removed", flush=True)
     else:
         _nudge = _tool_failure_nudge(messages)
         if _nudge:
@@ -3385,7 +3386,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                         f.write("\n...\n")
         except Exception:
             pass
-    result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
+    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=CHAT_TIMEOUT)
     # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
     # or empty reasoning), retry once with a nudge, then fall back to a clear
     # message so the client never sees an empty/"None" reply.
@@ -3555,7 +3556,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # already inside an overcome episode), parse its reply and record the
     # decision — build_tool (attempted), declare_edge (confirmed), or a
     # TOOL_SAVE marker (overcame + saved tool).
-    if _stuck or _overcome_active(messages):
+    if _stuck or _in_build:
         try:
             _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)
             if _oo != "none":
