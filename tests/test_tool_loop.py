@@ -254,6 +254,45 @@ def test_keyword_fallback_disabled_by_default():
 
 
 @test
+def test_classify_tool_outcome_failures():
+    """Deterministic classifier catches objective failure shapes (no model needed)."""
+    assert mp._classify_tool_outcome("") == ("FAILURE", "empty result")
+    assert mp._classify_tool_outcome("   \n\t  ") == ("FAILURE", "empty result")
+    assert mp._classify_tool_outcome("No results found.")[0] == "FAILURE"
+    assert mp._classify_tool_outcome("Access denied by Cloudflare protection")[0] == "FAILURE"
+    assert mp._classify_tool_outcome("403 Forbidden")[0] == "FAILURE"
+    assert mp._classify_tool_outcome("Request timed out after 10s")[0] == "FAILURE"
+
+
+@test
+def test_classify_tool_outcome_success_and_unknown():
+    # substantial content, no failure marker -> success
+    good = "1. Real result\n   example.com\n   A long enough snippet of real content about the topic, well over one hundred characters to clear the success threshold."
+    assert mp._classify_tool_outcome(good) == ("SUCCESS", "content")
+    # short but not clearly-failing -> unknown (defer to model tags)
+    assert mp._classify_tool_outcome("ok") is None
+    # non-string -> unknown
+    assert mp._classify_tool_outcome(None) is None
+
+
+@test
+def test_combined_tool_trail_merges_deterministic_and_tags():
+    """Untagged objective failures still appear in the trail, ordered before success."""
+    msgs = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "tool", "content": "No results found."},
+        {"role": "assistant", "content": "[TOOL:FAILURE: empty] retrying another way"},
+        {"role": "tool", "content": "1. Real result\n   site.com\n   A substantial snippet with more than one hundred characters of text so the classifier calls it a success."},
+        {"role": "assistant", "content": "Done. [TOOL:SUCCESS]"},
+    ]
+    trail = mp._extract_combined_tool_trail(msgs)
+    statuses = [s for s, _ in trail]
+    assert "FAILURE" in statuses and "SUCCESS" in statuses, f"expected fail->success, got {trail!r}"
+    last_success = max(i for i, s in enumerate(statuses) if s == "SUCCESS")
+    assert any(s == "FAILURE" for s in statuses[:last_success]), f"failure not before success: {trail!r}"
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()

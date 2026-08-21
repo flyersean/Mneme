@@ -3418,14 +3418,105 @@ def _extract_tool_tags(messages, since_last_user=False):
     return tags
 
 
+# ─── Deterministic tool-outcome observation ─────────────────────────────
+# The model tags outcomes ([TOOL:SUCCESS]/[TOOL:FAILURE]) per system_prompt.md,
+# but it often never tags *objective* failures — a blocked scrape, an empty
+# search, a timeout — because from its view "a different URL is just another
+# attempt." This layer classifies tool RESULTS directly (the proxy already holds
+# them when it stages them), so a string of failed calls mid-chain is noticed
+# even when untagged. It complements, never replaces, the model's tags.
+
+_FAILURE_MARKERS = (
+    "no results found", "no results", "no matching", "nothing found",
+    "0 results", "no matches", "not found", "no data",
+    "blocked", "captcha", "cloudflare", "access denied", "forbidden",
+    "too many requests", "rate limit", "rate-limited", "challenge",
+    "timed out", "timeout", "connection refused", "connection reset",
+    "connection error", "command not found", "no such file",
+    "permission denied", "cancelled", "canceled",
+    "403 forbidden", "404 not found", "429 too many", "502 bad gateway",
+    "503 service unavailable",
+)
+
+
+def _classify_tool_outcome(content):
+    """Deterministic success/failure heuristic for a tool result string.
+
+    Returns (status, reason) or None when it can't confidently tell. status is
+    'SUCCESS' or 'FAILURE'. Conservative by design: objective failure shapes
+    (empty/blocked/timeout) are classified here; the semantic "non-empty but
+    wrong" case is left to the model's tags.
+    """
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text:
+        return ("FAILURE", "empty result")
+    low = text.lower()
+    for m in _FAILURE_MARKERS:
+        if m in low:
+            return ("FAILURE", m)
+    if len(text) >= 100:
+        return ("SUCCESS", "content")
+    return None
+
+
+def _extract_tool_outcomes(messages, since_last_user=False):
+    """Classify each tool message deterministically.
+
+    Returns [(msg_index, status, reason), ...] in conversation order, skipping
+    results the heuristic can't confidently label.
+    """
+    events = []
+    start = 0
+    if since_last_user:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                start = i
+                break
+    for i, m in enumerate(messages[start:], start=start):
+        if m.get("role") != "tool":
+            continue
+        cls = _classify_tool_outcome(_extract_text(m.get("content", "") or ""))
+        if cls:
+            events.append((i, cls[0], cls[1]))
+    return events
+
+
+def _extract_combined_tool_trail(messages, since_last_user=False):
+    """Merge deterministic tool outcomes with the model's [TOOL:...] tags into
+    one ordered trail of (status, reason), sorted by conversation position.
+
+    Deterministic classification is authoritative for objective failure modes;
+    the model's tags fill in the semantic cases only it can judge.
+    """
+    events = list(_extract_tool_outcomes(messages, since_last_user=since_last_user))
+    start = 0
+    if since_last_user:
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                start = i
+                break
+    for i, m in enumerate(messages[start:], start=start):
+        if m.get("role") != "assistant":
+            continue
+        content = _extract_text(m.get("content", "") or "")
+        for match in _TOOL_TAG_RE.finditer(content):
+            events.append((i, match.group(1).upper(), (match.group(2) or "").strip()))
+    events.sort(key=lambda e: e[0])
+    return [(s, r) for _, s, r in events]
+
+
 def _tool_failure_nudge(messages):
     """Return a nudge when the recent tag trail shows repeated failures.
 
     The proxy observes the failure (it never judges success itself); the nudge
     asks the MODEL to diagnose and change approach — it does not prescribe one.
+    Uses the combined trail (deterministic outcomes + model tags) so an
+    untagged string of blocked/empty tool results still trips the nudge.
     Empty string when the trail looks healthy.
     """
-    tags = _extract_tool_tags(messages)
+    tags = _extract_combined_tool_trail(messages)
     if not tags:
         return ""
     streak = 0
@@ -3792,24 +3883,36 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _glabel = {"A": "great", "B": "pass", "F": "fail"}.get(grade, grade)
     print(f"  [GRADE] {_glabel}: {grade}", flush=True)
 
+    _answer = result.get("content", "")
+    try:
+        _trail = _extract_combined_tool_trail(messages, since_last_user=True)
+        for _m in _TOOL_TAG_RE.finditer(_answer or ""):
+            _trail.append((_m.group(1).upper(), (_m.group(2) or "").strip()))
+        _trail_statuses = [s for s, _ in _trail]
+    except Exception as e:
+        _log_error("process_chat:tool_trail", e)
+        _trail, _trail_statuses = [], []
+
     # Capability-edge tracking: record this grade against the task's problem type.
-    # A poor grade accumulates toward flagging the type as a known edge, which then
-    # triggers a tool-build directive on the next encounter.
-    _record_capability(cur_ptype, grade)
+    # A poor grade accumulates toward flagging the type as a known edge. Repeated
+    # tool failures with no recovery (blocked scrape, empty search, timeout) are
+    # also a capability edge — the environment blocks the current approach — so
+    # treat that as a failure signal even when the turn otherwise "passed".
+    _eff_grade = grade
+    if (_trail_statuses.count("FAILURE") >= 2
+            and "SUCCESS" not in _trail_statuses
+            and grade not in ("D", "F")):
+        _eff_grade = "F"
+    _record_capability(cur_ptype, _eff_grade)
 
     # Tool-outcome learning: a failure->success trail becomes a reusable
-    # strategy for similar tasks. Extracted tags + this turn's answer are passed
-    # (cheap, sync); the model extraction + save run in the background.
-    try:
-        _trail_tags = _extract_tool_tags(messages, since_last_user=True)
-        _answer = result.get("content", "")
-        for _m in _TOOL_TAG_RE.finditer(_answer or ""):
-            _trail_tags.append((_m.group(1).upper(), (_m.group(2) or "").strip()))
-        _statuses = [s for s, _ in _trail_tags]
-        if "FAILURE" in _statuses and "SUCCESS" in _statuses:
-            _enqueue(_learn_from_tool_trail, _trail_tags, _answer, grade, cur_ptype)
-    except Exception as e:
-        _log_error("process_chat:tool_trail_enqueue", e)
+    # strategy for similar tasks. The combined trail (deterministic outcomes +
+    # model tags) is passed cheap+sync; the model extraction runs background.
+    if "FAILURE" in _trail_statuses and "SUCCESS" in _trail_statuses:
+        try:
+            _enqueue(_learn_from_tool_trail, _trail, _answer, grade, cur_ptype)
+        except Exception as e:
+            _log_error("process_chat:tool_trail_enqueue", e)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
     try:
