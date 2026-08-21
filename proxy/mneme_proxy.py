@@ -3894,6 +3894,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         for _m in _TOOL_TAG_RE.finditer(_answer or ""):
             _trail.append((_m.group(1).upper(), (_m.group(2) or "").strip()))
         _trail_statuses = [s for s, _ in _trail]
+        if _trail:
+            _desc = " -> ".join(f"{s}" + (f"({r})" if r else "") for s, r in _trail)
+            print(f"  [TOOL-TRAIL] {_desc}", flush=True)
     except Exception as e:
         _log_error("process_chat:tool_trail", e)
         _trail, _trail_statuses = [], []
