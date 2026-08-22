@@ -48,6 +48,9 @@ providers:
     model: deepseek/deepseek-v4-flash     # chat model
     embed_model: voyageai/voyage-4-lite   # model that turns text into searchable vectors
     label_model: meta-llama/llama-3.2-3b-instruct  # model that writes short topic labels
+    # OpenRouter reliability (ignored by any other OpenAI-compatible provider).
+    fallback_models: []          # e.g. ["openai/gpt-4o-mini", "google/gemini-2.5-flash"]
+    provider: {}                 # e.g. { preferred_max_latency: { p90: 30 } }
   deepseek:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY

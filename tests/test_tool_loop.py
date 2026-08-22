@@ -416,6 +416,30 @@ def test_requery_timeout_retries_once():
 
 
 @test
+def test_requery_midstream_error_retries_once():
+    """A mid-stream provider error (done_reason="error") on a tool-loop re-query
+    must be retried once, not kill the turn with an empty "(no response)"."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("jamos pizza", id="c1"),
+        {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+         "done_reason": "error", "error_type": "provider_overloaded"},
+        _answer("The answer. [source: mem_1]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "jamos pizza info"}],
+        session_id="test", tools=[],
+    )
+
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected the retry to recover, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
 def test_inject_min_similarity_blocks_below_floor():
     """A chunk below the absolute similarity floor must NOT be injected — this is
     the "no match -> no injection" guarantee (tunable via config)."""

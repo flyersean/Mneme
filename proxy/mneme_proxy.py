@@ -94,6 +94,8 @@ import mneme.tools as mntools
 CONFIG_PATH: Optional[str] = None
 CONFIG_DATA: Dict = {}           # raw sections for runtime lookup (providers, models)
 _PROVIDER_HEADERS: Dict = {}     # extra headers from the active provider block
+_OR_FALLBACK_MODELS: list = []   # OpenRouter model fallbacks (the `models` array)
+_OR_PROVIDER_PREF: Dict = {}     # OpenRouter provider routing prefs (ignore/order/...)
 
 # Flat map: "section.key" -> env var. Only keys listed here are honored from the
 # file; anything else fails loud (typo guard).
@@ -226,7 +228,7 @@ def _apply_config(data: Dict, path: str):
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         return
@@ -249,6 +251,12 @@ def _resolve_provider():
         if k and os.environ.get("OPENROUTER_API_KEY") is None:
             os.environ["OPENROUTER_API_KEY"] = k
     _PROVIDER_HEADERS = prov.get("headers") or {}
+    # OpenRouter-specific reliability (only applied to OpenRouter requests, so
+    # other OpenAI-compatible providers are unaffected): model fallbacks (the
+    # `models` array — walked in order if every provider for the primary model
+    # fails) and provider routing prefs (ignore/order/preferred_max_latency).
+    _OR_FALLBACK_MODELS = prov.get("fallback_models") or []
+    _OR_PROVIDER_PREF = prov.get("provider") or {}
 
 
 def load_config():
@@ -903,6 +911,16 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         payload["tools"] = tools
     if format_schema:
         payload["response_format"] = {"type": "json_schema", "json_schema": format_schema}
+    # OpenRouter-specific reliability options (config-driven; only ever added to
+    # OpenRouter requests, so a plain OpenAI-compatible backend is unaffected).
+    # - `models` array: model fallbacks, walked in order if every provider for the
+    #   primary model fails (recovers a whole-model outage / cold-start no-content).
+    # - `provider` prefs: ignore/order/only/allow_fallbacks/preferred_max_latency
+    #   to steer routing away from known-bad or slow endpoints.
+    if _OR_FALLBACK_MODELS:
+        payload["models"] = [MODEL] + [str(m) for m in _OR_FALLBACK_MODELS]
+    if _OR_PROVIDER_PREF:
+        payload["provider"] = _OR_PROVIDER_PREF
     if tools:
         _tnames = [t.get("function", {}).get("name", "?") for t in tools]
         print(f"  [TOOLS] forwarding {len(tools)} tools ({len(json.dumps(tools))}B): {_tnames}", flush=True)
@@ -970,6 +988,19 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 provider = obj["provider"]
             if obj.get("usage"):
                 completion_tokens = obj["usage"].get("completion_tokens", completion_tokens)
+            # Mid-stream provider error: OpenRouter emits an SSE event with a
+            # top-level `error` + choices[0].finish_reason:"error" when the provider
+            # dies mid-generation (overload/disconnect/timeout). Fail FAST and mark
+            # it retryable instead of sitting in the read-timeout for 60s.
+            if obj.get("error"):
+                _err = obj["error"]
+                _meta = _err.get("metadata") or {}
+                _etype = _meta.get("error_type", "unmapped")
+                print(f"  [GRIND-GUARD] mid-stream provider error ({_etype} {_err.get('code', '')}: "
+                      f"{str(_err.get('message', ''))[:100]}) — fail-fast, retryable", flush=True)
+                return {"content": "".join(content_parts), "thinking": "".join(reasoning_parts),
+                        "tool_calls": [], "eval_count": 0, "done_reason": "error",
+                        "error_type": _etype, "provider": provider}
             choices = obj.get("choices") or []
             if not choices:
                 continue
@@ -3275,18 +3306,21 @@ def _execute_search_tool_calls(search_calls):
 
 
 def _query_retry_timeout(msgs, tools=None, timeout=CHAT_TIMEOUT):
-    """query_model with ONE retry on a 0-token provider hang.
+    """query_model with ONE retry on a transient provider failure.
 
     A transient OpenRouter stream stall (the GRIND-GUARD aborts with
-    done_reason="timeout" and 0 tokens) should not kill the whole turn. The
-    initial query in process_chat already retries this case; the tool-loop
-    re-queries and the hard-stop queries were missing it, so a single stalled
-    re-query returned empty ("(no response)") with no recovery.
+    done_reason="timeout" and 0 tokens) or a mid-stream provider error
+    (done_reason="error") should not kill the whole turn. The initial query in
+    process_chat already retries this case; the tool-loop re-queries and the
+    hard-stop queries were missing it, so a single stalled re-query returned
+    empty ("(no response)") with no recovery.
     """
     result = query_model(msgs, tools=tools, timeout=timeout)
-    if (result.get("done_reason") == "timeout" and not result.get("eval_count")
-            and not (result.get("content") or "").strip() and not result.get("tool_calls")):
-        print("  [TIMEOUT-RETRY] provider hang (0 tokens) — retrying once", flush=True)
+    dr = result.get("done_reason", "")
+    empty = not (result.get("content") or "").strip() and not result.get("tool_calls")
+    retryable = (dr == "timeout" and empty and not result.get("eval_count")) or dr == "error"
+    if retryable:
+        print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
         result = query_model(msgs, tools=tools, timeout=timeout)
     return result
 
@@ -3448,11 +3482,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _failed = False
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         dr = result.get("done_reason", "?")
-        if dr == "timeout" and not result.get("eval_count"):
-            # Provider hang (zero tokens received) — NOT a grind. OpenRouter
-            # occasionally drops large synthesis requests without a single byte;
-            # retry once on a fresh connection before declaring a capability edge.
-            print(f"  [TIMEOUT-RETRY] provider hang (0 tokens) — retrying once", flush=True)
+        if (dr == "timeout" and not result.get("eval_count")) or dr == "error":
+            # Provider hang (zero tokens received) or a mid-stream provider error
+            # — NOT a grind. OpenRouter occasionally drops large synthesis requests
+            # without a single byte, or dies mid-generation; retry once on a fresh
+            # connection before declaring a capability edge.
+            print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
             result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
             if not (result.get("content") or "").strip() and not result.get("tool_calls"):
                 _failed = True

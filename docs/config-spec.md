@@ -46,6 +46,9 @@ providers:                  # OpenAI-compatible providers. Add one -> new backen
     embed_model: voyageai/voyage-4-lite
     label_model: meta-llama/llama-3.2-3b-instruct
     headers: {}              # optional extra headers (e.g. HTTP-Referer/X-Title)
+    # OpenRouter-only reliability (ignored by other OpenAI-compatible providers):
+    fallback_models: []      # [openai/gpt-5.4-mini, ...] — walked in order if the primary model's providers all fail
+    provider: {}             # { ignore: [deepinfra], preferred_max_latency: { p90: 3 }, ... } — provider routing prefs
   deepseek:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
@@ -130,6 +133,15 @@ models:                      # P8 per-model overrides, keyed by model name
 Per-provider `base_url` + `api_key_env` + 3 model names. OpenRouter's
 `HTTP-Referer`/`X-Title` headers move into `headers:`. The `reasoning_field`
 quirk moves to `models:` (field name is per-model, not per-provider).
+
+OpenRouter-specific reliability keys (only added to OpenRouter requests — a plain
+OpenAI-compatible provider ignores them):
+- `fallback_models:` (list) — model fallbacks, walked in order if every provider
+  for the primary model fails (whole-model outage, cold-start no-content, context-
+  length, moderation). Mirrors OpenRouter's `models` array.
+- `provider:` (mapping) — routing prefs passed as the `provider` object:
+  `ignore` / `only` / `order` / `allow_fallbacks` / `preferred_max_latency` /
+  `preferred_min_throughput`.
 
 ### sampling
 | key | default | today |
