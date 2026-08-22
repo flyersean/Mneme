@@ -57,11 +57,13 @@ DEFAULT_INSTRUCTIONS = {
         "future reuse.\n"
     ),
     "capability_edge": (
-        "\n=== CAPABILITY EDGE ===\n"
-        "You have previously failed or performed poorly on tasks of type '{{problem_type}}'.\n"
-        "Do NOT attempt this again from memory alone. Either (a) propose the exact tool, "
-        "command, or script that would answer it correctly, or (b) state clearly that you "
-        "cannot answer it and what capability is missing."
+        "=== CAPABILITY EDGE ===\n"
+        "You have previously failed or performed poorly on tasks of type '{{problem_type}}'. "
+        "Do NOT retry it from memory alone — OVERCOME the edge instead. STOP making other "
+        "calls and decide exactly one:\n"
+        "  - \"DECISION: build_tool\" + a \"PLAN:\" (write a script that solves it, test it with bash, then \"TOOL_SAVE:\" it)\n"
+        "  - \"DECISION: reuse_tool\" + \"TOOL: <name>\" (a tool you already built — list_tools/read_tool — or one you find online via web_search)\n"
+        "  - \"DECISION: declare_edge\" + a \"MISSING:\" note — only AFTER you have genuinely tried to build or reuse a tool and failed\n"
     ),
     "overcome": (
         "\n=== OVERCOME MODE ===\n"
@@ -165,7 +167,7 @@ DEFAULT_INSTRUCTIONS = {k: v.strip() for k, v in DEFAULT_INSTRUCTIONS.items()}
 # docs/instructions.md. `vars` is a space-separated list of {{placeholders}}.
 INSTRUCTION_META = {
     "explore": ("user explicitly asks for a NEW method", "", "_explore_directive"),
-    "capability_edge": ("task's problem type is a flagged capability edge", "{{problem_type}}", "_capability_directive"),
+    "capability_edge": ("task type is a flagged edge → hard stop: build/reuse/declare", "{{problem_type}}", "_capability_directive"),
     "overcome": ("model is stuck (2 failures / 6 rounds), hard stop", "{{problem_type}} {{reason}}", "_overcome_directive"),
     "overcome_reuse": ("model chose reuse_tool — run the existing tool", "{{tool}} {{path}}", "_reuse_directive"),
     "overcome_build": ("model chose build_tool — one bounded build iteration", "{{iteration}} {{max}}", "_build_directive"),

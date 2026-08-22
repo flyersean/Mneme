@@ -687,6 +687,23 @@ def test_record_overcome_updates_edge():
 
 
 @test
+def test_capability_edge_directs_to_overcome():
+    # A flagged edge must route the model to OVERCOME (build/reuse/declare), not the
+    # old dead-end "propose a tool or state you cannot answer".
+    d = mp._load_instruction("capability_edge", vars={"problem_type": "compute"})
+    for marker in ("OVERCOME", "DECISION: build_tool", "DECISION: reuse_tool", "DECISION: declare_edge"):
+        assert marker in d, f"capability_edge missing '{marker}'"
+    assert "propose the exact tool" not in d
+    assert "state clearly that you" not in d
+    # A flagged type returns the directive; an unflagged type returns nothing.
+    mp._record_capability("edge_route_test", "F")
+    mp._record_capability("edge_route_test", "F")
+    assert mp._is_capability_edge("edge_route_test") is True
+    assert "OVERCOME" in mp._capability_directive("edge_route_test")
+    assert mp._capability_directive("other") == ""
+
+
+@test
 def test_in_build_mode_and_build_tool_calls():
     msgs = [
         {"role": "user", "content": "scrape the blocked site"},

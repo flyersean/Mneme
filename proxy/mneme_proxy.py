@@ -3533,19 +3533,23 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     context, ptype = build_context(user_msg)
     cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (instructions + memory + saved-tool directive + capability-edge
-    # directive + optional explore directive) as a system message after Hermes.
-    # If the model is stuck, inject the hard OVERCOME directive instead of the
-    # soft nudge — it forces a decision (build a tool or declare the edge).
-    mneme_system = context + _tool_directive(db, cur_ptype) + _capability_directive(cur_ptype) + _explore_directive(full_user_msg)
+    # Insert Mneme (instructions + memory + saved-tool directive + optional explore
+    # directive) as a system message after Hermes. A KNOWN capability edge is NOT
+    # injected here — it routes into the hard-stop overcome path below (line ~3545),
+    # because the point of flagging an edge is to OVERCOME it, not name it and stop.
+    mneme_system = context + _tool_directive(db, cur_ptype) + _explore_directive(full_user_msg)
     _tool_injection = mntools.inject_relevant_tools(user_msg)
     if _tool_injection:
         mneme_system += "\n" + _tool_injection
         print("  [TOOL-INJECT] injected relevant built tools", flush=True)
     _stuck, _stuck_reason = _detect_stuck(messages)
+    _is_edge = _is_capability_edge(cur_ptype)
     _in_build = _in_build_mode(messages)
     _in_reuse = _in_reuse_mode(messages)
-    _deliberate = _stuck and not _in_build and not _in_reuse  # hard stop: force deliberation, not another retry
+    # A KNOWN capability edge routes straight into overcome mode (hard stop) — the
+    # point of flagging an edge is to overcome it (build/reuse a tool), not just to
+    # name it and stop. Stuck-now and known-edge share the same deliberation gate.
+    _deliberate = (_stuck or _is_edge) and not _in_build and not _in_reuse
     if _in_build:
         _calls = _build_tool_calls(messages)
         if _calls >= BUILD_MAX_TOOL_CALLS:
@@ -3559,8 +3563,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         mneme_system += "\n\n" + _reuse_directive(_rname, _rpath)
         print(f"  [REUSE] run existing tool '{_rname}'", flush=True)
     elif _deliberate:
-        mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
-        print(f"  [OVERCOME] {_stuck_reason} — hard stop, tools removed", flush=True)
+        if _is_edge:
+            mneme_system += "\n\n" + _capability_directive(cur_ptype)
+            print(f"  [OVERCOME] known edge '{cur_ptype}' — hard stop, tools removed", flush=True)
+        else:
+            mneme_system += "\n\n" + _overcome_directive(cur_ptype, _stuck_reason)
+            print(f"  [OVERCOME] {_stuck_reason} — hard stop, tools removed", flush=True)
     else:
         _nudge = _tool_failure_nudge(messages)
         if _nudge:
@@ -3946,11 +3954,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _eff_grade = "F"
     _record_capability(cur_ptype, _eff_grade)
 
-    # Overcome-mode outcome: if the model was deliberating (stuck now, or
-    # already inside an overcome episode), parse its reply and record the
-    # decision — build_tool (attempted), declare_edge (confirmed), or a
+    # Overcome-mode outcome: if the model was deliberating (stuck now, a known
+    # capability edge, or already inside an overcome episode), parse its reply and
+    # record the decision — build_tool (attempted), declare_edge (confirmed), or a
     # TOOL_SAVE marker (overcame + saved tool).
-    if _stuck or _in_build or _in_reuse:
+    if _stuck or _is_edge or _in_build or _in_reuse:
         try:
             _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)
             if _oo != "none":
