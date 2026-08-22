@@ -350,7 +350,7 @@ _SEARCH_CACHE = {}
 
 
 def _exec_web_search(query):
-    """Web search across free backends (Brave primary, DuckDuckGo fallback).
+    """Web search across free backends (DuckDuckGo primary, Brave fallback).
 
     Free search engines rate-limit bot IPs, so results are best-effort: a failed
     search degrades to a clear message (the model can fall back to bash+curl).
@@ -360,7 +360,7 @@ def _exec_web_search(query):
         return "[web_search: empty query]"
     if query in _SEARCH_CACHE:
         return _SEARCH_CACHE[query]
-    for backend in (_brave_search, _ddg_search):
+    for backend in (_ddg_search, _brave_search):
         try:
             out = backend(query)
             if out:
