@@ -743,6 +743,29 @@ def test_instruction_sync_no_orphans_no_missing():
 
 
 @test
+def test_instruction_materialize_roundtrip():
+    """Every shipped prompt materializes to disk and loads back EXACTLY (a user can
+    read/edit the on-disk file like system_prompt.md), and materialize is idempotent
+    (never clobbers an edited file)."""
+    from mneme.instructions import materialize_instructions, _parse_instruction_file, DEFAULT_INSTRUCTIONS
+    materialize_instructions()
+    d = os.path.join(os.environ["MNEME_CHUNK_DIR"], "instructions", "default")
+    assert os.path.isdir(d), f"materialize didn't create {d}"
+    for name, default in DEFAULT_INSTRUCTIONS.items():
+        path = os.path.join(d, name + ".txt")
+        assert os.path.isfile(path), f"missing materialized file {name}.txt"
+        body, _ = _parse_instruction_file(path)
+        assert body == default, f"{name} round-trip mismatch: {body!r} != {default!r}"
+    # idempotency: a user-edited file must survive a re-materialize
+    p = os.path.join(d, "step_back_examine.txt")
+    with open(p, "w") as f:
+        f.write("# when: edited\n\nEDITED BODY\n")
+    materialize_instructions()
+    body, _ = _parse_instruction_file(p)
+    assert body == "EDITED BODY", f"materialize clobbered an edited file: {body!r}"
+
+
+@test
 def test_dsml_tool_calls_parsed():
     """DeepSeek models sometimes emit tool calls as DSML markup in `content` (not
     OpenAI-format tool_calls). They must be parsed back into tool_calls so the loop

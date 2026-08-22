@@ -1,11 +1,13 @@
 # Mneme injected instructions — the map
 
-Every prompt Mneme injects into the model is externalized: it ships with a
-hardcoded default (so a fresh clone works) and can be overridden by an editable
-file under `$MNEME_CHUNK_DIR/instructions/`:
+Every prompt Mneme injects into the model is externalized AND auto-materialized:
+on startup the proxy writes every shipped prompt to disk under
+`$MNEME_CHUNK_DIR/instructions/` so you can read and edit them directly — no code
+edit, no hand-creating a file with the right format. Edit a file to change that
+prompt; delete it to revert to the built-in default.
 
     instructions/
-      default/<name>.txt      — generic override (wins over the code default)
+      default/<name>.txt      — the prompt (auto-created on first run; edit to override)
       <model-name>/<name>.txt — per-model override (wins over default/)
 
 A missing or malformed file falls back to the code default and logs loudly — a

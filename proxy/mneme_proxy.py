@@ -37,7 +37,7 @@ from mneme.tool_trail import (
     _extract_combined_tool_trail,
     _tool_failure_nudge,
 )
-from mneme.instructions import _load_instruction
+from mneme.instructions import _load_instruction, materialize_instructions
 from mneme.overcome import (
     _detect_stuck,
     _overcome_directive,
@@ -1896,7 +1896,7 @@ def _meta_principles_block() -> str:
     against the dynamic MAX_INJECTED_TOKENS budget."""
     try:
         lines = "\n".join(f"PRINCIPLE: {p}" for p in META_PRINCIPLES)
-        return _load_instruction("meta_principles_header") + lines + "\n"
+        return "\n" + _load_instruction("meta_principles_header") + "\n" + lines + "\n"
     except Exception as e:
         _log_error("_meta_principles_block", e)
         return ""
@@ -2869,7 +2869,7 @@ def _preferences_block() -> str:
         return ""
     if not rows:
         return ""
-    lines = [_load_instruction("user_preferences_header")]
+    lines = ["\n" + _load_instruction("user_preferences_header")]
     for k, v in rows:
         lines.append(f"- {k}: {v}")
     return "\n".join(lines)
@@ -4963,6 +4963,10 @@ def _dump_config():
 _embedding_health_check()
 _load_index()
 _seed_chunk_seq()
+# Materialize every injected prompt to disk ($MNEME_CHUNK_DIR/instructions/default/*.txt)
+# so they are readable/editable like system_prompt.md — no code edit needed to tune a
+# prompt. Only creates missing files; user edits are never overwritten.
+materialize_instructions()
 # Re-embed pending chunks in the BACKGROUND — not synchronously — so startup is
 # not blocked on N sequential embed round-trips (the non-blocking chunk path stores
 # them pending_embed and defers embedding to here). The bg worker queue reuses the

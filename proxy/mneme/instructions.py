@@ -5,13 +5,17 @@ mneme.yaml: a user can tune wording for a quirky model or an edge case without
 a code edit, and a bad file degrades to the shipped default instead of breaking
 an injection.
 
+The prompts are AUTO-MATERIALIZED at startup (materialize_instructions()): every
+shipped prompt is written to disk so it can be READ and EDITED like system_prompt.md
+— no code edit, and no need to hand-create a file with the right format.
+
 Directory layout (under $MNEME_CHUNK_DIR/instructions/):
 
-    default/<name>.txt       — override for the code default
+    default/<name>.txt       — the prompt (auto-created on first run; edit to override)
     <model-dir>/<name>.txt   — per-model override (wins over default/)
 
-Each file carries optional frontmatter (self-documenting + used by the sync
-test), commented lines that the loader strips before substitution:
+Each file carries optional frontmatter (self-documenting), commented lines that the
+loader strips before substitution:
 
     # when: injected when a task's problem type is a flagged capability edge
     # vars: {{problem_type}}
@@ -148,6 +152,74 @@ DEFAULT_INSTRUCTIONS = {
     "system_directives_header": "=== SYSTEM DIRECTIVES (learned from past experience) ===",
 }
 
+# Normalize: strip leading/trailing whitespace so each prompt round-trips faithfully
+# through the on-disk files (the loader strips the blank-line separator between the
+# frontmatter and the body). Separation whitespace is the injection call-site's job,
+# not the prompt's — the two *_header prompts below get their leading newline added
+# by build_context/_preferences_block.
+DEFAULT_INSTRUCTIONS = {k: v.strip() for k, v in DEFAULT_INSTRUCTIONS.items()}
+
+
+# Self-documentation for each prompt (the "when / vars / used_by" frontmatter that
+# materialize_instructions() writes into the on-disk files). Kept in sync with
+# docs/instructions.md. `vars` is a space-separated list of {{placeholders}}.
+INSTRUCTION_META = {
+    "explore": ("user explicitly asks for a NEW method", "", "_explore_directive"),
+    "capability_edge": ("task's problem type is a flagged capability edge", "{{problem_type}}", "_capability_directive"),
+    "overcome": ("model is stuck (2 failures / 6 rounds), hard stop", "{{problem_type}} {{reason}}", "_overcome_directive"),
+    "overcome_reuse": ("model chose reuse_tool — run the existing tool", "{{tool}} {{path}}", "_reuse_directive"),
+    "overcome_build": ("model chose build_tool — one bounded build iteration", "{{iteration}} {{max}}", "_build_directive"),
+    "overcome_build_exhausted": ("build iterations exhausted — force declare_edge", "{{max}}", "_build_exhausted_directive"),
+    "synthesize_nudge": ("≥8 tool calls w/o a final answer (advisory)", "{{count}}", "_synthesize_nudge"),
+    "hard_wrapup": ("repeated identical tool calls (redundancy hard stop)", "{{count}}", "_hard_wrapup_directive"),
+    "write_script_nudge": ("≥5 distinct bash calls on one target (soft)", "{{count}} {{resource}}", "_write_script_nudge"),
+    "step_back_examine": ("≥6 tool calls w/o answer — examine + pivot (soft)", "{{count}}", "_step_back_directive"),
+    "step_back_adapt": ("≥12 tool calls w/o answer — adapt a known solution", "{{count}}", "_step_back_directive"),
+    "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
+    "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
+    "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
+    "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
+    "system_directives_header": ("saved strategies are injected", "", "build_context"),
+}
+
+
+def materialize_instructions():
+    """Write every shipped prompt to $MNEME_CHUNK_DIR/instructions/default/<name>.txt.
+
+    This is what makes the injected prompts READABLE and EDITABLE on disk without a
+    code edit — the same ergonomics as system_prompt.md. Each file gets a short
+    self-documenting frontmatter (when / vars / used_by) the loader strips, then the
+    prompt body. Existing files are left untouched so user edits survive; only
+    missing files are created. Deleting a file reverts to the built-in default.
+    """
+    default_dir = os.path.join(_instructions_dir(), "default")
+    try:
+        os.makedirs(default_dir, exist_ok=True)
+    except OSError as e:
+        print(f"  [INSTRUCTIONS][ERR] cannot create {default_dir}: {e}", flush=True)
+        return
+    created = 0
+    for name, text in DEFAULT_INSTRUCTIONS.items():
+        path = os.path.join(default_dir, name + ".txt")
+        if os.path.isfile(path):
+            continue  # never clobber a file the user may have edited
+        when, vars_, used_by = INSTRUCTION_META.get(name, ("", "", ""))
+        head = []
+        if when:
+            head.append(f"# when: {when}")
+        if vars_:
+            head.append(f"# vars: {vars_}")
+        if used_by:
+            head.append(f"# used_by: {used_by}")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(head) + "\n\n" + text + "\n")
+            created += 1
+        except OSError as e:
+            print(f"  [INSTRUCTIONS][ERR] cannot write {path}: {e}", flush=True)
+    if created:
+        print(f"  [INSTRUCTIONS] materialized {created} prompt file(s) under {default_dir}", flush=True)
+
 
 def _load_instruction(name, default=None, vars=None):
     """Return the instruction text for `name`.
@@ -161,8 +233,10 @@ def _load_instruction(name, default=None, vars=None):
     text = _read_override(name)
     if text is None:
         text = default
-    else:
-        print(f"  [INSTRUCTIONS] {name}: using override file", flush=True)
+    elif text != default:
+        # Only announce a REAL edit (materialized defaults match the code default,
+        # so this stays quiet unless the user actually changed the wording).
+        print(f"  [INSTRUCTIONS] {name}: using edited override file", flush=True)
     return _substitute(text, vars or {})
 
 
