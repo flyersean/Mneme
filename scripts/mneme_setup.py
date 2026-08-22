@@ -481,7 +481,7 @@ def free_port(start=8080):
     return 8080
 
 
-def start_proxy(backend, port):
+def start_proxy(backend, models, port):
     env = os.environ.copy()
     env["MNEME_CHUNK_DIR"] = MEMORY_DIR
     env["MNEME_PORT"] = str(port)
@@ -490,7 +490,14 @@ def start_proxy(backend, port):
         env["OPENROUTER_API_KEY"] = load_saved_key()
         env["MNEME_BACKEND"] = "openrouter"
     else:
+        # Ollama models are read from env vars (not the config), so the choices
+        # the user just made MUST be exported here — otherwise the proxy falls
+        # back to its code defaults (e.g. label=qwen2.5:0.5b) and silently uses
+        # models the user never picked. This was the "labeler 404" bug.
         env["MNEME_BACKEND"] = "ollama"
+        env["MNEME_MODEL"] = models.get("model", "")
+        env["EMBED_MODEL"] = models.get("embed_model", "")
+        env["LABEL_MODEL"] = models.get("label_model", "")
     log = open("/tmp/mneme.log", "w")
     subprocess.Popen([sys.executable, "-uB", "proxy/mneme_proxy.py"],
                      cwd=REPO_ROOT, env=env, stdout=log, stderr=log, start_new_session=True)
@@ -558,7 +565,7 @@ def main():
     if install_pi:
         setup_pi(models.get("ctx_size"))
 
-    started = start_proxy(backend, port)
+    started = start_proxy(backend, models, port)
 
     # Wrap up
     print("\n\033[1mSetup complete.\033[0m")

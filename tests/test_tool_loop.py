@@ -104,6 +104,14 @@ def _web_call(query, id="call_2"):
             "eval_count": 10, "done_reason": "tool_calls"}
 
 
+def _web_call_stop(query, id="call_2"):
+    """A web_search tool call where the model reported done_reason="stop" instead
+    of "tool_calls" (the Qwen3.6-35B "Uncensored-Aggressive" behaviour). The tool
+    call must STILL be executed, not dropped."""
+    return {"content": "", "thinking": "narrated reasoning", "tool_calls": [_tc("web_search", {"query": query}, id)],
+            "eval_count": 924, "done_reason": "stop"}
+
+
 def _bash_call(command, id="call_1"):
     return {"content": "", "thinking": "", "tool_calls": [_tc("bash", {"command": command}, id)],
             "eval_count": 10, "done_reason": "tool_calls"}
@@ -175,6 +183,37 @@ def test_web_search_executed_server_side():
     assert calls == ["mneme tool calling bug"], f"web_search was not executed server-side: {calls!r}"
     # resolved server-side -> no forwarded tool call, and a final answer.
     assert not (result.get("tool_calls") or []), f"web_search must not be forwarded: {result.get('tool_calls')!r}"
+    assert (result.get("content") or "").strip(), "expected a final answer, got empty content"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_tool_call_with_stop_reason_is_executed():
+    """Regression (Qwen3.6-35B bug): a model that emits a tool call with
+    done_reason="stop" AND empty content must have the tool executed — the loop
+    must not break early, drop the call, and return an empty answer."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("mneme tool calling bug"),       # turn 1: recall memory
+        _web_call_stop("mneme tool calling bug"),     # turn 2: web_search but done_reason=stop
+        _answer("The bug is fixed. [source: web_search]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+
+    mt = mp.mntools
+    orig = mt._exec_web_search
+    calls = []
+    mt._exec_web_search = lambda q: calls.append(q) or f"[stub] results for '{q}'"
+    try:
+        result = mp.process_chat(
+            [{"role": "user", "content": "What's the status of the Mneme tool-calling bug? Search memory."}],
+            session_id="test", tools=[],
+        )
+    finally:
+        mt._exec_web_search = orig
+
+    assert calls == ["mneme tool calling bug"], f"web_search dropped on done_reason=stop: {calls!r}"
     assert (result.get("content") or "").strip(), "expected a final answer, got empty content"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
