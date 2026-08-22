@@ -40,21 +40,21 @@ apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-
 
 # Install from pip. --break-system-packages handles PEP 668 (Ubuntu 22.04+).
 # --ignore-installed bypasses any lingering pinned system packages.
-if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml 2>/dev/null; then
+if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs 2>/dev/null; then
   echo "  ✓ pip install OK"
 else
   echo "  pip (--break-system-packages) failed — retrying plain install..."
-  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml
+  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs
 fi
 
 # Verify each package imports.
 MISSED=""
-for pkg in flask flask_cors faiss numpy requests yaml; do
+for pkg in flask flask_cors faiss numpy requests yaml ddgs; do
   if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; MISSED="$MISSED $pkg"; fi
 done
 if [ -n "$MISSED" ]; then
   echo "  ⚠ Still missing:$MISSED"
-  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml"
+  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs"
 fi
 
 # ── 2. Ollama ─────────────────────────────────────────────────────────

@@ -309,18 +309,33 @@ _SEARCH_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/53
 
 
 def _ddg_search(query):
-    """DuckDuckGo HTML backend (no key). Returns a results string, or None."""
-    r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=_SEARCH_HEADERS, timeout=20)
-    html = r.text or ""
-    titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
-    if not titles:
+    """DuckDuckGo backend via the ddgs package. ddgs performs the vqd-token
+    handshake that a raw POST to html.duckduckgo.com omits — that missing token
+    is why DDG returns the 202 'anomaly' challenge to naive scrapers. Lazy
+    import so the tool still works (Brave fallback) if ddgs isn't installed.
+    Returns a results string, or None.
+
+    Note: ddgs can occasionally block in native code (primp/libcurl) holding the
+    GIL, so a hung search could freeze the proxy; DDGS(timeout=…) bounds each
+    request. If this ever hangs in practice, isolate it in a subprocess (see
+    Hermes's plugins/web/ddgs/provider.py for the reference implementation)."""
+    try:
+        from ddgs import DDGS
+    except ImportError:
         return None
-    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
+    try:
+        with DDGS(timeout=15) as client:
+            hits = list(client.text(query, max_results=8))
+    except Exception:
+        return None
+    if not hits:
+        return None
     lines = [f"web results for '{query}':"]
-    for i, (href, title) in enumerate(titles[:8]):
-        t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
-        snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
-        lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
+    for i, h in enumerate(hits, 1):
+        t = str(h.get("title") or "").strip()
+        url = str(h.get("href") or h.get("url") or "").strip()
+        body = str(h.get("body") or "").strip()
+        lines.append(f"{i}. {t}\n   {url}\n   {body[:300]}")
     return "\n".join(lines)
 
 
