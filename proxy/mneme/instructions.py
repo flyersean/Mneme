@@ -183,6 +183,30 @@ INSTRUCTION_META = {
 }
 
 
+# Canonical order the prompts fire in a conversation (used by the /instructions
+# reference page so a user can read them top-to-bottom in the order they'd appear).
+# Not every prompt fires every turn — this is the "if a conversation escalates
+# fully" order. Anything not listed here (shouldn't happen) is appended last.
+INSTRUCTION_ORDER = [
+    "meta_principles_header",     # always — context build, every turn
+    "system_directives_header",   # always — context build, every turn
+    "user_preferences_header",    # always — context build, every turn
+    "explore",                    # user explicitly asks for a NEW method
+    "capability_edge",            # the task's problem type was previously flagged
+    "tool_failure_nudge",         # ≥2 consecutive tool failures
+    "write_script_nudge",         # ≥5 bash calls against the same target
+    "synthesize_nudge",           # ≥8 calls w/o a final answer (advisory)
+    "step_back_examine",          # ≥6 calls — examine the obstacle, pivot
+    "step_back_adapt",            # ≥12 calls — find a known solution online
+    "step_back_concede",          # ≥20 calls — concede honestly (hard stop)
+    "hard_wrapup",                # repeated identical calls (redundancy stop)
+    "overcome",                   # stuck → choose build / reuse / declare
+    "overcome_reuse",             #   reuse an already-built tool
+    "overcome_build",             #   build a new tool
+    "overcome_build_exhausted",   #   build attempts ran out
+]
+
+
 def materialize_instructions():
     """Write every shipped prompt to $MNEME_CHUNK_DIR/instructions/default/<name>.txt.
 
@@ -219,6 +243,64 @@ def materialize_instructions():
             print(f"  [INSTRUCTIONS][ERR] cannot write {path}: {e}", flush=True)
     if created:
         print(f"  [INSTRUCTIONS] materialized {created} prompt file(s) under {default_dir}", flush=True)
+
+
+def list_instructions():
+    """Return the prompts in conversation order, reading the LIVE default/ files
+    (with the code default as fallback). Each entry: {name, when, vars, used_by,
+    content, path, model_override}. Used by the /instructions reference page."""
+    ordered = list(INSTRUCTION_ORDER)
+    for name in DEFAULT_INSTRUCTIONS:  # any default not in the order list (defensive)
+        if name not in ordered:
+            ordered.append(name)
+    model_dir = _model_override_dir()
+    result = []
+    for name in ordered:
+        when, vars_, used_by = INSTRUCTION_META.get(name, ("", "", ""))
+        path = os.path.join(_instructions_dir(), "default", name + ".txt")
+        body = None
+        if os.path.isfile(path):
+            body, _ = _parse_instruction_file(path)
+        if body is None:
+            body = DEFAULT_INSTRUCTIONS.get(name, "")
+        model_override = ""
+        if model_dir:
+            mp = os.path.join(_instructions_dir(), model_dir, name + ".txt")
+            if os.path.isfile(mp):
+                model_override = mp
+        result.append({
+            "name": name,
+            "when": when,
+            "vars": vars_,
+            "used_by": used_by,
+            "content": body,
+            "path": path,
+            "model_override": model_override,
+        })
+    return result
+
+
+def save_instruction(name, content):
+    """Write a user-edited prompt body back to default/<name>.txt, preserving the
+    self-documenting frontmatter (reconstructed from INSTRUCTION_META). Returns the
+    path written; raises OSError on failure. Unknown names raise ValueError."""
+    if name not in DEFAULT_INSTRUCTIONS:
+        raise ValueError(f"unknown instruction name: {name}")
+    when, vars_, used_by = INSTRUCTION_META.get(name, ("", "", ""))
+    head = []
+    if when:
+        head.append(f"# when: {when}")
+    if vars_:
+        head.append(f"# vars: {vars_}")
+    if used_by:
+        head.append(f"# used_by: {used_by}")
+    path = os.path.join(_instructions_dir(), "default", name + ".txt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        if head:
+            f.write("\n".join(head) + "\n\n")
+        f.write(content.rstrip("\n") + "\n")
+    return path
 
 
 def _load_instruction(name, default=None, vars=None):

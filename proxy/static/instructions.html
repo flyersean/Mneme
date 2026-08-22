@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Injected Instructions</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1a1d21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 900px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
+  .legend { background: var(--accent-soft); border: 1px solid #d7e2ff; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #1e3a8a; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  .card-head .name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 600; font-size: 15px; }
+  .card-head .actions { display: flex; gap: 8px; align-items: center; }
+  .when { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+  .when b { color: var(--text); font-weight: 600; }
+  .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  textarea {
+    width: 100%;
+    min-height: 120px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    resize: vertical;
+    background: #fcfcfd;
+    color: var(--text);
+  }
+  textarea:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+  button {
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:hover { opacity: 0.88; }
+  a.link { font-size: 12px; color: var(--accent); text-decoration: none; }
+  a.link:hover { text-decoration: underline; }
+  .status { position: fixed; bottom: 20px; right: 20px; background: #111827; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+  .status.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mneme — Injected Instructions</h1>
+  <p>Every prompt Mneme injects into the model, in the order they fire during a conversation. Edit a box and click <b>Save</b> to change that prompt — it writes straight back to its file (the <code># when / vars / used_by</code> header is metadata, not part of the prompt). Delete a file to revert to the built-in default.</p>
+</header>
+<main>
+  <div class="legend">
+    Order = the flow of one conversation: the first three fire on <b>every</b> turn (context build), then the escalation prompts fire as a task gets harder — a few tool calls → many → stuck → concede. Not every prompt fires every turn.
+  </div>
+  <div id="list"></div>
+</main>
+<div class="status" id="status"></div>
+<script>
+  async function load() {
+    const res = await fetch('/instructions/data');
+    const data = await res.json();
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+    for (const ins of data.instructions) {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const head = document.createElement('div');
+      head.className = 'card-head';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'name';
+      nameSpan.textContent = ins.name;
+      head.appendChild(nameSpan);
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const link = document.createElement('a');
+      link.className = 'link';
+      link.href = '/instructions/raw/' + ins.name;
+      link.target = '_blank';
+      link.textContent = '\u2197 open file';
+      actions.appendChild(link);
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'primary';
+      saveBtn.textContent = 'Save';
+      actions.appendChild(saveBtn);
+      head.appendChild(actions);
+      card.appendChild(head);
+
+      const when = document.createElement('div');
+      when.className = 'when';
+      when.innerHTML = '<b>When:</b> ' + escapeHtml(ins.when || '\u2014');
+      card.appendChild(when);
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const parts = [];
+      if (ins.vars) parts.push('vars: ' + ins.vars);
+      if (ins.used_by) parts.push('used_by: ' + ins.used_by);
+      meta.textContent = parts.join('   \u00b7   ');
+      card.appendChild(meta);
+
+      const ta = document.createElement('textarea');
+      ta.value = ins.content;
+      ta.spellcheck = false;
+      card.appendChild(ta);
+
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.disabled = true;
+        try {
+          const r = await fetch('/instructions/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: ins.name, content: ta.value })
+          });
+          const out = await r.json();
+          if (r.ok && out.ok) flash('Saved ' + ins.name);
+          else flash('Error: ' + (out.error || 'unknown'), true);
+        } catch (e) {
+          flash('Error: ' + e.message, true);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+
+      list.appendChild(card);
+    }
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function flash(msg, isErr) {
+    const s = document.getElementById('status');
+    s.textContent = msg;
+    s.style.background = isErr ? '#b91c1c' : '#111827';
+    s.classList.add('show');
+    clearTimeout(s._t);
+    s._t = setTimeout(() => s.classList.remove('show'), 2200);
+  }
+  load().catch(e => { document.getElementById('list').textContent = 'Failed to load: ' + e.message; });
+</script>
+</body>
+</html>

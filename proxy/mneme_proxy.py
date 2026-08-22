@@ -37,7 +37,7 @@ from mneme.tool_trail import (
     _extract_combined_tool_trail,
     _tool_failure_nudge,
 )
-from mneme.instructions import _load_instruction, materialize_instructions
+from mneme.instructions import _load_instruction, materialize_instructions, list_instructions, save_instruction, _instructions_dir
 from mneme.overcome import (
     _detect_stuck,
     _overcome_directive,
@@ -4339,7 +4339,55 @@ if FLASK_OK:
         except Exception as e:
             print(f"  [CHAT-UI][ERR] {str(e)[:100]}", flush=True)
             return _cors_response({"error": "chat UI not found"}, status=404)
-    
+
+    # ── Instructions reference UI: read/edit the injected prompts in conversation order ──
+    _INSTRUCTIONS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "instructions.html")
+
+    @app.route("/instructions", methods=["GET"])
+    def instructions_ui():
+        try:
+            with open(_INSTRUCTIONS_HTML_PATH, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except Exception as e:
+            print(f"  [INSTRUCTIONS-UI][ERR] {str(e)[:100]}", flush=True)
+            return _cors_response({"error": "instructions UI not found"}, status=404)
+
+    @app.route("/instructions/data", methods=["GET"])
+    def instructions_data():
+        try:
+            return _cors_response({"instructions": list_instructions()})
+        except Exception as e:
+            print(f"  [INSTRUCTIONS-UI][ERR] data: {str(e)[:100]}", flush=True)
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/instructions/save", methods=["POST"])
+    def instructions_save():
+        data = request.get_json(force=True)
+        name = data.get("name", "")
+        content = data.get("content", "")
+        if not re.fullmatch(r"[a-z_]+", name):
+            return _cors_response({"error": "invalid instruction name"}, status=400)
+        try:
+            path = save_instruction(name, content)
+            return _cors_response({"ok": True, "path": path})
+        except ValueError:
+            return _cors_response({"error": f"unknown instruction: {name}"}, status=400)
+        except OSError as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/instructions/raw/<name>", methods=["GET"])
+    def instructions_raw(name):
+        if not re.fullmatch(r"[a-z_]+", name):
+            return _cors_response({"error": "invalid instruction name"}, status=400)
+        path = os.path.join(_instructions_dir(), "default", name + ".txt")
+        if not os.path.isfile(path):
+            return _cors_response({"error": f"no file for {name}"}, status=404)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/plain; charset=utf-8"}
+        except OSError as e:
+            return _cors_response({"error": str(e)}, status=500)
+
     # ── OPTIONS preflight for all routes ──
     @app.route("/v1/chat/completions", methods=["OPTIONS"])
     @app.route("/api/chat/completions", methods=["OPTIONS"])
