@@ -9,7 +9,7 @@
 #   MNEME_MODEL    (main LLM)          default: deepseek/deepseek-v4-flash
 #   EMBED_MODEL    (embedder)          default: voyageai/voyage-4-lite   (1024-dim)
 #   LABEL_MODEL    (topic labeler)     default: meta-llama/llama-3.2-3b-instruct (non-thinking)
-#   MNEME_CHUNK_DIR (memory DB dir)    default: ~/mneme_chunks
+#   MNEME_CHUNK_DIR (memory DB dir)    default: ~/mneme/chunks
 #   MNEME_PORT      (proxy port)       default: 8080
 set -euo pipefail
 
@@ -17,7 +17,7 @@ export MNEME_BACKEND="${MNEME_BACKEND:-openrouter}"
 export MNEME_MODEL="${MNEME_MODEL:-deepseek/deepseek-v4-flash}"
 export EMBED_MODEL="${EMBED_MODEL:-voyageai/voyage-4-lite}"
 export LABEL_MODEL="${LABEL_MODEL:-meta-llama/llama-3.2-3b-instruct}"
-export MNEME_CHUNK_DIR="${MNEME_CHUNK_DIR:-$HOME/mneme_chunks}"
+export MNEME_CHUNK_DIR="${MNEME_CHUNK_DIR:-$HOME/mneme/chunks}"
 export MNEME_PORT="${MNEME_PORT:-8080}"
 export MNEME_CTX_TOKENS="${MNEME_CTX_TOKENS:-256000}"   # context trim budget (tokens)
 export MNEME_CHAT_TIMEOUT="${MNEME_CHAT_TIMEOUT:-120}"   # seconds, anti-grind guardrail (model answers ~2s; fail fast on hangs)
@@ -31,8 +31,8 @@ fi
 cd "$(dirname "$0")/.."
 
 # Prefer the local venv if it exists (the openrouter branch needs faiss/numpy/flask/requests)
-if [ -x "$HOME/mneme-venv/bin/python" ]; then
-  PY="$HOME/mneme-venv/bin/python"
+if [ -x "$HOME/mneme/venv/bin/python" ]; then
+  PY="$HOME/mneme/venv/bin/python"
 else
   PY="python3"
 fi

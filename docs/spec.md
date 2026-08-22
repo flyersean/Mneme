@@ -65,7 +65,7 @@ Natural-language-with-markers, not forced JSON, so a slightly-off model still yi
 
 If `build_tool`, run a bounded loop (default **3 iterations**) letting the model:
 
-1. `write` the tool (a script under `~/mneme_chunks/tools/`),
+1. `write` the tool (a script under `~/mneme/chunks/tools/`),
 2. `bash` it against the failing task,
 3. observe the result (the deterministic classifier already labels each run result),
 4. iterate.
@@ -127,7 +127,7 @@ Every instruction ships with a hardcoded default (a fresh clone always works). A
 ### Directory layout
 
 ```
-~/mneme_chunks/instructions/
+~/mneme/chunks/instructions/
   README.md                     # the map: what each file does + when it's injected
   default/
     capability_edge.txt
@@ -213,7 +213,7 @@ Pragmatic module-level globals, initialized by the orchestrator at startup (matc
 ## Rollout
 
 1. Work on `modularize-overcome`; do NOT touch `unified_mneme` until merged.
-2. Preserve the live DB (`~/mneme_chunks/mneme.db`) — all migrations additive.
+2. Preserve the live DB (`~/mneme/chunks/mneme.db`) — all migrations additive.
 3. After each module lands: run the offline suite, then a live smoke test through Pi.
 4. Merge to `unified_mneme` only when all tests pass and a live session still works.
 

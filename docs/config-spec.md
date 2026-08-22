@@ -31,7 +31,7 @@ var is unset. Per-request overrides (e.g. `temperature` passed to
 ## Schema
 
 ```yaml
-# mneme.yaml — lives next to the DB, e.g. ~/mneme_chunks/mneme.yaml
+# mneme.yaml — lives next to the DB, e.g. ~/mneme/chunks/mneme.yaml
 
 backend:
   type: openai              # "ollama" | "openai"   (openai = OpenAI-compatible)
@@ -75,7 +75,7 @@ timeouts:
   edge_ratio: 0.5
 
 storage:
-  chunk_dir: ~/mneme_chunks
+  chunk_dir: ~/mneme/chunks
   port: 8080
   inject_system: true
   staging_turns: 6           # flush cadence (the every-6-turns knob)
@@ -170,7 +170,7 @@ OpenAI-compatible provider ignores them):
 ### storage
 | key | default | today |
 |---|---|---|
-| chunk_dir | `~/mneme_chunks` | [env] `MNEME_CHUNK_DIR` |
+| chunk_dir | `~/mneme/chunks` | [env] `MNEME_CHUNK_DIR` |
 | port | 8080 | [env] `MNEME_PORT` |
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
 | staging_turns | 6 | [const] `STAGING_TURNS` |
@@ -203,7 +203,7 @@ OpenAI-compatible provider ignores them):
 | key | default | today |
 |---|---|---|
 | native | auto | `NATIVE_TOOLS_MODE` (auto/on/off) — inject proxy-owned bash/write unless the client supplied its own |
-| dir | ~/mneme_chunks/tools | `TOOLS_DIR` — canonical directory built tools are stored in + run from |
+| dir | ~/mneme/chunks/tools | `TOOLS_DIR` — canonical directory built tools are stored in + run from |
 | bash_timeout | 30 | `BASH_TIMEOUT` — seconds before a native bash command is killed |
 | inject_min_similarity | 0.75 | `TOOL_INJECT_MIN_SIM` — stricter than retrieval; a built tool is auto-injected only above this |
 | inject_max | 3 | `TOOL_INJECT_MAX` — max built tools auto-injected per turn |

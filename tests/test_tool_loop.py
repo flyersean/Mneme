@@ -14,7 +14,7 @@ sends: a user turn, a memory search, a hand-off to web_search, then a final
 tagged answer.
 
 Run:
-    /home/sean/mneme-venv/bin/python tests/test_tool_loop.py
+    /home/sean/mneme/venv/bin/python tests/test_tool_loop.py
 """
 
 import os

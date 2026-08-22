@@ -33,18 +33,18 @@ The proxy needs a Python venv with a few deps, and (for hosted backends) an API 
 
 ```bash
 # venv (one-time, ~250MB)
-python3 -m venv ~/mneme-venv
-~/mneme-venv/bin/pip install faiss-cpu numpy flask flask-cors requests pyyaml
+python3 -m venv ~/mneme/venv
+~/mneme/venv/bin/pip install faiss-cpu numpy flask flask-cors requests pyyaml
 
 # API key — pick ONE:
 #   a) save it where launch.sh looks for it (chmod 600):
-#        echo 'OPENROUTER_API_KEY=sk-...' > ~/.mneme/openrouter.env
+#        echo 'OPENROUTER_API_KEY=sk-...' > ~/mneme/env
 #   b) or just export it each time:
 #        export OPENROUTER_API_KEY=sk-...
 ```
 
 The API key is never written into the repo — it lives in an env var or a
-`~/.mneme/openrouter.env` file that is gitignored by convention.
+`~/mneme/env` file that is gitignored by convention.
 
 > `scripts/mneme_setup_openrouter.py` also exists and can validate your key and
 > show your credit balance, but it writes a legacy `setup_config.json`. The
@@ -53,12 +53,12 @@ The API key is never written into the repo — it lives in an env var or a
 ### 3. Configure (optional)
 
 The proxy auto-loads a config file from next to the memory DB
-(`$MNEME_CHUNK_DIR/mneme.yaml`, default `~/mneme_chunks/mneme.yaml`). Copy the
+(`$MNEME_CHUNK_DIR/mneme.yaml`, default `~/mneme/chunks/mneme.yaml`). Copy the
 example to get started:
 
 ```bash
-mkdir -p ~/mneme_chunks
-cp mneme.yaml.example ~/mneme_chunks/mneme.yaml
+mkdir -p ~/mneme/chunks
+cp mneme.yaml.example ~/mneme/chunks/mneme.yaml
 ```
 
 The example is fully commented — every setting explains what it does. The
@@ -72,7 +72,7 @@ knobs you'll actually tune.
 ./launch.sh
 ```
 
-This starts the proxy (backgrounded, logging to `~/mneme_chunks/mneme.log`),
+This starts the proxy (backgrounded, logging to `~/mneme/chunks/mneme.log`),
 waits for it to be healthy, then launches Pi with the Mneme search extensions.
 Exiting Pi stops the proxy. To run the proxy alone:
 
@@ -186,7 +186,7 @@ cycling + strategy extraction).
 ## Testing
 
 ```bash
-~/mneme-venv/bin/python tests/test_tool_loop.py
+~/mneme/venv/bin/python tests/test_tool_loop.py
 ```
 
 Deterministic regression tests — no live model or network. A scripted model

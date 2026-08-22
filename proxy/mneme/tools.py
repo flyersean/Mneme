@@ -27,7 +27,7 @@ from mneme.util import _extract_text
 
 # ─── Config (env-set by mneme_proxy's config loader before first use) ────
 NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")   # auto | on | off
-TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme_chunks/tools"))
+TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme/chunks/tools"))
 BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
 TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
 TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
@@ -48,7 +48,7 @@ def reload_config():
     global NATIVE_TOOLS_MODE, TOOLS_DIR, BASH_TIMEOUT
     global TOOL_INJECT_MIN_SIM, TOOL_INJECT_MAX, TOOL_INJECT_TOKENS
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
-    TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme_chunks/tools"))
+    TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme/chunks/tools"))
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
     TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
     TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))

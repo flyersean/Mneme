@@ -182,7 +182,7 @@ def _find_config_path():
     if cd and os.path.exists(os.path.join(cd, "mneme.yaml")):
         return os.path.join(cd, "mneme.yaml")
     for name in ("mneme.yaml", "mneme.json"):
-        p = os.path.join(os.path.expanduser("~/mneme_chunks"), name)
+        p = os.path.join(os.path.expanduser("~/mneme/chunks"), name)
         if os.path.exists(p):
             return p
     return None
@@ -609,7 +609,7 @@ def grade_priority(chunk_id: str) -> int:
 
 # snowflake-arctic-embed2 produces 1024-dim embeddings (nomic-embed-text was 768).
 # NOTE: existing vectors in the DB are 768-dim and incompatible. Wipe
-# mneme_chunks/mneme.db (or run a migration) before starting with
+# mneme/chunks/mneme.db (or run a migration) before starting with
 # the new embedder, otherwise FAISS will reject add/search on shape mismatch.
 # EMBED_MODEL is env-overridable so a DB can move between machines with
 # different embedders (the startup health check re-embeds mismatched chunks).

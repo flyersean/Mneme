@@ -6,9 +6,9 @@ no GPU, no model downloads — the main LLM, embedder, and labeler all run on
 OpenRouter. This script:
 
   1. Asks for (and validates) your OpenRouter API key, saves it to
-     ~/.mneme/openrouter.env (chmod 600, never written into the repo).
+     ~/mneme/env (chmod 600, never written into the repo).
   2. Lets you pick the main / embedder / labeler models (cheap defaults).
-  3. Creates a venv (~/mneme-venv) with faiss/numpy/flask/requests if needed.
+  3. Creates a venv (~/mneme/venv) with faiss/numpy/flask/requests if needed.
   4. Writes a config + start script, launches the proxy, and health-checks it.
 
 Self-contained (stdlib only) so it runs via:
@@ -32,9 +32,9 @@ DEFAULT_EMBED  = "voyageai/voyage-4-lite"            # 1024-dim (matches FAISS)
 DEFAULT_LABEL  = "meta-llama/llama-3.2-3b-instruct"  # small, non-thinking
 
 OR_BASE       = "https://openrouter.ai/api/v1"
-KEY_FILE      = os.environ.get("MNEME_KEY_FILE", os.path.expanduser("~/.mneme/openrouter.env"))
-VENV_DIR      = os.environ.get("MNEME_VENV_DIR", os.path.expanduser("~/mneme-venv"))
-MEMORY_DIR    = os.environ.get("MNEME_CHUNK_DIR", os.path.expanduser("~/mneme_chunks"))
+KEY_FILE      = os.environ.get("MNEME_KEY_FILE", os.path.expanduser("~/mneme/env"))
+VENV_DIR      = os.environ.get("MNEME_VENV_DIR", os.path.expanduser("~/mneme/venv"))
+MEMORY_DIR    = os.environ.get("MNEME_CHUNK_DIR", os.path.expanduser("~/mneme/chunks"))
 _REPO_DERIVED = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO_ROOT = None  # resolved in main() via find_repo()
 
@@ -101,7 +101,7 @@ def find_repo():
     own location, then common checkout paths, then offers to git-clone."""
     candidates = [
         _REPO_DERIVED,
-        os.path.expanduser("~/Mneme-build"),
+        os.path.expanduser("~/mneme/repo"),
         os.path.expanduser("~/Mneme"),
         os.path.expanduser("~/mneme"),
         os.getcwd(),
@@ -117,7 +117,7 @@ def find_repo():
             return path
         print(f"  proxy/mneme_proxy.py not found in {path}.")
         sys.exit(1)
-    dest = os.path.expanduser("~/Mneme-build")
+    dest = os.path.expanduser("~/mneme/repo")
     print(f"  Cloning into {dest} ...")
     r = run(f"git clone --branch unified_mneme https://github.com/flyersean/Mneme.git {dest}", timeout=300)
     if r.returncode != 0:
@@ -476,7 +476,7 @@ def main():
     print("\n  The proxy is OpenAI-compatible at http://localhost:%d/v1" % port)
     print("  Test:  curl http://localhost:%d/health" % port)
     print()
-    print("  The API key lives only in ~/.mneme/openrouter.env (chmod 600).")
+    print("  The API key lives only in ~/mneme/env (chmod 600).")
     print("  To rotate it, re-run this wizard or edit that file.")
     return 0 if started else 1
 

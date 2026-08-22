@@ -11,11 +11,11 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-VENV="${MNEME_VENV_DIR:-$HOME/mneme-venv}"
-KEY_FILE="${MNEME_KEY_FILE:-$HOME/.mneme/openrouter.env}"
+VENV="${MNEME_VENV_DIR:-$HOME/mneme/venv}"
+KEY_FILE="${MNEME_KEY_FILE:-$HOME/mneme/env}"
 HERMES_ENV="$HOME/.hermes/profiles/deep1/.env"
 PORT="${MNEME_PORT:-8080}"
-CHUNK_DIR="${MNEME_CHUNK_DIR:-$HOME/mneme_chunks}"
+CHUNK_DIR="${MNEME_CHUNK_DIR:-$HOME/mneme/chunks}"
 
 # --- 1. API key: env var, then saved key file, then Hermes .env ---
 if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -f "$KEY_FILE" ]; then

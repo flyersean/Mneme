@@ -42,7 +42,7 @@ New `tools:` section in `mneme.yaml` (and documented in `docs/config-spec.md`):
 ```yaml
 tools:
   native: auto               # auto | on | off — proxy-owned bash+write bootstrap tools
-  dir: ~/mneme_chunks/tools  # canonical directory where built tools are stored
+  dir: ~/mneme/chunks/tools  # canonical directory where built tools are stored
   bash_timeout: 30           # seconds before a native bash command is killed
   inject_min_similarity: 0.75  # STRICTER than retrieval.inject_min_similarity (0.62):
                                # a tool is injected only when it CLOSELY matches the
@@ -127,7 +127,7 @@ On `TOOL_SAVE: <name> :: <description> :: <path>`:
 - Compact payload, ~1-2 lines per tool:
 
       [Built tools you can reuse]
-      - scrape_salary (live_data): scrape a salary from a job site — bash ~/mneme_chunks/tools/scrape_salary
+      - scrape_salary (live_data): scrape a salary from a job site — bash ~/mneme/chunks/tools/scrape_salary
 
 - Injected at two points: (a) normal turns — so the model reuses before it even
   gets stuck; and (b) the overcome deliberation turn — so "reuse" is a visible
