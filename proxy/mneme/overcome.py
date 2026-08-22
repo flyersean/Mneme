@@ -28,10 +28,20 @@ STUCK_CONSECUTIVE_FAILURES = int(os.environ.get("MNEME_STUCK_CONSECUTIVE_FAILURE
 STUCK_MAX_TOOL_ROUNDS = int(os.environ.get("MNEME_STUCK_MAX_TOOL_ROUNDS", "6"))
 BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 # Each build iteration = one write + one bash (a single build-and-test attempt).
+# This bounds the BUILD loop in harness mode; native-mode exploratory bash is NOT
+# counted against it (it's bounded by MAX_SERVER_ROUNDS + the redundancy stop).
 BUILD_MAX_TOOL_CALLS = BUILD_MAX_ITERATIONS * 2
 # Soft "wrap up" nudge: after this many SUCCESSFUL server-side tool calls without
-# a final answer, nudge the model to synthesize instead of grinding further.
-TOOL_ROUND_NUDGE = int(os.environ.get("MNEME_TOOL_ROUND_NUDGE", "4"))
+# a final answer, nudge the model to synthesize. Advisory only — the model may keep
+# going as long as it has NEW ideas; the hard stop is redundancy-based, not count-based.
+TOOL_ROUND_NUDGE = int(os.environ.get("MNEME_TOOL_ROUND_NUDGE", "8"))
+# Grinding = repeating the SAME tool call (same name + same args), not making many
+# calls. After this many repeats of an already-seen call (with no intervening write
+# to invalidate it), hard-stop and force a final answer.
+REDUNDANT_STOP = int(os.environ.get("MNEME_REDUNDANT_STOP", "3"))
+# Absolute ceiling on server-tool rounds per turn. A high backstop for pathological
+# loops; legitimate multi-source exploration should finish well under this.
+MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", "20"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
 _DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)

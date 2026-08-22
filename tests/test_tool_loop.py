@@ -102,6 +102,11 @@ def _web_call(query, id="call_2"):
             "eval_count": 10, "done_reason": "tool_calls"}
 
 
+def _bash_call(command, id="call_1"):
+    return {"content": "", "thinking": "", "tool_calls": [_tc("bash", {"command": command}, id)],
+            "eval_count": 10, "done_reason": "tool_calls"}
+
+
 def _answer(text):
     return {"content": text, "thinking": "", "tool_calls": [],
             "eval_count": 20, "done_reason": "stop"}
@@ -222,15 +227,19 @@ def test_narration_with_tool_calls_is_not_dropped():
 
 @test
 def test_wrap_up_nudge_after_grinding():
-    """Regression: a model that keeps making SUCCESSFUL tool calls without a
-    final answer must be nudged to synthesize (soft), not left to burn the whole
-    build budget and then time out."""
+    """A model making many NOVEL tool calls must be nudged to wrap up (advisory)
+    but NOT hard-stopped — new ideas keep flowing, only the count-based nudge
+    fires."""
     model = ScriptedModel()
     model.queue = [
         _search_call("grind a", id="c1"),
         _search_call("grind b", id="c2"),
         _search_call("grind c", id="c3"),
         _search_call("grind d", id="c4"),
+        _search_call("grind e", id="c5"),
+        _search_call("grind f", id="c6"),
+        _search_call("grind g", id="c7"),
+        _search_call("grind h", id="c8"),
         _answer("The answer. [source: mem_1]"),
     ]
     mp.query_model = model
@@ -241,28 +250,26 @@ def test_wrap_up_nudge_after_grinding():
         session_id="test", tools=[],
     )
 
-    # the wrap-up nudge must have been injected into at least one followup
     hit = any("WRAP UP" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
     assert hit, "wrap-up nudge was never injected into a followup"
+    # Novel calls must NOT trigger the hard stop.
+    hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert not hard, "novel (non-redundant) calls must not trigger the hard stop"
     assert "The answer" in (result.get("content") or ""), \
         f"expected final answer after nudge, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
 @test
-def test_hard_wrapup_after_grinding():
-    """Regression: if the soft nudge is ignored, the loop must hard-stop at the
-    tool-round cap — strip the tools and force a final answer instead of
-    grinding to the loop cap and returning empty."""
+def test_hard_wrapup_after_redundant_bash():
+    """Grinding = REPEATING the same call. After REDUNDANT_STOP repeats of an
+    identical bash command, hard-stop and force a final answer."""
     model = ScriptedModel()
     model.queue = [
-        _search_call("a", id="c1"),
-        _search_call("b", id="c2"),
-        _search_call("c", id="c3"),
-        _search_call("d", id="c4"),
-        _search_call("e", id="c5"),
-        _search_call("f", id="c6"),
-        _search_call("g", id="c7"),
+        _bash_call("echo repeat", id="c1"),
+        _bash_call("echo repeat", id="c2"),
+        _bash_call("echo repeat", id="c3"),
+        _bash_call("echo repeat", id="c4"),
         _answer("The answer. [source: mem_1]"),
     ]
     mp.query_model = model
@@ -274,7 +281,7 @@ def test_hard_wrapup_after_grinding():
     )
 
     hit = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert hit, "hard-wrapup directive was never injected"
+    assert hit, "redundancy hard-stop was never injected"
     assert "The answer" in (result.get("content") or ""), \
         f"expected final answer after hard stop, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
@@ -282,18 +289,15 @@ def test_hard_wrapup_after_grinding():
 
 @test
 def test_search_grind_hard_stops_with_answer():
-    """A model that keeps searching and never answers must not stall: the loop
-    hard-stops (strips tools) and forces a final answer — search_memory is never
-    forwarded to the client's empty shim."""
+    """A model that repeats the SAME search must not stall: the redundancy stop
+    forces a final answer, and search_memory is never forwarded to the client's
+    empty shim."""
     model = ScriptedModel()
     model.queue = [
         _search_call("mneme tool calling bug"),
         _search_call("mneme tool calling bug", id="call_2"),
         _search_call("mneme tool calling bug", id="call_3"),
         _search_call("mneme tool calling bug", id="call_4"),
-        _search_call("mneme tool calling bug", id="call_5"),
-        _search_call("mneme tool calling bug", id="call_6"),
-        _search_call("mneme tool calling bug", id="call_7"),
         _answer("The bug is fixed. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
@@ -304,13 +308,47 @@ def test_search_grind_hard_stops_with_answer():
         session_id="test", tools=[],
     )
 
-    # The hard stop forces a final answer, and search_memory never leaks to the
-    # client (the shim is empty).
+    # The redundancy stop forces a final answer, and search_memory never leaks to
+    # the client (the shim is empty).
     assert (result.get("content") or "").strip(), \
         f"expected a final answer after hard stop, got {result.get('content')!r}"
     names = [t["function"]["name"] for t in (result.get("tool_calls") or [])]
     assert "search_memory" not in names, \
         f"search_memory should not be forwarded to the empty client shim: {names!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_novel_bash_exploration_not_cut_off():
+    """Regression (Jamo's case): many DIFFERENT bash calls (scraping several
+    sites) must ALL run — neither the redundancy stop nor the build budget may
+    cut off legitimate exploratory curl. The old code pinned both at 6."""
+    model = ScriptedModel()
+    model.queue = [
+        _bash_call("echo site1", id="c1"),
+        _bash_call("echo site2", id="c2"),
+        _bash_call("echo site3", id="c3"),
+        _bash_call("echo site4", id="c4"),
+        _bash_call("echo site5", id="c5"),
+        _bash_call("echo site6", id="c6"),
+        _bash_call("echo site7", id="c7"),
+        _bash_call("echo site8", id="c8"),
+        _answer("Found it. [source: mem_1]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "scrape a bunch of sites"}],
+        session_id="test", tools=[],
+    )
+
+    executed = [t for t in result.get("tool_trace", []) if t["tool"] == "bash" and not t.get("blocked")]
+    assert len(executed) == 8, f"expected all 8 exploratory bash calls to run, got {len(executed)}"
+    hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert not hard, "novel (non-redundant) bash must not trigger the hard stop"
+    assert "Found it" in (result.get("content") or ""), \
+        f"expected final answer, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 

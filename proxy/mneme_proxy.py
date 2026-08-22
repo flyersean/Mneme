@@ -58,7 +58,8 @@ from mneme.overcome import (
     BUILD_MAX_ITERATIONS,
     BUILD_MAX_TOOL_CALLS,
     TOOL_ROUND_NUDGE,
-    STUCK_MAX_TOOL_ROUNDS,
+    REDUNDANT_STOP,
+    MAX_SERVER_ROUNDS,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -3461,13 +3462,29 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # dropped a follow-up call — grading the turn F.
     _trace_search_chunks = set()
     passthrough_calls = []
-    _build_calls = 0  # native write/bash executions this turn (bounded by BUILD_MAX_TOOL_CALLS)
-    _MAX_SERVER_ROUNDS = BUILD_MAX_TOOL_CALLS + 4  # build budget + search/registry headroom
+    _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
+    _MAX_SERVER_ROUNDS = MAX_SERVER_ROUNDS  # absolute round ceiling (high backstop)
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _server_names = {"search_memory", "list_tools", "read_tool"} | _native_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
+    _seen_sigs = set()   # tool-call signatures seen this turn (a write clears them)
+    _redundant = 0       # repeat calls this turn (grinding signal — triggers the hard stop)
+
+    def _mark_call(nm, args):
+        """Track a tool call for the redundancy stop. A `write` invalidates all
+        prior signatures (the script changed, so re-running bash is legitimate).
+        Any other repeated call counts toward the redundancy hard-stop."""
+        nonlocal _redundant
+        if nm == "write":
+            _seen_sigs.clear()
+            return
+        _sig = f"{nm}:{json.dumps(args, sort_keys=True)}"
+        if _sig in _seen_sigs:
+            _redundant += 1
+        else:
+            _seen_sigs.add(_sig)
 
     def _trace(tool, args, res, t0, blocked=False):
         """Compact entry for the tool trace (truncate long args/results)."""
@@ -3509,40 +3526,40 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if result.get("done_reason") == "stop":
             break
 
-        # Hard stop: too many tool rounds without a final answer (the soft nudge
-        # was ignored). Strip the tools and force a synthesis from everything the
-        # model has ALREADY gathered (the accumulated followup), so it stops
-        # grinding instead of burning the whole budget and then timing out empty.
-        if _tool_rounds >= STUCK_MAX_TOOL_ROUNDS and not _in_build_mode(full_msgs):
-            _stop = list(followup)
-            _stop.append({"role": "user", "content": _hard_wrapup_directive(_tool_rounds)})
-            print(f"  [TOOL-HARD-STOP] {_tool_rounds} tool rounds — forcing final answer", flush=True)
-            result = query_model(_stop, tools=[], timeout=CHAT_TIMEOUT)
-            break
-
-        # Native bash/write: bounded by BUILD_MAX_TOOL_CALLS (the unified knob —
-        # same bound the harness-mode build loop enforces via _build_tool_calls).
+        # Native bash/write. `write` is bounded by BUILD_MAX_ITERATIONS (the build
+        # loop); exploratory `bash` is NOT counted against the build budget — it is
+        # bounded by MAX_SERVER_ROUNDS and the redundancy stop instead. This is the
+        # fix for "scrape six different sites" being wrongly cut off as "build loop
+        # exhausted."
         if native_calls:
-            if _build_calls >= BUILD_MAX_TOOL_CALLS:
-                # Budget spent: don't execute more; force the model to declare.
+            _writes = [tc for tc in native_calls if tc.get("function", {}).get("name") == "write"]
+            _budget_blocked = bool(_writes) and _build_calls >= BUILD_MAX_ITERATIONS
+
+            if _budget_blocked:
+                # Write budget spent: force the model to declare the edge. Only the
+                # writes are blocked; any bash in the same round still runs below.
                 followup.append({"role": "user", "content": _build_exhausted_directive(BUILD_MAX_ITERATIONS)})
-                for tc in native_calls:
-                    nm = tc["function"]["name"]
-                    args = tc["function"].get("arguments", {}) or {}
-                    _tool_trace.append(_trace(nm, args, "build budget exhausted — not executed", time.time(), blocked=True))
-                print(f"  [BUILD-EXHAUSTED] native build budget ({BUILD_MAX_TOOL_CALLS}) reached", flush=True)
+                for tc in _writes:
+                    _tool_trace.append(_trace("write", tc["function"].get("arguments", {}) or {},
+                                              "build budget exhausted — not executed", time.time(), blocked=True))
+                print(f"  [BUILD-EXHAUSTED] write budget ({BUILD_MAX_ITERATIONS}) reached", flush=True)
+                _exec = [tc for tc in native_calls if tc.get("function", {}).get("name") == "bash"]
             else:
-                _build_calls += len(native_calls)
-                _tool_rounds += len(native_calls)
-                followup.append({"role": "assistant", "content": None, "tool_calls": native_calls})
-                for tc in native_calls:
+                _build_calls += len(_writes)
+                _exec = native_calls
+
+            if _exec:
+                followup.append({"role": "assistant", "content": None, "tool_calls": _exec})
+                for tc in _exec:
                     nm = tc["function"]["name"]
                     args = tc["function"].get("arguments", {}) or {}
+                    _mark_call(nm, args)
                     _t0 = time.time()
                     res = mntools.execute_native_tool(nm, args)
                     _tool_trace.append(_trace(nm, args, res, _t0))
                     print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
                     followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
+                _tool_rounds += len(_exec)
 
         # search_memory: user-message feedback (Muse-template workaround — the
         # Ollama path drops a "tool" role message and trips the peg grammar).
@@ -3553,6 +3570,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _trace_search_chunks.update(_trace_chunks)
             for tc in search_calls:
                 args = tc["function"].get("arguments", {}) or {}
+                _mark_call("search_memory", args)
                 _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
             followup.append({"role": "user", "content": "search_memory results:\n" + tool_result})
 
@@ -3560,6 +3578,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         for tc in registry_calls:
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
+            _mark_call(nm, args)
             _t0 = time.time()
             _tool_rounds += 1
             res = mntools.execute_readonly_tool(nm, args)
@@ -3567,10 +3586,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             print(f"  [TOOL-REGISTRY] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
 
-        # Wrap-up nudge: too many successful tool calls without a final answer.
-        # Distinct from the build loop (which has its own budget): this fires for
-        # exploratory grinding (date, curl, date, curl...) and nudges the model to
-        # synthesize instead of burning the whole build budget and then timing out.
+        # Redundancy hard-stop: the model repeated the SAME tool call enough times
+        # (grinding), as opposed to trying NEW calls (legitimate exploration). Strip
+        # the tools and force a final answer from everything it has ALREADY gathered.
+        if _redundant >= REDUNDANT_STOP:
+            _stop = list(followup)
+            _stop.append({"role": "user", "content": _hard_wrapup_directive(_redundant)})
+            print(f"  [TOOL-HARD-STOP] {_redundant} repeated tool calls — forcing final answer", flush=True)
+            result = query_model(_stop, tools=[], timeout=CHAT_TIMEOUT)
+            break
+
+        # Wrap-up nudge: advisory — many tool calls without a final answer. The model
+        # may keep going as long as it has NEW ideas; only the redundancy stop above
+        # is a hard cut-off.
         if (_tool_rounds >= TOOL_ROUND_NUDGE and not _nudged
                 and not _in_build_mode(full_msgs)):
             followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
