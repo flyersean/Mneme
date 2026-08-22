@@ -244,33 +244,56 @@ def pull_model(name):
         print(f"  ⚠ could not pull {name} (may be a typo or network) — continuing")
 
 
+def _menu(prompt, entries):
+    """entries: list of (label, value). Entries with value=None are non-selectable
+    section headers, printed without a number. Only real options get numbered.
+    Returns the chosen value."""
+    print(f"\n{prompt}")
+    selectable = []
+    n = 0
+    for label, value in entries:
+        if value is None:
+            print(f"  {label}")
+        else:
+            n += 1
+            selectable.append(value)
+            print(f"  {n}. {label}")
+    while True:
+        try:
+            val = input(f"Choice (1-{n}): ").strip()
+        except EOFError:
+            print()
+            sys.exit(1)
+        try:
+            i = int(val)
+            if 1 <= i <= n:
+                return selectable[i - 1]
+        except ValueError:
+            pass
+        print(f"  Enter 1-{n}")
+
+
 def setup_ollama_models():
     """Pick chat/embed/label models (Ollama names), pulling if needed. Returns a dict."""
     ensure_ollama()
     pulled = get_pulled_models()
 
     print("\n\033[1mModels (local Ollama — pulled to this machine)\033[0m")
-    opts = []
-    models = []
+    entries = []
     if pulled:
-        opts.append("── Already pulled ──")
+        entries.append(("── Already pulled ──", None))
         for p in pulled:
-            opts.append(f"{p}  (pulled)")
-            models.append(p)
-    opts.append("── Pull a recommended model ──")
+            entries.append((f"{p}  (pulled)", p))
+    entries.append(("── Pull a recommended model ──", None))
     recommended = [
         ("qwen3:32b  (strong general model)", "qwen3:32b"),
         ("qwen3:14b  (lighter)", "qwen3:14b"),
         ("llama3.1:8b  (small)", "llama3.1:8b"),
     ]
-    for label, mid in recommended:
-        opts.append(label)
-        models.append(mid)
-    opts.append("Custom (enter any Ollama model name)")
-    models.append("__custom__")
+    entries.extend(recommended)
+    entries.append(("Custom (enter any Ollama model name)", "__custom__"))
 
-    idx = choose("Main (chat) model", opts)
-    model = models[idx]
+    model = _menu("Main (chat) model", entries)
     if model == "__custom__":
         model = ask("Enter Ollama model name") or "qwen3:32b"
     pull_model(model)
