@@ -102,7 +102,6 @@ def find_repo():
     candidates = [
         _REPO_DERIVED,
         os.path.expanduser("~/mneme/repo"),
-        os.path.expanduser("~/Mneme"),
         os.path.expanduser("~/mneme"),
         os.getcwd(),
     ]
