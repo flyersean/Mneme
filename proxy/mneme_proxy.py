@@ -1645,11 +1645,14 @@ def _chunk_large_messages(msgs: list) -> list:
                 chunk_num = (i // CHUNK_SIZE) + 1
                 chunk_id = f"{base_id}:{chunk_num}"
                 
-                # Save to DB + FAISS (save_chunk handles vec=None -> pending_embed)
-                vec = embed(piece)
+                # Save to DB + FAISS with vec=None (pending_embed). Do NOT embed
+                # synchronously here: the embed endpoint (also OpenRouter) sits on
+                # the hot path of every re-query, and a 60s read-timeout per chunk
+                # blocks the chat request — the "(no response)" bug. Chunks are
+                # re-embedded in the background on startup.
                 save_chunk(chunk_id, f"auto_chunk_{base_id}",
                     [{"role": m["role"], "content": piece}],
-                    vec, source="tool:chunked", grade="B")
+                    None, source="tool:chunked", grade="B")
                 
                 # Brief summary of this chunk for the index
                 preview = piece[:120].replace("\n", " ").strip()
