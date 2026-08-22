@@ -96,6 +96,7 @@ CONFIG_DATA: Dict = {}           # raw sections for runtime lookup (providers, m
 _PROVIDER_HEADERS: Dict = {}     # extra headers from the active provider block
 _OR_FALLBACK_MODELS: list = []   # OpenRouter model fallbacks (the `models` array)
 _OR_PROVIDER_PREF: Dict = {}     # OpenRouter provider routing prefs (ignore/order/...)
+_OR_STREAM: bool = True          # OpenRouter stream toggle (non-streaming enables OR failover)
 
 # Flat map: "section.key" -> env var. Only keys listed here are honored from the
 # file; anything else fails loud (typo guard).
@@ -228,7 +229,7 @@ def _apply_config(data: Dict, path: str):
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         return
@@ -257,6 +258,10 @@ def _resolve_provider():
     # fails) and provider routing prefs (ignore/order/preferred_max_latency).
     _OR_FALLBACK_MODELS = prov.get("fallback_models") or []
     _OR_PROVIDER_PREF = prov.get("provider") or {}
+    # stream toggle: streaming (default) gives a fast first-token hang detector;
+    # non-streaming lets OpenRouter buffer + transparently fail over a mid-stream
+    # stall. Config-only so flipping it later is a one-line edit, not a code change.
+    _OR_STREAM = bool(prov.get("stream", True))
 
 
 def load_config():
@@ -896,7 +901,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
         "model": MODEL,
-        "stream": True,
+        "stream": _OR_STREAM,
         "messages": msgs,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
@@ -931,6 +936,60 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             json.dump(payload, _f)
     except Exception:
         pass
+
+    if not _OR_STREAM:
+        # Non-streaming path: OpenRouter buffers the full response server-side, so
+        # it CAN transparently fail over to a backup provider if the primary stalls
+        # mid-generation (streaming commits the first token and disables failover).
+        # Slower to detect a truly hung provider, but self-healing on stalls.
+        try:
+            r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
+                              json=payload, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+                    "done_reason": "timeout"}
+        try:
+            obj = r.json()
+        except ValueError:
+            print(f"  [GRIND-GUARD] OpenRouter non-JSON response (status {r.status_code}) — aborting", flush=True)
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+                    "done_reason": "timeout"}
+        if obj.get("error"):
+            _err = obj["error"]
+            _meta = _err.get("metadata") or {}
+            _etype = _meta.get("error_type", "unmapped")
+            print(f"  [GRIND-GUARD] OpenRouter error ({_etype} {_err.get('code', '')}: "
+                  f"{str(_err.get('message', ''))[:100]}) — retryable", flush=True)
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+                    "done_reason": "error", "error_type": _etype, "provider": obj.get("provider", "?")}
+        _choices = obj.get("choices") or []
+        _msg = (_choices[0].get("message") or {}) if _choices else {}
+        _content = _msg.get("content") or ""
+        _thinking = _msg.get("reasoning") or ""
+        _finish = _choices[0].get("finish_reason") if _choices else None
+        _provider = obj.get("provider", "?")
+        _completion_tokens = (obj.get("usage") or {}).get("completion_tokens", 0)
+        _tool_calls = []
+        for _tc in (_msg.get("tool_calls") or []):
+            _fn = _tc.get("function") or {}
+            _args_raw = _fn.get("arguments", "")
+            try:
+                _args = json.loads(_args_raw) if _args_raw else {}
+            except Exception:
+                _args = {}
+            _tool_calls.append({
+                "id": _tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                "type": _tc.get("type", "function"),
+                "function": {"name": _fn.get("name", ""), "arguments": _args},
+            })
+        if not _content and _thinking and not _tool_calls:
+            _content = _thinking
+        _done = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(_finish, _finish) \
+            if _finish else ("tool_calls" if _tool_calls else "stop")
+        return {"content": _content, "thinking": _thinking, "tool_calls": _tool_calls,
+                "eval_count": _completion_tokens, "done_reason": _done, "provider": _provider}
+
     # Two-phase timeout: short for the first token (detect a hung provider fast),
     # then the full `timeout` for the rest (steady generation). A single
     # non-stream request can't do this — the body is buffered server-side until

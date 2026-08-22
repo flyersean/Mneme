@@ -142,6 +142,10 @@ OpenAI-compatible provider ignores them):
 - `provider:` (mapping) — routing prefs passed as the `provider` object:
   `ignore` / `only` / `order` / `allow_fallbacks` / `preferred_max_latency` /
   `preferred_min_throughput`.
+- `stream:` (bool, default `true`) — `true` streams tokens (fast first-token hang
+  detection); `false` lets OpenRouter buffer the full reply so it can transparently
+  fail over a mid-stream stall (streaming commits the first token and disables
+  failover). Config-only, so flipping it later is a one-line edit.
 
 ### sampling
 | key | default | today |
