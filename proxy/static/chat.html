@@ -413,7 +413,6 @@ input.addEventListener("input", () => {
 document.getElementById("new-chat").addEventListener("click", () => {
   history = [];
   thread.innerHTML = "";
-  appendMessage("assistant", "Hi — I'm Mneme, a memory-augmented assistant. I can search my memory, build small tools to work around limits, and grade my own answers for honesty. What should we work on?");
   input.focus();
 });
 
@@ -435,7 +434,6 @@ async function boot() {
   } catch (e) {
     modelLabel.textContent = MODEL;
   }
-  appendMessage("assistant", "Hi — I'm Mneme, a memory-augmented assistant. I can search my memory, build small tools to work around limits, and grade my own answers for honesty. What should we work on?");
   input.focus();
 }
 boot();

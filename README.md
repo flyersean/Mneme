@@ -16,94 +16,180 @@ Any OpenAI client ──▶ Mneme Proxy (:8080) ──▶ your model backend (Ol
                            └──▶ SQLite + FAISS memory (injected back into the prompt)
 ```
 
----
+Everything lives under one directory, `~/mneme/`:
 
-## Getting started
-
-### 1. Clone
-
-```bash
-git clone --branch unified_mneme https://github.com/flyersean/Mneme.git
-cd Mneme
+```
+~/mneme/
+  repo/      this repository (git clone)
+  venv/      Python virtualenv (faiss / numpy / flask / requests / pyyaml)
+  env        your API key (chmod 600; never in the repo)
+  chunks/    memory DB (mneme.db), config (mneme.yaml), log, and editable prompts
 ```
 
-### 2. One-time setup: API key + venv
+---
 
-The proxy needs a Python venv with a few deps, and (for hosted backends) an API key.
+## Quick start — pick your path
+
+| You want… | Path |
+|---|---|
+| Hosted models, no GPU, no downloads (recommended for a laptop) | **Path A — OpenRouter** (one command) |
+| Local models, private, free | **Path C — Ollama** |
+
+Both end at the same place: a proxy on `http://localhost:8080` with a built-in
+chat page and an editable-prompt page.
+
+---
+
+## The two web pages
+
+Once the proxy is running (any path):
+
+| URL | What it is |
+|---|---|
+| `http://localhost:8080/` (or `/chat`) | **Chat UI** — a light-theme web client over `/v1/chat/completions`. Full native toolset (memory search, built-tool registry, `bash`/`write`). |
+| `http://localhost:8080/instructions` | **Prompt editor** — every injected prompt, in the order it fires during a conversation. Read them, edit them inline (Save writes straight back to the file), or click "open file" for the raw text. |
+| `http://localhost:8080/v1` | OpenAI-compatible API base (for Pi, Hermes, or any client). |
+| `http://localhost:8080/health` | Health check (`curl http://localhost:8080/health`). |
+
+---
+
+## Getting started — step by step
+
+### Path A — OpenRouter (hosted, one command)
+
+Fully hosted: the chat model, embedder, and labeler all run on OpenRouter, so
+there is nothing to download except the ~250 MB venv. The wizard validates your
+key, lets you pick the three models (sensible cheap defaults), creates the venv,
+writes the config, and starts the proxy:
 
 ```bash
-# venv (one-time, ~250MB)
+curl -sSL -o /tmp/setup_or.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup_openrouter.py && python3 /tmp/setup_or.py
+```
+
+You'll need an OpenRouter key (https://openrouter.ai/keys). Then open
+`http://localhost:8080/` to chat.
+
+### Path B — manual setup (clone + venv + key + config)
+
+If you prefer to do it yourself (or the wizard is unavailable):
+
+```bash
+# 1. Clone the current branch into the ~/mneme/ layout
+git clone --branch unified_mneme https://github.com/flyersean/Mneme.git ~/mneme/repo
+cd ~/mneme/repo
+
+# 2. venv (one-time, ~250 MB)
 python3 -m venv ~/mneme/venv
 ~/mneme/venv/bin/pip install faiss-cpu numpy flask flask-cors requests pyyaml
 
-# API key — pick ONE:
-#   a) save it where launch.sh looks for it (chmod 600):
-#        echo 'OPENROUTER_API_KEY=sk-...' > ~/mneme/env
-#   b) or just export it each time:
-#        export OPENROUTER_API_KEY=sk-...
-```
+# 3. API key (chmod 600; never committed)
+echo 'OPENROUTER_API_KEY=sk-or-v1-...' > ~/mneme/env && chmod 600 ~/mneme/env
 
-The API key is never written into the repo — it lives in an env var or a
-`~/mneme/env` file that is gitignored by convention.
-
-> `scripts/mneme_setup_openrouter.py` also exists and can validate your key and
-> show your credit balance, but it writes a legacy `setup_config.json`. The
-> proxy now reads `mneme.yaml` (below) instead — prefer the manual steps above.
-
-### 3. Configure (optional)
-
-The proxy auto-loads a config file from next to the memory DB
-(`$MNEME_CHUNK_DIR/mneme.yaml`, default `~/mneme/chunks/mneme.yaml`). Copy the
-example to get started:
-
-```bash
+# 4. Config (copy the commented example; defaults already point at OpenRouter)
 mkdir -p ~/mneme/chunks
 cp mneme.yaml.example ~/mneme/chunks/mneme.yaml
-```
 
-The example is fully commented — every setting explains what it does. The
-defaults already point at OpenRouter with `deepseek/deepseek-v4-flash`, so a
-fresh copy works as-is for a hosted setup. See **Configuration** below for the
-knobs you'll actually tune.
-
-### 4. Launch
-
-```bash
+# 5. Launch
 ./launch.sh
 ```
 
-This starts the proxy (backgrounded, logging to `~/mneme/chunks/mneme.log`),
-waits for it to be healthy, then launches Pi with the Mneme search extensions.
-Exiting Pi stops the proxy. To run the proxy alone:
+### Path C — Ollama (local models, private)
+
+The proxy defaults to the Ollama backend — you just need Ollama running with the
+three models pulled (chat, embedder, labeler):
 
 ```bash
-scripts/run_openrouter.sh        # proxy only, no Pi
+# install + start Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve   # or it may already be running
+
+# pull the three models (chat / embedder / labeler)
+ollama pull <your-chat-model>          # e.g. qwen3:32b, llama3.1:70b, …
+ollama pull snowflake-arctic-embed2    # 1024-dim embedder
+ollama pull qwen2.5:0.5b               # tiny topic labeler
+
+# run the proxy (no API key needed)
+cd ~/mneme/repo
+export MNEME_BACKEND=ollama                                      # use local Ollama
+export MNEME_MODEL=<your-chat-model>                             # e.g. qwen3:32b, llama3.1:70b, …
+export EMBED_MODEL=snowflake-arctic-embed2                       # 1024-dim embedder
+export LABEL_MODEL=qwen2.5:0.5b                                  # tiny topic labeler
+~/mneme/venv/bin/python -uB proxy/mneme_proxy.py
 ```
 
-The proxy is OpenAI-compatible at `http://localhost:8080/v1`. Verify with
-`curl http://localhost:8080/health`.
+Then open `http://localhost:8080/`. To make it permanent, set
+`backend.type: ollama` and `backend.ollama_url: http://localhost:11434` in
+`~/mneme/chunks/mneme.yaml` (Ollama is the default only when no config
+overrides it — the example config targets OpenRouter, so set `backend.type`
+explicitly), and put the model names in the `MNEME_MODEL` / `EMBED_MODEL` /
+`LABEL_MODEL` env vars.
 
-### Built-in chat UI
+> The embedder must stay 1024-dim (the FAISS index is built at 1024). The
+> startup health check probes the embedder and fails loud on a dimension
+> mismatch, so a wrong embedder is caught immediately, not silently.
 
-The proxy serves a simple light-theme chat page at `http://localhost:8080/`
-(or `/chat`) — no client or extension needed. It's a thin front end over
-`/v1/chat/completions` and exercises the full native toolset out of the box
-(memory search, built-tool registry, native `bash`/`write`).
+---
 
-### Connect any OpenAI client
+## Running through Pi
 
-- **Pi**: `pi --provider mneme --model text-mneme:64k --extension extensions/pi/mneme-search-tool.ts --extension extensions/pi/mneme-web-tools.ts`
-  (point Pi's `mneme` provider at `http://localhost:8080/v1`.)
-- **Hermes / anything OpenAI-compatible**: set the base URL to `http://localhost:8080/v1`.
+[Pi](https://github.com/earendil-works/pi) is a terminal AI coding assistant.
+`launch.sh` starts the proxy **and** launches Pi against it in one go:
+
+```bash
+cd ~/mneme/repo
+./launch.sh      # starts the proxy, waits for health, then launches Pi
+```
+
+`./launch.sh` does the Pi work for you, but if you want to set it up by hand:
+
+1. **Install Pi** (needs Node.js 22+):
+
+   ```bash
+   npm install -g @earendil-works/pi-coding-agent
+   ```
+
+2. **Point Pi at Mneme** — add a `mneme` provider in `~/.pi/agent/models.json`:
+
+   ```json
+   {
+     "providers": {
+       "mneme": {
+         "baseUrl": "http://localhost:8080/v1",
+         "api": "openai-completions",
+         "apiKey": "none",
+         "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false },
+         "models": [{ "id": "text-mneme:64k", "name": "Mneme", "contextWindow": 32000, "reasoning": false }]
+       }
+     }
+   }
+   ```
+
+3. **Run Pi with the Mneme tools** (memory search + web search):
+
+   ```bash
+   pi --provider mneme --model text-mneme:64k \
+     --extension ~/mneme/repo/extensions/pi/mneme-search-tool.ts \
+     --extension ~/mneme/repo/extensions/pi/mneme-web-tools.ts
+   ```
+
+The proxy alone (no Pi) is `scripts/run_openrouter.sh`. Exiting Pi stops the
+proxy started by `launch.sh`.
+
+### Connect any other OpenAI client
+
+Anything OpenAI-compatible (Hermes, Open WebUI, etc.) just needs the base URL:
+
+- `http://localhost:8080/v1`
 
 ---
 
 ## Configuration
 
-Everything is one file — `$MNEME_CHUNK_DIR/mneme.yaml` — plus a few env vars.
-Settings are resolved **env var > config file > built-in default**, and the
-proxy logs a `[CONFIG]` line at startup showing the final value of every
-setting, so a typo or an overriding env var is visible, not silent.
+Everything is one file — `$MNEME_CHUNK_DIR/mneme.yaml` (default
+`~/mneme/chunks/mneme.yaml`) — plus a few env vars. Settings are resolved
+**env var > config file > built-in default**, and the proxy logs a `[CONFIG]`
+line at startup showing the final value of every setting, so a typo or an
+overriding env var is visible, not silent.
 
 The knobs you'll actually touch (see `mneme.yaml.example` for full comments):
 
@@ -172,9 +258,11 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
   recurrence — filtered through a junk-directive guard so hallucinated
   "strategies" never enter memory.
 
-**Capability-edge tracking** — records a competence edge per problem type; two
-poor grades flag it and the next similar task injects a "propose the tool,
-don't grind" directive.
+**Capability-edge tracking & overcoming** — records a competence edge per problem
+type; two poor grades flag it, and the next similar task is routed into
+**overcome mode** (hard-stop: build a tool, reuse a saved one, or honestly
+declare the missing capability) instead of grinding or silently giving up. A
+built tool is saved and the edge can be cleared.
 
 **Thinking & learning modes** — `/mode/think` (novelty: generate a baseline,
 forbid its modal features, diverge, and grade novelty objectively via embedding
@@ -192,8 +280,9 @@ cycling + strategy extraction).
 Deterministic regression tests — no live model or network. A scripted model
 stands in for the LLM, and the real SQLite/FAISS + retrieval paths run against
 an in-memory DB. They cover the tool-calling loop (search → answer, search →
-web_search hand-off, search-loop exhaustion) and the injection gate
-(`inject_min_similarity` floor, keyword fallback off).
+web_search hand-off, search-loop exhaustion), the injection gate
+(`inject_min_similarity` floor, keyword fallback off), the step-back ladder,
+the capability-edge → overcome routing, and the injected-prompt materializer.
 
 ---
 
@@ -205,6 +294,8 @@ web_search hand-off, search-loop exhaustion) and the injection gate
 | POST | `/save` | Flush staging buffer to persistent storage |
 | POST | `/search` | Debug search: `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
+| GET | `/` / `/chat` | Built-in chat UI |
+| GET | `/instructions` | Prompt reference + editor (the injected prompts) |
 | GET | `/list` | List all chunks with metadata |
 | GET/POST | `/capabilities` | List capability-edge records / flag or clear |
 | POST | `/mode/think` | Novelty thinking mode (escape mode collapse) |
