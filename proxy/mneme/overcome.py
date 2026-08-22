@@ -39,9 +39,13 @@ TOOL_ROUND_NUDGE = int(os.environ.get("MNEME_TOOL_ROUND_NUDGE", "8"))
 # calls. After this many repeats of an already-seen call (with no intervening write
 # to invalidate it), hard-stop and force a final answer.
 REDUNDANT_STOP = int(os.environ.get("MNEME_REDUNDANT_STOP", "3"))
+# Structural grinding = many DIFFERENT bash calls against the SAME target (URL/file).
+# After this many distinct calls on one resource, nudge the model to WRITE a single
+# script instead of extracting one field at a time (the Jamo's-menu pattern).
+STRUCTURAL_BASH_NUDGE = int(os.environ.get("MNEME_STRUCTURAL_BASH_NUDGE", "5"))
 # Absolute ceiling on server-tool rounds per turn. A high backstop for pathological
 # loops; legitimate multi-source exploration should finish well under this.
-MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", "20"))
+MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", "30"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
 _DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)
@@ -179,6 +183,12 @@ def _synthesize_nudge(count):
 def _hard_wrapup_directive(count):
     """Hard stop: strip tools and force a final answer after too many tool rounds."""
     return _load_instruction("hard_wrapup", vars={"count": str(count)})
+
+
+def _write_script_nudge(count, resource):
+    """Nudge the model to write a single script when it is making many distinct
+    bash calls against the same target (extracting one field at a time)."""
+    return _load_instruction("write_script_nudge", vars={"count": str(count), "resource": resource})
 
 
 def _reuse_tool_info(messages, db):

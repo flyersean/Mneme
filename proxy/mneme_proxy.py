@@ -51,6 +51,7 @@ from mneme.overcome import (
     _reuse_tool_info,
     _synthesize_nudge,
     _hard_wrapup_directive,
+    _write_script_nudge,
     _save_tool,
     _record_overcome,
     _tool_directive,
@@ -59,6 +60,7 @@ from mneme.overcome import (
     BUILD_MAX_TOOL_CALLS,
     TOOL_ROUND_NUDGE,
     REDUNDANT_STOP,
+    STRUCTURAL_BASH_NUDGE,
     MAX_SERVER_ROUNDS,
 )
 import mneme.capability as capability
@@ -3471,20 +3473,41 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _nudged = False   # one-time wrap-up nudge sent
     _seen_sigs = set()   # tool-call signatures seen this turn (a write clears them)
     _redundant = 0       # repeat calls this turn (grinding signal — triggers the hard stop)
+    _bash_resources = {}  # resource key -> set of distinct bash sigs (structural-grind signal)
+    _script_nudged = False  # one-time "write a script" nudge sent
+
+    def _bash_resource_key(command):
+        """Coarse grouping key for a bash command: which resource is it touching?
+        Used to detect many DIFFERENT calls on the SAME target (extracting one field
+        at a time) — the write-a-script signal, as opposed to true redundancy."""
+        m = re.search(r"https?://[^\s'\"|&]+", command)
+        if m:
+            return "url:" + m.group(0).rstrip("/")
+        m = re.search(r"\b(grep|cat|head|tail|sed|awk|python3?)\b[^\n]*?\b([A-Za-z0-9_./~-]+\.(?:html?|json|txt|py|csv|xml|md))\b", command)
+        if m:
+            return "file:" + m.group(2)
+        toks = command.split()
+        return "cmd:" + (toks[0] if toks else command)
 
     def _mark_call(nm, args):
-        """Track a tool call for the redundancy stop. A `write` invalidates all
-        prior signatures (the script changed, so re-running bash is legitimate).
-        Any other repeated call counts toward the redundancy hard-stop."""
+        """Track a tool call for the redundancy stop and the structural (write-a-
+        script) nudge. A `write` invalidates all prior signatures (the script
+        changed, so re-running bash is legitimate). Any other repeated call counts
+        toward the redundancy hard-stop; many distinct bash calls on one resource
+        count toward the write-a-script nudge."""
         nonlocal _redundant
         if nm == "write":
             _seen_sigs.clear()
+            _bash_resources.clear()
             return
         _sig = f"{nm}:{json.dumps(args, sort_keys=True)}"
         if _sig in _seen_sigs:
             _redundant += 1
         else:
             _seen_sigs.add(_sig)
+        if nm == "bash":
+            _rk = _bash_resource_key(str(args.get("command", "")) if isinstance(args, dict) else "")
+            _bash_resources.setdefault(_rk, set()).add(_sig)
 
     def _trace(tool, args, res, t0, blocked=False):
         """Compact entry for the tool trace (truncate long args/results)."""
@@ -3585,6 +3608,17 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _tool_trace.append(_trace(nm, args, res, _t0))
             print(f"  [TOOL-REGISTRY] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
+
+        # Structural nudge: many DISTINCT bash calls on the SAME target (extracting
+        # one field at a time) -> steer the model to write one script instead. Soft
+        # and one-time; the exact-repeat redundancy stop below is the hard backstop.
+        if not _script_nudged:
+            for _rk, _sigs in _bash_resources.items():
+                if len(_sigs) >= STRUCTURAL_BASH_NUDGE:
+                    followup.append({"role": "user", "content": _write_script_nudge(len(_sigs), _rk)})
+                    _script_nudged = True
+                    print(f"  [WRITE-SCRIPT-NUDGE] {len(_sigs)} distinct bash calls on {_rk}", flush=True)
+                    break
 
         # Redundancy hard-stop: the model repeated the SAME tool call enough times
         # (grinding), as opposed to trying NEW calls (legitimate exploration). Strip

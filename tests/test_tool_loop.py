@@ -325,14 +325,14 @@ def test_novel_bash_exploration_not_cut_off():
     cut off legitimate exploratory curl. The old code pinned both at 6."""
     model = ScriptedModel()
     model.queue = [
-        _bash_call("echo site1", id="c1"),
-        _bash_call("echo site2", id="c2"),
-        _bash_call("echo site3", id="c3"),
-        _bash_call("echo site4", id="c4"),
-        _bash_call("echo site5", id="c5"),
-        _bash_call("echo site6", id="c6"),
-        _bash_call("echo site7", id="c7"),
-        _bash_call("echo site8", id="c8"),
+        _bash_call("curl https://site1.example", id="c1"),
+        _bash_call("curl https://site2.example", id="c2"),
+        _bash_call("curl https://site3.example", id="c3"),
+        _bash_call("curl https://site4.example", id="c4"),
+        _bash_call("curl https://site5.example", id="c5"),
+        _bash_call("curl https://site6.example", id="c6"),
+        _bash_call("curl https://site7.example", id="c7"),
+        _bash_call("curl https://site8.example", id="c8"),
         _answer("Found it. [source: mem_1]"),
     ]
     mp.query_model = model
@@ -347,7 +347,43 @@ def test_novel_bash_exploration_not_cut_off():
     assert len(executed) == 8, f"expected all 8 exploratory bash calls to run, got {len(executed)}"
     hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
     assert not hard, "novel (non-redundant) bash must not trigger the hard stop"
+    # Different targets must NOT trigger the write-a-script nudge either.
+    script = any("WRITE A SCRIPT" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert not script, "distinct targets must not trigger the write-a-script nudge"
     assert "Found it" in (result.get("content") or ""), \
+        f"expected final answer, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_structural_write_script_nudge():
+    """Many DISTINCT bash calls on the SAME target (extracting one field at a
+    time) must nudge the model to write a single script — soft, not a hard stop."""
+    model = ScriptedModel()
+    model.queue = [
+        _bash_call("curl https://menu.example | grep field1", id="c1"),
+        _bash_call("curl https://menu.example | grep field2", id="c2"),
+        _bash_call("curl https://menu.example | grep field3", id="c3"),
+        _bash_call("curl https://menu.example | grep field4", id="c4"),
+        _bash_call("curl https://menu.example | grep field5", id="c5"),
+        _bash_call("curl https://menu.example | grep field6", id="c6"),
+        _answer("Menu extracted. [source: mem_1]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "scrape the menu"}],
+        session_id="test", tools=[],
+    )
+
+    hit = any("WRITE A SCRIPT" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert hit, "write-a-script nudge was never injected for same-target grinding"
+    hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert not hard, "distinct (non-identical) calls must not trigger the hard stop"
+    executed = [t for t in result.get("tool_trace", []) if t["tool"] == "bash" and not t.get("blocked")]
+    assert len(executed) == 6, f"expected all 6 bash calls to run, got {len(executed)}"
+    assert "Menu extracted" in (result.get("content") or ""), \
         f"expected final answer, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 

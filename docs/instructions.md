@@ -22,8 +22,9 @@ injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 | `overcome_build`        | model chose build_tool — one bounded build iteration | `{{iteration}}`, `{{max}}`    | `_build_directive`     |
 | `overcome_build_exhausted` | build iterations exhausted — force declare_edge    | `{{max}}`                     | `_build_exhausted_directive` |
 | `overcome_reuse`       | model chose reuse_tool — run the existing tool       | `{{tool}}`, `{{path}}`         | `_reuse_directive`     |
-| `synthesize_nudge`     | ≥4 successful tool calls w/o a final answer          | `{{count}}`                   | `_synthesize_nudge`    |
-| `hard_wrapup`          | ≥6 tool rounds w/o a final answer (tools stripped)   | `{{count}}`                   | `_hard_wrapup_directive`|
+| `synthesize_nudge`     | ≥8 successful tool calls w/o a final answer (advisory)| `{{count}}`                  | `_synthesize_nudge`    |
+| `hard_wrapup`          | repeated identical tool calls (redundancy hard stop)  | `{{count}}`                  | `_hard_wrapup_directive`|
+| `write_script_nudge`   | ≥5 distinct bash calls on one target (soft)           | `{{count}}`, `{{resource}}`  | `_write_script_nudge`  |
 | `tool_failure_nudge`    | ≥2 consecutive tool failures (soft, before overcome) | `{{count}}`                   | `_tool_failure_nudge`  |
 | `meta_principles_header`| always — header above the meta-principles            | —                             | `_meta_principles_block`|
 | `user_preferences_header`| stored preferences exist                             | —                             | `_preferences_block`   |

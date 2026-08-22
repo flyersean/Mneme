@@ -88,6 +88,12 @@ DEFAULT_INSTRUCTIONS = {
         "Synthesize your final answer to the user from the information you have already gathered. "
         "If you genuinely cannot answer with what you have, state plainly what is missing."
     ),
+    "write_script_nudge": (
+        "\n=== WRITE A SCRIPT ===\n"
+        "You have made {{count}} bash calls against the same target ({{resource}}). Stop extracting "
+        "one field at a time. Write a single script that fetches the target once and extracts "
+        "everything you need in one pass, then run it once with bash."
+    ),
     "overcome_build": (
         "\n=== BUILD MODE (step {{iteration}}/{{max}}) ===\n"
         "Build the tool from your plan: write it under the tools directory using write, then test it "
