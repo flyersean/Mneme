@@ -77,9 +77,11 @@ class ScriptedModel:
     def __init__(self):
         self.queue = []
         self.seen = []  # every messages list passed to query_model (for assertions)
+        self.tools_seen = []  # the `tools` kwarg of each call (None if not passed)
 
     def __call__(self, messages, *args, **kwargs):
         self.seen.append(messages)
+        self.tools_seen.append(kwargs.get("tools"))
         if not self.queue:
             raise AssertionError(
                 "query_model called more times than scripted; "
@@ -288,6 +290,10 @@ def test_step_back_ladder_escalates():
     assert saw("STEP BACK"), "rung 1 (examine + pivot) never injected"
     assert saw("TRY ANOTHER ANGLE"), "rung 2 (adapt known solution) never injected"
     assert saw("CONCEDE OR ANSWER"), "rung 3 (concede) never injected"
+    # rung 3 is a HARD backstop: the final query must strip tools so the model is
+    # forced to answer instead of continuing to grind.
+    assert model.tools_seen and model.tools_seen[-1] == [], \
+        f"rung 3 hard stop must strip tools, got {model.tools_seen[-1]!r}"
     assert "The answer" in (result.get("content") or ""), \
         f"expected final answer, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"

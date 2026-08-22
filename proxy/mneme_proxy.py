@@ -3802,12 +3802,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # Step-back ladder: soft, escalating reflection on non-convergence. Fires at
         # count thresholds — after N tool calls without a final answer, make the model
         # STOP and think: examine + pivot -> adapt a known solution -> concede honestly.
-        # Advisory; the redundancy stop above and the round cap are the hard backstops.
+        # Rungs 1-2 are advisory; rung 3 is a HARD backstop (strip tools, force a final
+        # answer) so the model can't ignore the "concede" prompt and grind to the cap.
         _sbl_next = (STEP_BACK_3 if _step_back_level >= 2 else
                      STEP_BACK_2 if _step_back_level == 1 else STEP_BACK_1)
         if (_step_back_level < 3 and _tool_rounds >= _sbl_next
                 and not _in_build_mode(full_msgs)):
             _step_back_level += 1
+            if _step_back_level >= 3:
+                _stop = list(followup)
+                _stop.append({"role": "user", "content": _step_back_directive(3, _tool_rounds)})
+                print(f"  [STEP-BACK] rung 3 hard stop after {_tool_rounds} tool calls", flush=True)
+                result = _query_retry_timeout(_stop, tools=[])
+                break
             followup.append({"role": "user", "content": _step_back_directive(_step_back_level, _tool_rounds)})
             print(f"  [STEP-BACK] rung {_step_back_level} after {_tool_rounds} tool calls", flush=True)
 
