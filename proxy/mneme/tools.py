@@ -306,27 +306,34 @@ def _exec_read_tool(name):
 
 
 def _exec_web_search(query):
-    """A minimal web search (DuckDuckGo HTML, no API key). Returns title/url/snippet."""
+    """A minimal web search (DuckDuckGo HTML, no API key). Retries with backoff on
+    rate-limit/block, which is DDG's main failure mode under rapid queries."""
     query = (query or "").strip()
     if not query:
         return "[web_search: empty query]"
     url = "https://html.duckduckgo.com/html/"
     headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
-    try:
-        r = requests.post(url, data={"q": query}, headers=headers, timeout=20)
-        html = r.text or ""
-    except Exception as e:
-        return f"[web_search error: {type(e).__name__}: {e}]"
-    titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
-    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
-    if not titles:
-        return "[web_search: no results (possible block/rate-limit)]"
-    lines = [f"web results for '{query}':"]
-    for i, (href, title) in enumerate(titles[:8]):
-        t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
-        snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
-        lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
-    return "\n".join(lines)
+    import time as _time
+    last_err = ""
+    for attempt in range(3):
+        html = ""
+        try:
+            r = requests.post(url, data={"q": query}, headers=headers, timeout=20)
+            html = r.text or ""
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
+        if titles:
+            snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
+            lines = [f"web results for '{query}':"]
+            for i, (href, title) in enumerate(titles[:8]):
+                t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
+                snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
+                lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
+            return "\n".join(lines)
+        # rate-limited/blocked — back off before retrying
+        _time.sleep(2.0 * (attempt + 1))
+    return f"[web_search: no results after 3 attempts{(' (' + last_err + ')') if last_err else ''}]"
 
 
 def execute_readonly_tool(name, args):

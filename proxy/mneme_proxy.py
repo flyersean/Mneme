@@ -945,13 +945,13 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         # Non-streaming path: OpenRouter buffers the full response server-side, so
         # it CAN transparently fail over to a backup provider if the primary stalls
         # mid-generation (streaming commits the first token and disables failover).
-        # Slower to detect a truly hung provider, but self-healing on stalls.
-        # The read timeout must outlast OpenRouter's own provider timeout + failover
-        # (a cold-start or provider stall can take a minute+); 60s aborts us before
-        # OpenRouter has finished routing around the bad provider.
+        # Live data: StreamLake sometimes HANGS (no bytes for 150s+) and OpenRouter
+        # does NOT fail over within our deadline — but a fresh retry recovers in
+        # ~8s. So a moderate read timeout (~60s) outlasts a normal answer (~20s) yet
+        # fails fast on a hang, letting OUR retry recover instead of burning 150s.
         try:
             r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                              json=payload, timeout=max(timeout or 0, 150))
+                              json=payload, timeout=timeout)
         except requests.exceptions.RequestException as e:
             print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
