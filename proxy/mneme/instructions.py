@@ -94,6 +94,29 @@ DEFAULT_INSTRUCTIONS = {
         "one field at a time. Write a single script that fetches the target once and extracts "
         "everything you need in one pass, then run it once with bash."
     ),
+    "step_back_examine": (
+        "\n=== STEP BACK ===\n"
+        "You have made {{count}} tool calls and are not converging. Stop making new calls for a moment "
+        "and reason out loud:\n"
+        "1. What exactly are you trying to obtain or find?\n"
+        "2. What have you already tried, and why did each attempt fail?\n"
+        "3. What is the actual obstacle (blocked, JS-rendered, auth, rate-limit, wrong tool)?\n"
+        "Then take ONE genuinely different approach. Do not repeat an approach that already failed."
+    ),
+    "step_back_adapt": (
+        "\n=== TRY ANOTHER ANGLE ===\n"
+        "You have made {{count}} tool calls and are still stuck; the previous approach did not work. "
+        "Diagnose the error you are seeing. Has this kind of problem been solved before — use "
+        "search_memory to look up past solutions, or list_tools to find a built tool you can adapt? "
+        "If a known solution exists, adapt it. If not, name a categorically different approach and take it."
+    ),
+    "step_back_concede": (
+        "\n=== CONCEDE OR ANSWER ===\n"
+        "You have made {{count}} tool calls and still cannot get the key fact. Stop. "
+        "If the information is genuinely unreachable with your tools (blocked, JS-rendered, requires "
+        "auth), say so plainly — tell the user what you could NOT get and why. Then give them "
+        "everything you DID find, with a clear note on what is missing. Do not make any more tool calls."
+    ),
     "overcome_build": (
         "\n=== BUILD MODE (step {{iteration}}/{{max}}) ===\n"
         "Build the tool from your plan: write it under the tools directory using write, then test it "

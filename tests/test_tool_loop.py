@@ -265,6 +265,33 @@ def test_wrap_up_nudge_after_grinding():
 
 
 @test
+def test_step_back_ladder_escalates():
+    """Non-convergence must trigger the escalating step-back reflection ladder:
+    examine+pivot (rung 1 @6) -> adapt known solution (rung 2 @12) -> concede
+    (rung 3 @20). Soft, advisory — the model still reaches a final answer."""
+    model = ScriptedModel()
+    model.queue = [_search_call(f"grind {i}", id=f"c{i}") for i in range(20)]
+    model.queue.append(_answer("The answer. [source: mem_1]"))
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "grind grind grind"}],
+        session_id="test", tools=[],
+    )
+
+    def saw(marker):
+        return any(marker in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+
+    assert saw("STEP BACK"), "rung 1 (examine + pivot) never injected"
+    assert saw("TRY ANOTHER ANGLE"), "rung 2 (adapt known solution) never injected"
+    assert saw("CONCEDE OR ANSWER"), "rung 3 (concede) never injected"
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected final answer, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
 def test_hard_wrapup_after_redundant_bash():
     """Grinding = REPEATING the same call. After REDUNDANT_STOP repeats of an
     identical bash command, hard-stop and force a final answer."""

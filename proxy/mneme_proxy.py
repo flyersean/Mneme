@@ -52,6 +52,7 @@ from mneme.overcome import (
     _synthesize_nudge,
     _hard_wrapup_directive,
     _write_script_nudge,
+    _step_back_directive,
     _save_tool,
     _record_overcome,
     _tool_directive,
@@ -61,6 +62,9 @@ from mneme.overcome import (
     TOOL_ROUND_NUDGE,
     REDUNDANT_STOP,
     STRUCTURAL_BASH_NUDGE,
+    STEP_BACK_1,
+    STEP_BACK_2,
+    STEP_BACK_3,
     MAX_SERVER_ROUNDS,
 )
 import mneme.capability as capability
@@ -3592,6 +3596,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _redundant = 0       # repeat calls this turn (grinding signal — triggers the hard stop)
     _bash_resources = {}  # resource key -> set of distinct bash sigs (structural-grind signal)
     _script_nudged = False  # one-time "write a script" nudge sent
+    _step_back_level = 0   # step-back ladder rung reached this turn (0 = none yet)
 
     def _bash_resource_key(command):
         """Coarse grouping key for a bash command: which resource is it touching?
@@ -3746,6 +3751,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             print(f"  [TOOL-HARD-STOP] {_redundant} repeated tool calls — forcing final answer", flush=True)
             result = _query_retry_timeout(_stop, tools=[])
             break
+
+        # Step-back ladder: soft, escalating reflection on non-convergence. Fires at
+        # count thresholds — after N tool calls without a final answer, make the model
+        # STOP and think: examine + pivot -> adapt a known solution -> concede honestly.
+        # Advisory; the redundancy stop above and the round cap are the hard backstops.
+        _sbl_next = (STEP_BACK_3 if _step_back_level >= 2 else
+                     STEP_BACK_2 if _step_back_level == 1 else STEP_BACK_1)
+        if (_step_back_level < 3 and _tool_rounds >= _sbl_next
+                and not _in_build_mode(full_msgs)):
+            _step_back_level += 1
+            followup.append({"role": "user", "content": _step_back_directive(_step_back_level, _tool_rounds)})
+            print(f"  [STEP-BACK] rung {_step_back_level} after {_tool_rounds} tool calls", flush=True)
 
         # Wrap-up nudge: advisory — many tool calls without a final answer. The model
         # may keep going as long as it has NEW ideas; only the redundancy stop above

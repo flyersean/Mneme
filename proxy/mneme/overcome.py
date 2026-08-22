@@ -43,6 +43,14 @@ REDUNDANT_STOP = int(os.environ.get("MNEME_REDUNDANT_STOP", "3"))
 # After this many distinct calls on one resource, nudge the model to WRITE a single
 # script instead of extracting one field at a time (the Jamo's-menu pattern).
 STRUCTURAL_BASH_NUDGE = int(os.environ.get("MNEME_STRUCTURAL_BASH_NUDGE", "5"))
+# Step-back ladder: a soft, escalating reflection on NON-convergence. Instead of
+# letting the model grind until the hard stop, after N tool calls without a final
+# answer we inject a "stop and think" prompt that climbs from "examine + pivot" ->
+# "adapt a known solution" -> "concede honestly". Advisory (the model can still
+# act); the redundancy stop + round cap remain the hard backstops.
+STEP_BACK_1 = int(os.environ.get("MNEME_STEP_BACK_1", "6"))
+STEP_BACK_2 = int(os.environ.get("MNEME_STEP_BACK_2", "12"))
+STEP_BACK_3 = int(os.environ.get("MNEME_STEP_BACK_3", "20"))
 # Absolute ceiling on server-tool rounds per turn. A high backstop for pathological
 # loops; legitimate multi-source exploration should finish well under this.
 MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", "30"))
@@ -189,6 +197,19 @@ def _write_script_nudge(count, resource):
     """Nudge the model to write a single script when it is making many distinct
     bash calls against the same target (extracting one field at a time)."""
     return _load_instruction("write_script_nudge", vars={"count": str(count), "resource": resource})
+
+
+def _step_back_directive(level, count):
+    """The step-back ladder: a soft reflection prompt at rung `level` (1..3) after
+    `count` non-converging tool calls. 1 = examine + pivot, 2 = adapt a known
+    solution, 3 = concede honestly."""
+    # Explicit per-rung lookups (not an f-string) so the instruction-sync test can
+    # statically see every _load_instruction call site.
+    if level == 2:
+        return _load_instruction("step_back_adapt", vars={"count": str(count)})
+    if level == 3:
+        return _load_instruction("step_back_concede", vars={"count": str(count)})
+    return _load_instruction("step_back_examine", vars={"count": str(count)})
 
 
 def _reuse_tool_info(messages, db):
