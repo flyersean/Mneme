@@ -188,6 +188,37 @@ def test_search_loop_terminates_with_answer():
 
 
 @test
+def test_narration_with_tool_calls_is_not_dropped():
+    """Regression: a thinking model that narrates its next step in `content`
+    while emitting tool_calls (finish_reason=tool_calls) must have those calls
+    executed — not silently dropped with the narration returned as the answer."""
+    model = ScriptedModel()
+    model.queue = [
+        {"content": "Let me check memory for this.", "thinking": "search memory first",
+         "tool_calls": [_tc("search_memory", {"query": "mneme weather tool"}, id="c1")],
+         "eval_count": 10, "done_reason": "tool_calls"},
+        _answer("The answer. [source: mem_1787262481137988]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "tell me about the weather tool"}],
+        session_id="test", tools=[],
+    )
+
+    # The search_memory call must have executed server-side (appears in the trace),
+    # and the final answer must come from the SECOND response, not the narration.
+    names = [t["tool"] for t in result.get("tool_trace", [])]
+    assert "search_memory" in names, f"narration content dropped the tool call; trace={result.get('tool_trace')!r}"
+    assert "Let me check memory" not in (result.get("content") or ""), \
+        f"narration was returned as the answer: {result.get('content')!r}"
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected final answer, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
 def test_search_loop_exhaustion_returns_results_as_content():
     """BUG 1 (fallback): if the model keeps searching and never answers, the
     proxy must resolve the final search and return the results as CONTENT —

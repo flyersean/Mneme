@@ -3481,14 +3481,21 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     for _round in range(_MAX_SERVER_ROUNDS):
         tcs = result.get("tool_calls") or []
-        content = (result.get("content") or "").strip()
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool")]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
 
-        if content or not (search_calls or registry_calls or native_calls):
+        if not (search_calls or registry_calls or native_calls):
+            break
+        # A thinking model narrates its next step ("let me check the date") in
+        # `content` while ALSO emitting the tool_calls for that step. Only treat
+        # content as the final answer when the model actually finished (stop);
+        # finish_reason=tool_calls means "run these and continue", so the
+        # narration must not terminate the loop — it was silently dropping the
+        # pending tool calls and returning the narration as the answer.
+        if result.get("done_reason") == "stop":
             break
 
         followup = list(full_msgs)
