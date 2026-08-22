@@ -144,34 +144,36 @@ def test(fn):
 # ── 4. The tests ────────────────────────────────────────────────────────────
 
 @test
-def test_search_then_web_search_passthrough():
-    """BUG 1 (regression): after a memory search, the model's follow-up web_search
-    call must be FORWARDED to the client, not silently dropped.
-
-    Old code did `result["tool_calls"] = remaining_calls`, wiping the re-query's
-    web_search and grading the turn F. This fails on the old code, passes on the fix.
-    """
+def test_web_search_executed_server_side():
+    """web_search is now a SERVER tool: after a memory search, a follow-up
+    web_search must be EXECUTED by the proxy (results fed back to the model),
+    not silently dropped and not forwarded as a dangling client tool call."""
     model = ScriptedModel()
     model.queue = [
         _search_call("mneme tool calling bug"),   # turn 1: recall memory
-        _web_call("mneme tool calling bug"),      # turn 2: hand off to web_search
+        _web_call("mneme tool calling bug"),      # turn 2: web_search (server-side)
+        _answer("The bug is fixed. [source: web_search]"),
     ]
     mp.query_model = model
     mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
 
-    result = mp.process_chat(
-        [{"role": "user", "content": "What's the status of the Mneme tool-calling bug? Search memory."}],
-        session_id="test", tools=[],
-    )
+    # stub the network-backed web_search executor so the test stays offline
+    mt = mp.mntools
+    orig = mt._exec_web_search
+    calls = []
+    mt._exec_web_search = lambda q: calls.append(q) or f"[stub] results for '{q}'"
+    try:
+        result = mp.process_chat(
+            [{"role": "user", "content": "What's the status of the Mneme tool-calling bug? Search memory."}],
+            session_id="test", tools=[],
+        )
+    finally:
+        mt._exec_web_search = orig
 
-    tc = result.get("tool_calls") or []
-    assert len(tc) == 1, f"expected exactly 1 forwarded tool call, got {tc!r}"
-    assert tc[0]["function"]["name"] == "web_search", \
-        f"web_search was dropped; got {tc!r}"
-    # The memory search was resolved server-side, so it must NOT leak through.
-    names = [t["function"]["name"] for t in tc]
-    assert "search_memory" not in names, "search_memory should be resolved server-side"
-    assert result.get("_grade") == "C", f"expected deferred grade C, got {result.get('_grade')!r}"
+    assert calls == ["mneme tool calling bug"], f"web_search was not executed server-side: {calls!r}"
+    # resolved server-side -> no forwarded tool call, and a final answer.
+    assert not (result.get("tool_calls") or []), f"web_search must not be forwarded: {result.get('tool_calls')!r}"
+    assert (result.get("content") or "").strip(), "expected a final answer, got empty content"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
@@ -876,14 +878,15 @@ def test_assemble_tools_dedup():
     try:
         mt.NATIVE_TOOLS_MODE = "auto"
         names = [t["function"]["name"] for t in mt.assemble_tools([])]
-        assert names == ["search_memory", "list_tools", "read_tool", "bash", "write"], names
+        assert names == ["search_memory", "list_tools", "read_tool", "web_search", "bash", "write"], names
         client = [
             {"type": "function", "function": {"name": "bash"}},
             {"type": "function", "function": {"name": "write"}},
             {"type": "function", "function": {"name": "web_search"}},
         ]
         names = [t["function"]["name"] for t in mt.assemble_tools(client)]
-        assert names == ["search_memory", "list_tools", "read_tool", "bash", "write", "web_search"], names
+        # web_search is a SERVER tool now — the client's copy is deduped, not appended.
+        assert names == ["search_memory", "list_tools", "read_tool", "web_search", "bash", "write"], names
     finally:
         mt.NATIVE_TOOLS_MODE = orig
 

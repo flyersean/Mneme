@@ -17,7 +17,10 @@ the module import-cycle-free and unit-testable against a temp DB + a fake embed.
 import os
 import json
 import subprocess
+import re as _re
+from html import unescape as _unescape
 
+import requests
 import numpy as np
 
 from mneme.util import _extract_text
@@ -100,6 +103,21 @@ READ_TOOL_TOOL = {
     },
 }
 
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for information, techniques, or tools. Use to research how to solve a problem you cannot solve from memory — find a library, a service, a known solution, or documentation. Returns the top results with titles, URLs, and snippets.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for — a specific question or keywords"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
@@ -132,7 +150,7 @@ NATIVE_WRITE_TOOL = {
 }
 
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, WEB_SEARCH_TOOL)
 
 
 # ─── Tool assembly ───────────────────────────────────────────────────────
@@ -287,12 +305,38 @@ def _exec_read_tool(name):
     return f"Source of tool '{name}' ({desc}):\n\n{src}"
 
 
+def _exec_web_search(query):
+    """A minimal web search (DuckDuckGo HTML, no API key). Returns title/url/snippet."""
+    query = (query or "").strip()
+    if not query:
+        return "[web_search: empty query]"
+    url = "https://html.duckduckgo.com/html/"
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
+    try:
+        r = requests.post(url, data={"q": query}, headers=headers, timeout=20)
+        html = r.text or ""
+    except Exception as e:
+        return f"[web_search error: {type(e).__name__}: {e}]"
+    titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
+    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
+    if not titles:
+        return "[web_search: no results (possible block/rate-limit)]"
+    lines = [f"web results for '{query}':"]
+    for i, (href, title) in enumerate(titles[:8]):
+        t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
+        snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
+        lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
+    return "\n".join(lines)
+
+
 def execute_readonly_tool(name, args):
-    """Dispatch a read-only registry tool (list_tools/read_tool)."""
+    """Dispatch a read-only registry tool (list_tools/read_tool) or web_search."""
     if name == "list_tools":
         return _exec_list_tools((args or {}).get("query") or None, (args or {}).get("problem_type") or None)
     if name == "read_tool":
         return _exec_read_tool((args or {}).get("name", ""))
+    if name == "web_search":
+        return _exec_web_search((args or {}).get("query", ""))
     return f"[unknown registry tool: {name}]"
 
 
