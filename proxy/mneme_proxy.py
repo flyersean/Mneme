@@ -59,12 +59,6 @@ from mneme.overcome import (
     _handle_overcome_reply,
     BUILD_MAX_ITERATIONS,
     BUILD_MAX_TOOL_CALLS,
-    TOOL_ROUND_NUDGE,
-    REDUNDANT_STOP,
-    STRUCTURAL_BASH_NUDGE,
-    STEP_BACK_1,
-    STEP_BACK_2,
-    STEP_BACK_3,
     MAX_SERVER_ROUNDS,
 )
 import mneme.capability as capability
@@ -3787,54 +3781,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
 
-        # Structural nudge: many DISTINCT bash calls on the SAME target (extracting
-        # one field at a time) -> steer the model to write one script instead. Soft
-        # and one-time; the exact-repeat redundancy stop below is the hard backstop.
-        if not _script_nudged:
-            for _rk, _sigs in _bash_resources.items():
-                if len(_sigs) >= STRUCTURAL_BASH_NUDGE:
-                    followup.append({"role": "user", "content": _write_script_nudge(len(_sigs), _rk)})
-                    _script_nudged = True
-                    print(f"  [WRITE-SCRIPT-NUDGE] {len(_sigs)} distinct bash calls on {_rk}", flush=True)
-                    break
-
-        # Redundancy hard-stop: the model repeated the SAME tool call enough times
-        # (grinding), as opposed to trying NEW calls (legitimate exploration). Strip
-        # the tools and force a final answer from everything it has ALREADY gathered.
-        if _redundant >= REDUNDANT_STOP:
-            _stop = list(followup)
-            _stop.append({"role": "user", "content": _hard_wrapup_directive(_redundant)})
-            print(f"  [TOOL-HARD-STOP] {_redundant} repeated tool calls — forcing final answer", flush=True)
-            result = _query_retry_timeout(_stop, tools=[])
-            break
-
-        # Step-back ladder: soft, escalating reflection on non-convergence. Fires at
-        # count thresholds — after N tool calls without a final answer, make the model
-        # STOP and think: examine + pivot -> adapt a known solution -> concede honestly.
-        # Rungs 1-2 are advisory; rung 3 is a HARD backstop (strip tools, force a final
-        # answer) so the model can't ignore the "concede" prompt and grind to the cap.
-        _sbl_next = (STEP_BACK_3 if _step_back_level >= 2 else
-                     STEP_BACK_2 if _step_back_level == 1 else STEP_BACK_1)
-        if (_step_back_level < 3 and _tool_rounds >= _sbl_next
-                and not _in_build_mode(full_msgs)):
-            _step_back_level += 1
-            if _step_back_level >= 3:
-                _stop = list(followup)
-                _stop.append({"role": "user", "content": _step_back_directive(3, _tool_rounds)})
-                print(f"  [STEP-BACK] rung 3 hard stop after {_tool_rounds} tool calls", flush=True)
-                result = _query_retry_timeout(_stop, tools=[])
-                break
-            followup.append({"role": "user", "content": _step_back_directive(_step_back_level, _tool_rounds)})
-            print(f"  [STEP-BACK] rung {_step_back_level} after {_tool_rounds} tool calls", flush=True)
-
-        # Wrap-up nudge: advisory — many tool calls without a final answer. The model
-        # may keep going as long as it has NEW ideas; only the redundancy stop above
-        # is a hard cut-off.
-        if (_tool_rounds >= TOOL_ROUND_NUDGE and not _nudged
-                and not _in_build_mode(full_msgs)):
-            followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
-            _nudged = True
-            print(f"  [TOOL-NUDGE] wrap up after {_tool_rounds} tool calls", flush=True)
+        # (Mid-loop interruption machinery removed: write-script nudge, redundancy
+        # hard-stop, step-back ladder, and wrap-up nudge. These injected coaching
+        # messages interrupted the model's natural tool use and were misfiring. The
+        # loop now simply runs the model's tool calls until it produces a final
+        # answer or hits the MAX_SERVER_ROUNDS cap.)
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)

@@ -272,97 +272,10 @@ def test_narration_with_tool_calls_is_not_dropped():
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
-@test
-def test_wrap_up_nudge_after_grinding():
-    """A model making many NOVEL tool calls must be nudged to wrap up (advisory)
-    but NOT hard-stopped — new ideas keep flowing, only the count-based nudge
-    fires."""
-    model = ScriptedModel()
-    model.queue = [
-        _search_call("grind a", id="c1"),
-        _search_call("grind b", id="c2"),
-        _search_call("grind c", id="c3"),
-        _search_call("grind d", id="c4"),
-        _search_call("grind e", id="c5"),
-        _search_call("grind f", id="c6"),
-        _search_call("grind g", id="c7"),
-        _search_call("grind h", id="c8"),
-        _answer("The answer. [source: mem_1]"),
-    ]
-    mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
-
-    result = mp.process_chat(
-        [{"role": "user", "content": "grind grind grind"}],
-        session_id="test", tools=[],
-    )
-
-    hit = any("WRAP UP" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert hit, "wrap-up nudge was never injected into a followup"
-    # Novel calls must NOT trigger the hard stop.
-    hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert not hard, "novel (non-redundant) calls must not trigger the hard stop"
-    assert "The answer" in (result.get("content") or ""), \
-        f"expected final answer after nudge, got {result.get('content')!r}"
-    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
-@test
-def test_step_back_ladder_escalates():
-    """Non-convergence must trigger the escalating step-back reflection ladder:
-    examine+pivot (rung 1 @6) -> adapt known solution (rung 2 @12) -> concede
-    (rung 3 @20). Soft, advisory — the model still reaches a final answer."""
-    model = ScriptedModel()
-    model.queue = [_search_call(f"grind {i}", id=f"c{i}") for i in range(20)]
-    model.queue.append(_answer("The answer. [source: mem_1]"))
-    mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
-
-    result = mp.process_chat(
-        [{"role": "user", "content": "grind grind grind"}],
-        session_id="test", tools=[],
-    )
-
-    def saw(marker):
-        return any(marker in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-
-    assert saw("STEP BACK"), "rung 1 (examine + pivot) never injected"
-    assert saw("TRY ANOTHER ANGLE"), "rung 2 (adapt known solution) never injected"
-    assert saw("CONCEDE OR ANSWER"), "rung 3 (concede) never injected"
-    # rung 3 is a HARD backstop: the final query must strip tools so the model is
-    # forced to answer instead of continuing to grind.
-    assert model.tools_seen and model.tools_seen[-1] == [], \
-        f"rung 3 hard stop must strip tools, got {model.tools_seen[-1]!r}"
-    assert "The answer" in (result.get("content") or ""), \
-        f"expected final answer, got {result.get('content')!r}"
-    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
-@test
-def test_hard_wrapup_after_redundant_bash():
-    """Grinding = REPEATING the same call. After REDUNDANT_STOP repeats of an
-    identical bash command, hard-stop and force a final answer."""
-    model = ScriptedModel()
-    model.queue = [
-        _bash_call("echo repeat", id="c1"),
-        _bash_call("echo repeat", id="c2"),
-        _bash_call("echo repeat", id="c3"),
-        _bash_call("echo repeat", id="c4"),
-        _answer("The answer. [source: mem_1]"),
-    ]
-    mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
-
-    result = mp.process_chat(
-        [{"role": "user", "content": "grind grind grind"}],
-        session_id="test", tools=[],
-    )
-
-    hit = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert hit, "redundancy hard-stop was never injected"
-    assert "The answer" in (result.get("content") or ""), \
-        f"expected final answer after hard stop, got {result.get('content')!r}"
-    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
 @test
@@ -433,37 +346,6 @@ def test_novel_bash_exploration_not_cut_off():
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
-@test
-def test_structural_write_script_nudge():
-    """Many DISTINCT bash calls on the SAME target (extracting one field at a
-    time) must nudge the model to write a single script — soft, not a hard stop."""
-    model = ScriptedModel()
-    model.queue = [
-        _bash_call("curl https://menu.example | grep field1", id="c1"),
-        _bash_call("curl https://menu.example | grep field2", id="c2"),
-        _bash_call("curl https://menu.example | grep field3", id="c3"),
-        _bash_call("curl https://menu.example | grep field4", id="c4"),
-        _bash_call("curl https://menu.example | grep field5", id="c5"),
-        _bash_call("curl https://menu.example | grep field6", id="c6"),
-        _answer("Menu extracted. [source: mem_1]"),
-    ]
-    mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
-
-    result = mp.process_chat(
-        [{"role": "user", "content": "scrape the menu"}],
-        session_id="test", tools=[],
-    )
-
-    hit = any("WRITE A SCRIPT" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert hit, "write-a-script nudge was never injected for same-target grinding"
-    hard = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
-    assert not hard, "distinct (non-identical) calls must not trigger the hard stop"
-    executed = [t for t in result.get("tool_trace", []) if t["tool"] == "bash" and not t.get("blocked")]
-    assert len(executed) == 6, f"expected all 6 bash calls to run, got {len(executed)}"
-    assert "Menu extracted" in (result.get("content") or ""), \
-        f"expected final answer, got {result.get('content')!r}"
-    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
 @test
