@@ -49,12 +49,16 @@ from mneme.overcome import (
     _in_reuse_mode,
     _reuse_directive,
     _reuse_tool_info,
+    _synthesize_nudge,
+    _hard_wrapup_directive,
     _save_tool,
     _record_overcome,
     _tool_directive,
     _handle_overcome_reply,
     BUILD_MAX_ITERATIONS,
     BUILD_MAX_TOOL_CALLS,
+    TOOL_ROUND_NUDGE,
+    STUCK_MAX_TOOL_ROUNDS,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -3462,6 +3466,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _server_names = {"search_memory", "list_tools", "read_tool"} | _native_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
+    _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
+    _nudged = False   # one-time wrap-up nudge sent
 
     def _trace(tool, args, res, t0, blocked=False):
         """Compact entry for the tool trace (truncate long args/results)."""
@@ -3478,6 +3484,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             "elapsed_ms": int((time.time() - t0) * 1000),
             "blocked": bool(blocked),
         }
+
+    # Accumulate tool history across rounds (NOT rebuilt from full_msgs each
+    # round). If each round only shows the model the latest tool result, it
+    # forgets what it already gathered and re-fetches — the grinding we see.
+    followup = list(full_msgs)
 
     for _round in range(_MAX_SERVER_ROUNDS):
         tcs = result.get("tool_calls") or []
@@ -3498,7 +3509,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if result.get("done_reason") == "stop":
             break
 
-        followup = list(full_msgs)
+        # Hard stop: too many tool rounds without a final answer (the soft nudge
+        # was ignored). Strip the tools and force a synthesis from everything the
+        # model has ALREADY gathered (the accumulated followup), so it stops
+        # grinding instead of burning the whole budget and then timing out empty.
+        if _tool_rounds >= STUCK_MAX_TOOL_ROUNDS and not _in_build_mode(full_msgs):
+            _stop = list(followup)
+            _stop.append({"role": "user", "content": _hard_wrapup_directive(_tool_rounds)})
+            print(f"  [TOOL-HARD-STOP] {_tool_rounds} tool rounds — forcing final answer", flush=True)
+            result = query_model(_stop, tools=[], timeout=CHAT_TIMEOUT)
+            break
 
         # Native bash/write: bounded by BUILD_MAX_TOOL_CALLS (the unified knob —
         # same bound the harness-mode build loop enforces via _build_tool_calls).
@@ -3513,6 +3533,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 print(f"  [BUILD-EXHAUSTED] native build budget ({BUILD_MAX_TOOL_CALLS}) reached", flush=True)
             else:
                 _build_calls += len(native_calls)
+                _tool_rounds += len(native_calls)
                 followup.append({"role": "assistant", "content": None, "tool_calls": native_calls})
                 for tc in native_calls:
                     nm = tc["function"]["name"]
@@ -3527,6 +3548,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # Ollama path drops a "tool" role message and trips the peg grammar).
         if search_calls:
             _t0 = time.time()
+            _tool_rounds += 1
             tool_result, _trace_chunks = _execute_search_tool_calls(search_calls)
             _trace_search_chunks.update(_trace_chunks)
             for tc in search_calls:
@@ -3539,10 +3561,21 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
             _t0 = time.time()
+            _tool_rounds += 1
             res = mntools.execute_readonly_tool(nm, args)
             _tool_trace.append(_trace(nm, args, res, _t0))
             print(f"  [TOOL-REGISTRY] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
+
+        # Wrap-up nudge: too many successful tool calls without a final answer.
+        # Distinct from the build loop (which has its own budget): this fires for
+        # exploratory grinding (date, curl, date, curl...) and nudges the model to
+        # synthesize instead of burning the whole build budget and then timing out.
+        if (_tool_rounds >= TOOL_ROUND_NUDGE and not _nudged
+                and not _in_build_mode(full_msgs)):
+            followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
+            _nudged = True
+            print(f"  [TOOL-NUDGE] wrap up after {_tool_rounds} tool calls", flush=True)
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)

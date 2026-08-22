@@ -76,8 +76,10 @@ class ScriptedModel:
 
     def __init__(self):
         self.queue = []
+        self.seen = []  # every messages list passed to query_model (for assertions)
 
     def __call__(self, messages, *args, **kwargs):
+        self.seen.append(messages)
         if not self.queue:
             raise AssertionError(
                 "query_model called more times than scripted; "
@@ -219,10 +221,70 @@ def test_narration_with_tool_calls_is_not_dropped():
 
 
 @test
-def test_search_loop_exhaustion_returns_results_as_content():
-    """BUG 1 (fallback): if the model keeps searching and never answers, the
-    proxy must resolve the final search and return the results as CONTENT —
-    not forward a search_memory to the client's empty shim (which would stall)."""
+def test_wrap_up_nudge_after_grinding():
+    """Regression: a model that keeps making SUCCESSFUL tool calls without a
+    final answer must be nudged to synthesize (soft), not left to burn the whole
+    build budget and then time out."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("grind a", id="c1"),
+        _search_call("grind b", id="c2"),
+        _search_call("grind c", id="c3"),
+        _search_call("grind d", id="c4"),
+        _answer("The answer. [source: mem_1]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "grind grind grind"}],
+        session_id="test", tools=[],
+    )
+
+    # the wrap-up nudge must have been injected into at least one followup
+    hit = any("WRAP UP" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert hit, "wrap-up nudge was never injected into a followup"
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected final answer after nudge, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_hard_wrapup_after_grinding():
+    """Regression: if the soft nudge is ignored, the loop must hard-stop at the
+    tool-round cap — strip the tools and force a final answer instead of
+    grinding to the loop cap and returning empty."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("a", id="c1"),
+        _search_call("b", id="c2"),
+        _search_call("c", id="c3"),
+        _search_call("d", id="c4"),
+        _search_call("e", id="c5"),
+        _search_call("f", id="c6"),
+        _search_call("g", id="c7"),
+        _answer("The answer. [source: mem_1]"),
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "grind grind grind"}],
+        session_id="test", tools=[],
+    )
+
+    hit = any("STOP AND ANSWER" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert hit, "hard-wrapup directive was never injected"
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected final answer after hard stop, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_search_grind_hard_stops_with_answer():
+    """A model that keeps searching and never answers must not stall: the loop
+    hard-stops (strips tools) and forces a final answer — search_memory is never
+    forwarded to the client's empty shim."""
     model = ScriptedModel()
     model.queue = [
         _search_call("mneme tool calling bug"),
@@ -232,13 +294,7 @@ def test_search_loop_exhaustion_returns_results_as_content():
         _search_call("mneme tool calling bug", id="call_5"),
         _search_call("mneme tool calling bug", id="call_6"),
         _search_call("mneme tool calling bug", id="call_7"),
-        _search_call("mneme tool calling bug", id="call_8"),
-        _search_call("mneme tool calling bug", id="call_9"),
-        _search_call("mneme tool calling bug", id="call_10"),
-        _search_call("mneme tool calling bug", id="call_11"),
-        # The fallback content (raw search results) has no provenance tags, so
-        # the grading path makes one slow provenance-judge call on it.
-        _answer("NO SPECIFIC CLAIMS"),
+        _answer("The bug is fixed. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
     mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
@@ -248,13 +304,14 @@ def test_search_loop_exhaustion_returns_results_as_content():
         session_id="test", tools=[],
     )
 
-    # The fallback returns the search results as content, and does NOT forward
-    # a search_memory tool call (the client shim is empty).
-    assert "Search results from Mneme memory:" in (result.get("content") or ""), \
-        f"expected search results as content, got {result.get('content','')[:120]!r}"
+    # The hard stop forces a final answer, and search_memory never leaks to the
+    # client (the shim is empty).
+    assert (result.get("content") or "").strip(), \
+        f"expected a final answer after hard stop, got {result.get('content')!r}"
     names = [t["function"]["name"] for t in (result.get("tool_calls") or [])]
     assert "search_memory" not in names, \
         f"search_memory should not be forwarded to the empty client shim: {names!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
 @test

@@ -29,6 +29,9 @@ STUCK_MAX_TOOL_ROUNDS = int(os.environ.get("MNEME_STUCK_MAX_TOOL_ROUNDS", "6"))
 BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 # Each build iteration = one write + one bash (a single build-and-test attempt).
 BUILD_MAX_TOOL_CALLS = BUILD_MAX_ITERATIONS * 2
+# Soft "wrap up" nudge: after this many SUCCESSFUL server-side tool calls without
+# a final answer, nudge the model to synthesize instead of grinding further.
+TOOL_ROUND_NUDGE = int(os.environ.get("MNEME_TOOL_ROUND_NUDGE", "4"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
 _DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)
@@ -156,6 +159,16 @@ def _build_exhausted_directive(max_iterations):
 def _reuse_directive(tool_name, tool_path):
     """Instruct the model to run an existing tool (reuse path) and use its output."""
     return _load_instruction("overcome_reuse", vars={"tool": tool_name or "?", "path": tool_path or "?"})
+
+
+def _synthesize_nudge(count):
+    """Soft nudge to wrap up and answer after too many tool calls without convergence."""
+    return _load_instruction("synthesize_nudge", vars={"count": str(count)})
+
+
+def _hard_wrapup_directive(count):
+    """Hard stop: strip tools and force a final answer after too many tool rounds."""
+    return _load_instruction("hard_wrapup", vars={"count": str(count)})
 
 
 def _reuse_tool_info(messages, db):

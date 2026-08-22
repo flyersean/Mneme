@@ -76,6 +76,18 @@ DEFAULT_INSTRUCTIONS = {
         "answer the user. The tool is at: {{path}}\n"
         "If it works, answer directly. If it fails, say so and reconsider (build a new tool or declare the edge)."
     ),
+    "synthesize_nudge": (
+        "\n=== WRAP UP ===\n"
+        "You have made {{count}} tool calls without a final answer. You almost certainly have enough "
+        "information now. Synthesize your final answer to the user — do NOT make another tool call "
+        "unless something critical is genuinely missing."
+    ),
+    "hard_wrapup": (
+        "\n=== STOP AND ANSWER ===\n"
+        "You have made {{count}} tool calls without a final answer. STOP calling tools now. "
+        "Synthesize your final answer to the user from the information you have already gathered. "
+        "If you genuinely cannot answer with what you have, state plainly what is missing."
+    ),
     "overcome_build": (
         "\n=== BUILD MODE (step {{iteration}}/{{max}}) ===\n"
         "Build the tool from your plan: write it under the tools directory using write, then test it "
