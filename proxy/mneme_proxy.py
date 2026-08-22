@@ -4889,7 +4889,11 @@ def _dump_config():
 _embedding_health_check()
 _load_index()
 _seed_chunk_seq()
-_reembed_pending()
+# Re-embed pending chunks in the BACKGROUND — not synchronously — so startup is
+# not blocked on N sequential embed round-trips (the non-blocking chunk path stores
+# them pending_embed and defers embedding to here). The bg worker queue reuses the
+# check_same_thread=False connection and the faiss file lock, so it is safe.
+_enqueue(_reembed_pending)
 # Calibrate noise baseline AFTER FAISS is loaded
 BASELINE_NOISE = _calibrate_noise()
 print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
