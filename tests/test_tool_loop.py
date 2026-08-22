@@ -737,6 +737,33 @@ def test_instruction_sync_no_orphans_no_missing():
 
 
 @test
+def test_dsml_tool_calls_parsed():
+    """DeepSeek models sometimes emit tool calls as DSML markup in `content` (not
+    OpenAI-format tool_calls). They must be parsed back into tool_calls so the loop
+    executes them instead of leaking the raw markup as the answer."""
+    sample = (
+        "<\uff5cDSML\uff5ctool_calls>\n"
+        "<\uff5cDSML\uff5cinvoke name=\"bash\">\n"
+        "<\uff5cDSML\uff5cparameter name=\"command\" string=\"true\">curl -s https://x</\uff5cDSML\uff5cparameter>\n"
+        "</\uff5cDSML\uff5cinvoke>\n"
+        "<\uff5cDSML\uff5cinvoke name=\"write\">\n"
+        "<\uff5cDSML\uff5cparameter name=\"file_path\">s.py</\uff5cDSML\uff5cparameter>\n"
+        "<\uff5cDSML\uff5cparameter name=\"content\">print(1)</\uff5cDSML\uff5cparameter>\n"
+        "</\uff5cDSML\uff5cinvoke>\n"
+        "</\uff5cDSML\uff5ctool_calls>"
+    )
+    tcs, residual = mp._parse_dsml_tool_calls(sample)
+    assert len(tcs) == 2, f"expected 2 tool calls, got {tcs!r}"
+    assert tcs[0]["function"]["name"] == "bash"
+    assert tcs[0]["function"]["arguments"] == {"command": "curl -s https://x"}
+    assert tcs[1]["function"]["name"] == "write"
+    assert tcs[1]["function"]["arguments"] == {"file_path": "s.py", "content": "print(1)"}
+    assert not residual, f"DSML block should be stripped from content: {residual!r}"
+    # no-DSML content passes through untouched
+    assert mp._parse_dsml_tool_calls("plain answer") == ([], "plain answer")
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()

@@ -895,6 +895,44 @@ MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
 )
 
+
+# DeepSeek models (via some OpenRouter providers) emit tool calls in DSML markup
+# instead of the OpenAI function-calling format. We normalize the fullwidth bar
+# (U+FF5C, the DSML delimiter) to ASCII and parse the invoke/parameter structure
+# back into OpenAI-format tool_calls, so the loop executes them instead of leaking
+# the raw markup as the "answer".
+_DSML_INVOKE_RE = re.compile(r'<\|DSML\|invoke\s+name="([^"]+)"\s*>(.*?)</\|DSML\|invoke>', re.S)
+_DSML_PARAM_RE = re.compile(r'<\|DSML\|parameter\s+name="([^"]+)"[^>]*>(.*?)</\|DSML\|parameter>', re.S)
+
+
+def _parse_dsml_tool_calls(content):
+    """Extract DSML tool calls embedded in `content` -> (tool_calls, residual).
+
+    Returns ([], content) unchanged when there is no DSML block. Otherwise returns
+    OpenAI-format tool_calls and the content with the DSML block stripped.
+    """
+    if not content:
+        return [], content
+    norm = content.replace("\uff5c", "|")
+    if "<|DSML|tool_calls>" not in norm and "<|DSML|function_calls>" not in norm:
+        return [], content
+    out = []
+    for m in _DSML_INVOKE_RE.finditer(norm):
+        name = m.group(1)
+        body = m.group(2)
+        args = {}
+        for pm in _DSML_PARAM_RE.finditer(body):
+            args[pm.group(1)] = pm.group(2).strip()
+        out.append({
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": name, "arguments": args},
+        })
+    residual = re.sub(r'<\|DSML\|(?:tool_calls|function_calls)>.*?</\|DSML\|(?:tool_calls|function_calls)>',
+                      "", norm, flags=re.S)
+    return out, residual.strip()
+
+
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                       max_tokens=-1, timeout=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
@@ -990,6 +1028,14 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 "type": _tc.get("type", "function"),
                 "function": {"name": _fn.get("name", ""), "arguments": _args},
             })
+        if not _tool_calls and _content:
+            # DeepSeek models can emit DSML tool-call markup as plain content instead
+            # of OpenAI-format tool_calls. Parse it so the loop executes the calls.
+            _dsml_tcs, _dsml_residual = _parse_dsml_tool_calls(_content)
+            if _dsml_tcs:
+                _tool_calls = _dsml_tcs
+                _content = _dsml_residual
+                _finish = "tool_calls"
         if not _content and _thinking and not _tool_calls:
             _content = _thinking
         _done = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(_finish, _finish) \
