@@ -305,35 +305,70 @@ def _exec_read_tool(name):
     return f"Source of tool '{name}' ({desc}):\n\n{src}"
 
 
+_SEARCH_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
+
+
+def _ddg_search(query):
+    """DuckDuckGo HTML backend (no key). Returns a results string, or None."""
+    r = requests.post("https://html.duckduckgo.com/html/", data={"q": query}, headers=_SEARCH_HEADERS, timeout=20)
+    html = r.text or ""
+    titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
+    if not titles:
+        return None
+    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
+    lines = [f"web results for '{query}':"]
+    for i, (href, title) in enumerate(titles[:8]):
+        t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
+        snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
+        lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
+    return "\n".join(lines)
+
+
+def _brave_search(query):
+    """Brave Search backend (no key; tolerates bots better than DDG/Bing)."""
+    r = requests.get("https://search.brave.com/search", params={"q": query}, headers=_SEARCH_HEADERS, timeout=20)
+    html = r.text or ""
+    titles = _re.findall(r'<a href="(https?://[^"]+)"[^>]*>\s*<h[1-4][^>]*>(.*?)</h[1-4]>', html, _re.S)
+    if not titles:
+        return None
+    descs = _re.findall(r'<section class="description[^"]*"[^>]*>(.*?)</section>', html, _re.S)
+    seen = set()
+    lines = [f"web results for '{query}':"]
+    for i, (href, title) in enumerate(titles):
+        t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
+        if not t or href in seen:
+            continue
+        seen.add(href)
+        snip = _unescape(_re.sub(r'<[^>]+>', '', descs[i])).strip() if i < len(descs) else ""
+        lines.append(f"{len(lines)}. {t}\n   {href}\n   {snip[:300]}")
+        if len(lines) > 8:
+            break
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+_SEARCH_CACHE = {}
+
+
 def _exec_web_search(query):
-    """A minimal web search (DuckDuckGo HTML, no API key). Retries with backoff on
-    rate-limit/block, which is DDG's main failure mode under rapid queries."""
+    """Web search across free backends (Brave primary, DuckDuckGo fallback).
+
+    Free search engines rate-limit bot IPs, so results are best-effort: a failed
+    search degrades to a clear message (the model can fall back to bash+curl).
+    Repeated queries are served from a small in-process cache to cut load."""
     query = (query or "").strip()
     if not query:
         return "[web_search: empty query]"
-    url = "https://html.duckduckgo.com/html/"
-    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
-    import time as _time
-    last_err = ""
-    for attempt in range(3):
-        html = ""
+    if query in _SEARCH_CACHE:
+        return _SEARCH_CACHE[query]
+    for backend in (_brave_search, _ddg_search):
         try:
-            r = requests.post(url, data={"q": query}, headers=headers, timeout=20)
-            html = r.text or ""
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-        titles = _re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.S)
-        if titles:
-            snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, _re.S)
-            lines = [f"web results for '{query}':"]
-            for i, (href, title) in enumerate(titles[:8]):
-                t = _unescape(_re.sub(r'<[^>]+>', '', title)).strip()
-                snip = _unescape(_re.sub(r'<[^>]+>', '', snippets[i])).strip() if i < len(snippets) else ""
-                lines.append(f"{i + 1}. {t}\n   {_unescape(href)}\n   {snip}")
-            return "\n".join(lines)
-        # rate-limited/blocked — back off before retrying
-        _time.sleep(2.0 * (attempt + 1))
-    return f"[web_search: no results after 3 attempts{(' (' + last_err + ')') if last_err else ''}]"
+            out = backend(query)
+            if out:
+                _SEARCH_CACHE[query] = out
+                return out
+        except Exception:
+            continue
+    return "[web_search: no results (all backends rate-limited/blocked)]"
 
 
 def execute_readonly_tool(name, args):
