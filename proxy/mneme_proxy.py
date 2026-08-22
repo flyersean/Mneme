@@ -942,9 +942,12 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         # it CAN transparently fail over to a backup provider if the primary stalls
         # mid-generation (streaming commits the first token and disables failover).
         # Slower to detect a truly hung provider, but self-healing on stalls.
+        # The read timeout must outlast OpenRouter's own provider timeout + failover
+        # (a cold-start or provider stall can take a minute+); 60s aborts us before
+        # OpenRouter has finished routing around the bad provider.
         try:
             r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                              json=payload, timeout=timeout)
+                              json=payload, timeout=max(timeout or 0, 150))
         except requests.exceptions.RequestException as e:
             print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
