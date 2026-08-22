@@ -107,6 +107,10 @@ def _bash_call(command, id="call_1"):
             "eval_count": 10, "done_reason": "tool_calls"}
 
 
+def _timeout_call():
+    return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+
+
 def _answer(text):
     return {"content": text, "thinking": "", "tool_calls": [],
             "eval_count": 20, "done_reason": "stop"}
@@ -385,6 +389,29 @@ def test_structural_write_script_nudge():
     assert len(executed) == 6, f"expected all 6 bash calls to run, got {len(executed)}"
     assert "Menu extracted" in (result.get("content") or ""), \
         f"expected final answer, got {result.get('content')!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
+def test_requery_timeout_retries_once():
+    """A transient 0-token provider hang on a tool-loop re-query must be retried
+    once, not kill the turn with an empty "(no response)"."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("jamos pizza", id="c1"),
+        _timeout_call(),   # first re-query stalls (0 tokens)
+        _answer("The answer. [source: mem_1]"),  # retry recovers
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "jamos pizza info"}],
+        session_id="test", tools=[],
+    )
+
+    assert "The answer" in (result.get("content") or ""), \
+        f"expected the retry to recover a final answer, got {result.get('content')!r}"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 

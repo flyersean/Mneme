@@ -3271,6 +3271,23 @@ def _execute_search_tool_calls(search_calls):
     return "\n\n".join(result_texts), trace
 
 
+def _query_retry_timeout(msgs, tools=None, timeout=CHAT_TIMEOUT):
+    """query_model with ONE retry on a 0-token provider hang.
+
+    A transient OpenRouter stream stall (the GRIND-GUARD aborts with
+    done_reason="timeout" and 0 tokens) should not kill the whole turn. The
+    initial query in process_chat already retries this case; the tool-loop
+    re-queries and the hard-stop queries were missing it, so a single stalled
+    re-query returned empty ("(no response)") with no recovery.
+    """
+    result = query_model(msgs, tools=tools, timeout=timeout)
+    if (result.get("done_reason") == "timeout" and not result.get("eval_count")
+            and not (result.get("content") or "").strip() and not result.get("tool_calls")):
+        print("  [TIMEOUT-RETRY] provider hang (0 tokens) — retrying once", flush=True)
+        result = query_model(msgs, tools=tools, timeout=timeout)
+    return result
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -3627,7 +3644,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _stop = list(followup)
             _stop.append({"role": "user", "content": _hard_wrapup_directive(_redundant)})
             print(f"  [TOOL-HARD-STOP] {_redundant} repeated tool calls — forcing final answer", flush=True)
-            result = query_model(_stop, tools=[], timeout=CHAT_TIMEOUT)
+            result = _query_retry_timeout(_stop, tools=[])
             break
 
         # Wrap-up nudge: advisory — many tool calls without a final answer. The model
@@ -3641,7 +3658,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)
-        result = query_model(followup, tools=msg_tools, timeout=CHAT_TIMEOUT)
+        result = _query_retry_timeout(followup, tools=msg_tools)
     else:
         # Ran out of server rounds (model kept calling server tools without
         # answering). Resolve any remaining search_memory server-side; native/
