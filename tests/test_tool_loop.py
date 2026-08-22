@@ -1047,6 +1047,36 @@ def test_verify_and_regrade_world_true_passes():
         mp.query_model, mp.mntools._exec_web_search = orig_q, orig_ws
 
 
+# ── 4c. Near-empty answer guard ─────────────────────────────────────────────
+@test
+def test_is_near_empty_detects_shrugs():
+    for shrug in ("None", "...", "Idk", "N/A", "I don't know", "nope", ""):
+        assert mp._is_near_empty(shrug) is True, f"{shrug!r} should be near-empty"
+    for real in ("Paris", "The capital is Paris.", "Yes, it is raining.",
+                 "Bitcoin is around $77,300."):
+        assert mp._is_near_empty(real) is False, f"{real!r} should not be near-empty"
+
+
+@test
+def test_near_empty_answer_gets_fallback():
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("jamos pizza", id="c1"),
+        _answer("None"),   # model gives up mid-struggle with a shrug
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "jamos pizza info"}],
+        session_id="test", tools=[],
+    )
+    c = result.get("content") or ""
+    assert "gave up" in c, f"near-empty 'None' should hit the gave-up fallback, got {c!r}"
+    assert c.strip() != "None", "shrug 'None' must not be returned as the answer"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
 # ── 5. Runner ───────────────────────────────────────────────────────────────
 def main():
     seed_chunk()

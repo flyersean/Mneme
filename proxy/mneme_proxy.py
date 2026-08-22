@@ -3432,6 +3432,32 @@ def _query_retry_timeout(msgs, tools=None, timeout=CHAT_TIMEOUT):
     return result
 
 
+_SHRUG_TOKENS = {
+    "none", "n/a", "na", "n-a", "...", "..", "…", "idk", "no", "nope",
+    "??", "???", "?", "i don't know", "i dont know", "not found", "nothing",
+    "unknown", "i give up", "cannot", "can't", "cant", "no idea", "no result",
+    "not sure", "unsure", "dunno", "null", "empty", "none found",
+}
+
+
+def _is_near_empty(text):
+    """True if a 'final answer' is effectively empty: blank, a shrug token
+    ('None', '...', 'Idk', 'N/A'), or a bare <=4-char token. The model emits
+    these when it gives up after a long failing struggle instead of answering —
+    its reasoning says one thing ('I'll try a new search') but the output is a
+    shrug. A real answer always carries more than a shrug.
+
+    Trade-off: a legitimate terse answer ('Yes', '42', 'Paris' is 5 so it
+    escapes) can also be caught; the fallback is the honest 'could not answer'
+    message, which is preferable to presenting a give-up as an answer."""
+    c = (text or "").strip().strip(".,!?;:\"'*_~`()[] \t\n")
+    if not c:
+        return True
+    if c.lower() in _SHRUG_TOKENS:
+        return True
+    return len(c) <= 4
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -3809,8 +3835,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # fallback (above), but a synthesis re-query that stalls (provider hang) or
     # errors lands here with empty content and no tool_calls — the client would
     # otherwise see a bare "(no response)". Give a meaningful explanation instead.
-    if not (result.get("content") or "").strip() and not result.get("tool_calls"):
+    # Also catches NEAR-empty answers: a model that gives up mid-struggle emits a
+    # shrug ('None', '...', 'Idk') instead of a real answer.
+    if _is_near_empty(result.get("content") or "") and not result.get("tool_calls"):
         _why = result.get("done_reason") or "unknown"
+        _near = (result.get("content") or "").strip()
         if _why == "timeout":
             result["content"] = ("[The reply stalled — the model provider stopped responding "
                                  "mid-generation and the automatic retry also timed out. "
@@ -3819,10 +3848,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             result["content"] = (f"[The model provider returned an error "
                                  f"({result.get('error_type', 'unknown')}); the retry also failed. "
                                  "Please try again.]")
+        elif _near:
+            result["content"] = (f"[The model gave up — it returned {_near!r} instead of an "
+                                 "answer. Please try again or rephrase the question.]")
         else:
             result["content"] = "[The model returned an empty response and could not answer. Please try again.]"
         _failed = True
-        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}) — returned explanatory message", flush=True)
+        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}, near={_near!r}) — returned explanatory message", flush=True)
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the
