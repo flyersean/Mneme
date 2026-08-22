@@ -21,28 +21,49 @@ Everything lives under one directory, `~/mneme/`:
 ```
 ~/mneme/
   repo/      this repository (git clone)
-  venv/      Python virtualenv (faiss / numpy / flask / requests / pyyaml)
-  env        your API key (chmod 600; never in the repo)
+  env        your OpenRouter API key (chmod 600; only for the hosted backend)
   chunks/    memory DB (mneme.db), config (mneme.yaml), log, and editable prompts
 ```
 
 ---
 
-## Quick start — pick your path
+## Install + setup (two commands)
 
-| You want… | Path |
-|---|---|
-| Hosted models, no GPU, no downloads (recommended for a laptop) | **Path A — OpenRouter** (one command) |
-| Local models, private, free | **Path C — Ollama** |
+One unified path — the same two commands on a laptop or a pod. The installer
+prepares the machine; the setup wizard asks how you want to run it.
 
-Both end at the same place: a proxy on `http://localhost:8080` with a built-in
-chat page and an editable-prompt page.
+### 1. Install (dependencies + Ollama + proxy code)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/install.sh | bash
+```
+
+Installs the Python dependencies, Ollama (idempotent — harmless even for a
+hosted backend), and clones the proxy into `~/mneme/repo`. Safe to re-run; it
+only fills in what's missing.
+
+### 2. Setup (backend, models, Pi)
+
+```bash
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup.py && python3 /tmp/setup.py
+```
+
+The wizard walks four steps:
+
+1. **Backend** — OpenRouter (hosted; needs an API key) or Ollama (local/private).
+2. **Models** — chat / embedder / labeler (per backend; Ollama pulls them for you).
+3. **Pi** — optional terminal assistant. Saying **no** still leaves the built-in
+   chat page and any OpenAI-compatible client working.
+4. **Port** + whether to inject Mneme's system instructions.
+
+It writes one config (`~/mneme/chunks/mneme.yaml`) and a start script
+(`~/mneme/chunks/start_proxy.sh`), then launches the proxy and health-checks it.
 
 ---
 
 ## The two web pages
 
-Once the proxy is running (any path):
+Once the proxy is running (any backend):
 
 | URL | What it is |
 |---|---|
@@ -53,102 +74,23 @@ Once the proxy is running (any path):
 
 ---
 
-## Getting started — step by step
+## Run it / connect
 
-### Path A — OpenRouter (hosted, one command)
+- **Start / restart the proxy:** `~/mneme/chunks/start_proxy.sh` (written by setup).
+- **Logs:** `tail -f /tmp/mneme.log`.
 
-Fully hosted: the chat model, embedder, and labeler all run on OpenRouter, so
-there is nothing to download except the ~250 MB venv. The wizard validates your
-key, lets you pick the three models (sensible cheap defaults), creates the venv,
-writes the config, and starts the proxy:
+### Pi (terminal assistant)
 
-```bash
-curl -sSL -o /tmp/setup_or.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup_openrouter.py && python3 /tmp/setup_or.py
-```
+Pi is offered during setup. To install or run it by hand:
 
-You'll need an OpenRouter key (https://openrouter.ai/keys). Then open
-`http://localhost:8080/` to chat.
-
-### Path B — manual setup (clone + venv + key + config)
-
-If you prefer to do it yourself (or the wizard is unavailable):
-
-```bash
-# 1. Clone the current branch into the ~/mneme/ layout
-git clone --branch unified_mneme https://github.com/flyersean/Mneme.git ~/mneme/repo
-cd ~/mneme/repo
-
-# 2. venv (one-time, ~250 MB)
-python3 -m venv ~/mneme/venv
-~/mneme/venv/bin/pip install faiss-cpu numpy flask flask-cors requests pyyaml
-
-# 3. API key (chmod 600; never committed)
-echo 'OPENROUTER_API_KEY=sk-or-v1-...' > ~/mneme/env && chmod 600 ~/mneme/env
-
-# 4. Config (copy the commented example; defaults already point at OpenRouter)
-mkdir -p ~/mneme/chunks
-cp mneme.yaml.example ~/mneme/chunks/mneme.yaml
-
-# 5. Launch
-./launch.sh
-```
-
-### Path C — Ollama (local models, private)
-
-The proxy defaults to the Ollama backend — you just need Ollama running with the
-three models pulled (chat, embedder, labeler):
-
-```bash
-# install + start Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-ollama serve   # or it may already be running
-
-# pull the three models (chat / embedder / labeler)
-ollama pull <your-chat-model>          # e.g. qwen3:32b, llama3.1:70b, …
-ollama pull snowflake-arctic-embed2    # 1024-dim embedder
-ollama pull qwen2.5:0.5b               # tiny topic labeler
-
-# run the proxy (no API key needed)
-cd ~/mneme/repo
-export MNEME_BACKEND=ollama                                      # use local Ollama
-export MNEME_MODEL=<your-chat-model>                             # e.g. qwen3:32b, llama3.1:70b, …
-export EMBED_MODEL=snowflake-arctic-embed2                       # 1024-dim embedder
-export LABEL_MODEL=qwen2.5:0.5b                                  # tiny topic labeler
-~/mneme/venv/bin/python -uB proxy/mneme_proxy.py
-```
-
-Then open `http://localhost:8080/`. To make it permanent, set
-`backend.type: ollama` and `backend.ollama_url: http://localhost:11434` in
-`~/mneme/chunks/mneme.yaml` (Ollama is the default only when no config
-overrides it — the example config targets OpenRouter, so set `backend.type`
-explicitly), and put the model names in the `MNEME_MODEL` / `EMBED_MODEL` /
-`LABEL_MODEL` env vars.
-
-> The embedder must stay 1024-dim (the FAISS index is built at 1024). The
-> startup health check probes the embedder and fails loud on a dimension
-> mismatch, so a wrong embedder is caught immediately, not silently.
-
----
-
-## Running through Pi
-
-[Pi](https://github.com/earendil-works/pi) is a terminal AI coding assistant.
-`launch.sh` starts the proxy **and** launches Pi against it in one go:
-
-```bash
-cd ~/mneme/repo
-./launch.sh      # starts the proxy, waits for health, then launches Pi
-```
-
-`./launch.sh` does the Pi work for you, but if you want to set it up by hand:
-
-1. **Install Pi** (needs Node.js 22+):
+1. Install (needs Node.js 22+):
 
    ```bash
    npm install -g @earendil-works/pi-coding-agent
    ```
 
-2. **Point Pi at Mneme** — add a `mneme` provider in `~/.pi/agent/models.json`:
+2. Point Pi at Mneme — setup writes `~/.pi/agent/models.json` for you, but the
+   shape is:
 
    ```json
    {
@@ -164,7 +106,7 @@ cd ~/mneme/repo
    }
    ```
 
-3. **Run Pi with the Mneme tools** (memory search + web search):
+3. Run:
 
    ```bash
    pi --provider mneme --model text-mneme:64k \
@@ -172,10 +114,20 @@ cd ~/mneme/repo
      --extension ~/mneme/repo/extensions/pi/mneme-web-tools.ts
    ```
 
-The proxy alone (no Pi) is `scripts/run_openrouter.sh`. Exiting Pi stops the
-proxy started by `launch.sh`.
+### Connect to a remote pod
 
-### Connect any other OpenAI client
+If Mneme runs on a pod (RunPod, etc.), run the standalone connect app on your
+laptop to open a stay-alive SSH tunnel and get the local URLs:
+
+```bash
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+```
+
+It prompts for the pod address + SSH port, opens the tunnel (with keep-alive),
+then prints the OpenAI API base URL, the chat URL, and the prompt-editor URL to
+open in your browser.
+
+### Any other OpenAI client
 
 Anything OpenAI-compatible (Hermes, Open WebUI, etc.) just needs the base URL:
 

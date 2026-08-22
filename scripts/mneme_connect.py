@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""Mneme Connect — SSH tunnel to a pod running Mneme, then launch Pi or Hermes.
+"""Mneme Connect — standalone SSH tunnel to a pod running Mneme.
 
-Usage:
-    python3 mneme_connect.py
-    # or
-    curl -sSL <url> | python3 -
+Establishes a stay-alive SSH tunnel from this machine to a pod, then shows you
+the local URLs to use. No agent setup, no Pi/Hermes config — just the tunnel.
+
+Usage (install & run):
+    curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+
+    # or, to keep it around:
+    curl -sSL -o ~/.local/bin/mneme-connect https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && chmod +x ~/.local/bin/mneme-connect
+
+Stdlib-only (no pip installs). Requires `ssh` on this machine and the pod's SSH
+key already set up.
 """
 
-import subprocess, sys, os, tempfile, time, json, shutil
+import subprocess
+import sys
+import os
+import time
+import shutil
+import urllib.request
+import urllib.error
 
-try:
-    import questionary
-except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "questionary", "-q"], check=True)
-    import questionary
 
-def check_cmd(cmd):
-    return shutil.which(cmd) is not None
-
-print("""
+def banner():
+    print("""
   \033[36m███╗   ███╗███╗   ██╗███████╗███╗   ███╗███████╗
   ████╗ ████║████╗  ██║██╔════╝████╗ ████║██╔════╝
   ██╔████╔██║██╔██╗ ██║█████╗  ██╔████╔██║█████╗
@@ -29,159 +35,92 @@ print("""
   Connect to Mneme on a remote pod
 """)
 
-# ── Step 1: Pod connection ──
-pod_ip = questionary.text(
-    "Pod address (IP or hostname):",
-    default="69.30.85.102"
-).ask()
-if not pod_ip: sys.exit(1)
 
-pod_port = questionary.text(
-    "SSH port:",
-    default="22140"
-).ask()
-if not pod_port: sys.exit(1)
+def main():
+    banner()
 
-ssh_user = questionary.text(
-    "SSH user:",
-    default="root"
-).ask()
-if not ssh_user: sys.exit(1)
+    ssh = shutil.which("ssh")
+    if not ssh:
+        print("  ✗ 'ssh' not found — install openssh-client first.")
+        sys.exit(1)
 
-# ── Step 2: Agent choice ──
-agent_choice = questionary.select(
-    "Choose AI agent:",
-    choices=[
-        "Hermes (CLI agent with profiles)",
-        "Pi (terminal coding agent)",
+    # ── Pod connection details ──
+    pod_ip = input("  Pod address (IP or hostname): ").strip()
+    if not pod_ip:
+        sys.exit(1)
+    pod_port = input("  SSH port [22140]: ").strip() or "22140"
+    ssh_user = input("  SSH user [root]: ").strip() or "root"
+    local_port = input("  Local port for the tunnel [8080]: ").strip() or "8080"
+
+    # ── Build the stay-alive tunnel ──
+    print(f"\n  Opening stay-alive tunnel:  localhost:{local_port} → {ssh_user}@{pod_ip}:{pod_port} (pod's :8080)")
+    print("  Keep this window open — the tunnel stays up until you press Ctrl+C.\n")
+
+    err_log = "/tmp/mneme_connect_ssh.log"
+    errf = open(err_log, "w")
+    cmd = [
+        ssh, "-N",
+        "-L", f"{local_port}:localhost:8080",
+        "-p", pod_port, f"{ssh_user}@{pod_ip}",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",       # keep the link alive through idle + NAT
+        "-o", "ServerAliveCountMax=3",
+        "-o", "TCPKeepAlive=yes",
     ]
-).ask()
-if not agent_choice: sys.exit(1)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errf)
 
-use_hermes = "Hermes" in agent_choice
-use_pi = "Pi" in agent_choice
-
-hermes_profile = None
-if use_hermes:
-    # Discover profiles
-    profiles = ["deep1", "default"]
-    if check_cmd("hermes"):
+    # ── Wait for the tunnel to be healthy ──
+    print("  Connecting", end="", flush=True)
+    ok = False
+    for _ in range(25):
+        if proc.poll() is not None:
+            break  # ssh died — will report below
         try:
-            r = subprocess.run(["hermes", "profiles", "list"], capture_output=True, text=True, timeout=10)
-            for line in r.stdout.splitlines():
-                parts = line.strip().split()
-                if parts and not line.startswith("Profile") and not line.startswith("---"):
-                    profiles.append(parts[0])
-            profiles = list(dict.fromkeys(profiles))  # dedupe
-        except:
+            urllib.request.urlopen(f"http://localhost:{local_port}/health", timeout=3)
+            ok = True
+            break
+        except Exception:
+            print(".", end="", flush=True)
+            time.sleep(1)
+    print()
+
+    if not ok:
+        print("  ✗ Tunnel failed (or the proxy isn't up on the pod).")
+        tail = ""
+        try:
+            with open(err_log) as f:
+                tail = f.read()[-600:]
+        except Exception:
             pass
-    
-    hermes_profile = questionary.select(
-        "Hermes profile:",
-        choices=profiles + ["Custom (enter name)"],
-    ).ask()
-    
-    if hermes_profile and "Custom" in hermes_profile:
-        hermes_profile = questionary.text("Profile name:").ask()
-    
-    if not hermes_profile: sys.exit(1)
+        if tail.strip():
+            print("  SSH said:\n" + tail)
+        print(f"  Check the pod address, SSH port, and that the proxy is running on the pod at :8080.")
+        proc.terminate()
+        sys.exit(1)
 
-# ── Step 3: Local port ──
-local_port = questionary.text(
-    "Local port for tunnel:",
-    default="8080"
-).ask()
-if not local_port: sys.exit(1)
+    # ── Show the connection settings ──
+    print("  ✓ Connected.\n")
+    print("  ── Use these on THIS machine ──")
+    print(f"  OpenAI API base:   http://localhost:{local_port}/v1")
+    print(f"  Chat app:          http://localhost:{local_port}/")
+    print(f"  Prompt editor:     http://localhost:{local_port}/instructions")
+    print()
+    print("  Open either URL in your browser, or point any OpenAI-compatible")
+    print("  client (Pi, Hermes, Open WebUI, ...) at the API base URL above.")
+    print("\n  Press Ctrl+C to close the tunnel.")
 
-# ── Build tunnel ──
-print(f"\nOpening SSH tunnel: localhost:{local_port} → {pod_ip}:{pod_port}:8080\n")
-
-# Use SSH with -f -N to background the tunnel
-tunnel_cmd = [
-    "ssh", "-f", "-N",
-    "-L", f"{local_port}:localhost:8080",
-    "-p", pod_port, f"{ssh_user}@{pod_ip}",
-    "-o", "StrictHostKeyChecking=accept-new",
-    "-o", "ServerAliveInterval=30",
-    "-o", "ExitOnForwardFailure=yes",
-]
-
-r = subprocess.run(tunnel_cmd, capture_output=True, text=True)
-if r.returncode != 0:
-    print(f"SSH tunnel failed: {r.stderr}")
-    print("Check your pod address, port, and SSH key setup.")
-    sys.exit(1)
-
-# Test tunnel
-print("Testing tunnel...", end=" ", flush=True)
-for _ in range(10):
-    time.sleep(1)
+    # ── Stay alive ──
     try:
-        import urllib.request
-        resp = urllib.request.urlopen(f"http://localhost:{local_port}/health", timeout=3)
-        data = json.loads(resp.read())
-        print(f"OK! ({data.get('chunks',0)} chunks, backend: {data.get('backend','?')})")
-        break
-    except:
-        continue
-else:
-    print("tunnel open but proxy not responding. Continuing anyway...")
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        print("\n  Tunnel closed.")
 
-# ── Configure agent ──
-print()
 
-if use_hermes:
-    # Configure Hermes to use the tunnel
-    if not check_cmd("hermes"):
-        print("Hermes not found. Install with: pip install hermes-agent")
-        sys.exit(1)
-    
-    subprocess.run(["hermes", "config", "set", "model.default", "text-mneme:64k"], capture_output=True)
-    subprocess.run(["hermes", "config", "set", "model.provider", "custom"], capture_output=True)
-    subprocess.run(["hermes", "config", "set", "model.base_url", f"http://localhost:{local_port}/v1"], capture_output=True)
-    subprocess.run(["hermes", "config", "set", "model.api_key", "none"], capture_output=True)
-    
-    print(f"\033[32m✓ Hermes configured for Mneme at localhost:{local_port}\033[0m")
-    print(f"  Profile: {hermes_profile}")
-    print(f"\nLaunching Hermes...\n")
-    os.execvp("hermes", ["hermes", "--profile", hermes_profile])
-
-elif use_pi:
-    # Configure Pi to use the tunnel
-    if not check_cmd("pi") and not check_cmd("node"):
-        print("Pi not found. Install Node.js 22+ and: npm install -g @earendil-works/pi-coding-agent")
-        sys.exit(1)
-    
-    pi_dir = os.path.expanduser("~/.pi/agent")
-    os.makedirs(pi_dir, exist_ok=True)
-    
-    pi_config = {
-        "providers": {
-            "mneme": {
-                "baseUrl": f"http://localhost:{local_port}/v1",
-                "api": "openai-completions",
-                "apiKey": "none",
-                "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
-                "models": [{"id": "text-mneme:64k", "name": "Mneme (remote pod)", "contextWindow": 32000, "reasoning": False}]
-            }
-        }
-    }
-    with open(os.path.join(pi_dir, "models.json"), "w") as f:
-        json.dump(pi_config, f, indent=2)
-    
-    # Check for search_memory extension
-    ext_path = os.path.expanduser("~/mneme-search-tool.ts")
-    ext_flag = f" --extension {ext_path}" if os.path.exists(ext_path) else ""
-    if not os.path.exists(ext_path):
-        print("  Tip: copy extensions/pi/mneme-search-tool.ts to ~/ for search_memory tool")
-    
-    print(f"\033[32m✓ Pi configured for Mneme at localhost:{local_port}\033[0m")
-    print(f"\nLaunching Pi...\n")
-    
-    pi_cmd = ["pi", "--provider", "mneme", "--model", "text-mneme:64k"]
-    if os.path.exists(ext_path):
-        pi_cmd.extend(["--extension", ext_path])
-    
-    os.execvp("pi", pi_cmd)
-
-print("\nDisconnect: kill the SSH tunnel or close this terminal.")
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n  Cancelled.")
+        sys.exit(130)
