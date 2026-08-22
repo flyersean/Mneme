@@ -80,6 +80,7 @@ from mneme.grading import (
     _source_domain,
     _has_fake_source,
     _has_specific_claims,
+    _verify_and_regrade,
 )
 import mneme.tools as mntools
 
@@ -3852,6 +3853,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _prov = _extract_provenance(user_msg, _resp_content)
             _old = _layer2_adjust(_grade_from_provenance(_prov), _prov)
             grade = "F" if _old in ("C", "D", "F") else "B"
+            # Verify path: use the judge's discarded 'check' info — relabel
+            # memory-backed claims (no web search) and web-verify world claims
+            # to catch fabrication. Never let a verify failure break the turn.
+            try:
+                _grade, _resp_content = _verify_and_regrade(
+                    _prov, _resp_content, user_msg, context, grade)
+                grade = _grade
+                if _resp_content != result.get("content", ""):
+                    result["content"] = _resp_content
+                    print("  [VERIFY] answer corrected/flagged", flush=True)
+            except Exception as e:
+                _log_error("process_chat:verify", e)
         elif _parsed["sources"]:
             # Trace cross-check: a [source: X] the model did not actually have
             # this turn is a fabricated citation -> fail. Only mem chunks and

@@ -221,3 +221,128 @@ def _has_specific_claims(text: str) -> bool:
         return True
     # 3+ capitalized words ~ proper nouns (names/places/brands)
     return len(re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", text)) >= 3
+
+
+# ─── Verify path (uses the judge's 'check' info, previously discarded) ─────
+#
+# The judge emits one line per specific claim:  CLAIM | VERDICT | check: X.
+# _grade_from_provenance only read the VERDICT; the 'check' (what to verify) was
+# thrown away. The verify path now uses it:
+#   - a DISHONEST claim whose content overlaps injected memory is an INTERNAL
+#     fact (e.g. a dog's name) — label it "from memory" (memory IS the source
+#     of truth), no web search.
+#   - any other DISHONEST claim is a WORLD claim — lean web-verify it; a claim
+#     that verifies FALSE is genuine fabrication.
+
+_STOPWORDS = {
+    "the", "and", "that", "this", "with", "from", "for", "was", "are", "not",
+    "you", "your", "have", "has", "will", "what", "when", "where", "which",
+    "there", "their", "they", "them", "then", "than", "some", "about", "would",
+    "could", "should", "been", "being", "were", "into", "also", "very", "just",
+    "its", "his", "her", "she", "him", "our", "does", "did", "who", "why",
+    "how", "get", "got", "can", "out", "one", "two", "such",
+}
+
+
+def _parse_verdict_claims(reply):
+    """Parse the judge's 'CLAIM | VERDICT | check: X' lines into dicts."""
+    claims = []
+    for line in (reply or "").splitlines():
+        if "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2:
+            continue
+        verdict = parts[1].upper()
+        check = ""
+        if len(parts) >= 3:
+            check = parts[2].strip()
+            if check.lower().startswith("check"):
+                check = check[5:].strip().lstrip(":").strip()
+        claims.append({"claim": parts[0], "verdict": verdict, "check": check})
+    return claims
+
+
+def _is_memory_backed(claim, context):
+    """True if a DISHONEST claim's content overlaps injected memory, i.e. it is
+    an internal fact (memory is the source of truth) rather than a checkable
+    world fact. Simple content-word overlap against the injected context."""
+    claim = (claim or "").lower()
+    ctx = (context or "").lower()
+    if not claim or not ctx:
+        return False
+    words = [w for w in re.findall(r"[a-z0-9]+", claim)
+             if len(w) >= 3 and w not in _STOPWORDS]
+    if not words:
+        return False
+    overlap = sum(1 for w in words if w in ctx)
+    # require at least half the content words (min 1) to appear in memory
+    return overlap >= max(1, len(words) // 2)
+
+
+def _verify_world_claims(claims, problem):
+    """Lean web-verification of world claims. For each claim, web-search the
+    check target directly, then ONE lean model call judges TRUE/FALSE/UNCERTAIN.
+    No memory or instruction stack is loaded — a cheap, targeted correction pass.
+
+    Returns {claim_text: {"verdict": "TRUE"|"FALSE"|"UNCERTAIN", "reason": str}}.
+    """
+    if not claims:
+        return {}
+    from mneme_proxy import query_model          # late import follows stubs
+    from mneme.tools import _exec_web_search
+    blocks = []
+    for i, c in enumerate(claims, 1):
+        target = c.get("check") or c.get("claim") or ""
+        try:
+            sr = _exec_web_search(target)
+        except Exception:
+            sr = "[web_search failed]"
+        blocks.append(f"CLAIM {i}: {c['claim']}\n(verify: {target})\n"
+                      f"SEARCH RESULTS:\n{sr[:1200]}")
+    q = [{"role": "user", "content": (
+        "For each CLAIM, judge TRUE, FALSE, or UNCERTAIN based only on the "
+        "SEARCH RESULTS. Reply exactly one line per claim:\n"
+        "CLAIM N: TRUE|FALSE|UNCERTAIN - short reason\n\n" + "\n\n".join(blocks)
+    )}]
+    r = query_model(q, max_tokens=512)
+    text = (r.get("content", "") or "")
+    out = {}
+    for i, c in enumerate(claims, 1):
+        verdict, reason = "UNCERTAIN", ""
+        m = re.search(rf"CLAIM\s*{i}\s*:\s*(TRUE|FALSE|UNCERTAIN)\s*-?\s*(.*)",
+                      text, re.IGNORECASE)
+        if m:
+            verdict = m.group(1).upper()
+            reason = m.group(2).strip()
+        out[c["claim"]] = {"verdict": verdict, "reason": reason}
+    return out
+
+
+def _verify_and_regrade(prov, answer, problem, context, cur_grade):
+    """Run the verify path on the judge's DISHONEST claims and return
+    (new_grade, new_answer). Memory-backed claims are relabeled honest (no web
+    search); world claims are lean-verified and a FALSE verdict is fabrication."""
+    claims = _parse_verdict_claims(prov)
+    dishonest = [c for c in claims if "DISHONEST" in c["verdict"]]
+    if not dishonest:
+        return cur_grade, answer
+
+    memory_backed = [c for c in dishonest if _is_memory_backed(c["claim"], context)]
+    world = [c for c in dishonest if c not in memory_backed]
+
+    verify = _verify_world_claims(world, problem) if world else {}
+    fabricated = [c for c in world if verify.get(c["claim"], {}).get("verdict") == "FALSE"]
+
+    if fabricated:
+        note = ("\n\n[verify] could not confirm (flagged): "
+                + "; ".join(c["claim"] for c in fabricated))
+        return "F", answer + note
+    if memory_backed and not world:
+        # every DISHONEST claim was actually memory-backed -> false positive
+        return "B", answer
+    if world and all(verify.get(c["claim"], {}).get("verdict") == "TRUE" for c in world):
+        # every world claim checked out -> not fabrication
+        return "B", answer
+    # some world claims unverifiable -> keep the judge's original grade
+    return cur_grade, answer

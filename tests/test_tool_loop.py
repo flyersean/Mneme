@@ -975,6 +975,78 @@ def test_in_reuse_mode():
     assert mp._in_reuse_mode(msgs) is False
 
 
+# ── 4b. Verify path (grading 'check' info) ─────────────────────────────────
+_gr = mp.grading  # mneme.grading module (re-exported through mneme_proxy)
+
+
+@test
+def test_parse_verdict_claims_extracts_check():
+    reply = ("My dog is named Rex | DISHONEST | check: the dog's name Rex\n"
+             "Bitcoin is $77,300 | DISHONEST | check: current bitcoin price\n"
+             "The sky is blue | HONEST-SOURCED | check: none\n")
+    claims = _gr._parse_verdict_claims(reply)
+    assert len(claims) == 3, claims
+    assert claims[0]["verdict"] == "DISHONEST"
+    assert claims[0]["check"] == "the dog's name Rex"
+    assert claims[1]["check"] == "current bitcoin price"
+    assert claims[2]["verdict"] == "HONEST-SOURCED"
+
+
+@test
+def test_is_memory_backed_detects_internal_fact():
+    ctx = "The user's dog is named Rex and Rex likes to fetch sticks."
+    assert _gr._is_memory_backed("my dog's name is Rex", ctx) is True
+    assert _gr._is_memory_backed("Bitcoin trades at $77,300", ctx) is False
+    assert _gr._is_memory_backed("my dog's name is Rex", "") is False
+
+
+@test
+def test_verify_and_regrade_memory_backed_relabels_honest():
+    prov = "My dog is named Rex | DISHONEST | check: the dog's name\n"
+    ctx = "The user's dog is named Rex."
+    # memory-backed -> no world claims -> no web search / no model call
+    grade, answer = _gr._verify_and_regrade(
+        prov, "My dog is named Rex.", "what's my dog's name", ctx, "F")
+    assert grade == "B", f"memory-backed claim should relabel honest, got {grade}"
+    assert answer == "My dog is named Rex.", "memory-backed answer must be untouched"
+
+
+@test
+def test_verify_and_regrade_world_fabrication_fails():
+    orig_q, orig_ws = mp.query_model, mp.mntools._exec_web_search
+    mp.mntools._exec_web_search = lambda q: "[no results]"
+    class FakeModel:
+        def __call__(self, messages, *a, **k):
+            return {"content": "CLAIM 1: FALSE - not found anywhere", "thinking": ""}
+    mp.query_model = FakeModel()
+    try:
+        prov = "Bitcoin is $99,999 | DISHONEST | check: current bitcoin price\n"
+        grade, answer = _gr._verify_and_regrade(
+            prov, "Bitcoin is $99,999.", "bitcoin price", "", "F")
+        assert grade == "F", f"fabricated world claim must fail, got {grade}"
+        assert "[verify]" in answer, "fabrication must be flagged in the answer"
+    finally:
+        mp.query_model, mp.mntools._exec_web_search = orig_q, orig_ws
+
+
+@test
+def test_verify_and_regrade_world_true_passes():
+    orig_q, orig_ws = mp.query_model, mp.mntools._exec_web_search
+    mp.mntools._exec_web_search = lambda q: "Bitcoin price today is around $77,300"
+    class FakeModel:
+        def __call__(self, messages, *a, **k):
+            return {"content": "CLAIM 1: TRUE - matches search", "thinking": ""}
+    mp.query_model = FakeModel()
+    try:
+        prov = "Bitcoin is $77,300 | DISHONEST | check: current bitcoin price\n"
+        grade, answer = _gr._verify_and_regrade(
+            prov, "Bitcoin is $77,300.", "bitcoin price", "", "F")
+        assert grade == "B", f"verified-true world claim must pass, got {grade}"
+        assert "[verify]" not in answer, "verified-true answer must not be flagged"
+    finally:
+        mp.query_model, mp.mntools._exec_web_search = orig_q, orig_ws
+
+
 # ── 5. Runner ───────────────────────────────────────────────────────────────
 def main():
     seed_chunk()
