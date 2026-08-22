@@ -3769,6 +3769,25 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     result["tool_calls"] = passthrough_calls
     result["tool_trace"] = _tool_trace
+
+    # Empty-answer fallback for the LOOP path. The initial query has its own
+    # fallback (above), but a synthesis re-query that stalls (provider hang) or
+    # errors lands here with empty content and no tool_calls — the client would
+    # otherwise see a bare "(no response)". Give a meaningful explanation instead.
+    if not (result.get("content") or "").strip() and not result.get("tool_calls"):
+        _why = result.get("done_reason") or "unknown"
+        if _why == "timeout":
+            result["content"] = ("[The reply stalled — the model provider stopped responding "
+                                 "mid-generation and the automatic retry also timed out. "
+                                 "Please try again, or ask a more focused question.]")
+        elif _why == "error":
+            result["content"] = (f"[The model provider returned an error "
+                                 f"({result.get('error_type', 'unknown')}); the retry also failed. "
+                                 "Please try again.]")
+        else:
+            result["content"] = "[The model returned an empty response and could not answer. Please try again.]"
+        _failed = True
+        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}) — returned explanatory message", flush=True)
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the

@@ -440,6 +440,30 @@ def test_requery_midstream_error_retries_once():
 
 
 @test
+def test_requery_double_timeout_returns_explanation():
+    """When BOTH the synthesis re-query and its retry stall, the client must get
+    an explanatory message, not a bare empty "(no response)"."""
+    model = ScriptedModel()
+    model.queue = [
+        _search_call("jamos pizza", id="c1"),
+        _timeout_call(),   # first synthesis attempt stalls
+        _timeout_call(),   # retry also stalls
+    ]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+
+    result = mp.process_chat(
+        [{"role": "user", "content": "jamos pizza info"}],
+        session_id="test", tools=[],
+    )
+
+    c = result.get("content") or ""
+    assert ("stalled" in c or "timed out" in c or "empty" in c), \
+        f"expected an explanatory message, got {c!r}"
+    assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
+
+
+@test
 def test_inject_min_similarity_blocks_below_floor():
     """A chunk below the absolute similarity floor must NOT be injected — this is
     the "no match -> no injection" guarantee (tunable via config)."""
