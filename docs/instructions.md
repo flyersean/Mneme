@@ -31,6 +31,7 @@ injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 | `step_back_adapt`      | ≥12 tool calls w/o answer — adapt a known solution    | `{{count}}`                  | `_step_back_directive` |
 | `step_back_concede`    | ≥20 tool calls w/o answer — concede honestly          | `{{count}}`                  | `_step_back_directive` |
 | `tool_failure_nudge`    | ≥2 consecutive tool failures (soft, before overcome) | `{{count}}`                   | `_tool_failure_nudge`  |
+| `empty_answer_retry`    | model returned a blank/shrug answer — prompt it to continue | —                             | `process_chat` (tool loop) |
 | `meta_principles_header`| always — header above the meta-principles            | —                             | `_meta_principles_block`|
 | `user_preferences_header`| stored preferences exist                             | —                             | `_preferences_block`   |
 | `system_directives_header`| saved strategies are injected                      | —                             | `build_context`        |

@@ -1047,7 +1047,7 @@ def test_verify_and_regrade_world_true_passes():
         mp.query_model, mp.mntools._exec_web_search = orig_q, orig_ws
 
 
-# ── 4c. Near-empty answer guard ─────────────────────────────────────────────
+# ── 4c. Continue-after-empty (prompt the model to keep going) ──────────────
 @test
 def test_is_near_empty_detects_shrugs():
     for shrug in ("None", "...", "Idk", "N/A", "I don't know", "nope", ""):
@@ -1058,11 +1058,12 @@ def test_is_near_empty_detects_shrugs():
 
 
 @test
-def test_near_empty_answer_gets_fallback():
+def test_near_empty_answer_prompts_continue():
     model = ScriptedModel()
     model.queue = [
         _search_call("jamos pizza", id="c1"),
-        _answer("None"),   # model gives up mid-struggle with a shrug
+        _answer("None"),                        # model gives up mid-struggle
+        _answer("The pizza info. [source: mem_1]"),  # continue prompt -> real answer
     ]
     mp.query_model = model
     mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
@@ -1072,8 +1073,11 @@ def test_near_empty_answer_gets_fallback():
         session_id="test", tools=[],
     )
     c = result.get("content") or ""
-    assert "gave up" in c, f"near-empty 'None' should hit the gave-up fallback, got {c!r}"
-    assert c.strip() != "None", "shrug 'None' must not be returned as the answer"
+    assert "pizza info" in c, f"continue prompt should produce a real answer, got {c!r}"
+    assert "gave up" not in c, "must not return a quit message"
+    # The continue prompt must have been injected into a followup.
+    hit = any("CONTINUE" in str(m.get("content", "")) for msgs in model.seen for m in msgs)
+    assert hit, "continue prompt was never injected"
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 

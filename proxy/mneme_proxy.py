@@ -3458,6 +3458,10 @@ def _is_near_empty(text):
     return len(c) <= 4
 
 
+# Bounded "continue" prompts when the model gives up with a blank/shrug answer.
+MAX_EMPTY_RETRY = 2
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
     # Extract query from ALL recent user messages — not just the last one.
     # Multi-turn context is captured so "also the earthquake" finds earthquake
@@ -3726,6 +3730,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # round). If each round only shows the model the latest tool result, it
     # forgets what it already gathered and re-fetches — the grinding we see.
     followup = list(full_msgs)
+    _continue_attempts = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
         tcs = result.get("tool_calls") or []
@@ -3736,6 +3741,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         passthrough_calls.extend(other_calls)
 
         if not (search_calls or registry_calls or native_calls):
+            # No server tool calls. If the model gave up (blank/shrug answer),
+            # prompt it to CONTINUE instead of ending the turn — bounded retries.
+            # (Infra timeouts/errors land in the fallback below, not here.)
+            if (_is_near_empty(result.get("content") or "")
+                    and _continue_attempts < MAX_EMPTY_RETRY
+                    and result.get("done_reason") not in ("timeout", "error")):
+                _continue_attempts += 1
+                _near = (result.get("content") or "").strip()
+                print(f"  [CONTINUE] near-empty answer ({_near!r}) — prompting model to continue "
+                      f"({_continue_attempts}/{MAX_EMPTY_RETRY})", flush=True)
+                followup.append({"role": "user", "content": _load_instruction("empty_answer_retry")})
+                result = _query_retry_timeout(followup, tools=msg_tools)
+                continue
             break
         # A thinking model narrates its next step ("let me check the date") in
         # `content` while ALSO emitting the tool_calls for that step. Only treat
@@ -3831,15 +3849,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     result["tool_calls"] = passthrough_calls
     result["tool_trace"] = _tool_trace
 
-    # Empty-answer fallback for the LOOP path. The initial query has its own
-    # fallback (above), but a synthesis re-query that stalls (provider hang) or
-    # errors lands here with empty content and no tool_calls — the client would
-    # otherwise see a bare "(no response)". Give a meaningful explanation instead.
-    # Also catches NEAR-empty answers: a model that gives up mid-struggle emits a
-    # shrug ('None', '...', 'Idk') instead of a real answer.
-    if _is_near_empty(result.get("content") or "") and not result.get("tool_calls"):
+    # Empty-answer fallback for the LOOP path (infrastructure failures only: a
+    # synthesis re-query that stalls or errors). A blank/shrug answer from the
+    # MODEL (not an infra failure) is handled by the CONTINUE retry in the tool
+    # loop; if those retries are exhausted we return the model's output as-is
+    # (no "it quit" boilerplate — the user can see the model gave up).
+    if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         _why = result.get("done_reason") or "unknown"
-        _near = (result.get("content") or "").strip()
         if _why == "timeout":
             result["content"] = ("[The reply stalled — the model provider stopped responding "
                                  "mid-generation and the automatic retry also timed out. "
@@ -3848,13 +3864,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             result["content"] = (f"[The model provider returned an error "
                                  f"({result.get('error_type', 'unknown')}); the retry also failed. "
                                  "Please try again.]")
-        elif _near:
-            result["content"] = (f"[The model gave up — it returned {_near!r} instead of an "
-                                 "answer. Please try again or rephrase the question.]")
         else:
             result["content"] = "[The model returned an empty response and could not answer. Please try again.]"
         _failed = True
-        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}, near={_near!r}) — returned explanatory message", flush=True)
+        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}) — returned explanatory message", flush=True)
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the

@@ -149,6 +149,13 @@ DEFAULT_INSTRUCTIONS = {
         "You have had {{count}} tool failures in a row. Stop retrying and diagnose the "
         "root cause, then switch to a fundamentally different method."
     ),
+    "empty_answer_retry": (
+        "=== CONTINUE — NO ANSWER YET ===\n"
+        "Your previous response was empty or incomplete. Do not give up. Continue the task: "
+        "use your tools (web_search, bash, search_memory) to find what you need, then give "
+        "a complete answer. If you are genuinely blocked, explain what you found and what "
+        "is still missing — but only after you have actually tried again."
+    ),
     "meta_principles_header": "\n=== META-PRINCIPLES (always apply) ===\n",
     "user_preferences_header": "\n=== USER PREFERENCES (learned from explicit requests — honor these) ===",
     "system_directives_header": "=== SYSTEM DIRECTIVES (learned from past experience) ===",
@@ -179,6 +186,7 @@ INSTRUCTION_META = {
     "step_back_adapt": ("≥12 tool calls w/o answer — adapt a known solution", "{{count}}", "_step_back_directive"),
     "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
     "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
+    "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
     "system_directives_header": ("saved strategies are injected", "", "build_context"),
@@ -196,6 +204,7 @@ INSTRUCTION_ORDER = [
     "explore",                    # user explicitly asks for a NEW method
     "capability_edge",            # the task's problem type was previously flagged
     "tool_failure_nudge",         # ≥2 consecutive tool failures
+    "empty_answer_retry",         # model returned a blank/shrug answer
     "write_script_nudge",         # ≥5 bash calls against the same target
     "synthesize_nudge",           # ≥8 calls w/o a final answer (advisory)
     "step_back_examine",          # ≥6 calls — examine the obstacle, pivot
