@@ -514,6 +514,34 @@ def start_proxy(backend, models, port):
     return False
 
 
+def create_access_symlinks():
+    """Expose the memory dir + repo to JupyterLab's file browser via /workspace
+    symlinks, so a user can browse and download the DB, config, and prompts from
+    the GUI (RunPod's JupyterLab is rooted at /workspace, which ~/mneme isn't
+    under, and /root is mode 700 so the GUI can't climb to it). No-op off-pod."""
+    if not os.path.isdir("/workspace"):
+        return
+    links = {
+        "/workspace/mneme-chunks": MEMORY_DIR,
+        "/workspace/mneme-repo": REPO_ROOT,
+    }
+    made = []
+    for link, target in links.items():
+        try:
+            if os.path.islink(link):
+                os.remove(link)
+            elif os.path.exists(link):
+                continue  # a real file/dir is there; don't clobber it
+            os.symlink(target, link)
+            made.append(link)
+        except Exception:
+            pass
+    if made:
+        print("\n  JupyterLab shortcuts (browse/download your DB):")
+        for link in made:
+            print(f"    {link}  →  {links[link]}")
+
+
 # ── Main ─────────────────────────────────────────────────────────
 def main():
     global REPO_ROOT
@@ -566,6 +594,7 @@ def main():
         setup_pi(models.get("ctx_size"))
 
     started = start_proxy(backend, models, port)
+    create_access_symlinks()
 
     # Wrap up
     print("\n\033[1mSetup complete.\033[0m")
