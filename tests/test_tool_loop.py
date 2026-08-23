@@ -872,7 +872,7 @@ def test_assemble_tools_dedup():
     try:
         mt.NATIVE_TOOLS_MODE = "auto"
         names = [t["function"]["name"] for t in mt.assemble_tools([])]
-        assert names == ["search_memory", "list_tools", "read_tool", "web_search", "bash", "write"], names
+        assert names == ["search_memory", "list_tools", "read_tool", "read_file", "web_search", "bash", "write"], names
         client = [
             {"type": "function", "function": {"name": "bash"}},
             {"type": "function", "function": {"name": "write"}},
@@ -880,7 +880,7 @@ def test_assemble_tools_dedup():
         ]
         names = [t["function"]["name"] for t in mt.assemble_tools(client)]
         # web_search is a SERVER tool now — the client's copy is deduped, not appended.
-        assert names == ["search_memory", "list_tools", "read_tool", "web_search", "bash", "write"], names
+        assert names == ["search_memory", "list_tools", "read_tool", "read_file", "web_search", "bash", "write"], names
     finally:
         mt.NATIVE_TOOLS_MODE = orig
 
