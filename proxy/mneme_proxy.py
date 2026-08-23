@@ -302,6 +302,16 @@ def _backend_is_openai() -> bool:
     return MNEME_BACKEND in ("openai", "openrouter")
 
 
+def _aux_backend(override_env: str) -> str:
+    """Transport for an auxiliary model (embed/label/judge). An explicit override
+    env (e.g. MNEME_EMBED_BACKEND) wins; otherwise follow the main backend
+    (MNEME_BACKEND); otherwise local Ollama. Read at call time — not import — so
+    it reflects the config-loaded backend, not the import-time default."""
+    return (os.environ.get(override_env)
+            or os.environ.get("MNEME_BACKEND")
+            or MNEME_BACKEND)
+
+
 def _or_headers() -> dict:
     """Headers for the OpenAI-compatible backend. Provider-specific extra headers
     (e.g. OpenRouter's HTTP-Referer/X-Title) come from config `providers.<name>.headers`;
@@ -750,7 +760,7 @@ def _embed_single(text: str) -> np.ndarray:
     """Embed one chunk. Ollama /api/embeddings by default (the embed model is
     always local snowflake-arctic-embed2, 1024-dim, so existing chunk vectors stay
     valid even when the main chat model runs on OpenRouter). Raises on failure."""
-    if os.environ.get("MNEME_EMBED_BACKEND", "ollama") in ("openai", "openrouter"):
+    if _aux_backend("MNEME_EMBED_BACKEND") in ("openai", "openrouter"):
         r = requests.post(
             f"{OR_BASE_URL}/embeddings",
             headers=_or_headers(),
@@ -1581,7 +1591,7 @@ def _llm_topic_label(text: str) -> str:
     if not clean.strip():
         return "untitled"
     try:
-        if os.environ.get("MNEME_LABEL_BACKEND", "ollama") in ("openai", "openrouter"):
+        if _aux_backend("MNEME_LABEL_BACKEND") in ("openai", "openrouter"):
             r = requests.post(
                 f"{OR_BASE_URL}/chat/completions",
                 headers=_or_headers(),
