@@ -991,6 +991,31 @@ def _parse_dsml_tool_calls(content):
     return out, residual.strip()
 
 
+def _serialize_tool_call_arguments(msgs: list) -> list:
+    """Return a copy of msgs with assistant tool_call arguments re-encoded as JSON
+    strings (OpenAI spec). _query_openrouter parses the model's string arguments
+    into dicts on the way in; when those messages are re-sent in a follow-up turn,
+    strict providers (Stealth/Ox Alpha) reject dict arguments with a 400 "Provider
+    returned error", so we re-serialize them before every outgoing request."""
+    out = []
+    for m in msgs:
+        m = dict(m)
+        tcs = m.get("tool_calls")
+        if tcs:
+            ntc = []
+            for tc in tcs:
+                tc = dict(tc)
+                fn = dict(tc.get("function") or {})
+                args = fn.get("arguments")
+                if isinstance(args, dict):
+                    fn["arguments"] = json.dumps(args)
+                tc["function"] = fn
+                ntc.append(tc)
+            m["tool_calls"] = ntc
+        out.append(m)
+    return out
+
+
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                       max_tokens=-1, timeout=None, model=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
@@ -999,6 +1024,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     message.reasoning; tool-call arguments arrive as JSON strings and are
     json.loads'd back to dicts to match the Ollama path."""
     _model = model or MODEL
+    msgs = _serialize_tool_call_arguments(msgs)
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
         "model": _model,
