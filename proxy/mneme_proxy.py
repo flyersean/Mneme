@@ -1051,13 +1051,21 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
     }
-    # Reasoning effort: opt-in via MNEME_REASONING_EFFORT. Omitted by default so each
-    # model uses its own default (deepseek = "high"; Ox Alpha's Stealth default was
-    # "max", which over-reasoned on trivial queries — set "low" there). The effort
-    # values are model-specific (deepseek: xhigh|high; ox-alpha: low|high|max).
+    # Reasoning controls (opt-in, model-specific):
+    #   MNEME_REASONING_EFFORT=low|high|max  -> reasoning.effort (models WITH effort levels,
+    #       e.g. deepseek xhigh|high, Ox Alpha low|high|max).
+    #   MNEME_REASONING_ENABLED=0/off        -> reasoning.enabled=false (Qwen3.6-style models:
+    #       thinking is binary on/off, no effort levels. Disabling = "instruct mode", fast,
+    #       zero thinking tokens. Qwen's "thinking_budget"/reasoning.max_tokens is NOT a cap —
+    #       the model treats it as a goal and over-thinks MORE, so don't use it.)
+    _reasoning = {}
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
     if _reffort:
-        payload["reasoning"] = {"effort": _reffort}
+        _reasoning["effort"] = _reffort
+    if os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
+        _reasoning["enabled"] = False
+    if _reasoning:
+        payload["reasoning"] = _reasoning
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
     if _mt is None:
         _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
