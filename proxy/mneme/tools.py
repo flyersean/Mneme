@@ -122,7 +122,7 @@ NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a shell command on the Mneme host. Use to run a tool you built (e.g. python3 script.py) or inspect the environment.",
+        "description": "Run a shell command on the Mneme host. Runs from the home directory (/root). To access files elsewhere, use absolute paths (e.g. ls /root/mneme/chunks/instructions or cat /workspace/...) or cd first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -137,7 +137,7 @@ NATIVE_WRITE_TOOL = {
     "type": "function",
     "function": {
         "name": "write",
-        "description": "Write a file on the Mneme host. Use to save a script you are building. Relative paths land in the tools directory.",
+        "description": "Write a file on the Mneme host. Use to save a script you are building. Relative paths land in the tools directory (/root/mneme/chunks/tools); the returned text shows the full saved path.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -217,7 +217,7 @@ def _exec_bash(command):
         os.makedirs(TOOLS_DIR, exist_ok=True)
         p = subprocess.run(
             command, shell=True, capture_output=True, text=True,
-            timeout=BASH_TIMEOUT, cwd=TOOLS_DIR,
+            timeout=BASH_TIMEOUT, cwd=os.path.expanduser("~"),
         )
         out = (p.stdout or "").rstrip()
         if p.stderr:
