@@ -1111,14 +1111,16 @@ def test_memory_only_uses_light_prompt():
     orig = mp.MEMORY_ONLY
     try:
         mp.MEMORY_ONLY = True
-        ctx = mp._finalize_context("hello world")
+        blk = mp._system_prompt_block()
         # Drops the behavioral obligations...
-        assert "Source Tagging" not in ctx, "memory-only must drop source-tagging rules"
-        assert "Tool Outcome Tagging" not in ctx, "memory-only must drop tool-tagging rules"
+        assert "Source Tagging" not in blk, "memory-only must drop source-tagging rules"
+        assert "Tool Outcome Tagging" not in blk, "memory-only must drop tool-tagging rules"
         # ...but still explains how memory works...
-        assert "Memory Chunk Format" in ctx, "memory-only must keep the chunk-format legend"
-        assert "search_memory" in ctx, "memory-only must keep the search instructions"
-        # ...and keeps the budget line.
+        assert "Memory Chunk Format" in blk, "memory-only must keep the chunk-format legend"
+        assert "search_memory" in blk, "memory-only must keep the search instructions"
+        # _finalize_context now only appends the budget line (the system prompt
+        # moved to _system_prompt_block for the head/tail split).
+        ctx = mp._finalize_context("hello world")
         assert "[context budget:" in ctx
     finally:
         mp.MEMORY_ONLY = orig

@@ -747,9 +747,10 @@ def pool_embeddings(vectors: List[np.ndarray]) -> np.ndarray:
     return centroid / (np.linalg.norm(centroid) + 1e-8)
 
 def _embed_single(text: str) -> np.ndarray:
-    """Embed one chunk. Ollama /api/embeddings by default; OpenRouter
-    /embeddings when MNEME_BACKEND=openrouter. Raises on failure."""
-    if _backend_is_openai():
+    """Embed one chunk. Ollama /api/embeddings by default (the embed model is
+    always local snowflake-arctic-embed2, 1024-dim, so existing chunk vectors stay
+    valid even when the main chat model runs on OpenRouter). Raises on failure."""
+    if os.environ.get("MNEME_EMBED_BACKEND", "ollama") in ("openai", "openrouter"):
         r = requests.post(
             f"{OR_BASE_URL}/embeddings",
             headers=_or_headers(),
@@ -894,14 +895,36 @@ def _load_system_prompt_memory():
 SYSTEM_PROMPT_MEMORY = _load_system_prompt_memory()
 
 
+MISSION_FILE = os.path.join(os.path.dirname(__file__), "mission.md")
+def _load_mission() -> str:
+    try:
+        with open(MISSION_FILE) as f:
+            return f.read().strip()
+    except Exception as e:
+        _log_error("_load_mission", e)
+        return ""
+
+MISSION = _load_mission()
+
+
+def _system_prompt_block() -> str:
+    """The FIXED Mneme instruction block (system prompt + mission). Goes in the
+    system message at the HEAD so it is a stable, cacheable prefix across turns.
+    The VARIABLE memory chunks are injected separately at the tail (process_chat)."""
+    if INJECT_SYSTEM == "0":
+        return ""
+    prompt = SYSTEM_PROMPT_MEMORY if MEMORY_ONLY else SYSTEM_PROMPT
+    block = "=== MNEME INSTRUCTIONS ===\n" + prompt
+    if MISSION:
+        block += "\n\n" + MISSION
+    return block + "\n\n"
+
+
 def _finalize_context(ctx: str) -> str:
-    """Prepend Mneme instructions (system_prompt.md) unless MNEME_INJECT_SYSTEM=0.
-    Applied at EVERY return path of build_context so the instructions (memory
-    format, search_memory, source tagging) always reach the model — including on
-    an empty DB (fresh install), where the early returns previously skipped them."""
-    if INJECT_SYSTEM != "0":
-        prompt = SYSTEM_PROMPT_MEMORY if MEMORY_ONLY else SYSTEM_PROMPT
-        ctx = "=== MNEME INSTRUCTIONS ===\n" + prompt + "\n\n" + ctx
+    """Append the context-budget line. The system prompt is no longer prepended
+    here — it is the fixed system-message prefix added separately by
+    _system_prompt_block(), so the variable memory can sit at the tail (cacheable
+    conversation prefix) instead of the head."""
     # Context budget line (model suggestion #1): tell the model how much window
     # is left so it can decide search-more vs synthesize instead of guessing.
     _total = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))
@@ -1204,19 +1227,26 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 
 def _query_model_impl(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: Optional[int] = None, format_schema=None, model: str = None) -> dict:
+                timeout: Optional[int] = None, format_schema=None, model: str = None,
+                backend: str = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
     `format_schema` threads an Ollama structured-output JSON schema into the
     payload's `format` field; when set the caller should json.loads the reply.
     `model` overrides the backend model for a single call (e.g. the small label
-    model for cheap judge/label calls).
+    model for cheap judge/label calls). `backend` overrides the transport for a
+    single call ("openai"/"openrouter" vs "ollama") — used to keep auxiliary
+    calls (judge, label) on local Ollama while the main model runs on OpenRouter.
     """
     _model = model or MODEL
+    # Per-call backend override (default: global MNEME_BACKEND). Auxiliary calls
+    # (judge/label) pass backend="ollama" so they never follow the main model onto
+    # OpenRouter — they run on the local pod models.
+    use_openai = (backend if backend is not None else MNEME_BACKEND) in ("openai", "openrouter")
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
-    if timeout is None: timeout = OLLAMA_CHAT_TIMEOUT if not _backend_is_openai() else CHAT_TIMEOUT  # backend-aware fail-fast (was 600s default)
+    if timeout is None: timeout = OLLAMA_CHAT_TIMEOUT if not use_openai else CHAT_TIMEOUT  # backend-aware fail-fast (was 600s default)
     
     # Trim to last MAX_HISTORY_MESSAGES, but always keep the system prompt (first message if system role)
     trimmed = list(messages)
@@ -1314,7 +1344,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
                 break
     msgs = sys_msgs + non_sys
     
-    if _backend_is_openai():
+    if use_openai:
         return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout)
     try:
         r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
@@ -1349,7 +1379,8 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: Optional[int] = None, format_schema=None, model: str = None) -> dict:
+                timeout: Optional[int] = None, format_schema=None, model: str = None,
+                backend: str = None) -> dict:
     """Timing wrapper around _query_model_impl — logs one line per model call.
 
     Fields: caller (function that invoked query_model), tid (bg = _BG_QUEUE
@@ -1364,7 +1395,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         _caller = "?"
     _tid = "bg" if threading.current_thread().name.startswith("mneme-bg") else "req"
     res = _query_model_impl(messages, system, temperature, max_tokens, tools,
-                            options, timeout, format_schema, model)
+                            options, timeout, format_schema, model, backend)
     _dur = time.time() - _t0
     if isinstance(res, dict):
         _done = res.get("done_reason", "?")
@@ -1550,7 +1581,7 @@ def _llm_topic_label(text: str) -> str:
     if not clean.strip():
         return "untitled"
     try:
-        if _backend_is_openai():
+        if os.environ.get("MNEME_LABEL_BACKEND", "ollama") in ("openai", "openrouter"):
             r = requests.post(
                 f"{OR_BASE_URL}/chat/completions",
                 headers=_or_headers(),
@@ -1671,6 +1702,16 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
     """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
     Dynamic K: adjusts retrieval count based on score spread above noise floor."""
     q_vec = embed(query)
+    if q_vec is None:
+        # Cold/empty embed (e.g. embed model briefly unloading during a restart).
+        # Retry once, then keyword-fallback — a single missed embed must never
+        # silently return zero chunks and send the model off without memory.
+        print("  [ROUTE] embed returned None — retrying once", flush=True)
+        time.sleep(0.4)
+        q_vec = embed(query)
+    if q_vec is None:
+        print("  [ROUTE] embed still None — keyword fallback", flush=True)
+        return [cid for _, cid in _keyword_search(query, top_k)[:top_k]]
     scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
     # Injection gate: absolute similarity floor. A chunk below INJECT_MIN_SIMILARITY
     # is never injected — this is the on/off knob (tunable in config). If nothing
@@ -1692,6 +1733,14 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
         dynamic_k = 0  # Nothing above noise floor
     
     if dynamic_k == 0:
+        # Semantic miss (nothing cleared the injection floor). Fall back to a
+        # keyword match rather than silently returning zero — a rephrased query
+        # should still surface a substring hit (e.g. "pizza" / "Greenville").
+        # Noisier than semantic hits, but strictly better than no memory at all.
+        kw = _keyword_search(query, top_k)
+        if kw:
+            print(f"  [ROUTE] semantic miss — keyword fallback returned {len(kw)}", flush=True)
+            return [cid for _, cid in kw[:top_k]]
         return []
     
     # Hybrid: fill with keyword matches if FAISS is sparse
@@ -3584,15 +3633,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # so newly-stored preferences are injected this same turn.
     _store_preferences(_detect_preferences(user_msg))
     
-    # Build injected memory (already includes Mneme instructions)
+    # Build injected memory (chunks + budget; the fixed system prompt is added to
+    # the system message below via _system_prompt_block() so it stays cacheable).
     context, ptype = build_context(user_msg)
     cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (instructions + memory + saved-tool directive + optional explore
-    # directive) as a system message after Hermes. A KNOWN capability edge is NOT
-    # injected here — it routes into the hard-stop overcome path below (line ~3545),
-    # because the point of flagging an edge is to OVERCOME it, not name it and stop.
-    mneme_system = context + _tool_directive(db, cur_ptype) + _explore_directive(full_user_msg)
+    # Insert Mneme (fixed instructions + saved-tool directive + optional explore
+    # directive) as a system message after Hermes. The VARIABLE memory context is
+    # injected at the TAIL (prepended to the last user message) so the stable
+    # [system prompt + conversation] prefix stays cacheable across turns.
+    # A KNOWN capability edge is NOT injected here — it routes into the hard-stop
+    # overcome path below, because the point of flagging an edge is to OVERCOME
+    # it, not name it and stop.
+    mneme_system = _system_prompt_block() + _tool_directive(db, cur_ptype) + _explore_directive(full_user_msg)
     _tool_injection = mntools.inject_relevant_tools(user_msg)
     if _tool_injection:
         mneme_system += "\n" + _tool_injection
@@ -3635,6 +3688,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             insert_at = i + 1
             break
     messages.insert(insert_at, {"role": "system", "content": mneme_system})
+    # Inject the VARIABLE memory context at the TAIL: prepend it to the last user
+    # message. This keeps the [system prompt + conversation] prefix stable and
+    # cacheable (KV prefix cache), instead of re-processing the whole conversation
+    # every turn when the memory chunks reshuffle at the head.
+    if context.strip():
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                messages[i]["content"] = context + "\n\n---\n" + (messages[i].get("content") or "")
+                print(f"  [INJECT-TAIL] memory prepended to last user message ({len(context)} chars)", flush=True)
+                break
     full_msgs = messages
     
     # Optional debug dump of the system messages (off by default; set

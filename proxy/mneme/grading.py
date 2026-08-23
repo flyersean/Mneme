@@ -59,7 +59,7 @@ def _extract_provenance(problem: str, answer: str) -> str:
         "Use VERDICT values HONEST-SOURCED, HONEST-GUESS, or DISHONEST.\n"
         "If there are no specific claims, write exactly: NO SPECIFIC CLAIMS"
     )}]
-    r = query_model(q, max_tokens=512, model=LABEL_MODEL)  # small label model — the judge only emits short verdict lines; cheap and fast
+    r = query_model(q, max_tokens=512, model=LABEL_MODEL, backend="ollama")  # small local label model — judge only emits short verdict lines; stays on Ollama even when main model is OpenRouter
     return r.get("content", "") or ""
 
 
