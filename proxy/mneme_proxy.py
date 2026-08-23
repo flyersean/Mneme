@@ -3893,6 +3893,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _continue_attempts = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
+        # Context-size guard: if the followup has bloated (many file reads via
+        # bash), force a final synthesis NOW instead of growing the payload until
+        # OpenRouter times out on re-query. This is a hard backstop; legitimate
+        # multi-source exploration should stay well under it.
+        _ctx_chars = sum(len(str(m.get("content", ""))) for m in followup)
+        if _ctx_chars > 50000:
+            print(f"  [TOOL-HARD-STOP] followup {_ctx_chars} chars — forcing synthesis", flush=True)
+            followup.append({"role": "user", "content":
+                "You have gathered a lot of context. Synthesize your findings into a "
+                "final answer now — do not run any more tools."})
+            result = _query_retry_timeout(followup, tools=msg_tools)
+            break
         tcs = result.get("tool_calls") or []
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool", "web_search")]
