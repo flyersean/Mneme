@@ -60,6 +60,12 @@ fi
 # ── 2. Ollama ─────────────────────────────────────────────────────────
 echo; echo "[2/3] Ollama"
 
+# Disable flash attention. Some vision-patched GGUF models (e.g. the HauhauCS
+# Qwen3.6-35B) crash with "CUDA error: an illegal memory access was encountered"
+# on prompts longer than ~1-2k tokens when flash attention is on. Off = stable
+# decode at the cost of a little speed/memory. Set before starting ollama.
+export OLLAMA_FLASH_ATTENTION=0
+
 if command -v ollama >/dev/null 2>&1; then
   _VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   echo "  ✓ ollama found (${_VER:-unknown})"
