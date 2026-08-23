@@ -169,6 +169,7 @@ def setup_openrouter_models():
     """Pick main/embed/label models (OpenRouter IDs). Returns a dict."""
     print("\n\033[1mModels (all hosted on OpenRouter — nothing downloaded)\033[0m")
     main_opts = [
+        ("stealth/ox-alpha           (free frontier coder, 1M ctx, reasoning)", "stealth/ox-alpha"),
         ("deepseek/deepseek-v4-flash  (cheapest thinking MoE)", "deepseek/deepseek-v4-flash"),
         ("deepseek/deepseek-chat      (V3, non-thinking)", "deepseek/deepseek-chat"),
         ("qwen/qwen3-32b              (open-weight)", "qwen/qwen3-32b"),
