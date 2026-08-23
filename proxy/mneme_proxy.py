@@ -1051,12 +1051,11 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
     }
-    # Reasoning effort: Ox Alpha defaults to "max", which burns hundreds of thinking
-    # tokens on trivial queries (~9-30s of hidden reasoning before a one-word answer).
-    # Default to "low" so simple chats answer fast; raise via MNEME_REASONING_EFFORT
-    # (low|high|max) for heavy coding/build tasks. Only sent when the model supports
-    # it (config `reasoning` is ignored by non-reasoning providers).
-    _reffort = os.environ.get("MNEME_REASONING_EFFORT", "low")
+    # Reasoning effort: opt-in via MNEME_REASONING_EFFORT. Omitted by default so each
+    # model uses its own default (deepseek = "high"; Ox Alpha's Stealth default was
+    # "max", which over-reasoned on trivial queries — set "low" there). The effort
+    # values are model-specific (deepseek: xhigh|high; ox-alpha: low|high|max).
+    _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
     if _reffort:
         payload["reasoning"] = {"effort": _reffort}
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
