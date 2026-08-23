@@ -36,6 +36,7 @@ from mneme.tool_trail import (
     _extract_tool_outcomes,
     _extract_combined_tool_trail,
     _tool_failure_nudge,
+    _recent_attempts_summary,
 )
 from mneme.instructions import _load_instruction, materialize_instructions, list_instructions, save_instruction, _instructions_dir
 from mneme.overcome import (
@@ -883,8 +884,15 @@ def _finalize_context(ctx: str) -> str:
     format, search_memory, source tagging) always reach the model — including on
     an empty DB (fresh install), where the early returns previously skipped them."""
     if INJECT_SYSTEM != "0":
-        return "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + ctx
-    return ctx
+        ctx = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + ctx
+    # Context budget line (model suggestion #1): tell the model how much window
+    # is left so it can decide search-more vs synthesize instead of guessing.
+    _total = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))
+    _reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
+    _used = _estimate_tokens(ctx)
+    _remaining = max(0, _total - _reserve - _used)
+    return ctx + (f"\n\n[context budget: {_total} token window, ~{_used} used, "
+                  f"~{_remaining} remaining for tool results + answer]")
 
 MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
@@ -3831,6 +3839,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # messages interrupted the model's natural tool use and were misfiring. The
         # loop now simply runs the model's tool calls until it produces a final
         # answer or hits the MAX_SERVER_ROUNDS cap.)
+
+        # Compact tool-state summary (suggestion #2): show the model what it just
+        # tried and the outcome, so it doesn't repeat a call that already failed.
+        # This is STATE, not a directive — the model still decides its own next step.
+        _state = _recent_attempts_summary(_tool_trace)
+        if _state:
+            followup.append({"role": "user", "content": _state})
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)

@@ -157,3 +157,34 @@ def _tool_failure_nudge(messages):
     if streak >= 2:
         return _load_instruction("tool_failure_nudge", vars={"count": str(streak)})
     return ""
+
+
+def _recent_attempts_summary(tool_trace, max_entries=6):
+    """Compact 'recent attempts' state for the model (suggestion #2): the last few
+    tool calls with a success/failure label and the key argument, so the model
+    doesn't repeat a call it already made and saw fail. Empty string when there's
+    no history yet."""
+    if not tool_trace:
+        return ""
+    recent = tool_trace[-max_entries:]
+    lines = []
+    for tr in recent:
+        tool = tr.get("tool", "?")
+        args = tr.get("args") or {}
+        key = ""
+        if isinstance(args, dict):
+            for k in ("query", "command", "name", "file_path", "path"):
+                if args.get(k) is not None:
+                    key = str(args[k])
+                    if len(key) > 80:
+                        key = key[:80] + "…"
+                    break
+        status = "?"
+        if tr.get("blocked"):
+            status = "blocked"
+        else:
+            cls = _classify_tool_outcome(tr.get("result", "") or "")
+            if cls:
+                status = cls[0].lower()
+        lines.append(f"- {tool}{(' ' + repr(key)) if key else ''} → {status}")
+    return "[recent attempts]\n" + "\n".join(lines)

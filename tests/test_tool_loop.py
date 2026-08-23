@@ -1081,6 +1081,31 @@ def test_near_empty_answer_prompts_continue():
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
+# ── 4d. Context budget line + tool-state summary (model suggestions #1/#2) ──
+@test
+def test_context_budget_line_injected():
+    ctx = mp._finalize_context("hello world")
+    assert "[context budget:" in ctx, f"budget line missing: {ctx[-200:]!r}"
+
+
+@test
+def test_recent_attempts_summary():
+    tr = [
+        {"tool": "web_search", "args": {"query": "jamos pizza"},
+         "result": "[web_search: no results (all backends rate-limited/blocked)]", "blocked": False},
+        {"tool": "bash", "args": {"command": "curl -s https://api.example"},
+         "result": "x" * 120, "blocked": False},       # long content -> success
+        {"tool": "write", "args": {"file_path": "s.py"},
+         "result": "", "blocked": True},               # budget-blocked
+    ]
+    s = mp._recent_attempts_summary(tr)
+    assert "[recent attempts]" in s, s
+    assert "web_search" in s and "failure" in s, s
+    assert "bash" in s and "success" in s, s
+    assert "write" in s and "blocked" in s, s
+    assert mp._recent_attempts_summary([]) == ""
+
+
 # ── 5. Runner ───────────────────────────────────────────────────────────────
 def main():
     seed_chunk()
