@@ -987,12 +987,13 @@ def _parse_dsml_tool_calls(content):
 
 
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
-                      max_tokens=-1, timeout=None) -> dict:
+                      max_tokens=-1, timeout=None, model=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
     dict shape as the Ollama path: {content, thinking, tool_calls, eval_count,
     done_reason}. OpenRouter normalizes thinking models' reasoning into
     message.reasoning; tool-call arguments arrive as JSON strings and are
     json.loads'd back to dicts to match the Ollama path."""
+    _model = model or MODEL
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
         "model": _model,
@@ -1003,7 +1004,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     }
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
     if _mt is None:
-        _mc = (CONFIG_DATA.get("models") or {}).get(MODEL) or {}
+        _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
         _mt = _mc.get("max_tokens") or int(os.environ.get("MNEME_MAX_TOKENS", "0"))
     if _mt and int(_mt) > 0:
         payload["max_tokens"] = int(_mt)
@@ -1018,7 +1019,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # - `provider` prefs: ignore/order/only/allow_fallbacks/preferred_max_latency
     #   to steer routing away from known-bad or slow endpoints.
     if _OR_FALLBACK_MODELS:
-        payload["models"] = [MODEL] + [str(m) for m in _OR_FALLBACK_MODELS]
+        payload["models"] = [_model] + [str(m) for m in _OR_FALLBACK_MODELS]
     if _OR_PROVIDER_PREF:
         payload["provider"] = _OR_PROVIDER_PREF
     if tools:
@@ -1355,7 +1356,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     msgs = sys_msgs + non_sys
     
     if use_openai:
-        return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout)
+        return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout, _model)
     try:
         r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     except requests.exceptions.ReadTimeout:
