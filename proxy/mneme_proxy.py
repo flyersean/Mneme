@@ -357,9 +357,12 @@ AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recen
 # OLLAMA_CHAT_TIMEOUT is longer because cold-start model loading legitimately
 # delays the first token; NOVELTY_TIMEOUT is for slow multi-iteration
 # exploration (novelty/learning modes, 26B+ local models).
-CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "60"))
-OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "120"))
-FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "30"))
+# 300s (5 min) lets the reasoning model think through long chains without the
+# grind-guard aborting mid-think; the model stays resident (keep_alive=-1) so
+# there's no reload latency to soak the budget.
+CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "300"))
+OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "300"))
+FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "180"))
 CONNECT_TIMEOUT = 15  # TCP+TLS connect timeout for OpenAI-style calls
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))
 EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
@@ -959,7 +962,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     json.loads'd back to dicts to match the Ollama path."""
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
-        "model": MODEL,
+        "model": _model,
         "stream": _OR_STREAM,
         "messages": msgs,
         "temperature": opts.get("temperature"),
@@ -1201,13 +1204,16 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 
 def _query_model_impl(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: Optional[int] = None, format_schema=None) -> dict:
+                timeout: Optional[int] = None, format_schema=None, model: str = None) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
     `format_schema` threads an Ollama structured-output JSON schema into the
     payload's `format` field; when set the caller should json.loads the reply.
+    `model` overrides the backend model for a single call (e.g. the small label
+    model for cheap judge/label calls).
     """
+    _model = model or MODEL
     if temperature is None: temperature = OLLAMA_TEMP
     if max_tokens is None: max_tokens = -1  # let Ollama decide
     if timeout is None: timeout = OLLAMA_CHAT_TIMEOUT if not _backend_is_openai() else CHAT_TIMEOUT  # backend-aware fail-fast (was 600s default)
@@ -1260,7 +1266,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         opts.update(options)
     
     payload = {
-        "model": MODEL, "stream": False, "messages": msgs,
+        "model": _model, "stream": False, "messages": msgs,
         "options": opts
     }
     if tools:
@@ -1343,7 +1349,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
-                timeout: Optional[int] = None, format_schema=None) -> dict:
+                timeout: Optional[int] = None, format_schema=None, model: str = None) -> dict:
     """Timing wrapper around _query_model_impl — logs one line per model call.
 
     Fields: caller (function that invoked query_model), tid (bg = _BG_QUEUE
@@ -1358,7 +1364,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         _caller = "?"
     _tid = "bg" if threading.current_thread().name.startswith("mneme-bg") else "req"
     res = _query_model_impl(messages, system, temperature, max_tokens, tools,
-                            options, timeout, format_schema)
+                            options, timeout, format_schema, model)
     _dur = time.time() - _t0
     if isinstance(res, dict):
         _done = res.get("done_reason", "?")
@@ -1369,7 +1375,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     else:
         _done, _tok, _think, _content, _prov = "?", 0, 0, 0, "?"
     print(f"  [QMODEL] {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} "
-          f"caller={_caller} tid={_tid} model={MODEL} backend={MNEME_BACKEND} "
+          f"caller={_caller} tid={_tid} model={model or MODEL} backend={MNEME_BACKEND} "
           f"dur={_dur:.2f}s done={_done} n_tok={_tok} think={_think} content={_content} provider={_prov}",
           flush=True)
     return res
