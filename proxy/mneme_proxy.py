@@ -316,7 +316,12 @@ def _or_headers() -> dict:
     """Headers for the OpenAI-compatible backend. Provider-specific extra headers
     (e.g. OpenRouter's HTTP-Referer/X-Title) come from config `providers.<name>.headers`;
     OpenRouter attribution headers are added only when talking to OpenRouter."""
-    h = {"Authorization": f"Bearer {OR_API_KEY}", "Content-Type": "application/json"}
+    # Accept-Encoding: identity — requests defaults to gzip/deflate/br, and
+    # OpenRouter's Stealth provider returns a gzip body that decodes to whitespace
+    # (the request then hangs until the read timeout). Forcing identity makes
+    # OpenRouter return plain JSON, like curl does, and avoids the hang.
+    h = {"Authorization": f"Bearer {OR_API_KEY}", "Content-Type": "application/json",
+         "Accept-Encoding": "identity"}
     if _PROVIDER_HEADERS:
         h.update(_PROVIDER_HEADERS)
     elif OR_BASE_URL.startswith("https://openrouter.ai"):
