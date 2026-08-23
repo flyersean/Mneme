@@ -126,6 +126,21 @@ READ_FILE_TOOL = {
     },
 }
 
+FETCH_URL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": "Fetch a web page and return its CLEAN text (HTML/CSS/JS stripped). Use this instead of `bash curl` to read a menu, article, or any page you need to extract facts from. Returns up to 12000 chars of readable text.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full http(s) URL to fetch, e.g. https://jamopizza.com/menu"},
+            },
+            "required": ["url"],
+        },
+    },
+}
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -173,7 +188,7 @@ NATIVE_WRITE_TOOL = {
 }
 
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_FILE_TOOL, WEB_SEARCH_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
 
 
 # ─── Tool assembly ───────────────────────────────────────────────────────
@@ -430,14 +445,43 @@ def _exec_read_file(path, start=None, end=None):
         return f"[read_file error: {type(e).__name__}: {e}]"
 
 
+def _exec_fetch_url(url):
+    """Fetch a URL and return clean text (HTML/CSS/JS stripped), capped at 12000 chars."""
+    url = (url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return f"[fetch_url: invalid URL: {url}]"
+    try:
+        r = requests.get(url, timeout=20, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+        })
+        r.raise_for_status()
+        html = r.text or ""
+        # Drop script/style blocks first, then strip remaining tags, then unescape.
+        html = _re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=_re.IGNORECASE | _re.DOTALL)
+        text = _re.sub(r"<[^>]+>", " ", html)
+        text = _unescape(text)
+        text = _re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = _re.sub(r"\n\s*\n+", "\n", text).strip()
+        if len(text) > 12000:
+            text = (text[:9000]
+                    + f"\n\n[... truncated: {len(text)} chars total ...]\n\n"
+                    + text[-3000:])
+        return text if text else "[fetch_url: empty page]"
+    except Exception as e:
+        return f"[fetch_url error: {type(e).__name__}: {e}]"
+
+
 def execute_readonly_tool(name, args):
-    """Dispatch a read-only registry tool (list_tools/read_tool/read_file) or web_search."""
+    """Dispatch a read-only registry tool (list_tools/read_tool/read_file/fetch_url) or web_search."""
     if name == "list_tools":
         return _exec_list_tools((args or {}).get("query") or None, (args or {}).get("problem_type") or None)
     if name == "read_tool":
         return _exec_read_tool((args or {}).get("name", ""))
     if name == "read_file":
         return _exec_read_file((args or {}).get("path", ""), (args or {}).get("start"), (args or {}).get("end"))
+    if name == "fetch_url":
+        return _exec_fetch_url((args or {}).get("url", ""))
     if name == "web_search":
         return _exec_web_search((args or {}).get("query", ""))
     return f"[unknown registry tool: {name}]"
