@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 
 
 def _extract_text(content) -> str:
-    """Extract text from message content (str or list of blocks)."""
+    """Extract text from message content (str, list of blocks, or None)."""
+    if content is None:
+        return ""  # None content (e.g. an assistant tool-call turn) must NOT become "None"
     if isinstance(content, str):
         return content
     if isinstance(content, list):
