@@ -27,7 +27,13 @@ from mneme.util import _extract_text
 
 # ─── Config (env-set by mneme_proxy's config loader before first use) ────
 NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")   # auto | on | off
-TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme/chunks/tools"))
+def _default_tools_dir() -> str:
+    # Tools live under the install's chunk dir, NOT a hardcoded ~/mneme path —
+    # otherwise a clean install in another directory (e.g. ~/mneme-ox) would still
+    # write tools into the old ~/mneme/chunks/tools. MNEME_TOOLS_DIR overrides.
+    cd = os.environ.get("MNEME_CHUNK_DIR") or "~/mneme/chunks"
+    return os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR") or os.path.join(cd, "tools"))
+TOOLS_DIR = _default_tools_dir()
 BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
 TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
 TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
@@ -48,7 +54,7 @@ def reload_config():
     global NATIVE_TOOLS_MODE, TOOLS_DIR, BASH_TIMEOUT
     global TOOL_INJECT_MIN_SIM, TOOL_INJECT_MAX, TOOL_INJECT_TOKENS
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
-    TOOLS_DIR = os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR", "~/mneme/chunks/tools"))
+    TOOLS_DIR = _default_tools_dir()
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
     TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
     TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
@@ -103,6 +109,23 @@ READ_TOOL_TOOL = {
     },
 }
 
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read a file on the Mneme host by path, optionally a 1-based line range. Use this to inspect code/config efficiently instead of `bash cat` (which dumps the whole file). Returns the requested lines, capped at 12000 chars.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to the file, e.g. /home/sean/mneme-ox/repo/proxy/mneme_proxy.py"},
+                "start": {"type": "integer", "description": "Optional 1-based first line to read (default 1)"},
+                "end": {"type": "integer", "description": "Optional 1-based last line to read, inclusive (default: end of file)"},
+            },
+            "required": ["path"],
+        },
+    },
+}
+
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -150,7 +173,7 @@ NATIVE_WRITE_TOOL = {
 }
 
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, WEB_SEARCH_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_FILE_TOOL, WEB_SEARCH_TOOL)
 
 
 # ─── Tool assembly ───────────────────────────────────────────────────────
@@ -386,12 +409,35 @@ def _exec_web_search(query):
     return "[web_search: no results (all backends rate-limited/blocked)]"
 
 
+def _exec_read_file(path, start=None, end=None):
+    """Read a file (optionally a line range), capped at 12000 chars."""
+    try:
+        path = os.path.expanduser(path or "")
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        total = len(lines)
+        s = max(1, int(start) if start else 1)
+        e = min(total, int(end) if end else total)
+        text = "".join(lines[s - 1:e])
+        if len(text) > 12000:
+            text = (text[:9000]
+                    + f"\n\n[... truncated: {len(text)} chars in lines {s}-{e} of {total}. Read a narrower range for the middle.]\n\n"
+                    + text[-3000:])
+        return text if text.strip() else f"[read_file: empty range (lines {s}-{e} of {total})]"
+    except FileNotFoundError:
+        return f"[read_file: no such file: {path}]"
+    except Exception as e:
+        return f"[read_file error: {type(e).__name__}: {e}]"
+
+
 def execute_readonly_tool(name, args):
-    """Dispatch a read-only registry tool (list_tools/read_tool) or web_search."""
+    """Dispatch a read-only registry tool (list_tools/read_tool/read_file) or web_search."""
     if name == "list_tools":
         return _exec_list_tools((args or {}).get("query") or None, (args or {}).get("problem_type") or None)
     if name == "read_tool":
         return _exec_read_tool((args or {}).get("name", ""))
+    if name == "read_file":
+        return _exec_read_file((args or {}).get("path", ""), (args or {}).get("start"), (args or {}).get("end"))
     if name == "web_search":
         return _exec_web_search((args or {}).get("query", ""))
     return f"[unknown registry tool: {name}]"

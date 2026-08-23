@@ -3827,7 +3827,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
     _MAX_SERVER_ROUNDS = MAX_SERVER_ROUNDS  # absolute round ceiling (high backstop)
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
-    _server_names = {"search_memory", "list_tools", "read_tool", "web_search"} | _native_names
+    _server_names = {"search_memory", "list_tools", "read_tool", "read_file", "web_search"} | _native_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
@@ -3907,7 +3907,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             break
         tcs = result.get("tool_calls") or []
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
-        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool", "web_search")]
+        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool", "read_file", "web_search")]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
