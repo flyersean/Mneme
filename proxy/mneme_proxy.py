@@ -1016,6 +1016,24 @@ def _serialize_tool_call_arguments(msgs: list) -> list:
     return out
 
 
+def _truncate_tool_result(content: str) -> str:
+    """Cap a tool result at MAX_TOOL_FORWARD chars with a head+tail window.
+
+    A `bash cat file.py` returns the whole file (tens of KB); forwarding that
+    verbatim bloats the conversation until OpenRouter times out on re-query. Bound
+    what the model sees, point at search_memory for the rest (full text is still
+    staged to memory). This is the Hermes-style bounded-output pattern — never a
+    summary, always a window + retrieval pointer."""
+    content = content or ""
+    if len(content) <= MAX_TOOL_FORWARD:
+        return content
+    head_len = MAX_TOOL_FORWARD * 3 // 4
+    tail_len = MAX_TOOL_FORWARD - head_len
+    return (content[:head_len]
+            + f"\n\n[... content truncated: {len(content)} chars total, showing first {head_len} + last {tail_len} chars. Full text is in memory — use search_memory to retrieve the sections you need.]\n\n"
+            + content[-tail_len:])
+
+
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                       max_tokens=-1, timeout=None, model=None) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
@@ -3932,7 +3950,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     res = mntools.execute_native_tool(nm, args)
                     _tool_trace.append(_trace(nm, args, res, _t0))
                     print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
-                    followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": res})
+                    followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": _truncate_tool_result(res)})
                 _tool_rounds += len(_exec)
 
         # search_memory: user-message feedback (Muse-template workaround — the
@@ -3946,7 +3964,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 args = tc["function"].get("arguments", {}) or {}
                 _mark_call("search_memory", args)
                 _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
-            followup.append({"role": "user", "content": "search_memory results:\n" + tool_result})
+            followup.append({"role": "user", "content": "search_memory results:\n" + _truncate_tool_result(tool_result)})
 
         # Registry tools (list_tools/read_tool): user-message feedback.
         for tc in registry_calls:
@@ -3959,7 +3977,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _tool_trace.append(_trace(nm, args, res, _t0))
             _label = "WEB-SEARCH" if nm == "web_search" else "TOOL-REGISTRY"
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
-            followup.append({"role": "user", "content": f"{nm} result:\n{res}"})
+            followup.append({"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"})
 
         # (Mid-loop interruption machinery removed: write-script nudge, redundancy
         # hard-stop, step-back ladder, and wrap-up nudge. These injected coaching
