@@ -65,6 +65,10 @@ echo; echo "[2/3] Ollama"
 # on prompts longer than ~1-2k tokens when flash attention is on. Off = stable
 # decode at the cost of a little speed/memory. Set before starting ollama.
 export OLLAMA_FLASH_ATTENTION=0
+# Keep models resident in VRAM (never unload). Default is 5m — a turn after an
+# idle gap then pays a 30-60s reload of the 27GB model, which can exceed the
+# proxy's first-token timeout. -1 = stay loaded until the pod shuts down.
+export OLLAMA_KEEP_ALIVE=-1
 
 if command -v ollama >/dev/null 2>&1; then
   _VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
