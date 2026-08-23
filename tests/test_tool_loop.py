@@ -1106,6 +1106,24 @@ def test_recent_attempts_summary():
     assert mp._recent_attempts_summary([]) == ""
 
 
+@test
+def test_memory_only_uses_light_prompt():
+    orig = mp.MEMORY_ONLY
+    try:
+        mp.MEMORY_ONLY = True
+        ctx = mp._finalize_context("hello world")
+        # Drops the behavioral obligations...
+        assert "Source Tagging" not in ctx, "memory-only must drop source-tagging rules"
+        assert "Tool Outcome Tagging" not in ctx, "memory-only must drop tool-tagging rules"
+        # ...but still explains how memory works...
+        assert "Memory Chunk Format" in ctx, "memory-only must keep the chunk-format legend"
+        assert "search_memory" in ctx, "memory-only must keep the search instructions"
+        # ...and keeps the budget line.
+        assert "[context budget:" in ctx
+    finally:
+        mp.MEMORY_ONLY = orig
+
+
 # ── 5. Runner ───────────────────────────────────────────────────────────────
 def main():
     seed_chunk()

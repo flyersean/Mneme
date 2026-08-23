@@ -121,6 +121,7 @@ _CONFIG_ENV_MAP = {
     "storage.chunk_dir": "MNEME_CHUNK_DIR",
     "storage.port": "MNEME_PORT",
     "storage.inject_system": "MNEME_INJECT_SYSTEM",
+    "storage.memory_only": "MNEME_MEMORY_ONLY",
     "storage.staging_turns": "MNEME_STAGING_TURNS",
     "storage.staging_idle": "MNEME_STAGING_IDLE",
     "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
@@ -315,6 +316,7 @@ def _or_headers() -> dict:
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
+MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "0") == "1"  # "1" = inject memory chunks only (light memory-explainer prompt, no tagging/meta-principles/directives)
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
@@ -877,6 +879,17 @@ def _load_system_prompt():
 
 SYSTEM_PROMPT = _load_system_prompt()
 
+SYSTEM_PROMPT_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "system_prompt_memory.md")
+def _load_system_prompt_memory():
+    try:
+        with open(SYSTEM_PROMPT_MEMORY_FILE) as f:
+            return f.read().strip()
+    except Exception as e:
+        _log_error("_load_system_prompt_memory", e)
+        return _load_system_prompt()
+
+SYSTEM_PROMPT_MEMORY = _load_system_prompt_memory()
+
 
 def _finalize_context(ctx: str) -> str:
     """Prepend Mneme instructions (system_prompt.md) unless MNEME_INJECT_SYSTEM=0.
@@ -884,7 +897,8 @@ def _finalize_context(ctx: str) -> str:
     format, search_memory, source tagging) always reach the model — including on
     an empty DB (fresh install), where the early returns previously skipped them."""
     if INJECT_SYSTEM != "0":
-        ctx = "=== MNEME INSTRUCTIONS ===\n" + SYSTEM_PROMPT + "\n\n" + ctx
+        prompt = SYSTEM_PROMPT_MEMORY if MEMORY_ONLY else SYSTEM_PROMPT
+        ctx = "=== MNEME INSTRUCTIONS ===\n" + prompt + "\n\n" + ctx
     # Context budget line (model suggestion #1): tell the model how much window
     # is left so it can decide search-more vs synthesize instead of guessing.
     _total = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))
@@ -2029,7 +2043,7 @@ def build_context(query: str) -> Tuple[str, str]:
         "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
         "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
     ).fetchall()
-    if srows:
+    if srows and not MEMORY_ONLY:
         _INJECTED_STRATEGY_IDS.clear()
         _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
         directives = "\n" + _load_instruction("system_directives_header") + "\n"
@@ -2053,9 +2067,11 @@ def build_context(query: str) -> Tuple[str, str]:
     except Exception as e:
         print(f"  [INJECT][LOG-ERROR] {e}", flush=True)
 
-    # Phase 5.1: prepend the fixed meta-principles block AFTER budget
-    # accounting — it is constant and must not consume the dynamic token budget.
-    context = _meta_principles_block() + _preferences_block() + context
+    # Phase 5.1: prepend the fixed meta-principles block AFTER budget accounting.
+    # Skipped in memory-only mode — the model gets just the chunks + the light
+    # memory explainer, with no meta-principles or directives stacked on top.
+    if not MEMORY_ONLY:
+        context = _meta_principles_block() + _preferences_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
     context = _finalize_context(context)
