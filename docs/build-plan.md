@@ -15,13 +15,11 @@ and committable; work proceeds lowest-risk → highest-risk, respecting dependen
 Deferred from the strict two-rule spec (documented in code):
 - The "different approach" condition on the SUCCESS trigger is approximated by
   ">= 2 consecutive failures then success" — precise tool/url/query comparison
-  needs tool names in the combined trail (not yet carried).
-- `source_chunk` is populated by the archive path and `_save_strategy`'s new
-  param; the recovery/DON'T-DO/novel saves still write `source_chunk=""` because
-  the turn's chunk is archived asynchronously after the save is enqueued (a
-  turn->chunk tracker is the follow-up).
-- `_strategy_floor_chunks` embeds the query a second time (route_query also
-  embeds) — a single-embed refactor is a cheap follow-up.
+  needs tool names in the combined trail (not yet carried). [deferred]
+- ~~`source_chunk` link for recovery/DON'T-DO/novel saves~~ — fixed via a
+  pending-link backfill in `_archive_single_chunk` (3549c04).
+- ~~double-embed in `_strategy_floor_chunks`~~ — fixed via a shared `_embed_query`
+  (single-embed turn, 3549c04).
 
 Order rationale:
   Phase 1 (prefix-cache) is self-contained and touches no semantics — safe first,
