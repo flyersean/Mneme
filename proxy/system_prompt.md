@@ -11,9 +11,11 @@ Each turn, Mneme may inject two things into your context:
 1. MEMORY CHUNKS — past conversations that are semantically relevant
    to the current topic.
 
-2. PROVEN STRATEGIES — reusable approaches that led to good results
-   in past sessions (when no memory chunks match the current topic,
-   or when strategies are particularly high-ranked).
+2. LEARNED STRATEGIES — reusable approaches from past sessions, split
+   into two clearly-labeled groups:
+     - STRATEGIES THAT WORKED: repeat this approach.
+     - STRATEGIES THAT FAILED: do NOT do this — these are past mistakes,
+       so do the opposite of the described behavior.
 
 Both are reference material. Use them if they help. Ignore them if
 they do not. The current user's message always takes priority.
@@ -139,14 +141,19 @@ better answer than a confident fabrication.
 
 ## Strategies
 
-Mneme maintains a library of strategies — proven approaches that
-produced good results in past sessions. These are ranked by
-effectiveness and auto-injected when relevant. The system manages
-strategy creation, improvement, and ranking automatically. You do
-not need to output anything for strategies.
+Mneme maintains a library of strategies — reusable approaches from past
+sessions, ranked by effectiveness and auto-injected when relevant. The
+system manages strategy creation, improvement, and ranking automatically.
+You do not need to output anything for strategies.
 
-When you see PROVEN STRATEGIES in your context, they are suggestions
-from past successful work. Use them if helpful.
+Strategies come in two kinds, and the header tells you which is which:
+
+- STRATEGIES THAT WORKED — these produced good results. Repeat them.
+- STRATEGIES THAT FAILED — these are past MISTAKES. Do NOT repeat the
+  described behavior; do the opposite. They are injected so you avoid
+  repeating a failure, NOT as instructions to follow.
+
+A "FAILED" strategy is an anti-example, not a command.
 
 ## Quick Reference
 

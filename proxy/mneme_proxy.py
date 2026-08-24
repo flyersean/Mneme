@@ -609,12 +609,21 @@ for migration in (
     "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
     "ALTER TABLE tools ADD COLUMN embedding BLOB",
     "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
 ):
     try:
         db.execute(migration)
     except sqlite3.OperationalError:
         pass  # column already exists
 db.commit()
+# Backfill: mark failure-derived strategies as FAILURE so they inject under the
+# "do NOT do this" header rather than as success examples. Only matches the old
+# "FAILURE on:"/"TRUNCATED on:" text — new failures set outcome at insert time.
+try:
+    db.execute("UPDATE strategies SET outcome='FAILURE' WHERE strategy_text LIKE 'FAILURE on:%' OR strategy_text LIKE 'TRUNCATED on:%'")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
 
 # ─── Grade Priority (same as raw-k-cache) ──────────────────────
 GRADE_PRIORITY = {"A": 3, "B": 2, "C": 1, "F": 0}
@@ -1764,7 +1773,7 @@ def generate_strategy(messages: list, outcome: str) -> str:
     text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[:] if m["role"] in ("user", "assistant"))
     # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
-        return f"FAILURE on: {text[:200]}. Retry with different approach."
+        return f"Do NOT repeat what failed here: {text[:180]}. Instead, try a different approach."
     return f"TRUNCATED on: {text[:200]}. Content too large — use chunked reading."
 
 # ─── Routing ───────────────────────────────────────────────────
@@ -1935,6 +1944,44 @@ def get_strategies(problem_type=None, limit=3):
             (limit,)
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def _strategy_block(q_ptype: str) -> tuple:
+    """Build the learned-strategy injection block for a problem type.
+
+    Returns (block_text, ids). block_text is '' when no strategies match, so
+    callers inject nothing. Success strategies (outcome=SUCCESS) go under a
+    'what WORKED' header; failure strategies (outcome=FAILURE/TRUNCATED) go
+    under a 'what FAILED — do NOT do this' header. Each header is emitted only
+    when its category is non-empty (never an empty header).
+    """
+    srows = db.execute(
+        "SELECT strategy_id, strategy_text FROM strategies "
+        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
+        "AND problem_type = ? AND outcome = 'SUCCESS' "
+        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
+        (q_ptype,)
+    ).fetchall()
+    frows = db.execute(
+        "SELECT strategy_id, strategy_text FROM strategies "
+        "WHERE (retired IS NULL OR retired = 0) AND problem_type = ? "
+        "AND outcome IN ('FAILURE','TRUNCATED') "
+        "ORDER BY effective_grade DESC, use_count DESC LIMIT 3",
+        (q_ptype,)
+    ).fetchall()
+    if not srows and not frows:
+        return "", []
+    block = "\n\n" + _load_instruction("system_directives_header") + "\n"
+    if srows:
+        block += "\nSTRATEGIES THAT WORKED — repeat this approach:\n"
+        for r in srows:
+            block += f"  - {r[1][:200]}\n"
+    if frows:
+        block += "\nSTRATEGIES THAT FAILED — do NOT do this (past mistakes, do the opposite):\n"
+        for r in frows:
+            block += f"  - {r[1][:200]}\n"
+    ids = [r[0] for r in srows] + [r[0] for r in frows]
+    return block, ids
 
 # ─── Context Injection ─────────────────────────────────────────
 
@@ -2174,18 +2221,10 @@ def build_context(query: str) -> Tuple[str, str]:
     
     if not parts:
         # No memory chunks — inject strategies as fallback context
-        srows = db.execute(
-            "SELECT strategy_id, strategy_text FROM strategies "
-            "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') AND problem_type = ? "
-            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
-            (q_ptype,)
-        ).fetchall()
-        if srows:
+        strat_text, strat_ids = _strategy_block(q_ptype)
+        if strat_text:
             _INJECTED_STRATEGY_IDS.clear()
-            _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
-            strat_text = "\n\n" + _load_instruction("system_directives_header") + "\n"
-            for s in srows:
-                strat_text += "DIRECTIVE: " + s[1][:200] + "\n"
+            _INJECTED_STRATEGY_IDS.update(strat_ids)
             return _finalize_context(_meta_principles_block() + strat_text + _preferences_block()), ptype
         return _finalize_context(_meta_principles_block() + _preferences_block()), ptype
     
@@ -2206,18 +2245,11 @@ def build_context(query: str) -> Tuple[str, str]:
         context += "\n".join(f"  {r}" for r in struct_refs)
     
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
-    srows = db.execute(
-        "SELECT strategy_id, strategy_text FROM strategies "
-        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') AND problem_type = ? "
-        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
-        (q_ptype,)
-    ).fetchall()
-    if srows and not MEMORY_ONLY:
+    strat_text, strat_ids = _strategy_block(q_ptype)
+    if strat_text and not MEMORY_ONLY:
         _INJECTED_STRATEGY_IDS.clear()
-        _INJECTED_STRATEGY_IDS.update(r[0] for r in srows)
-        directives = "\n" + _load_instruction("system_directives_header") + "\n"
-        for s in srows:
-            directives += "DIRECTIVE: " + s[1][:200] + "\n"
+        _INJECTED_STRATEGY_IDS.update(strat_ids)
+        directives = strat_text
         # Strategies go at TOP — above memory, below system prompt
         if _estimate_tokens(directives + context) <= MAX_INJECTED_TOKENS:
             context = directives + "\n" + context
@@ -2498,17 +2530,18 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     outcome = "SUCCESS"
     ptype = "other"
     
-    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
+    # Outcome (success/failure) and task type (what the request was about) are
+    # two different axes. Previously "failed" stole the ptype slot and set it to
+    # "error", so a fabricated price lookup archived as problem_type="error"
+    # instead of "live_data" — which broke strategy relevance. Fix: outcome is
+    # the success/failure signal; ptype comes from the USER's request text.
+    if chunk_grade == "F" or any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
         outcome = "FAILURE"
-        ptype = "error"
     elif any(w in lower for w in ("continue", "next chunk", "more chunks")):
         outcome = "TRUNCATED"
-    elif any(w in lower for w in ("save", "archive", "memory", "store")):
-        ptype = "memory_operation"
-    elif any(w in lower for w in ("browser", "http", "page", "article", "wikipedia", "extract")):
-        ptype = "web_retrieval"
-    elif any(w in lower for w in ("code", "function", "def ", "patch", "fix", "debug")):
-        ptype = "code"
+    ptype = _classify_problem_type(user_text or full_text)
+    if ptype == "error":
+        ptype = "other"  # "error" is an outcome, not a task type
     
     strategy = generate_strategy(msgs, outcome)
     # Temporal stamping: prepend date to embedding text so FAISS can
@@ -2550,11 +2583,11 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         
         new_version = existing_version + 1
         db.execute(
-            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, ptype, strategy, chunk_id, "B",
              datetime.now(timezone.utc).isoformat(),
              new_version, sid if existing_version > 0 else "",
-             0.0, 0, 0, 0, "", 0)
+             0.0, 0, 0, 0, "", 0, outcome)
         )
         db.commit()
         print(f"  [STRATEGY] v{new_version} {strategy[:60]}...", flush=True)
@@ -4432,9 +4465,10 @@ def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0, ab
         clean_id = str(existing_id).replace("strat_", "").strip()
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
-    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
+    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, problem_type, text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
-         new_version, parent, 0.0, 0, 0, 0, "", cost))
+         new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
     db.commit()
     try:
         svec = embed(text.strip())
