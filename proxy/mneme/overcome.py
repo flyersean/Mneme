@@ -25,7 +25,7 @@ from mneme.tools import save_tool as _save_tool_to_registry
 
 
 # Tunables (env-overridable; mneme.yaml knobs can be layered on later)
-STUCK_CONSECUTIVE_FAILURES = int(os.environ.get("MNEME_STUCK_CONSECUTIVE_FAILURES", "2"))
+STUCK_CONSECUTIVE_FAILURES = int(os.environ.get("MNEME_STUCK_CONSECUTIVE_FAILURES", "3"))
 STUCK_MAX_TOOL_ROUNDS = int(os.environ.get("MNEME_STUCK_MAX_TOOL_ROUNDS", "6"))
 BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 # Each build iteration = one write + one bash (a single build-and-test attempt).

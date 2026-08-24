@@ -3587,7 +3587,15 @@ def _learn_from_tool_trail(trail_tags, answer, grade, ptype):
     if "SUCCESS" not in statuses:
         return
     last_success = max(i for i, s in enumerate(statuses) if s == "SUCCESS")
-    if not any(s == "FAILURE" for s in statuses[:last_success]):
+    # Require a RECOVERY: >= 2 consecutive failures immediately before the
+    # success (a single flaky failure is not a lesson).
+    streak = 0
+    for s in reversed(statuses[:last_success]):
+        if s == "FAILURE":
+            streak += 1
+        else:
+            break
+    if streak < 2:
         return
     trail = "; ".join(f"{s}{':' + r if r else ''}" for s, r in trail_tags[-8:])
     answer_clean = _TOOL_TAG_RE.sub("", answer or "").strip()
@@ -4272,10 +4280,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         except Exception as e:
             _log_error("process_chat:overcome_outcome", e)
 
-    # Tool-outcome learning: a failure->success trail becomes a reusable
-    # strategy for similar tasks. The combined trail (deterministic outcomes +
-    # model tags) is passed cheap+sync; the model extraction runs background.
-    if "FAILURE" in _trail_statuses and "SUCCESS" in _trail_statuses:
+    # Tool-outcome learning: a RECOVERY — >= 2 consecutive failures immediately
+    # before a success — becomes a reusable strategy. NOT "any failure + any
+    # success" (a single flaky request is not a lesson). The combined trail is
+    # passed cheap+sync; the model extraction runs background (build-plan Phase 2).
+    _streak = 0
+    if "SUCCESS" in _trail_statuses:
+        _last_s = max(i for i, s in enumerate(_trail_statuses) if s == "SUCCESS")
+        for _s in reversed(_trail_statuses[:_last_s]):
+            if _s == "FAILURE":
+                _streak += 1
+            else:
+                break
+    if _streak >= 2:
         try:
             _enqueue(_learn_from_tool_trail, _trail, _answer, grade, cur_ptype)
         except Exception as e:
@@ -4563,19 +4580,12 @@ def _is_junk_directive(text: str) -> bool:
 
 def _strategy_lifecycle(grade, messages, infra_failure=False):
     try:
-        if grade == "A":
-            # Only a GREAT response (crossed a capability edge) is worth saving
-            # as a strategy. A pass (B) just archives — saving strategies from
-            # every ordinary correct answer filled the library with noise.
-            q1 = [{"role": "user", "content": "You graded this response " + grade + ". Did you use a novel approach worth saving? Answer yes or no."}]
-            r1 = query_model(q1, timeout=CHAT_TIMEOUT)
-            if "yes" not in (r1.get("content","") or "").strip().lower(): return
-            q2 = [{"role": "user", "content": "If this improves an existing strategy state the strategy ID (strat_XXX). If new, say new. One word only."}]
-            r2 = query_model(q2, timeout=CHAT_TIMEOUT)
-            q3 = [{"role": "user", "content": "Describe the approach in 2-3 sentences."}]
-            r3 = query_model(q3, timeout=CHAT_TIMEOUT)
-            if r3.get("content"): _save_strategy(r3["content"].strip(), grade, r2.get("content","").strip())
-        elif grade in ("D", "F"):
+        # SUCCESS strategies are saved by the RECOVERY trigger
+        # (_learn_from_tool_trail — streak >= 2 failures then success) and the
+        # novel-procedure path (_save_novel_strategy). The old grade-A 3-call
+        # "novelty" gate is gone: it over-saved from every great answer and
+        # doubled the novel-procedure save. Here we handle ONLY DON'T-DO (D/F).
+        if grade in ("D", "F"):
             if infra_failure:
                 # A timeout/grind is an infrastructure failure, not a model
                 # mistake — there is no introspectable lesson to extract, and

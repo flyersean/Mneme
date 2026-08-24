@@ -20,7 +20,7 @@ injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 |-------------------------|------------------------------------------------------|-------------------------------|------------------------|
 | `explore`               | user explicitly asks for a NEW method                | —                             | `_explore_directive`   |
 | `capability_edge`       | task type is a flagged edge → hard stop: build/reuse | `{{problem_type}}`            | `_capability_directive`|
-| `overcome`              | model is stuck (2 failures / 6 rounds), hard stop    | `{{problem_type}}`, `{{reason}}` | `_overcome_directive` |
+| `overcome`              | model is stuck (3 failures / 6 rounds), hard stop    | `{{problem_type}}`, `{{reason}}` | `_overcome_directive` |
 | `overcome_build`        | model chose build_tool — one bounded build iteration | `{{iteration}}`, `{{max}}`    | `_build_directive`     |
 | `overcome_build_exhausted` | build iterations exhausted — end the build loop | `{{max}}`                     | `_build_exhausted_directive` |
 | `overcome_reuse`       | model chose reuse_tool — run the existing tool       | `{{tool}}`, `{{path}}`         | `_reuse_directive`     |

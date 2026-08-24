@@ -546,14 +546,22 @@ def test_load_instruction_override_wins():
 
 @test
 def test_detect_stuck_consecutive_failures():
-    msgs = [
+    # Recovery window (Phase 2): 2 consecutive failures is NOT stuck (the model
+    # still gets to try a different tool); 3 consecutive failures IS stuck.
+    two_fail = [
         {"role": "user", "content": "scrape the blocked site"},
         {"role": "assistant", "content": "trying", "tool_calls": []},
         {"role": "tool", "content": "blocked by cloudflare"},
         {"role": "assistant", "content": "retrying", "tool_calls": []},
         {"role": "tool", "content": "blocked by cloudflare"},
     ]
-    stuck, reason = mp._detect_stuck(msgs)
+    stuck2, _ = mp._detect_stuck(two_fail)
+    assert not stuck2  # 2 failures -> recovery window, not yet stuck
+    two_fail += [
+        {"role": "assistant", "content": "retrying again", "tool_calls": []},
+        {"role": "tool", "content": "blocked by cloudflare"},
+    ]
+    stuck, reason = mp._detect_stuck(two_fail)
     assert stuck and "consecutive" in reason, reason
 
 
