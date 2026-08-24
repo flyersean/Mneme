@@ -361,6 +361,12 @@ BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fa
 # Default 0.62 sits above the voyage-4-lite noise floor (~0.48) and below its
 # relevant-signal band (~0.70-0.72).
 INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.62"))
+# Strategy-only floor (below the memory floor). A chunk below INJECT_MIN_SIMILARITY
+# does NOT inject as memory, but if it sits at/above this floor its LINKED
+# strategies still inject — strategies are meant to generalize (same-concept,
+# medium similarity) where memory is same-topic (high similarity). Measured on
+# voyage-4-lite: same-concept sits ~0.43-0.62 (docs/strategy-retrieval-spec.md).
+STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.55"))
 # Keyword fallback: when FAISS returns fewer than top_k hits, pad the result list
 # with SQLite LIKE-substring matches. OFF by default — substring hits carry no
 # semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").
@@ -1957,29 +1963,55 @@ def get_strategies(problem_type=None, limit=3):
     return [r[0] for r in rows]
 
 
-def _strategy_block(q_ptype: str) -> tuple:
-    """Build the learned-strategy injection block for a problem type.
+def _strategy_block(chunk_ids=None, q_ptype="") -> tuple:
+    """Build the learned-strategy injection block, keyed by source-chunk linkage.
 
-    Returns (block_text, ids). block_text is '' when no strategies match, so
-    callers inject nothing. Success strategies (outcome=SUCCESS) go under a
-    'what WORKED' header; failure strategies (outcome=FAILURE/TRUNCATED) go
-    under a 'what FAILED — do NOT do this' header. Each header is emitted only
-    when its category is non-empty (never an empty header).
+    Primary: strategies whose `source_chunk` is in `chunk_ids` (the chunks this
+    query matched — linkage retrieval, not the problem_type taxonomy). Fallback:
+    legacy strategies with no source_chunk still match by problem_type, so
+    pre-linkage strategies are not silently dropped (deprecated — new saves
+    populate source_chunk via _save_strategy / _archive_single_chunk).
+
+    Returns (block_text, ids). block_text is '' when nothing matches, so callers
+    inject nothing. Success (outcome=SUCCESS) goes under 'what WORKED'; failure
+    (FAILURE/TRUNCATED) under 'what FAILED — do NOT do this'. Each header is
+    emitted only when its group is non-empty.
     """
-    srows = db.execute(
-        "SELECT strategy_id, strategy_text FROM strategies "
-        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
-        "AND problem_type = ? AND outcome = 'SUCCESS' "
-        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
-        (q_ptype,)
-    ).fetchall()
-    frows = db.execute(
-        "SELECT strategy_id, strategy_text FROM strategies "
-        "WHERE (retired IS NULL OR retired = 0) AND problem_type = ? "
-        "AND outcome IN ('FAILURE','TRUNCATED') "
-        "ORDER BY effective_grade DESC, use_count DESC LIMIT 3",
-        (q_ptype,)
-    ).fetchall()
+    chunk_ids = [c for c in (chunk_ids or []) if c]
+    srows, frows = [], []
+    if chunk_ids:
+        placeholders = ",".join("?" for _ in chunk_ids)
+        srows = db.execute(
+            f"SELECT strategy_id, strategy_text FROM strategies "
+            f"WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
+            f"AND source_chunk IN ({placeholders}) AND outcome = 'SUCCESS' "
+            f"ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
+            chunk_ids
+        ).fetchall()
+        frows = db.execute(
+            f"SELECT strategy_id, strategy_text FROM strategies "
+            f"WHERE (retired IS NULL OR retired = 0) "
+            f"AND source_chunk IN ({placeholders}) AND outcome IN ('FAILURE','TRUNCATED') "
+            f"ORDER BY effective_grade DESC, use_count DESC LIMIT 3",
+            chunk_ids
+        ).fetchall()
+    # Legacy fallback: pre-linkage strategies (empty source_chunk) match by
+    # problem_type. Only when linkage found nothing, and only for a real type.
+    if not srows and not frows and q_ptype and q_ptype != "other":
+        srows = db.execute(
+            "SELECT strategy_id, strategy_text FROM strategies "
+            "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
+            "AND (source_chunk IS NULL OR source_chunk = '') AND problem_type = ? AND outcome = 'SUCCESS' "
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
+            (q_ptype,)
+        ).fetchall()
+        frows = db.execute(
+            "SELECT strategy_id, strategy_text FROM strategies "
+            "WHERE (retired IS NULL OR retired = 0) "
+            "AND (source_chunk IS NULL OR source_chunk = '') AND problem_type = ? AND outcome IN ('FAILURE','TRUNCATED') "
+            "ORDER BY effective_grade DESC, use_count DESC LIMIT 3",
+            (q_ptype,)
+        ).fetchall()
     if not srows and not frows:
         return "", []
     block = "\n\n" + _load_instruction("system_directives_header") + "\n"
@@ -1993,6 +2025,25 @@ def _strategy_block(q_ptype: str) -> tuple:
             block += f"  - {r[1][:200]}\n"
     ids = [r[0] for r in srows] + [r[0] for r in frows]
     return block, ids
+
+
+def _strategy_floor_chunks(query, top_k=12):
+    """Chunk ids in [STRATEGY_MIN_SIMILARITY, INJECT_MIN_SIMILARITY) — below the
+    memory floor but at/above the strategy floor. These chunks do NOT inject as
+    memory, but their linked strategies still inject (strategies generalize across
+    same-concept queries where memory is same-topic). Raw cosine, matching the
+    floor semantics in docs/strategy-retrieval-spec.md Part 3."""
+    if not (query or "").strip():
+        return []
+    q_vec = embed(query)
+    if q_vec is None:
+        return []
+    try:
+        hits = _cosine_search(q_vec, top_k, 0.0)
+    except Exception:
+        return []
+    return [cid for sim, cid in hits if STRATEGY_MIN_SIMILARITY <= sim < INJECT_MIN_SIMILARITY]
+
 
 # ─── Context Injection ─────────────────────────────────────────
 
@@ -2159,6 +2210,13 @@ def build_context(query: str) -> Tuple[str, str]:
         siblings = siblings_map.get(cid, [])
         for sib in siblings[:MAX_SIBLINGS]:
             all_ids.add(sib)
+
+    # Strategy-floor chunks: below the memory floor but at/above the strategy
+    # floor — they do NOT inject as memory, but their linked strategies do
+    # (strategies generalize across same-concept queries). Linked retrieval
+    # key, not the problem_type taxonomy (docs/strategy-retrieval-spec.md).
+    strat_floor = _strategy_floor_chunks(query)
+    strategy_chunk_ids = list(all_ids) + [c for c in strat_floor if c not in all_ids]
     
     # Batch-fetch grades for all candidates — avoids per-chunk SQLite hits during sort
     if all_ids:
@@ -2232,7 +2290,7 @@ def build_context(query: str) -> Tuple[str, str]:
     
     if not parts:
         # No memory chunks — inject strategies as fallback context
-        strat_text, strat_ids = _strategy_block(q_ptype)
+        strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
         if strat_text:
             _INJECTED_STRATEGY_IDS.clear()
             _INJECTED_STRATEGY_IDS.update(strat_ids)
@@ -2256,7 +2314,7 @@ def build_context(query: str) -> Tuple[str, str]:
         context += "\n".join(f"  {r}" for r in struct_refs)
     
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
-    strat_text, strat_ids = _strategy_block(q_ptype)
+    strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
     if strat_text and not MEMORY_ONLY:
         _INJECTED_STRATEGY_IDS.clear()
         _INJECTED_STRATEGY_IDS.update(strat_ids)
@@ -4481,7 +4539,7 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
-def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True):
+def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk=""):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example.
     # abstract=False skips the model call for lessons that are already general
@@ -4520,7 +4578,7 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
     db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, problem_type, text.strip(), "", grade, datetime.now(timezone.utc).isoformat(),
+        (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
          new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
     db.commit()
     try:
