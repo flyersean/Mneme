@@ -2116,7 +2116,12 @@ def build_context(query: str) -> Tuple[str, str]:
         topic = chunk.get("topic_label", "unknown")
         sid = chunk.get("session_id", "default")
         sid_tag = f" [session:{sid}]" if sid and sid != "default" else ""
-        msg_text = f"--- [{cid}]{sid_tag} [G:{chunk.get('grade','?')}] [src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n"
+        _grade = chunk.get('grade', DEFAULT_GRADE) or DEFAULT_GRADE
+        if _grade == "F":
+            _gradetag = "[G:F — FAILED response / BAD information — do NOT trust or repeat]"
+        else:
+            _gradetag = f"[G:{_grade}]"
+        msg_text = f"--- [{cid}]{sid_tag} {_gradetag} [src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n"
         # If next sequential chunk exists, hint it
         msg_text += "\n".join(
             f"{m['role']}: {m['content']}"
@@ -3617,11 +3622,12 @@ MAX_EMPTY_RETRY = 2
 
 
 def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
-    # Extract query from ALL recent user messages — not just the last one.
-    # Multi-turn context is captured so "also the earthquake" finds earthquake
-    # chunks alongside Ebola chunks from earlier in the conversation.
+    # Extract the retrieval query from ONLY the last user message. Scoping retrieval
+    # to the current turn means a follow-up ("try again", a correction) doesn't
+    # re-surface chunks matched by earlier turns' keywords — which was re-injecting
+    # the model's own wrong answer on every retry.
     user_msgs = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages)
-                 if m.get("role") == "user"][:3]  # last 3 user turns
+                 if m.get("role") == "user"][:1]  # last user turn only
     user_msg = " ".join(reversed(user_msgs))  # chronological order
     
     # Full (untruncated) last user message — used for <<COMMAND>> detection
@@ -3680,7 +3686,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             raw = _extract_text(m.get("content", ""))
             cleaned = _cmd_re.sub("", raw).strip()
             if cleaned: m["content"] = cleaned
-    user_msgs2 = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages) if m.get("role") == "user"][:3]
+    user_msgs2 = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages) if m.get("role") == "user"][:1]
     user_msg = " ".join(reversed(user_msgs2))
 
     # Full tool list = read-only server tools (search_memory/list_tools/read_tool)
