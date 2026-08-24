@@ -213,6 +213,77 @@ precisely because it removes that window.
 
 ---
 
+## Context assembly — prefix-cache stability
+
+Cross-cutting (not strategy-specific): the request is reassembled every turn, and
+OpenRouter, Ollama, and essentially every KV-cache backend serve a cache hit only
+when the START of the request is byte-for-byte identical to a previous request.
+So this benefits any backend, not just one provider. The governing rule, lifted
+from the DeepSeek Harness but universal to prefix caching:
+
+    "The rule is not send the model what it needs — the rule is do not disturb
+    the bytes that came before."
+
+Stable prefix at the front; ALL variable content appended at the back; never
+inserted mid-conversation.
+
+### Part 1 — Already in place
+
+- `_system_prompt_block()` (mneme_proxy.py ~L961) is the FIXED instruction block,
+  kept in the system message at the head. Its docstring marks it "stable,
+  cacheable prefix."
+- The VARIABLE memory context is injected at the TAIL — prepended to the last
+  user message (process_chat ~L3855), never into the system message. The comment
+  there explicitly cites "KV prefix cache."
+
+The core rule is already applied; the remaining work is removing the last few
+places variable content still leaks into the stable prefix.
+
+### Part 2 — Variable directives still glued to the fixed block
+
+`process_chat` builds the second system message as
+`_system_prompt_block() + _tool_directive(...) + _explore_directive(...)`, then
+appends `_tool_injection` and any overcome/build/reuse/nudge directive. The fixed
+block is first, but the variable parts share the same message, so whenever a saved
+tool hint, an explore phrase, or a relevant-tool hint fires, the whole second
+system message shifts and the cache misses for that turn.
+
+Fix: keep the system message = `_system_prompt_block()` ONLY, and move
+`_tool_directive`, `_explore_directive`, and `_tool_injection` to the tail
+alongside the memory context (advisory hints — recency at the tail is fine).
+Keep the overcome/build/reuse/nudge directives as system messages: they are rare
+and are hard-stops that need system-message authority, so they cost little cache
+and must not be diluted.
+
+### Part 3 — Tool-result truncation is non-idempotent
+
+`compress_large_tool_results` truncates a >12000-char tool result to
+head(9000) + a ~170-char note + tail(3000) ≈ 12170 chars — still over the 12000
+threshold. Next turn it truncates again, and the note's "{len} chars total"
+number changes, so the bytes shift every turn for any large tool result still in
+history. This mutates the conversation prefix.
+
+Fix: make the truncation idempotent — cap the truncated result below
+MAX_TOOL_FORWARD (shrink head by the note length), or skip messages already
+carrying the truncation marker.
+
+### Part 4 — Memory-context re-prepend guard
+
+The tail injection is `content = context + "\n\n---\n" + content` with no guard
+for "already injected." Safe inside the native loop (context is baked once into
+`followup` before the loop), but a client re-invocation that re-sends the mutated
+last user message would double it — a correctness bug AND a growing, unstable
+tail. Add a guard: skip if the marker is already present (or track a flag).
+Verify the client flow before treating as confirmed.
+
+### What NOT to do
+
+- Do not move the overcome/build hard-stop directives to the tail.
+- Do not put the memory context back into the system message (variable content
+  inside the stable prefix is the original mistake).
+
+---
+
 ## Tradeoff
 
 Linkage ties strategy portability to the DB: a strategy travels with its source
