@@ -365,6 +365,21 @@ INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.6
 # with SQLite LIKE-substring matches. OFF by default — substring hits carry no
 # semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").
 KEYWORD_FALLBACK = os.environ.get("MNEME_KEYWORD_FALLBACK", "0") == "1"
+# Stopwords excluded from keyword search. Substring-matching on common function
+# words ("is", "me", "what", "just", "tell", "plus" ...) hits nearly every chunk
+# and turns a semantic miss into arbitrary injections (e.g. "2+2" matching "is").
+_KEYWORD_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "if", "then", "else", "for", "with",
+    "of", "to", "in", "on", "at", "by", "from", "as", "is", "are", "was", "were",
+    "be", "been", "am", "do", "does", "did", "have", "has", "had", "will", "would",
+    "can", "could", "should", "may", "might", "must", "not", "no", "so", "very",
+    "just", "only", "also", "too", "about", "than", "there", "here", "what",
+    "which", "who", "when", "where", "why", "how", "this", "that", "these", "those",
+    "it", "its", "he", "she", "they", "them", "we", "you", "i", "me", "my", "your",
+    "our", "their", "his", "her", "some", "any", "all", "each", "every", "more",
+    "most", "other", "such", "into", "over", "under", "again", "tell", "get", "give",
+    "take", "make", "let", "see", "look", "plus", "minus",
+}
 AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recency half-life in days — newer chunks get a bonus
 
 # Network timeouts (seconds). CHAT_TIMEOUT is the anti-grind guardrail for
@@ -847,7 +862,8 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
     """
     if not query or not query.strip():
         return []
-    words = [w.strip() for w in query.split() if len(w.strip()) >= 2]
+    words = [w.strip() for w in query.split()
+             if len(w.strip()) >= 2 and w.strip().lower() not in _KEYWORD_STOPWORDS]
     if not words:
         return []
     exclude_ids = exclude_ids if exclude_ids is not None else set()
@@ -1785,8 +1801,11 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
         time.sleep(0.4)
         q_vec = embed(query)
     if q_vec is None:
-        print("  [ROUTE] embed still None — keyword fallback", flush=True)
-        return [cid for _, cid in _keyword_search(query, top_k)[:top_k]]
+        if KEYWORD_FALLBACK:
+            print("  [ROUTE] embed still None — keyword fallback", flush=True)
+            return [cid for _, cid in _keyword_search(query, top_k)[:top_k]]
+        print("  [ROUTE] embed still None — no memory injected", flush=True)
+        return []
     scored_raw = _cosine_search(q_vec, top_k * 3, 0.0)  # no threshold — normalize instead
     # Injection gate: absolute similarity floor. A chunk below INJECT_MIN_SIMILARITY
     # is never injected — this is the on/off knob (tunable in config). If nothing
@@ -1808,14 +1827,16 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
         dynamic_k = 0  # Nothing above noise floor
     
     if dynamic_k == 0:
-        # Semantic miss (nothing cleared the injection floor). Fall back to a
-        # keyword match rather than silently returning zero — a rephrased query
-        # should still surface a substring hit (e.g. "pizza" / "Greenville").
-        # Noisier than semantic hits, but strictly better than no memory at all.
-        kw = _keyword_search(query, top_k)
-        if kw:
-            print(f"  [ROUTE] semantic miss — keyword fallback returned {len(kw)}", flush=True)
-            return [cid for _, cid in kw[:top_k]]
+        # Semantic miss (nothing cleared the injection floor) — inject nothing.
+        # A query below the similarity floor has no relevant memory; keyword
+        # fallback here matches stopwords and pollutes context (e.g. "2+2"
+        # matching "is"/"me" across unrelated chunks). Gated behind
+        # KEYWORD_FALLBACK (default off), same as _hybrid_search.
+        if KEYWORD_FALLBACK:
+            kw = _keyword_search(query, top_k)
+            if kw:
+                print(f"  [ROUTE] semantic miss — keyword fallback returned {len(kw)}", flush=True)
+                return [cid for _, cid in kw[:top_k]]
         return []
     
     # Hybrid: fill with keyword matches if FAISS is sparse
