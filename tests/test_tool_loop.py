@@ -165,7 +165,7 @@ def test_web_search_executed_server_side():
         _answer("The bug is fixed. [source: web_search]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     # stub the network-backed web_search executor so the test stays offline
     mt = mp.mntools
@@ -199,7 +199,7 @@ def test_tool_call_with_stop_reason_is_executed():
         _answer("The bug is fixed. [source: web_search]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     mt = mp.mntools
     orig = mt._exec_web_search
@@ -229,7 +229,7 @@ def test_search_loop_terminates_with_answer():
         _answer("The bug is fixed. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "Tell me about the Mneme bug and its learning loop."}],
@@ -254,7 +254,7 @@ def test_narration_with_tool_calls_is_not_dropped():
         _answer("The answer. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "tell me about the weather tool"}],
@@ -292,7 +292,7 @@ def test_search_grind_hard_stops_with_answer():
         _answer("The bug is fixed. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "What's the status of the Mneme tool-calling bug?"}],
@@ -327,7 +327,7 @@ def test_novel_bash_exploration_not_cut_off():
         _answer("Found it. [source: mem_1]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "scrape a bunch of sites"}],
@@ -359,7 +359,7 @@ def test_requery_timeout_retries_once():
         _answer("The answer. [source: mem_1]"),  # retry recovers
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "jamos pizza info"}],
@@ -383,7 +383,7 @@ def test_requery_midstream_error_retries_once():
         _answer("The answer. [source: mem_1]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "jamos pizza info"}],
@@ -406,7 +406,7 @@ def test_requery_double_timeout_returns_explanation():
         _timeout_call(),   # retry also stalls
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "jamos pizza info"}],
@@ -749,7 +749,7 @@ def test_single_search_then_answer():
         _answer("Here's what I found. [source: mem_1787262481137988]"),
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1787262481137988"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "What do we know about the tool calling bug?"}],
@@ -1076,7 +1076,7 @@ def test_near_empty_answer_prompts_continue():
         _answer("The pizza info. [source: mem_1]"),  # continue prompt -> real answer
     ]
     mp.query_model = model
-    mp.route_query = lambda q, top_k=3, with_scores=False: ["mem_1"]
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1"]
 
     result = mp.process_chat(
         [{"role": "user", "content": "jamos pizza info"}],

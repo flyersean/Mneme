@@ -425,6 +425,12 @@ _archive_cycle = 0
 _archive_cycle_lock = threading.Lock()
 _chunk_seq = 0
 _chunk_seq_lock = threading.Lock()
+# Pending strategy->source_chunk links: strategies saved with no source_chunk
+# (recovery / DON'T-DO / novel — the turn's chunk is archived asynchronously
+# AFTER the save is enqueued) are queued here and linked to the next archived
+# chunk in _archive_single_chunk.
+_pending_strategy_links = []
+_pending_links_lock = threading.Lock()
 
 def _seed_chunk_seq():
     global _chunk_seq
@@ -1815,17 +1821,26 @@ def _calibrate_noise(n_samples: int = 3) -> float:
         return sum(scores) / len(scores)  # average minimum across samples
     return 0.20
 
-def route_query(query: str, top_k: int = 3, with_scores: bool = False) -> List:
-    """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
-    Dynamic K: adjusts retrieval count based on score spread above noise floor."""
+def _embed_query(query):
+    """Embed a query once, retrying on a cold/missed embed. Returns the vector or
+    None. Shared by route_query and _strategy_floor_chunks so a turn embeds the
+    query exactly once (no double-embed on the hot path)."""
     q_vec = embed(query)
     if q_vec is None:
         # Cold/empty embed (e.g. embed model briefly unloading during a restart).
-        # Retry once, then keyword-fallback — a single missed embed must never
-        # silently return zero chunks and send the model off without memory.
+        # Retry once — a single missed embed must never silently return zero chunks.
         print("  [ROUTE] embed returned None — retrying once", flush=True)
         time.sleep(0.4)
         q_vec = embed(query)
+    return q_vec
+
+
+def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=None) -> List:
+    """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
+    Dynamic K: adjusts retrieval count based on score spread above noise floor.
+    Pass q_vec to reuse a pre-computed query vector (single-embed turn)."""
+    if q_vec is None:
+        q_vec = _embed_query(query)
     if q_vec is None:
         if KEYWORD_FALLBACK:
             print("  [ROUTE] embed still None — keyword fallback", flush=True)
@@ -2027,15 +2042,17 @@ def _strategy_block(chunk_ids=None, q_ptype="") -> tuple:
     return block, ids
 
 
-def _strategy_floor_chunks(query, top_k=12):
+def _strategy_floor_chunks(query="", q_vec=None, top_k=12):
     """Chunk ids in [STRATEGY_MIN_SIMILARITY, INJECT_MIN_SIMILARITY) — below the
     memory floor but at/above the strategy floor. These chunks do NOT inject as
     memory, but their linked strategies still inject (strategies generalize across
     same-concept queries where memory is same-topic). Raw cosine, matching the
-    floor semantics in docs/strategy-retrieval-spec.md Part 3."""
-    if not (query or "").strip():
-        return []
-    q_vec = embed(query)
+    floor semantics in docs/strategy-retrieval-spec.md Part 3. Pass q_vec to reuse
+    the turn's query vector (no double-embed)."""
+    if q_vec is None:
+        if not (query or "").strip():
+            return []
+        q_vec = _embed_query(query)
     if q_vec is None:
         return []
     try:
@@ -2200,7 +2217,8 @@ def build_context(query: str) -> Tuple[str, str]:
     4. Append strategies for the detected problem type
     """
     q_ptype = _classify_problem_type(query)
-    chunk_ids = route_query(query, top_k=3)
+    _qvec = _embed_query(query)  # embed once; shared by memory + strategy retrieval
+    chunk_ids = route_query(query, top_k=3, q_vec=_qvec)
     
     # Expand to siblings with cap — batch query instead of per-chunk
     all_ids = set()
@@ -2215,7 +2233,7 @@ def build_context(query: str) -> Tuple[str, str]:
     # floor — they do NOT inject as memory, but their linked strategies do
     # (strategies generalize across same-concept queries). Linked retrieval
     # key, not the problem_type taxonomy (docs/strategy-retrieval-spec.md).
-    strat_floor = _strategy_floor_chunks(query)
+    strat_floor = _strategy_floor_chunks(query, q_vec=_qvec)
     strategy_chunk_ids = list(all_ids) + [c for c in strat_floor if c not in all_ids]
     
     # Batch-fetch grades for all candidates — avoids per-chunk SQLite hits during sort
@@ -2630,6 +2648,16 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     # Pass generated sequential chunk_id through to save_chunk
     save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id, grade=chunk_grade,
                outcome=outcome, problem_type=ptype, source=source)
+
+    # Link pending strategies (saved this turn with no source_chunk) to this chunk.
+    with _pending_links_lock:
+        pending = _pending_strategy_links[:]
+        _pending_strategy_links.clear()
+    if pending:
+        for _psid in pending:
+            db.execute("UPDATE strategies SET source_chunk=? WHERE strategy_id=?", (chunk_id, _psid))
+        db.commit()
+        print(f"  [LINK] {len(pending)} strategies linked to {chunk_id}", flush=True)
     
     if strategy and ptype != "other":
         sid = f"strat_{ptype}_{seq}_{int(time.time())}"
@@ -4581,6 +4609,12 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
          new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
     db.commit()
+    # Linkage backfill: when a strategy is saved with no source_chunk (the turn's
+    # chunk is archived async AFTER the save), queue it so _archive_single_chunk
+    # links it to the chunk that gets created for this turn.
+    if not source_chunk:
+        with _pending_links_lock:
+            _pending_strategy_links.append(sid)
     try:
         svec = embed(text.strip())
         if svec is not None and FAISS_OK:
