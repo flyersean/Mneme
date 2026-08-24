@@ -7,6 +7,7 @@ honest "I can't") instead of another grind/fabricate attempt.
 """
 
 import os
+import re
 from datetime import datetime, timezone
 
 from mneme.util import _log_error
@@ -78,20 +79,31 @@ def _classify_problem_type(text: str) -> str:
     if not text:
         return "other"
     lower = text.lower()
-    if any(w in lower for w in ("error", "failed", "crash", "500", "exception", "traceback")):
+    def kw(*words):
+        for w in words:
+            w = w.strip()
+            if not w:
+                continue
+            if " " in w:
+                if w in lower:
+                    return True
+            elif re.search(rf"\b{re.escape(w)}\b", lower):
+                return True
+        return False
+    if kw("error", "failed", "crash", "500", "exception", "traceback"):
         return "error"
-    if any(w in lower for w in ("code", "function", "def ", "patch", "fix", "debug", "script",
-                                 "python", "program", "implement", "refactor", "write a")):
+    if kw("code", "function", "def", "patch", "fix", "debug", "script",
+          "python", "program", "implement", "refactor", "write a"):
         return "code"
-    if any(w in lower for w in ("hash", "sha", "compute", "calculate", "prime", "fibonacci",
-                                 "checksum", "encrypt", "decrypt", "sum of")):
+    if kw("hash", "sha", "compute", "calculate", "prime", "fibonacci",
+          "checksum", "encrypt", "decrypt", "sum of"):
         return "compute"
-    if any(w in lower for w in ("price", "weather", "stock", "exchange rate", "current",
-                                 "today", "latest", "temperature", "forecast", "now")):
+    if kw("price", "weather", "stock", "exchange rate", "current",
+          "today", "latest", "temperature", "forecast", "now"):
         return "live_data"
-    if any(w in lower for w in ("search", "fetch", "browser", "http", "page", "article",
-                                 "wikipedia", "extract", "url", "web")):
+    if kw("search", "fetch", "browser", "http", "https", "page", "article",
+          "wikipedia", "extract", "url", "web"):
         return "web_retrieval"
-    if any(w in lower for w in ("save", "archive", "memory", "store", "remember", "recall")):
+    if kw("save", "archive", "memory", "store", "remember", "recall"):
         return "memory_operation"
     return "other"
