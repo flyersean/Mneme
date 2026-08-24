@@ -63,7 +63,6 @@ DEFAULT_INSTRUCTIONS = {
         "calls and decide exactly one:\n"
         "  - \"DECISION: build_tool\" + a \"PLAN:\" (write a script that solves it, test it with bash, then \"TOOL_SAVE:\" it)\n"
         "  - \"DECISION: reuse_tool\" + \"TOOL: <name>\" (a tool you already built — list_tools/read_tool — or one you find online via web_search)\n"
-        "  - \"DECISION: declare_edge\" + a \"MISSING:\" note — only AFTER you have genuinely tried to build or reuse a tool and failed\n"
     ),
     "overcome": (
         "\n=== OVERCOME MODE ===\n"
@@ -72,7 +71,6 @@ DEFAULT_INSTRUCTIONS = {
         "You cannot call tools right now. Respond with plain text ONLY, choosing exactly one of:\n"
         "  - \"DECISION: reuse_tool\" plus \"TOOL: <name>\" (if a listed built tool already solves this)\n"
         "  - \"DECISION: build_tool\" plus a \"PLAN:\" (the tool/script that would solve this, and how to build and test it)\n"
-        "  - \"DECISION: declare_edge\" plus a \"MISSING:\" note (the capability you lack)\n"
         "(\"build a tool\" means write a script you can run via bash — you cannot add or modify the fixed "
         "harness tools: read, bash, edit, write, search_memory, web_search, web_scrape.)"
     ),
@@ -80,7 +78,7 @@ DEFAULT_INSTRUCTIONS = {
         "\n=== REUSE MODE ===\n"
         "You chose to reuse the existing tool '{{tool}}'. Run it with bash and use its output to "
         "answer the user. The tool is at: {{path}}\n"
-        "If it works, answer directly. If it fails, say so and reconsider (build a new tool or declare the edge)."
+        "If it works, answer directly. If it fails, say so and reconsider (build a new tool)."
     ),
     "synthesize_nudge": (
         "\n=== WRAP UP ===\n"
@@ -137,13 +135,12 @@ DEFAULT_INSTRUCTIONS = {
         "\n=== BUILD MODE (step {{iteration}}/{{max}}) ===\n"
         "Build the tool from your plan: write it under the tools directory using write, then test it "
         "with bash. When it works, output \"TOOL_SAVE: <name> :: <description> :: <path>\". "
-        "If it fails, fix and retry — you have a limited number of build steps before you must declare the edge."
+        "If it fails, fix and retry — you have a limited number of build steps before the build budget runs out."
     ),
     "overcome_build_exhausted": (
         "\n=== BUILD EXHAUSTED ===\n"
         "You have used all {{max}} build attempts without a working tool. Stop building. "
-        "Answer honestly: state what you could not achieve and which capability is missing "
-        "(output \"DECISION: declare_edge\" and a \"MISSING:\" note)."
+        "Answer honestly: state what you could not achieve and which capability is missing."
     ),
     "tool_failure_nudge": (
         "You have had {{count}} tool failures in a row. Stop retrying and diagnose the "
@@ -174,11 +171,11 @@ DEFAULT_INSTRUCTIONS = {k: v.strip() for k, v in DEFAULT_INSTRUCTIONS.items()}
 # docs/instructions.md. `vars` is a space-separated list of {{placeholders}}.
 INSTRUCTION_META = {
     "explore": ("user explicitly asks for a NEW method", "", "_explore_directive"),
-    "capability_edge": ("task type is a flagged edge → hard stop: build/reuse/declare", "{{problem_type}}", "_capability_directive"),
+    "capability_edge": ("task type is a flagged edge → hard stop: build/reuse", "{{problem_type}}", "_capability_directive"),
     "overcome": ("model is stuck (2 failures / 6 rounds), hard stop", "{{problem_type}} {{reason}}", "_overcome_directive"),
     "overcome_reuse": ("model chose reuse_tool — run the existing tool", "{{tool}} {{path}}", "_reuse_directive"),
     "overcome_build": ("model chose build_tool — one bounded build iteration", "{{iteration}} {{max}}", "_build_directive"),
-    "overcome_build_exhausted": ("build iterations exhausted — force declare_edge", "{{max}}", "_build_exhausted_directive"),
+    "overcome_build_exhausted": ("build iterations exhausted — end the build loop", "{{max}}", "_build_exhausted_directive"),
     "synthesize_nudge": ("≥8 tool calls w/o a final answer (advisory)", "{{count}}", "_synthesize_nudge"),
     "hard_wrapup": ("repeated identical tool calls (redundancy hard stop)", "{{count}}", "_hard_wrapup_directive"),
     "write_script_nudge": ("≥5 distinct bash calls on one target (soft)", "{{count}} {{resource}}", "_write_script_nudge"),
@@ -211,7 +208,7 @@ INSTRUCTION_ORDER = [
     "step_back_adapt",            # ≥12 calls — find a known solution online
     "step_back_concede",          # ≥20 calls — concede honestly (hard stop)
     "hard_wrapup",                # repeated identical calls (redundancy stop)
-    "overcome",                   # stuck → choose build / reuse / declare
+    "overcome",                   # stuck → choose build / reuse
     "overcome_reuse",             #   reuse an already-built tool
     "overcome_build",             #   build a new tool
     "overcome_build_exhausted",   #   build attempts ran out

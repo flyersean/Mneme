@@ -5,8 +5,9 @@ DETECT -> STOP -> DELIBERATE -> BUILD -> OUTCOME.
 A bounded, self-terminating escalation that fires when the model is stuck
 grinding on tool calls (consecutive failures, or too many rounds without an
 answer). Instead of the old soft nudge ("diagnose before retrying"), it hard-
-stops the loop and forces a decision: build a tool to overcome the edge, or
-declare the edge and name the missing capability.
+stops the loop and forces a decision: build a tool (or reuse one) to overcome
+the edge. There is no "declare edge" response — an edge is a trigger to build,
+not a thing to declare; it surfaces when the build loop exhausts its budget.
 
 Persistence functions take `db` explicitly so they are testable against a temp
 DB and stay free of import cycles with the orchestrator.
@@ -56,9 +57,8 @@ STEP_BACK_3 = int(os.environ.get("MNEME_STEP_BACK_3", "20"))
 MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", "30"))
 
 _OVERCOME_MARKER = "=== OVERCOME MODE ==="
-_DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|declare_edge|reuse_tool)\b', re.IGNORECASE)
+_DECISION_RE = re.compile(r'DECISION\s*:\s*(build_tool|reuse_tool)\b', re.IGNORECASE)
 _PLAN_RE = re.compile(r'PLAN\s*:\s*(.+)', re.IGNORECASE)
-_MISSING_RE = re.compile(r'MISSING\s*:\s*(.+)', re.IGNORECASE)
 _TOOL_RE = re.compile(r'TOOL\s*:\s*(\S+)', re.IGNORECASE)
 _TOOL_SAVE_RE = re.compile(r'TOOL_SAVE\s*:\s*([^:]+?)\s*::\s*([^:]+?)\s*::\s*(\S+)', re.IGNORECASE)
 
@@ -108,16 +108,14 @@ def _overcome_directive(problem_type, reason):
 
 
 def _parse_deliberation(reply):
-    """Parse a model reply for DECISION / PLAN / MISSING / TOOL markers."""
+    """Parse a model reply for DECISION / PLAN / TOOL markers."""
     reply = reply or ""
     dm = _DECISION_RE.search(reply)
     plan = _PLAN_RE.search(reply)
-    missing = _MISSING_RE.search(reply)
     tool = _TOOL_RE.search(reply)
     return {
         "decision": (dm.group(1).lower() if dm else ""),
         "plan": (plan.group(1).strip() if plan else ""),
-        "missing": (missing.group(1).strip() if missing else ""),
         "tool": (tool.group(1).strip() if tool else ""),
     }
 
@@ -131,7 +129,7 @@ def _in_build_mode(messages):
         txt = _extract_text(m.get("content", "") or "")
         if "DECISION: build_tool" in txt:
             seen_build = True
-        if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt:
+        if "TOOL_SAVE:" in txt:
             seen_resolution = True
     return seen_build and not seen_resolution
 
@@ -145,7 +143,7 @@ def _in_reuse_mode(messages):
         txt = _extract_text(m.get("content", "") or "")
         if "DECISION: reuse_tool" in txt:
             seen_reuse = True
-        if "TOOL_SAVE:" in txt or "DECISION: declare_edge" in txt or "DECISION: build_tool" in txt:
+        if "TOOL_SAVE:" in txt or "DECISION: build_tool" in txt:
             seen_resolution = True
     return seen_reuse and not seen_resolution
 
@@ -174,7 +172,8 @@ def _build_directive(iteration, max_iterations):
 
 
 def _build_exhausted_directive(max_iterations):
-    """Force declare_edge once the build loop has exhausted its budget."""
+    """End the build loop once its budget is exhausted — the edge surfaces via
+    the honest answer, not a declaration."""
     return _load_instruction("overcome_build_exhausted", vars={"max": str(max_iterations)})
 
 
@@ -291,12 +290,13 @@ def _handle_overcome_reply(db, problem_type, reply):
     """After an overcome directive, parse the model's reply and record the outcome.
 
     - TOOL_SAVE marker -> _save_tool + record 'overcame'
-    - DECISION: declare_edge -> record 'confirmed'
     - DECISION: build_tool -> record 'attempted' (the build proceeds over later
       turns via the passthrough/native write/bash tools)
     - DECISION: reuse_tool -> record 'attempted' (reuse proceeds: run the
       existing tool over later turns)
-    Returns a status string ('overcame'/'confirmed'/'build_tool'/'reuse_tool'/'none').
+    There is no declare_edge — the edge surfaces when the build loop exhausts
+    its budget (BUILD_MAX_TOOL_CALLS), not via a model declaration.
+    Returns a status string ('overcame'/'build_tool'/'reuse_tool'/'none').
     """
     if not (reply or "").strip():
         return "none"
@@ -307,9 +307,6 @@ def _handle_overcome_reply(db, problem_type, reply):
         _record_overcome(db, problem_type, "overcame")
         return "overcame"
     delib = _parse_deliberation(reply)
-    if delib["decision"] == "declare_edge":
-        _record_overcome(db, problem_type, "confirmed")
-        return "confirmed"
     if delib["decision"] == "build_tool":
         _record_overcome(db, problem_type, "attempted")
         return "build_tool"

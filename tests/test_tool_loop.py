@@ -584,8 +584,9 @@ def test_detect_stuck_on_tool_rounds():
 def test_parse_deliberation():
     d = mp._parse_deliberation("DECISION: build_tool\nPLAN: write a curl script\nok")
     assert d["decision"] == "build_tool" and "curl" in d["plan"]
+    # declare_edge is no longer a valid decision — it must not parse.
     d2 = mp._parse_deliberation("DECISION: declare_edge\nMISSING: no API access")
-    assert d2["decision"] == "declare_edge" and d2["missing"] == "no API access"
+    assert d2["decision"] == ""
 
 
 @test
@@ -609,11 +610,12 @@ def test_record_overcome_updates_edge():
 
 @test
 def test_capability_edge_directs_to_overcome():
-    # A flagged edge must route the model to OVERCOME (build/reuse/declare), not the
+    # A flagged edge must route the model to OVERCOME (build/reuse), not the
     # old dead-end "propose a tool or state you cannot answer".
     d = mp._load_instruction("capability_edge", vars={"problem_type": "compute"})
-    for marker in ("OVERCOME", "DECISION: build_tool", "DECISION: reuse_tool", "DECISION: declare_edge"):
+    for marker in ("OVERCOME", "DECISION: build_tool", "DECISION: reuse_tool"):
         assert marker in d, f"capability_edge missing '{marker}'"
+    assert "DECISION: declare_edge" not in d
     assert "propose the exact tool" not in d
     assert "state clearly that you" not in d
     # A flagged type returns the directive; an unflagged type returns nothing.
@@ -652,7 +654,7 @@ def test_build_directive_and_exhausted():
     d = mp._build_directive(2, 6)
     assert "BUILD MODE" in d and "step 2/6" in d
     e = mp._build_exhausted_directive(3)
-    assert "EXHAUSTED" in e and "declare_edge" in e
+    assert "EXHAUSTED" in e and "declare_edge" not in e
     assert mp._build_tool_calls([]) == 0
     # unified bound: the tool-call budget is derived from the iteration knob
     assert mp.BUILD_MAX_TOOL_CALLS == mp.BUILD_MAX_ITERATIONS * 2

@@ -3826,7 +3826,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _calls = _build_tool_calls(messages)
         if _calls >= BUILD_MAX_TOOL_CALLS:
             mneme_system += "\n\n" + _build_exhausted_directive(BUILD_MAX_ITERATIONS)
-            print(f"  [BUILD-EXHAUSTED] {_calls} build tool calls — forcing declare_edge", flush=True)
+            print(f"  [BUILD-EXHAUSTED] {_calls} build tool calls — ending build loop", flush=True)
         else:
             mneme_system += "\n\n" + _build_directive(_calls + 1, BUILD_MAX_TOOL_CALLS)
             print(f"  [BUILD] build step {_calls + 1}/{BUILD_MAX_TOOL_CALLS}", flush=True)
@@ -4242,8 +4242,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     # Overcome-mode outcome: if the model was deliberating (stuck now, a known
     # capability edge, or already inside an overcome episode), parse its reply and
-    # record the decision — build_tool (attempted), declare_edge (confirmed), or a
-    # TOOL_SAVE marker (overcame + saved tool).
+    # record the decision — build_tool (attempted), reuse_tool (attempted), or a
+    # TOOL_SAVE marker (overcame + saved tool). No declare_edge: an edge surfaces
+    # when the build loop exhausts its budget, not via a model declaration.
     if _stuck or _is_edge or _in_build or _in_reuse:
         try:
             _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)

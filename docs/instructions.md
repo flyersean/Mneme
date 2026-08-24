@@ -19,10 +19,10 @@ injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 | name                    | when injected                                        | vars                          | used_by                |
 |-------------------------|------------------------------------------------------|-------------------------------|------------------------|
 | `explore`               | user explicitly asks for a NEW method                | —                             | `_explore_directive`   |
-| `capability_edge`       | task type is a flagged edge → hard stop: build/reuse/declare | `{{problem_type}}`            | `_capability_directive`|
+| `capability_edge`       | task type is a flagged edge → hard stop: build/reuse | `{{problem_type}}`            | `_capability_directive`|
 | `overcome`              | model is stuck (2 failures / 6 rounds), hard stop    | `{{problem_type}}`, `{{reason}}` | `_overcome_directive` |
 | `overcome_build`        | model chose build_tool — one bounded build iteration | `{{iteration}}`, `{{max}}`    | `_build_directive`     |
-| `overcome_build_exhausted` | build iterations exhausted — force declare_edge    | `{{max}}`                     | `_build_exhausted_directive` |
+| `overcome_build_exhausted` | build iterations exhausted — end the build loop | `{{max}}`                     | `_build_exhausted_directive` |
 | `overcome_reuse`       | model chose reuse_tool — run the existing tool       | `{{tool}}`, `{{path}}`         | `_reuse_directive`     |
 | `synthesize_nudge`     | ≥8 successful tool calls w/o a final answer (advisory)| `{{count}}`                  | `_synthesize_nudge`    |
 | `hard_wrapup`          | repeated identical tool calls (redundancy hard stop)  | `{{count}}`                  | `_hard_wrapup_directive`|
