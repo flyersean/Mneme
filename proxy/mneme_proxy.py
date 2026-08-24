@@ -2822,7 +2822,10 @@ def compress_large_tool_results(messages: list) -> list:
         
         # Bound what the model sees: head+tail window, full text retrievable via
         # search_memory (Hermes-style bounded output — no summarization).
-        if len(content) > MAX_TOOL_FORWARD:
+        # Idempotency guard: a truncated message is still > MAX_TOOL_FORWARD (the
+        # note adds length), so re-truncating would shift bytes every turn and
+        # break the prefix cache. Skip anything already carrying the marker.
+        if len(content) > MAX_TOOL_FORWARD and "[... content truncated:" not in content:
             head_len = MAX_TOOL_FORWARD * 3 // 4
             tail_len = MAX_TOOL_FORWARD - head_len
             msg["content"] = (
@@ -3802,18 +3805,25 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     context, ptype = build_context(user_msg)
     cur_ptype = _classify_problem_type(user_msg)
     
-    # Insert Mneme (fixed instructions + saved-tool directive + optional explore
-    # directive) as a system message after Hermes. The VARIABLE memory context is
-    # injected at the TAIL (prepended to the last user message) so the stable
-    # [system prompt + conversation] prefix stays cacheable across turns.
+    # Insert Mneme's FIXED instruction block as a system message after Hermes.
+    # ONLY _system_prompt_block() goes here — a stable, cacheable prefix. The
+    # VARIABLE advisory directives (saved-tool hint, explore directive, relevant
+    # built tools) go to the TAIL (prepended to the last user message) alongside
+    # the memory context, so the stable [system prompt + conversation] prefix
+    # stays cacheable across turns (docs/build-plan.md Phase 1).
     # A KNOWN capability edge is NOT injected here — it routes into the hard-stop
     # overcome path below, because the point of flagging an edge is to OVERCOME
     # it, not name it and stop.
-    mneme_system = _system_prompt_block() + _tool_directive(db, cur_ptype) + _explore_directive(full_user_msg)
+    mneme_system = _system_prompt_block()
     _tool_injection = mntools.inject_relevant_tools(user_msg)
     if _tool_injection:
-        mneme_system += "\n" + _tool_injection
         print("  [TOOL-INJECT] injected relevant built tools", flush=True)
+    _advisory = [p for p in (
+        _tool_directive(db, cur_ptype),
+        _explore_directive(full_user_msg),
+        _tool_injection,
+    ) if (p or "").strip()]
+    dynamic_tail = "\n\n".join(_advisory)
     _stuck, _stuck_reason = _detect_stuck(messages)
     _is_edge = _is_capability_edge(cur_ptype)
     _in_build = _in_build_mode(messages)
@@ -3852,15 +3862,24 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             insert_at = i + 1
             break
     messages.insert(insert_at, {"role": "system", "content": mneme_system})
-    # Inject the VARIABLE memory context at the TAIL: prepend it to the last user
-    # message. This keeps the [system prompt + conversation] prefix stable and
-    # cacheable (KV prefix cache), instead of re-processing the whole conversation
-    # every turn when the memory chunks reshuffle at the head.
-    if context.strip():
+    # Inject the VARIABLE memory context + advisory directives at the TAIL: prepend
+    # to the last user message. This keeps the [system prompt + conversation]
+    # prefix stable and cacheable (KV prefix cache), instead of re-processing the
+    # whole conversation every turn when the memory chunks reshuffle at the head.
+    _tail_parts = [p for p in (context, dynamic_tail) if (p or "").strip()]
+    tail = "\n\n".join(_tail_parts)
+    if tail.strip():
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "user":
-                messages[i]["content"] = context + "\n\n---\n" + (messages[i].get("content") or "")
-                print(f"  [INJECT-TAIL] memory prepended to last user message ({len(context)} chars)", flush=True)
+                _cur = messages[i].get("content") or ""
+                # Guard against double-injection: if a client echoes the mutated
+                # message back on a later call, the memory disclaimer is already at
+                # the head — don't prepend again (else context doubles each round).
+                if context.strip() and "--- MEMORY:" in _cur:
+                    print("  [INJECT-TAIL] already injected — skipping", flush=True)
+                    break
+                messages[i]["content"] = tail + "\n\n---\n" + _cur
+                print(f"  [INJECT-TAIL] {len(tail)} chars prepended to last user message", flush=True)
                 break
     full_msgs = messages
     
