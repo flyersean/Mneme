@@ -1918,12 +1918,22 @@ def get_strategies(problem_type=None, limit=3):
     # Grade-first, then cost (cheaper wins) — so a discovered technique (grade A)
     # is injected ahead of failure-derived rules, and the cheaper of two
     # competing techniques (e.g. API JSON vs full-HTML scrape) wins the slot.
-    rows = db.execute(
-        "SELECT strategy_text FROM strategies WHERE retired=0 "
-        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, "
-        "cost ASC, effective_grade DESC, use_count DESC LIMIT ?",
-        (limit,)
-    ).fetchall()
+    # Optional problem_type filter: strategies are only relevant to the same
+    # problem type they were learned from (relevance + grade, not grade alone).
+    if problem_type:
+        rows = db.execute(
+            "SELECT strategy_text FROM strategies WHERE retired=0 AND problem_type = ? "
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, "
+            "cost ASC, effective_grade DESC, use_count DESC LIMIT ?",
+            (problem_type, limit)
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT strategy_text FROM strategies WHERE retired=0 "
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, "
+            "cost ASC, effective_grade DESC, use_count DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
     return [r[0] for r in rows]
 
 # ─── Context Injection ─────────────────────────────────────────
@@ -2080,6 +2090,7 @@ def build_context(query: str) -> Tuple[str, str]:
     3. Grade-aware trim to fit MAX_INJECTED_TOKENS
     4. Append strategies for the detected problem type
     """
+    q_ptype = _classify_problem_type(query)
     chunk_ids = route_query(query, top_k=3)
     
     # Expand to siblings with cap — batch query instead of per-chunk
@@ -2165,8 +2176,9 @@ def build_context(query: str) -> Tuple[str, str]:
         # No memory chunks — inject strategies as fallback context
         srows = db.execute(
             "SELECT strategy_id, strategy_text FROM strategies "
-            "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
-            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
+            "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') AND problem_type = ? "
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
+            (q_ptype,)
         ).fetchall()
         if srows:
             _INJECTED_STRATEGY_IDS.clear()
@@ -2196,8 +2208,9 @@ def build_context(query: str) -> Tuple[str, str]:
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
     srows = db.execute(
         "SELECT strategy_id, strategy_text FROM strategies "
-        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') "
-        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3"
+        "WHERE (retired IS NULL OR retired = 0) AND grade IN ('A','B') AND problem_type = ? "
+        "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, cost ASC, effective_grade DESC, use_count DESC LIMIT 3",
+        (q_ptype,)
     ).fetchall()
     if srows and not MEMORY_ONLY:
         _INJECTED_STRATEGY_IDS.clear()
