@@ -621,6 +621,10 @@ db.commit()
 # "FAILURE on:"/"TRUNCATED on:" text — new failures set outcome at insert time.
 try:
     db.execute("UPDATE strategies SET outcome='FAILURE' WHERE strategy_text LIKE 'FAILURE on:%' OR strategy_text LIKE 'TRUNCATED on:%'")
+    # Older code saved strategies with problem_type='model' placeholder, which
+    # never matches a query's classified type (so they never injected). Fold them
+    # back to 'other'.
+    db.execute("UPDATE strategies SET problem_type='other' WHERE problem_type='model'")
     # Reformat old-format failure text to the negative directive, so existing
     # rows match what generate_strategy now produces for new failures. Idempotent:
     # once rewritten the text no longer starts with "FAILURE on:".
@@ -3114,6 +3118,11 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
     param_sets = custom_params or _LEARN_PARAMS
     results = []
     strategies = []
+    # Task type for the strategies extracted below — so they inject into future
+    # queries of the SAME type (not orphaned under the "model" placeholder).
+    ptype = _classify_problem_type(problem)
+    if ptype == "error":
+        ptype = "other"
     
     for i in range(iterations):
         params = param_sets[i % len(param_sets)]
@@ -3179,7 +3188,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
                 s_text = str(s_text).strip()[:300]
                 if len(s_text) > 10:
                     strategies.append(s_text)
-                    _save_strategy(s_text, grade)
+                    _save_strategy(s_text, grade, problem_type=ptype)
                     print(f"  [LEARN-STRATEGY] {s_text[:80]}...", flush=True)
     
     # Synthesis: extract final strategies from all A-grade responses
@@ -3213,7 +3222,7 @@ def _run_learning_mode(problem: str, iterations: int = 5, custom_params: list = 
         for rule_text in rule_list:
             rule_text = str(rule_text).strip()[:300]
             if len(rule_text) > 10 and not _JUNK_RULE.search(rule_text):
-                _save_strategy(rule_text, "B")
+                _save_strategy(rule_text, "B", problem_type=ptype)
                 strategies.append(f"RULE: {rule_text}")
     
     return {
@@ -4435,7 +4444,7 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
-def _save_strategy(text, grade, existing_id="", problem_type="model", cost=0, abstract=True):
+def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example.
     # abstract=False skips the model call for lessons that are already general
