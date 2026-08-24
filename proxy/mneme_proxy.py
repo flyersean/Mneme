@@ -621,6 +621,13 @@ db.commit()
 # "FAILURE on:"/"TRUNCATED on:" text — new failures set outcome at insert time.
 try:
     db.execute("UPDATE strategies SET outcome='FAILURE' WHERE strategy_text LIKE 'FAILURE on:%' OR strategy_text LIKE 'TRUNCATED on:%'")
+    # Reformat old-format failure text to the negative directive, so existing
+    # rows match what generate_strategy now produces for new failures. Idempotent:
+    # once rewritten the text no longer starts with "FAILURE on:".
+    for _sid, _txt in db.execute("SELECT strategy_id, strategy_text FROM strategies WHERE strategy_text LIKE 'FAILURE on:%'").fetchall():
+        _body = _txt[len("FAILURE on: "):].replace(". Retry with different approach.", "").strip()
+        db.execute("UPDATE strategies SET strategy_text=? WHERE strategy_id=?",
+                   (f"Do NOT repeat what failed here: {_body}. Instead, try a different approach.", _sid))
     db.commit()
 except sqlite3.OperationalError:
     pass
