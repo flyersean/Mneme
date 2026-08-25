@@ -78,9 +78,11 @@ from mneme.grading import (
     _extract_mem_ids,
     _extract_urls_from_toolcalls,
     _extract_urls_from_messages,
+    _extract_urls_from_tool_trace,
     _source_domain,
     _has_fake_source,
     _has_specific_claims,
+    _is_honest_terminal,
     _verify_and_regrade,
 )
 import mneme.tools as mntools
@@ -2635,6 +2637,18 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         ptype = "other"  # "error" is an outcome, not a task type
     
     strategy = generate_strategy(msgs, outcome)
+    # Don't save a "Do NOT repeat" strategy for an honest-terminal answer
+    # (undefined / market price / I don't know / clarification) — those are
+    # correct-but-uncitable results, not failures. Saving one would poison
+    # strategy memory (the Shaw's lobster-roll false positive did exactly this).
+    _final_answer = ""
+    for m in reversed(msgs):
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content"):
+            _final_answer = _extract_text(m.get("content", ""))
+            break
+    if strategy and _is_honest_terminal(_final_answer):
+        print(f"  [ARCHIVE] honest-terminal answer — suppressing DON'T-DO strategy", flush=True)
+        strategy = ""
     # Temporal stamping: prepend date to embedding text so FAISS can
     # distinguish temporally distinct facts (e.g., "favorite model is X"
     # on Monday vs "favorite model is Y" on Friday). Display text unchanged.
@@ -4310,7 +4324,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # this turn is a fabricated citation -> fail. Only mem chunks and
             # URLs are checkable; the rest is left to the [guess] path.
             _trace_chunks = _extract_mem_ids(context) | _trace_search_chunks
-            _trace_urls = _extract_urls_from_messages(full_msgs) | _extract_urls_from_toolcalls(result.get("tool_calls"))
+            _trace_urls = _extract_urls_from_messages(full_msgs) | _extract_urls_from_toolcalls(result.get("tool_calls")) | _extract_urls_from_tool_trace(_tool_trace)
             if _has_fake_source(_parsed, _trace_chunks, _trace_urls):
                 grade = "F"
                 print("  [FAKE-SOURCE] fabricated citation detected — grade fail", flush=True)
@@ -4690,6 +4704,18 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
                 # asking the model to invent one produced tautological junk
                 # ("immediately execute the retrieval"). Capability-edge
                 # tracking (_record_capability) already handles timeouts.
+                return
+            # Defense-in-depth: an F that is actually a correct terminal answer
+            # (undefined / market price / I don't know / clarification) is a
+            # grading false positive — no genuine failure to learn from, and a
+            # "don't do this" directive would poison strategy memory.
+            _final_answer = ""
+            for m in reversed(messages or []):
+                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content"):
+                    _final_answer = _extract_text(m.get("content", ""))
+                    break
+            if _is_honest_terminal(_final_answer):
+                print("  [STRATEGY-DIRECTIVE][SKIP] honest-terminal answer — no failure lesson", flush=True)
                 return
             # Extract an imperative directive instead of boilerplate.
             # NOTE: grade C = tool-call deferred (model used a tool, answer

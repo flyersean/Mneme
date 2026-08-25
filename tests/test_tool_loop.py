@@ -1057,6 +1057,52 @@ def test_verify_and_regrade_world_true_passes():
         mp.query_model, mp.mntools._exec_web_search = orig_q, orig_ws
 
 
+# ── 4b. Honest-terminal detection + URL normalization (false-positive fixes) ──
+@test
+def test_is_honest_terminal_detects_uncitable_answers():
+    terminal = [
+        "7 divided by 0 is undefined.",
+        "The lobster roll is Market Price, no fixed dollar amount.",
+        "I don't know — you never told me.",
+        "No U.S. President resigned in August 2025 — that did not happen.",
+        "Did you mean to ask something?",
+    ]
+    for t in terminal:
+        assert _gr._is_honest_terminal(t) is True, f"{t!r} should be honest-terminal"
+    specific = [
+        "The Pulled Pork Sandwich is $13.49.",
+        "The capital of France is Paris.",
+        "Bitcoin is around $77,300.",
+    ]
+    for s in specific:
+        assert _gr._is_honest_terminal(s) is False, f"{s!r} should NOT be honest-terminal"
+
+
+@test
+def test_source_domain_normalizes_www_and_scheme():
+    assert _gr._source_domain("https://www.shaws-wharf.com/menu") == "shaws-wharf.com"
+    assert _gr._source_domain("shaws-wharf.com") == "shaws-wharf.com"
+    assert _gr._source_domain("http://WWW.Example.com:8080/x") == "example.com"
+
+
+@test
+def test_extract_urls_from_tool_trace():
+    tr = [
+        {"tool": "fetch_url", "args": {"url": "https://www.shaws-wharf.com/menu"}, "result": "menu content"},
+        {"tool": "web_search", "args": {"query": "x"}, "result": "see https://allmenus.com/foo"},
+    ]
+    u = _gr._extract_urls_from_tool_trace(tr)
+    assert "https://www.shaws-wharf.com/menu" in u
+    assert "https://allmenus.com/foo" in u
+
+
+@test
+def test_grade_inline_honest_terminal_is_pass_not_judge():
+    parsed = {"sources": [], "guesses": 0, "has_tags": False}
+    # undefined -> B (no slow-judge fallback), not None
+    assert _gr._grade_inline(parsed, "7 / 0 is undefined.", False) == "B"
+
+
 # ── 4c. Continue-after-empty (prompt the model to keep going) ──────────────
 @test
 def test_is_near_empty_detects_shrugs():
