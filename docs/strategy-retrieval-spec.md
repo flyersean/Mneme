@@ -305,6 +305,21 @@ is downgraded to a non-goal unless a concrete need appears.
   where it needs two).
 - **Grinding** — menu-price queries loop ~4 min, ~200s of which is two ~100s
   OpenRouter read timeouts. Separate from strategy retrieval.
-- **Threshold sweep** — confirm (a) the strategy floor (~0.55) against same-concept
-  vs unrelated queries, and (b) the failure-ladder numbers (2 / 3 / 6) against the
-  real consecutive-failure distribution, before freezing them.
+- **Threshold sweep** — measured on a fresh DB (voyage-4-lite, raw cosine):
+
+  | source → query | sim | vs floors (0.62 / 0.55) |
+  |----------------|-----|-------------------------|
+  | pulled-pork → same item | 0.831 | inject memory |
+  | pulled-pork → cheeseburger (other diner) | 0.531 | below strategy floor |
+  | pulled-pork → pizza (other) | 0.413 | below |
+  | pulled-pork → lobster roll (other) | 0.477 | below |
+  | pulled-pork → capital of France | 0.125 | unrelated |
+  | pulled-pork → "write a python fn" | 0.108 | unrelated |
+
+  The two-tier STRUCTURE holds (exact >> same-concept > unrelated), but the
+  strategy floor 0.55 sits on a knife-edge: "same concept, different restaurant"
+  measured 0.53 against a SHORT source fact. Real archived chunks are richer
+  (full answer + context) and score higher (0.615 in the earlier full-chunk
+  measurement). Re-measure against actual archived chunks before freezing 0.55;
+  the floor is sensitive to source richness. Ladder (3/6) deployed; needs a
+  failure-inducing battery to fully validate the streak distribution.
