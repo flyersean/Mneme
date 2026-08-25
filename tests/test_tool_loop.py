@@ -127,19 +127,21 @@ def _answer(text):
 
 
 def seed_chunk():
-    mp.db.execute(
-        "INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, grade, created_at) "
-        "VALUES (?,?,?,?,?)",
-        ("mem_1787262481137988", "test memory",
-         json.dumps([{"role": "user", "content": "the weather is sunny today"}]),
-         "B", "2026-08-20T00:00:00"),
-    )
-    mp.db.commit()
+    with mp._db_lock:
+        mp.db.execute(
+            "INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, grade, created_at) "
+            "VALUES (?,?,?,?,?)",
+            ("mem_1787262481137988", "test memory",
+             json.dumps([{"role": "user", "content": "the weather is sunny today"}]),
+             "B", "2026-08-20T00:00:00"),
+        )
+        mp.db.commit()
 
 
 def clear_strategies():
-    mp.db.execute("DELETE FROM strategies")
-    mp.db.commit()
+    with mp._db_lock:
+        mp.db.execute("DELETE FROM strategies")
+        mp.db.commit()
 
 
 # ── 3. Test runner (no pytest dependency) ───────────────────────────────────

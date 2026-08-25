@@ -433,6 +433,12 @@ _chunk_seq_lock = threading.Lock()
 # chunk in _archive_single_chunk.
 _pending_strategy_links = []
 _pending_links_lock = threading.Lock()
+# Single sqlite connection shared by the main thread + 2 background workers
+# (check_same_thread=False). Writes must be serialized: an unguarded commit()
+# racing another thread's commit on the same connection raises
+# "cannot commit - no transaction is active". Wrap every write+commit pair
+# (save_chunk, _save_strategy, _archive_single_chunk) in this lock.
+_db_lock = threading.RLock()
 
 def _seed_chunk_seq():
     global _chunk_seq
@@ -1589,11 +1595,12 @@ def _check_belief_evolution(new_chunk_id: str, topic_label: str):
             answer = (r.get("content", "") or "").strip().upper()
             
             if "UPDATE" in answer or "CONTRADICT" in answer:
-                db.execute(
-                    "UPDATE chunks SET superseded_by = ? WHERE chunk_id = ?",
-                    (new_chunk_id, old_id)
-                )
-                db.commit()
+                with _db_lock:
+                    db.execute(
+                        "UPDATE chunks SET superseded_by = ? WHERE chunk_id = ?",
+                        (new_chunk_id, old_id)
+                    )
+                    db.commit()
                 print(f"  [BELIEF] {old_id[:20]}... superseded by {new_chunk_id[:20]}... "
                       f"({answer[:20]})", flush=True)
     except Exception as e:
@@ -1624,16 +1631,16 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
     )
 
-    db.execute("""
-        INSERT OR REPLACE INTO chunks
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
-          blob, grade, consensus, outcome, problem_type,
-          source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
-          1 if is_indexable else 0, "",
-          pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0))
-
-    db.commit()
+    with _db_lock:
+        db.execute("""
+            INSERT OR REPLACE INTO chunks
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
+              blob, grade, consensus, outcome, problem_type,
+              source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
+              1 if is_indexable else 0, "",
+              pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0))
+        db.commit()
     
     # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:
@@ -2672,9 +2679,10 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         pending = _pending_strategy_links[:]
         _pending_strategy_links.clear()
     if pending:
-        for _psid in pending:
-            db.execute("UPDATE strategies SET source_chunk=? WHERE strategy_id=?", (chunk_id, _psid))
-        db.commit()
+        with _db_lock:
+            for _psid in pending:
+                db.execute("UPDATE strategies SET source_chunk=? WHERE strategy_id=?", (chunk_id, _psid))
+            db.commit()
         print(f"  [LINK] {len(pending)} strategies linked to {chunk_id}", flush=True)
     
     if strategy and ptype != "other":
@@ -2697,14 +2705,15 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
             pass
         
         new_version = existing_version + 1
-        db.execute(
-            "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, ptype, strategy, chunk_id, "B",
-             datetime.now(timezone.utc).isoformat(),
-             new_version, sid if existing_version > 0 else "",
-             0.0, 0, 0, 0, "", 0, outcome)
-        )
-        db.commit()
+        with _db_lock:
+            db.execute(
+                "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, ptype, strategy, chunk_id, "B",
+                 datetime.now(timezone.utc).isoformat(),
+                 new_version, sid if existing_version > 0 else "",
+                 0.0, 0, 0, 0, "", 0, outcome)
+            )
+            db.commit()
         print(f"  [STRATEGY] v{new_version} {strategy[:60]}...", flush=True)
         # Embed into FAISS for retrieval
         try:
@@ -3193,9 +3202,10 @@ def _store_preferences(updates: list):
         return
     now = datetime.now(timezone.utc).isoformat()
     try:
-        for key, val in updates:
-            db.execute("INSERT OR REPLACE INTO preferences VALUES (?,?,?)", (key, val, now))
-        db.commit()
+        with _db_lock:
+            for key, val in updates:
+                db.execute("INSERT OR REPLACE INTO preferences VALUES (?,?,?)", (key, val, now))
+            db.commit()
         print(f"  [PREF] stored {[(k, v) for k, v in updates]}", flush=True)
     except Exception as e:
         _log_error("_store_preferences", e)
@@ -4500,28 +4510,29 @@ def _consume_injected_strategies(grade: str):
         return
     print(f"  [CONSUME] consuming {len(ids)} injected strategies: {ids}", flush=True)
     try:
-        for sid in ids:
-            try:
-                row = db.execute(
-                    "SELECT use_count, success_count FROM strategies WHERE strategy_id=?",
-                    (sid,)
-                ).fetchone()
-                if not row:
-                    continue
-                uc = (row[0] or 0) + 1
-                sc = (row[1] or 0) + (1 if grade in ("A", "B") else 0)
-                eg = sc / max(uc, 1)
-                retired = 1 if (eg < 0.25 and uc >= 5) else 0
-                db.execute(
-                    "UPDATE strategies SET use_count=?, success_count=?, "
-                    "effective_grade=?, retired=? WHERE strategy_id=?",
-                    (uc, sc, eg, retired, sid)
-                )
-                if retired:
-                    print(f"  [STRATEGY-RETIRE] {sid} eff={eg:.2f} uses={uc}", flush=True)
-            except Exception as e:
-                _log_error(f"_consume_injected_strategies:row:{sid}", e)
-        db.commit()
+        with _db_lock:
+            for sid in ids:
+                try:
+                    row = db.execute(
+                        "SELECT use_count, success_count FROM strategies WHERE strategy_id=?",
+                        (sid,)
+                    ).fetchone()
+                    if not row:
+                        continue
+                    uc = (row[0] or 0) + 1
+                    sc = (row[1] or 0) + (1 if grade in ("A", "B") else 0)
+                    eg = sc / max(uc, 1)
+                    retired = 1 if (eg < 0.25 and uc >= 5) else 0
+                    db.execute(
+                        "UPDATE strategies SET use_count=?, success_count=?, "
+                        "effective_grade=?, retired=? WHERE strategy_id=?",
+                        (uc, sc, eg, retired, sid)
+                    )
+                    if retired:
+                        print(f"  [STRATEGY-RETIRE] {sid} eff={eg:.2f} uses={uc}", flush=True)
+                except Exception as e:
+                    _log_error(f"_consume_injected_strategies:row:{sid}", e)
+            db.commit()
     except Exception as e:
         _log_error("_consume_injected_strategies", e)
     finally:
@@ -4625,10 +4636,11 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
-    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
-         new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
-    db.commit()
+    with _db_lock:
+        db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
+             new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
+        db.commit()
     # Linkage backfill: when a strategy is saved with no source_chunk (the turn's
     # chunk is archived async AFTER the save), queue it so _archive_single_chunk
     # links it to the chunk that gets created for this turn.
@@ -4901,12 +4913,13 @@ if FLASK_OK:
                 except Exception:
                     pass
                 new_version = existing_version + 1
-                db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (sid, "model", st, "", "A",
-                     datetime.now(timezone.utc).isoformat(),
-                     new_version, sid if existing_version > 0 else "",
-                     0.0, 0, 0, 0, "", 0))
-                db.commit()
+                with _db_lock:
+                    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (sid, "model", st, "", "A",
+                         datetime.now(timezone.utc).isoformat(),
+                         new_version, sid if existing_version > 0 else "",
+                         0.0, 0, 0, 0, "", 0))
+                    db.commit()
                 print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
                 # Add to FAISS for future dedup
                 try:
@@ -4945,11 +4958,12 @@ if FLASK_OK:
                     sc = (row[2] or 0) + (1 if grade in ("A", "B") else 0)
                     grade_val = {"A": 1.0, "B": 0.75, "C": 0.5, "D": 0.25, "F": 0.0}.get(grade, 0.5)
                     new_eg = old_eg * 0.7 + grade_val * 0.3
-                    db.execute(
-                        "UPDATE strategies SET effective_grade=?, use_count=?, success_count=? WHERE strategy_id LIKE ?",
-                        (new_eg, uc, sc, f"%{ref_id}%")
-                    )
-                    db.commit()
+                    with _db_lock:
+                        db.execute(
+                            "UPDATE strategies SET effective_grade=?, use_count=?, success_count=? WHERE strategy_id LIKE ?",
+                            (new_eg, uc, sc, f"%{ref_id}%")
+                        )
+                        db.commit()
                     print(f"  [STRATEGY-EFF] #{ref_id} eff={new_eg:.2f} used={uc} success={sc}", flush=True)
         except Exception:
             pass
@@ -5326,16 +5340,18 @@ if FLASK_OK:
                 return _cors_response({"capability_edges": edges})
             data = request.get_json(force=True)
             if "clear" in data:
-                db.execute("UPDATE capability_edges SET flagged=0 WHERE problem_type=?", (data["clear"],))
-                db.commit()
+                with _db_lock:
+                    db.execute("UPDATE capability_edges SET flagged=0 WHERE problem_type=?", (data["clear"],))
+                    db.commit()
             elif "flag" in data:
                 now = datetime.now(timezone.utc).isoformat()
-                db.execute(
-                    "INSERT INTO capability_edges (problem_type, attempts, failures, last_grade, flagged, updated_at) "
-                    "VALUES (?,1,2,'F',1,?) ON CONFLICT(problem_type) DO UPDATE SET flagged=1, updated_at=excluded.updated_at",
-                    (data["flag"], now),
-                )
-                db.commit()
+                with _db_lock:
+                    db.execute(
+                        "INSERT INTO capability_edges (problem_type, attempts, failures, last_grade, flagged, updated_at) "
+                        "VALUES (?,1,2,'F',1,?) ON CONFLICT(problem_type) DO UPDATE SET flagged=1, updated_at=excluded.updated_at",
+                        (data["flag"], now),
+                    )
+                    db.commit()
             rows = db.execute(
                 "SELECT problem_type, attempts, failures, last_grade, flagged FROM capability_edges ORDER BY failures DESC"
             ).fetchall()
