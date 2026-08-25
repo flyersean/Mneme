@@ -95,6 +95,12 @@ retrieval:
                                # only if it scores >= this. Below it -> inject NOTHING. Tune per setup
                                # (embedders have different similarity scales). RAISE = stricter/fewer,
                                # LOWER = more recall.
+  strategy_min_similarity: 0.55  # SECOND floor (must be < inject_min_similarity). A chunk scoring
+                                 # in [strategy_min_similarity, inject_min_similarity) does NOT inject
+                                 # as memory, but any strategy LINKED to that chunk still injects — so
+                                 # a learned approach generalizes to same-concept queries that fall just
+                                 # under the memory floor. Strategies are retrieved by their SOURCE CHUNK,
+                                 # not by a problem-type taxonomy.
   keyword_fallback: false    # pad sparse FAISS with LIKE-substring matches. OFF by default —
                              # substring hits have no semantic score and pollute context.
   route_threshold: 0.08      # DEPRECATED for retrieval (route_query keys on inject_min_similarity);

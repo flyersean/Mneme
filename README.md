@@ -153,6 +153,7 @@ The knobs you'll actually touch (see `mneme.yaml.example` for full comments):
 | `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (must be non-thinking) |
 | `sampling.temperature` | `0.2` | creativity — lower is more deterministic |
 | `retrieval.inject_min_similarity` | `0.62` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall |
+| `retrieval.strategy_min_similarity` | `0.55` | second, lower floor — chunks in `[strategy_min, inject_min)` don't inject as memory, but their **linked strategies** still do (a learned approach generalizes to same-concept queries just under the memory floor) |
 | `retrieval.max_injected_tokens` | `8000` | token budget for memory stuffed into the prompt |
 
 Full reference: [`docs/config-spec.md`](docs/config-spec.md).
@@ -180,6 +181,14 @@ if nothing in memory scores above `inject_min_similarity`, nothing is injected
 default** (`keyword_fallback: false`) because it has no semantic score and
 pollutes context (e.g. "tool" matching an unrelated "Paramotor Tool" memory).
 
+Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity,
+inject_min_similarity)` isn't injected as memory, but any **strategy linked to
+that chunk** still is. This is how a learned approach ("verify the menu price on
+the restaurant's own site") generalizes to a *different* restaurant whose chunk
+sits just under the memory floor. Strategies are retrieved by their **source
+chunk** — the chunk that produced them — not by a hand-maintained taxonomy, so a
+strategy goes wherever its source chunk is relevant.
+
 Memory is **portable** across machines and even across 1024-dim embedders: on
 startup the proxy re-embeds any chunk whose stored `embed_model` doesn't match
 the current one, so you can `scp` the `.db` from a pod to a laptop and it
@@ -202,19 +211,31 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
 - Provenance grading: the model tags its sources (`[source: X]` / `[guess]`) and
   is graded on *honesty*, not answer-correctness — "I don't know" beats
   fabrication.
+- Honest-terminal detection: correct-but-uncitable answers — `undefined`,
+  `market price`, "I don't know", "no such X", a false-premise correction, a
+  clarification — are graded "pass", not fail. The judge misreads them as
+  failures, so they're short-circuited before the judge.
 - Trace cross-check: any cited `[source: mem_XXX]` or URL is verified against
-  what the model actually had this turn; a fabricated citation fails.
+  what the model actually had this turn (injected chunks + search results + the
+  server-side tool trace), with host normalization so `shaws-wharf.com` matches
+  `https://www.shaws-wharf.com/menu`. A fabricated citation fails.
+- Source-chunk linkage: every strategy is linked to the chunk that produced it,
+  and retrieval keys on that linkage (see "How memory works") — no
+  problem-type taxonomy to maintain.
 - Novel-procedure detection: a working new technique is detected from the tool
   trace, graded "great", and saved as a strategy.
 - Failure extraction: a D/F turn distills one imperative directive to prevent
-  recurrence — filtered through a junk-directive guard so hallucinated
-  "strategies" never enter memory.
+  recurrence — filtered through a junk-directive guard *and* skipped entirely
+  for honest-terminal answers, so a false-positive fail can't teach the model
+  to avoid a correct approach. SUCCESS strategies save only on a recovery
+  (≥2 consecutive tool failures then success), not every pass.
 
 **Capability-edge tracking & overcoming** — records a competence edge per problem
-type; two poor grades flag it, and the next similar task is routed into
-**overcome mode** (hard-stop: build a tool, reuse a saved one, or honestly
-declare the missing capability) instead of grinding or silently giving up. A
-built tool is saved and the edge can be cleared.
+type; three consecutive tool failures flag it, and the next similar task is
+routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or —
+when the build budget is spent — answer honestly and surface the edge) instead
+of grinding or silently giving up. A built tool is saved and the edge can be
+cleared.
 
 **Thinking & learning modes** — `/mode/think` (novelty: generate a baseline,
 forbid its modal features, diverge, and grade novelty objectively via embedding
@@ -234,7 +255,10 @@ stands in for the LLM, and the real SQLite/FAISS + retrieval paths run against
 an in-memory DB. They cover the tool-calling loop (search → answer, search →
 web_search hand-off, search-loop exhaustion), the injection gate
 (`inject_min_similarity` floor, keyword fallback off), the step-back ladder,
-the capability-edge → overcome routing, and the injected-prompt materializer.
+the capability-edge → overcome routing, the injected-prompt materializer,
+provenance grading (honest-terminal detection, source/URL normalization,
+tool-trace URL extraction, fabricated-citation fails), and the two-floor
+retrieval helpers. 58 tests.
 
 ---
 
@@ -263,6 +287,17 @@ index, SQLite connection, staging buffer) and threaded daemon archival. The
 backend is selected by config (`backend.type` + `providers:`); `query_model`
 → chat completions, `embed` → embeddings, and the labeler → chat completions,
 all OpenAI-compatible, so swapping providers is a config edit, not a code change.
+
+Two deliberate runtime details worth knowing:
+
+- **Prefix-cache-stable context.** The fixed instruction block (system prompt +
+  meta-principles) sits at the front of every request as a byte-stable prefix;
+  all *variable* content (memory, strategies, preferences, tool hints) is
+  appended at the tail, never inserted mid-prefix — so any prefix-caching
+  backend (OpenRouter, Ollama, etc.) can reuse the cached prefix across turns.
+- **Serialized writes.** The one SQLite connection is shared by the request
+  thread + two archival workers, so every write+commit pair is guarded by a
+  re-entrant lock — no "cannot commit, no transaction is active" races.
 
 ---
 

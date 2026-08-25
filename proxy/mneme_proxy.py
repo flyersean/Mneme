@@ -132,6 +132,7 @@ _CONFIG_ENV_MAP = {
     "retrieval.classify_threshold": "MNEME_CLASSIFY_THRESHOLD",
     "retrieval.baseline_noise": "MNEME_BASELINE_NOISE",
     "retrieval.inject_min_similarity": "MNEME_INJECT_MIN_SIMILARITY",
+    "retrieval.strategy_min_similarity": "MNEME_STRATEGY_MIN_SIMILARITY",
     "retrieval.keyword_fallback": "MNEME_KEYWORD_FALLBACK",
     "retrieval.age_decay_days": "MNEME_AGE_DECAY_DAYS",
     "retrieval.max_siblings": "MNEME_MAX_SIBLINGS",
