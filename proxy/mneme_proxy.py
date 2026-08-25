@@ -2307,13 +2307,15 @@ def build_context(query: str) -> Tuple[str, str]:
         parts.append(msg_text)
     
     if not parts:
-        # No memory chunks — inject strategies as fallback context
+        # No memory chunks — inject strategies as fallback context. (Meta-principles
+        # live in the fixed system message now — see process_chat — so they stay a
+        # cacheable prefix instead of re-shipping in the variable tail.)
         strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
         if strat_text:
             _INJECTED_STRATEGY_IDS.clear()
             _INJECTED_STRATEGY_IDS.update(strat_ids)
-            return _finalize_context(_meta_principles_block() + strat_text + _preferences_block()), ptype
-        return _finalize_context(_meta_principles_block() + _preferences_block()), ptype
+            return _finalize_context(strat_text + _preferences_block()), ptype
+        return _finalize_context(_preferences_block()), ptype
     
     # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
@@ -2355,11 +2357,13 @@ def build_context(query: str) -> Tuple[str, str]:
     except Exception as e:
         print(f"  [INJECT][LOG-ERROR] {e}", flush=True)
 
-    # Phase 5.1: prepend the fixed meta-principles block AFTER budget accounting.
+    # Phase 5.1: prepend user preferences AFTER budget accounting. The FIXED
+    # meta-principles block moved to the system message (process_chat) so it stays
+    # a cacheable prefix; only the VARIABLE preferences stay in the tail.
     # Skipped in memory-only mode — the model gets just the chunks + the light
     # memory explainer, with no meta-principles or directives stacked on top.
     if not MEMORY_ONLY:
-        context = _meta_principles_block() + _preferences_block() + context
+        context = _preferences_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
     context = _finalize_context(context)
@@ -3900,15 +3904,17 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     cur_ptype = _classify_problem_type(user_msg)
     
     # Insert Mneme's FIXED instruction block as a system message after Hermes.
-    # ONLY _system_prompt_block() goes here — a stable, cacheable prefix. The
-    # VARIABLE advisory directives (saved-tool hint, explore directive, relevant
-    # built tools) go to the TAIL (prepended to the last user message) alongside
-    # the memory context, so the stable [system prompt + conversation] prefix
-    # stays cacheable across turns (docs/build-plan.md Phase 1).
+    # ONLY _system_prompt_block() + _meta_principles_block() go here — both are
+    # constant, so this stays a stable, cacheable prefix. The VARIABLE advisory
+    # directives (saved-tool hint, explore, relevant tools) + memory + preferences
+    # go to the TAIL (prepended to the last user message) alongside the memory
+    # context (docs/build-plan.md Phase 1).
     # A KNOWN capability edge is NOT injected here — it routes into the hard-stop
     # overcome path below, because the point of flagging an edge is to OVERCOME
     # it, not name it and stop.
     mneme_system = _system_prompt_block()
+    if not MEMORY_ONLY:
+        mneme_system += _meta_principles_block()
     _tool_injection = mntools.inject_relevant_tools(user_msg)
     if _tool_injection:
         print("  [TOOL-INJECT] injected relevant built tools", flush=True)
