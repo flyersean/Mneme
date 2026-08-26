@@ -84,6 +84,7 @@ storage:
   chunk_dir: ~/mneme/chunks  # where the SQLite DB + FAISS index live (put mneme.yaml here too)
   port: 8080                 # HTTP port the proxy listens on
   inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
+  memory_only: false         # true = memory-only build: strategy/self-improving layer OFF (memory + grading + tools stay on). main branch defaults true, unified_mneme defaults false.
   staging_turns: 6           # flush the recent conversation into a memory chunk every N turns
   staging_idle: 120          # ...or after this many seconds of silence (whichever first)
   belief_evolution: false    # experimental — OFF (floods the backend)

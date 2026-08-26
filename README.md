@@ -10,6 +10,13 @@ and evolves strategies through a self-improving loop.
 OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads
 required when running against a hosted provider.
 
+**Three models, one DB.** Mneme runs three models against a single shared memory
+store (one SQLite DB + one FAISS index): the **chat** model (answers you), the
+**embedder** (turns text into vectors), and the **labeler** (tags topics). All
+three read/write the same DB, so memory is shared and consistent. The chat model
+is fixed by config — the request's `model` field is not used to route to a
+different chat model.
+
 ```
 Any OpenAI client ──▶ Mneme Proxy (:8080) ──▶ your model backend (Ollama or OpenAI-compatible)
                            │
@@ -303,11 +310,12 @@ Two deliberate runtime details worth knowing:
 
 ## Branches
 
-- `main` — stable, stripped-down memory-only build (Ollama). Start here if you
-  only want memory.
-- `unified_mneme` — **current branch.** `novelty-thinking`'s learning/strategy
-  layer on top of the config-file + backend generalization (one `mneme.yaml`,
-  `providers:` registry, `ollama | openai`). This README describes it.
+- `unified_mneme` — **current development branch** (this README). The full build:
+  strategy/self-improving layer enabled by default (`MNEME_MEMORY_ONLY=0`).
+- `main` — **memory-only build**: the same latest code with the strategy/
+  self-improving layer disabled by default (`MNEME_MEMORY_ONLY=1`). Memory
+  retrieval, provenance grading, and the full toolset stay on. Start here if you
+  only want memory. Install it with `MNEME_BRANCH=main` (see install step).
 - `novelty-thinking` — experimental learning/strategy layer (Ollama, Muse 30B).
 - `openrouter-backend` — earlier hosted-OpenRouter branch (superseded by
   `unified_mneme`'s provider registry).
