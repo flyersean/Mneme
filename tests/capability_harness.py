@@ -122,27 +122,26 @@ class Environment:
 
 # ─── Oracle: is the answer correct? ──────────────────────────────────────────
 def check_oracle(answer: str, oracle: str) -> bool:
-    """Deterministic correctness. Compares the first number in the answer to the
-    oracle number (whitespace/commas/signs stripped); falls back to substring
-    match for non-numeric oracles."""
+    """Deterministic correctness. Numeric oracles: any number in the answer may
+    match (the answer often leads with "field 3 ... 58.76", so a first-number
+    grab is wrong). Non-numeric: case-insensitive substring."""
     a = (answer or "").strip()
     o = (oracle or "").strip()
     if not o:
         return False
-    # numeric oracle: extract the first number from the answer
     try:
         target = float(o.replace(",", ""))
     except ValueError:
         return o.lower() in a.lower()
     import re
-    m = re.search(r"-?\d[\d,]*\.?\d*", a)
-    if not m:
-        return False
-    try:
-        got = float(m.group(0).replace(",", ""))
-    except ValueError:
-        return False
-    return math.isclose(got, target, rel_tol=1e-9)
+    for m in re.findall(r"-?\d[\d,]*\.?\d*", a):
+        try:
+            got = float(m.replace(",", ""))
+        except ValueError:
+            continue
+        if math.isclose(got, target, rel_tol=1e-9):
+            return True
+    return False
 
 
 # ─── Trajectory classification (single task) ─────────────────────────────────

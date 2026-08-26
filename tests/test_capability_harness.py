@@ -40,6 +40,15 @@ def test_check_oracle_numeric():
 
 
 @test
+def test_check_oracle_leading_field_number():
+    # the answer names "field 3" before the actual result — a first-number grab
+    # would wrongly read 3 instead of 58.7647.
+    assert check_oracle("field 3 average is 58.7647 (999 / 17)", "58.7647") is True
+    # and it must NOT accept a number that isn't there at all
+    assert check_oracle("field 3 average is 58.7647", "42") is False
+
+
+@test
 def test_check_oracle_substring():
     assert check_oracle("the price is Market Price", "market price") is True
     assert check_oracle("it is Paris", "London") is False
