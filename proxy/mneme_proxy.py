@@ -334,7 +334,7 @@ def _or_headers() -> dict:
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
-MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "0") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop.
+MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
@@ -5364,6 +5364,8 @@ if FLASK_OK:
         POST body: {problem, iterations?, features?}
         Generates a baseline, forbids its modal features, diverges, measures
         embedding distance (objective novelty), and pairwise-judges quality."""
+        if MEMORY_ONLY:
+            return _cors_response({"error": "thinking mode disabled in memory-only build"}, status=403)
         data = request.get_json(force=True)
         problem = data.get("problem", "")
         iterations = min(data.get("iterations", 4), 8)

@@ -2,8 +2,14 @@
 
 A proxy that sits between an AI agent and its model backend, archives every
 conversation into searchable memory, and injects relevant past context on each
-turn. It grades its own epistemic honesty (provenance, not answer-correctness)
-and evolves strategies through a self-improving loop.
+turn. It grades its own epistemic honesty (provenance, not answer-correctness).
+
+**This branch (`main`) is the memory-only build.** The full toolset is available
+and the model is told it has it — memory search, `bash`, `write`, web search,
+`fetch_url`, file access — but the strategy / self-improving layer (strategy
+learning, capability-edge → overcome, novel-procedure save, belief evolution,
+learning + thinking modes) is **disabled by default**. Set `MNEME_MEMORY_ONLY=0`
+to re-enable it; the `unified_mneme` branch runs with it on.
 
 **Backend-agnostic.** One config file chooses the backend — local
 [Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter,
@@ -35,7 +41,7 @@ prepares the machine; the setup wizard asks how you want to run it.
 ### 1. Install (dependencies + Ollama + proxy code)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | bash
 ```
 
 Installs the Python dependencies, Ollama (idempotent — harmless even for a
@@ -45,7 +51,7 @@ only fills in what's missing.
 ### 2. Setup (backend, models, Pi)
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup.py && python3 /tmp/setup.py
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && python3 /tmp/setup.py
 ```
 
 The wizard walks four steps:
@@ -120,7 +126,7 @@ If Mneme runs on a pod (RunPod, etc.), run the standalone connect app on your
 laptop to open a stay-alive SSH tunnel and get the local URLs:
 
 ```bash
-curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
 It prompts for the pod address + SSH port, opens the tunnel (with keep-alive),
@@ -158,6 +164,11 @@ The knobs you'll actually touch (see `mneme.yaml.example` for full comments):
 
 Full reference: [`docs/config-spec.md`](docs/config-spec.md).
 
+> **Memory-only mode.** `MNEME_MEMORY_ONLY=1` (the default on this branch) turns
+> off the whole strategy/self-improving layer while keeping memory retrieval,
+> provenance grading, and the full toolset. `MNEME_MEMORY_ONLY=0` re-enables the
+> learning layer; the `unified_mneme` branch ships that way.
+
 > Note: `route_threshold` and `classify_threshold` in the config are legacy —
 > `route_threshold` is only used by the `/search` debug endpoint and
 > `classify_threshold` is unused. Injection is governed by
@@ -187,7 +198,9 @@ that chunk** still is. This is how a learned approach ("verify the menu price on
 the restaurant's own site") generalizes to a *different* restaurant whose chunk
 sits just under the memory floor. Strategies are retrieved by their **source
 chunk** — the chunk that produced them — not by a hand-maintained taxonomy, so a
-strategy goes wherever its source chunk is relevant.
+strategy goes wherever its source chunk is relevant. *(The strategy floor is part
+of the self-improving layer, so it's off in this memory-only build unless
+`MNEME_MEMORY_ONLY=0`.)*
 
 Memory is **portable** across machines and even across 1024-dim embedders: on
 startup the proxy re-embeds any chunk whose stored `embed_model` doesn't match
@@ -207,7 +220,7 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
   loud on a dim mismatch; a failed embed is stored `pending_embed` and
   re-embedded on next startup (no silent dead vectors)
 
-**Learning & strategy layer**
+**Provenance grading** *(on — this is memory quality, not learning)*
 - Provenance grading: the model tags its sources (`[source: X]` / `[guess]`) and
   is graded on *honesty*, not answer-correctness — "I don't know" beats
   fabrication.
@@ -219,6 +232,8 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
   what the model actually had this turn (injected chunks + search results + the
   server-side tool trace), with host normalization so `shaws-wharf.com` matches
   `https://www.shaws-wharf.com/menu`. A fabricated citation fails.
+
+**Strategy / self-improving layer** *(disabled on this branch — set `MNEME_MEMORY_ONLY=0` to enable)*
 - Source-chunk linkage: every strategy is linked to the chunk that produced it,
   and retrieval keys on that linkage (see "How memory works") — no
   problem-type taxonomy to maintain.
@@ -230,14 +245,14 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
   to avoid a correct approach. SUCCESS strategies save only on a recovery
   (≥2 consecutive tool failures then success), not every pass.
 
-**Capability-edge tracking & overcoming** — records a competence edge per problem
-type; three consecutive tool failures flag it, and the next similar task is
-routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or —
-when the build budget is spent — answer honestly and surface the edge) instead
-of grinding or silently giving up. A built tool is saved and the edge can be
-cleared.
+**Capability-edge tracking & overcoming** *(disabled on this branch)* — records a
+competence edge per problem type; three consecutive tool failures flag it, and
+the next similar task is routed into **overcome mode** (hard-stop: build a tool,
+reuse a saved one, or — when the build budget is spent — answer honestly and
+surface the edge) instead of grinding or silently giving up. A built tool is
+saved and the edge can be cleared.
 
-**Thinking & learning modes** — `/mode/think` (novelty: generate a baseline,
+**Thinking & learning modes** *(disabled on this branch)* — `/mode/think` (novelty: generate a baseline,
 forbid its modal features, diverge, and grade novelty objectively via embedding
 distance + pairwise judge — not self-report) and `/mode/learn` (parameter
 cycling + strategy extraction).
@@ -303,11 +318,14 @@ Two deliberate runtime details worth knowing:
 
 ## Branches
 
-- `main` — stable, stripped-down memory-only build (Ollama). Start here if you
-  only want memory.
-- `unified_mneme` — **current branch.** `novelty-thinking`'s learning/strategy
-  layer on top of the config-file + backend generalization (one `mneme.yaml`,
-  `providers:` registry, `ollama | openai`). This README describes it.
+- `main` — **memory-only build** (this branch). The latest code with the
+  strategy/self-improving layer disabled by default (`MNEME_MEMORY_ONLY=1`).
+  Memory retrieval, provenance grading, and the full toolset stay on. Start here
+  if you only want memory; set `MNEME_MEMORY_ONLY=0` to re-enable the learning
+  layer.
+- `unified_mneme` — **current development branch**. Same code with the learning
+  layer enabled by default (and the capability harness + tests). This README
+  describes it with learning on.
 - `novelty-thinking` — experimental learning/strategy layer (Ollama, Muse 30B).
 - `openrouter-backend` — earlier hosted-OpenRouter branch (superseded by
   `unified_mneme`'s provider registry).

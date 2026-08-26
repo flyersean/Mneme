@@ -43,6 +43,7 @@ os.environ["MNEME_MODEL"] = "test-model"
 os.environ["EMBED_MODEL"] = "test-embed"
 os.environ["LABEL_MODEL"] = "test-label"
 os.environ["MNEME_ASK_REUSABLE"] = "0"  # "just ask" is live-only; ScriptedModel has no answer
+os.environ["MNEME_MEMORY_ONLY"] = "0"  # tests exercise the full learning layer, not memory-only mode
 
 _PROXY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "proxy")
 sys.path.insert(0, _PROXY_DIR)
