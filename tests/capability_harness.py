@@ -330,6 +330,63 @@ def make_env_binary(seed: int = 11) -> Environment:
     )
 
 
+def _make_pdf(text: str) -> bytes:
+    """Minimal single-page PDF with the given text, in a FlateDecode-compressed
+    content stream. stdlib-only to GENERATE, but extracting the text needs a real
+    PDF parser (poppler/pypdf) — `strings`/`grep` can't see compressed text, so
+    this is a genuine 'requires a tool' gap."""
+    import zlib
+
+    esc = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = f"BT /F1 14 Tf 72 720 Td ({esc}) Tj ET".encode("latin-1")
+    cstream = zlib.compress(content)
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+         b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (b"<< /Length " + str(len(cstream)).encode()
+         + b" /Filter /FlateDecode >>\nstream\n" + cstream + b"\nendstream"),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_pos = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_pos}\n%%EOF\n").encode()
+    return bytes(out)
+
+
+def make_env_pdf_text(seed: int = 9) -> Environment:
+    """PDF text extraction — a REAL gap: Python stdlib has no PDF parser, and the
+    text is FlateDecode-compressed so `strings`/`grep` can't read it. The model
+    must FIND a tool (pdftotext) or INSTALL one (pypdf) to succeed."""
+    rng = __import__("random").Random(seed)
+    total1 = rng.randint(1000, 9999)
+    total2 = rng.randint(1000, 9999)
+    pdf1 = _make_pdf(f"Order summary. TOTAL: {total1}")
+    pdf2 = _make_pdf(f"Order summary. TOTAL: {total2}")
+    return Environment(
+        id="pdf_text",
+        task1="Extract the text from data/report.pdf and report the amount after 'TOTAL:'.",
+        task2="Extract the text from data/report2.pdf and report the amount after 'TOTAL:'.",
+        oracle1=str(total1),
+        oracle2=str(total2),
+        capability="PDF text extraction",
+        discoverable=True,  # pdftotext (poppler) is present; pypdf installable
+        files={"report.pdf": pdf1, "report2.pdf": pdf2},
+    )
+
+
 def _make_png(width: int, height: int) -> bytes:
     """Minimal valid 8-bit RGB PNG (stdlib only) — enough for `file`/Pillow to
     report dimensions, and for a hand-rolled IHDR parser to read width/height."""
@@ -403,4 +460,4 @@ def make_env_timestamps(seed: int = 3) -> Environment:
     )
 
 
-ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims]
+ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims, make_env_pdf_text]

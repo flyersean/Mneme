@@ -3688,48 +3688,66 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
 # _tool_failure_nudge).
 
 
-def _learn_from_tool_trail(trail_tags, answer, grade, ptype):
-    """Turn a failure->success tool trail into a reusable strategy (background).
+def _tool_summary(tool_trace):
+    """Compact 'tool: key-arg' list so the model can recall what it actually did
+    (the old status-only trail couldn't see WHICH tool was called)."""
+    lines = []
+    for tr in (tool_trace or [])[-12:]:
+        tool = tr.get("tool", "?") if isinstance(tr, dict) else "?"
+        args = tr.get("args") or {}
+        key = ""
+        if isinstance(args, dict):
+            for k in ("query", "command", "name", "file_path", "path", "url"):
+                if args.get(k) is not None:
+                    key = str(args[k])
+                    if len(key) > 90:
+                        key = key[:90] + "…"
+                    break
+        lines.append(f"- {tool}" + (f": {key}" if key else ""))
+    return "\n".join(lines) if lines else "(no tool calls)"
 
-    Fires when the current task's trail has one or more FAILUREs followed by a
-    SUCCESS and the turn was graded honestly. Asks the model to extract the
-    method that worked vs. the one that didn't, tagged to ptype for reuse on
-    similar tasks.
+
+def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
+    """'Just ask': after a successful turn that used tools, ask the model whether
+    it built a tool, installed a library, or figured out a NEW reusable method,
+    and save a strategy on an explicit non-NO answer.
+
+    Replaces the old recovery trigger (>= 2 consecutive failures then a success).
+    The reusable thing usually happens with ZERO failures (an inline `pip install`,
+    a small parser), so failure streaks were the wrong signal — they missed every
+    clean acquisition. The model is the only party that knows whether something it
+    did is worth keeping, so we ask it directly.
     """
     if grade not in ("A", "B"):
         return
-    statuses = [s for s, _ in trail_tags]
-    if "SUCCESS" not in statuses:
+    if not tool_trace:
         return
-    last_success = max(i for i, s in enumerate(statuses) if s == "SUCCESS")
-    # Require a RECOVERY: >= 2 consecutive failures immediately before the
-    # success (a single flaky failure is not a lesson).
-    streak = 0
-    for s in reversed(statuses[:last_success]):
-        if s == "FAILURE":
-            streak += 1
-        else:
+    task = ""
+    for m in reversed(messages or []):
+        if m.get("role") == "user":
+            task = _extract_text(m.get("content", "") or "").strip()
             break
-    if streak < 2:
-        return
-    trail = "; ".join(f"{s}{':' + r if r else ''}" for s, r in trail_tags[-8:])
     answer_clean = _TOOL_TAG_RE.sub("", answer or "").strip()
     prompt = (
-        "You attempted a task and had some tool failures before succeeding.\n"
-        f"Tool trail: {trail}\n"
+        "You just used tools to complete this task:\n"
+        f"{task[:MAX_ABSTRACT_INPUT]}\n\n"
+        f"Tools you called:\n{_tool_summary(tool_trace)}\n\n"
         f"Final answer: {answer_clean[:MAX_ABSTRACT_INPUT]}\n\n"
-        "Extract ONE imperative rule of the form 'WHEN doing <task>, use <method "
-        "that worked> (the method <that failed> failed)'. Short, specific, "
-        "actionable. Respond with ONLY the rule."
+        "Did you build a new tool, install a new library/tool, or figure out a "
+        "method that is NEW and reusable for FUTURE tasks? If yes, output ONE "
+        "imperative rule: 'WHEN doing <task>, use <tool or method>' (name the "
+        "tool/library). If nothing is genuinely new and reusable, output exactly: NO"
     )
     try:
         r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
         rule = (r.get("content") or "").strip()
+        if not rule or rule.upper().split()[0] == "NO":
+            return
         if len(rule) > 10 and not _is_junk_directive(rule):
             _save_strategy(rule, "B", problem_type=ptype or "other")
-            print(f"  [TOOL-TRAIL-LEARN] {rule[:70]}...", flush=True)
+            print(f"  [REUSABLE-STRATEGY] {rule[:70]}...", flush=True)
     except Exception as e:
-        _log_error("_learn_from_tool_trail", e)
+        _log_error("_ask_reusable_strategy", e)
 
 
 def _execute_search_tool_calls(search_calls):
@@ -4397,23 +4415,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         except Exception as e:
             _log_error("process_chat:overcome_outcome", e)
 
-    # Tool-outcome learning: a RECOVERY — >= 2 consecutive failures immediately
-    # before a success — becomes a reusable strategy. NOT "any failure + any
-    # success" (a single flaky request is not a lesson). The combined trail is
-    # passed cheap+sync; the model extraction runs background (build-plan Phase 2).
-    _streak = 0
-    if "SUCCESS" in _trail_statuses:
-        _last_s = max(i for i, s in enumerate(_trail_statuses) if s == "SUCCESS")
-        for _s in reversed(_trail_statuses[:_last_s]):
-            if _s == "FAILURE":
-                _streak += 1
-            else:
-                break
-    if _streak >= 2:
+    # "Just ask" learning: after a successful turn that used tools, ask the model
+    # (background) whether it built/installed/figured out anything NEW and
+    # reusable, and save a strategy on an explicit non-NO answer. Replaces the
+    # recovery trigger (>= 2 failures then a success): clean acquisitions (an
+    # inline `pip install`, a small parser) happen with zero failures and were
+    # being missed. The combined trail above is still computed for the failure
+    # ladder + logging; the learner now uses the raw tool trace for tool identity.
+    if grade in ("A", "B") and _tool_trace:
         try:
-            _enqueue(_learn_from_tool_trail, _trail, _answer, grade, cur_ptype)
+            _enqueue(_ask_reusable_strategy, messages, _tool_trace, _answer, grade, cur_ptype)
         except Exception as e:
-            _log_error("process_chat:tool_trail_enqueue", e)
+            _log_error("process_chat:reusable_strategy_enqueue", e)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
     try:

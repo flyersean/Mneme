@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from capability_harness import (  # noqa: E402
     RunResult, Environment, check_oracle, classify_single, method_reuse_probe,
     unnecessary_work, score, make_env_records, make_env_binary, make_env_timestamps,
-    make_env_png_dims,
+    make_env_png_dims, make_env_pdf_text,
 )
 
 _TESTS = []
@@ -196,8 +196,27 @@ def test_png_is_valid_and_oracle_correct():
 
 
 @test
+def test_pdf_is_compressed_and_oracle_correct():
+    import zlib
+    from capability_harness import make_env_pdf_text
+    e = make_env_pdf_text(seed=9)
+    blob = e.files["report.pdf"]
+    assert blob[:5] == b"%PDF-", "bad PDF header"
+    # the text is FlateDecode-compressed -> raw bytes must NOT leak "TOTAL:"
+    assert b"TOTAL:" not in blob, "text not compressed (would be greppable)"
+    # decompress the single content stream and confirm the oracle amount is in it
+    s = blob.index(b"stream\n") + len(b"stream\n")
+    t = blob.index(b"endstream")
+    content = zlib.decompress(blob[s:t]).decode("latin-1")
+    assert f"TOTAL: {e.oracle1}" in content, f"oracle not in PDF text: {content!r}"
+    # deterministic
+    assert make_env_pdf_text(seed=9).oracle1 == e.oracle1
+
+
+@test
 def test_all_envs_generate_and_are_consistent():
-    for mk in (make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims):
+    for mk in (make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims,
+               make_env_pdf_text):
         e = mk()
         assert e.id and e.task1 and e.task2 and e.oracle1 and e.oracle2
         assert e.files, f"{e.id} has no data files"
