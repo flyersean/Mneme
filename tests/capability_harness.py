@@ -98,7 +98,9 @@ class RunResult:
         return any(t in _DISCOVERY_TOOLS for t in self.tools)
 
     @property
-    def reused(self) -> bool:
+    def consulted_tools(self) -> bool:
+        """Called list_tools/read_tool. WEAK signal — the registry may be empty, so
+        this means 'looked for a tool', NOT 'reused a tool'."""
         return any(t in _REUSE_TOOLS for t in self.tools)
 
     def search_before_build(self) -> bool:
@@ -113,6 +115,53 @@ class RunResult:
 
 
 # ─── Environment ─────────────────────────────────────────────────────────────
+# Generic shell/stdio tokens that are always present and never represent an
+# ACQUIRED capability — excluded when fingerprinting the tools a run used.
+_GENERIC_TOKENS = {
+    "bash", "sh", "python3", "python", "pip", "pip3", "cd", "ls", "cat", "echo",
+    "grep", "awk", "sed", "which", "apt", "apt-get", "export", "head", "tail",
+    "wc", "sort", "uniq", "cut", "tr", "printf", "mkdir", "cp", "mv", "rm",
+    "exit", "command", "type", "set", "curl", "wget", "env", "xargs", "find",
+    "tee", "readlink", "realpath", "basename", "dirname",
+}
+
+
+def _tool_tokens(rr: RunResult) -> set:
+    """Fingerprint the specific tools/executables a run used — the 'acquired
+    capability' tokens: pdftotext, pypdf, pandoc, unzip, a pip package, etc."""
+    import re
+    tokens = set()
+    for c in (rr.commands or []):
+        if not c:
+            continue
+        low = c.lower()
+        for m in re.findall(r"pip(?:3)?\s+install\s+([a-z0-9_.\-]+)", low):
+            tokens.add(m)
+        for seg in c.split("&&"):
+            seg = seg.strip()
+            parts = seg.split()
+            if not parts:
+                continue
+            exe = parts[0].split("/")[-1].strip().lower()
+            if exe and exe not in _GENERIC_TOKENS and not exe.startswith("cd"):
+                tokens.add(exe)
+        for m in re.findall(r"(pdftotext|pypdf|pdfplumber|pandoc|unzip|tesseract|"
+                            r"ffmpeg|convert|identify|docx2txt|mammoth|pymupdf|fitz|"
+                            r"poppler|pdfinfo)", low):
+            tokens.add(m)
+    return tokens
+
+
+def reused_tool(rr1: RunResult, rr2: RunResult) -> bool:
+    """Did task2 reuse a tool/command that task1 introduced (discovered/built/
+    installed)? True when the two runs share a non-generic tool token (e.g. both
+    ran pdftotext). This is the honest reuse signal — it does NOT fire on an
+    empty list_tools call."""
+    t1 = _tool_tokens(rr1)
+    t2 = _tool_tokens(rr2)
+    return bool(t1 and t1 & t2)
+
+
 @dataclass
 class Environment:
     id: str
@@ -223,13 +272,15 @@ def score(env: Environment, rr1: RunResult, rr2: RunResult) -> dict:
         "task2_elapsed": round(rr2.elapsed, 1),
         "task1_tools": rr1.tools,
         "task2_tools": rr2.tools,
-        "reused_tool": rr2.reused,
+        "reused_tool": reused_tool(rr1, rr2),
+        "consulted_tools": rr2.consulted_tools,
         "method_transferred": probe["transferred"],
         "method_probe": probe,
         "unnecessary_work_1": unnecessary_work(rr1, s1),
         "unnecessary_work_2": unnecessary_work(rr2, s2),
-        # headline: persistent capability gain = task2 solved via reuse/transfer
-        "persistent_capability_gain": s2 and (rr2.reused or probe["transferred"]),
+        # headline: persistent capability gain = task2 solved AND reused a tool
+        # task1 introduced (a real reuse, not an empty list_tools call)
+        "persistent_capability_gain": s2 and reused_tool(rr1, rr2),
     }
 
 

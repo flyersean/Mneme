@@ -26,8 +26,9 @@ def test(fn):
     return fn
 
 
-def _rr(answer, tools, results):
-    return RunResult(answer=answer, tools=tools, results=results)
+def _rr(answer, tools, results, commands=None):
+    return RunResult(answer=answer, tools=tools, results=results,
+                     commands=commands or [])
 
 
 # ─── Oracle ──────────────────────────────────────────────────────────────────
@@ -130,18 +131,60 @@ def test_unnecessary_work_does_not_flag_legit_build():
     assert unnecessary_work(rr, solved=True) is False
 
 
-# ─── Persistent capability gain (headline metric) ────────────────────────────
+# ─── Reuse + persistent capability gain (headline metric) ────────────────────
+@test
+def test_reused_tool_detects_shared_tool():
+    from capability_harness import reused_tool, _tool_tokens
+    rr1 = _rr("5", ["bash"], ["ok"], commands=["pdftotext report.pdf -"])
+    rr2 = _rr("6", ["bash"], ["ok"], commands=["pdftotext report2.pdf -"])
+    assert _tool_tokens(rr1) == {"pdftotext"}
+    assert reused_tool(rr1, rr2) is True
+
+
+@test
+def test_reused_tool_ignores_generic_overlap():
+    from capability_harness import reused_tool
+    # both use python3/bash, but different actual tools -> not reuse
+    rr1 = _rr("5", ["bash"], ["ok"], commands=["pdftotext a.pdf -"])
+    rr2 = _rr("6", ["bash"], ["ok"], commands=["unzip -p b.docx word/document.xml"])
+    assert reused_tool(rr1, rr2) is False
+
+
+@test
+def test_empty_list_tools_is_not_reuse():
+    from capability_harness import reused_tool
+    # task2 called list_tools (empty registry) but re-derived via a different
+    # command -> NOT reuse, even though list_tools was in the tool list.
+    rr1 = _rr("5", ["bash"], ["ok"], commands=["pdftotext a.pdf -"])
+    rr2 = _rr("6", ["list_tools", "bash"], ["(tool registry is empty)", "ok"],
+              commands=["cat b.pdf"])
+    assert rr2.consulted_tools is True
+    assert reused_tool(rr1, rr2) is False
+
+
 @test
 def test_score_persistent_gain_via_reuse():
     env = Environment(id="x", task1="t1", task2="t2", oracle1="5", oracle2="6",
                       capability="c", discoverable=True)
-    rr1 = _rr("5", ["write", "bash"], ["written", "ok"])
-    rr2 = _rr("6", ["list_tools", "read_tool", "bash"], ["tool", "tool", "ok"])  # reused
+    rr1 = _rr("5", ["bash"], ["ok"], commands=["pdftotext a.pdf -"])
+    rr2 = _rr("6", ["bash"], ["ok"], commands=["pdftotext b.pdf -"])
     s = score(env, rr1, rr2)
     assert s["task1_solved"] is True
     assert s["task2_solved"] is True
     assert s["reused_tool"] is True
     assert s["persistent_capability_gain"] is True
+
+
+@test
+def test_score_no_gain_when_list_tools_empty():
+    env = Environment(id="x", task1="t1", task2="t2", oracle1="5", oracle2="6",
+                      capability="c", discoverable=True)
+    rr1 = _rr("5", ["bash"], ["ok"], commands=["pdftotext a.pdf -"])
+    rr2 = _rr("6", ["list_tools", "bash"], ["(tool registry is empty)", "ok"],
+              commands=["cat b.pdf"])
+    s = score(env, rr1, rr2)
+    assert s["reused_tool"] is False
+    assert s["persistent_capability_gain"] is False
 
 
 # ─── Environment oracles are deterministic AND correct ───────────────────────
