@@ -330,6 +330,43 @@ def make_env_binary(seed: int = 11) -> Environment:
     )
 
 
+def _make_png(width: int, height: int) -> bytes:
+    """Minimal valid 8-bit RGB PNG (stdlib only) — enough for `file`/Pillow to
+    report dimensions, and for a hand-rolled IHDR parser to read width/height."""
+    import struct
+    import zlib
+
+    def chunk(typ: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + typ + data +
+                struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB
+    raw = b"".join(b"\x00" + b"\x00\x00\x00" * width for _ in range(height))  # filter0, black
+    idat = zlib.compress(raw)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def make_env_png_dims(seed: int = 5) -> Environment:
+    """A genuinely DISCOVERABLE gap: extracting image dimensions from a PNG. The
+    model has no stdlib call that does this in one line — it must FIND a tool
+    (`file`, ImageMagick `identify`, `pip install Pillow`) or BUILD a tiny IHDR
+    parser. bash+python3-stdlib alone cannot read a PNG's width trivially."""
+    rng = __import__("random").Random(seed)
+    w1 = rng.randint(50, 400); h1 = rng.randint(50, 400)
+    w2 = rng.randint(50, 400); h2 = rng.randint(50, 400)
+    return Environment(
+        id="png_dims",
+        task1="What is the pixel width of data/image.png?",
+        task2="What is the pixel height of data/image2.png?",
+        oracle1=str(w1),
+        oracle2=str(h2),
+        capability="image metadata extraction",
+        discoverable=True,  # `file` / Pillow / identify all report dimensions
+        files={"image.png": _make_png(w1, h1), "image2.png": _make_png(w2, h2)},
+    )
+
+
 def make_env_timestamps(seed: int = 3) -> Environment:
     """Weird timestamp strings -> normalized ISO. Discoverable (date / a known
     lib) but fiddly enough that a naive parse fails. Task 2 switches the field
@@ -366,4 +403,4 @@ def make_env_timestamps(seed: int = 3) -> Environment:
     )
 
 
-ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps]
+ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims]

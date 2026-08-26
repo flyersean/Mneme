@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from capability_harness import (  # noqa: E402
     RunResult, Environment, check_oracle, classify_single, method_reuse_probe,
     unnecessary_work, score, make_env_records, make_env_binary, make_env_timestamps,
+    make_env_png_dims,
 )
 
 _TESTS = []
@@ -174,8 +175,29 @@ def test_binary_oracle_correct():
 
 
 @test
+def test_png_is_valid_and_oracle_correct():
+    import struct
+    from capability_harness import _make_png, make_env_png_dims
+    e = make_env_png_dims(seed=5)
+    for name, oracle in (("image.png", e.oracle1), ("image2.png", e.oracle2)):
+        blob = e.files[name]
+        assert blob[:8] == b"\x89PNG\r\n\x1a\n", "bad PNG signature"
+        # IHDR is the first chunk; width/height are bytes 16-23 (big-endian)
+        assert blob[12:16] == b"IHDR", "IHDR not first chunk"
+        width, height = struct.unpack(">II", blob[16:24])
+        if name == "image.png":
+            assert str(width) == oracle
+        else:
+            assert str(height) == oracle
+    # also verify the second image's height matches its oracle
+    blob2 = e.files["image2.png"]
+    w2, h2 = struct.unpack(">II", blob2[16:24])
+    assert str(h2) == e.oracle2
+
+
+@test
 def test_all_envs_generate_and_are_consistent():
-    for mk in (make_env_records, make_env_binary, make_env_timestamps):
+    for mk in (make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims):
         e = mk()
         assert e.id and e.task1 and e.task2 and e.oracle1 and e.oracle2
         assert e.files, f"{e.id} has no data files"
