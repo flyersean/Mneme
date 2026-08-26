@@ -5,20 +5,29 @@
 #  Installs the three things the proxy needs, idempotently and with no prompts:
 #    1. Python dependencies (flask / faiss / numpy / requests / pyyaml)
 #    2. Ollama (installed + started — harmless even if you use a hosted backend)
-#    3. The proxy code (cloned into ~/mneme/repo, branch unified_mneme)
+#    3. The proxy code (cloned into ~/mneme/repo, branch from MNEME_BRANCH)
 #
 #  Run it once, then run the setup wizard to choose your backend and models:
-#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/install.sh | bash
-#    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup.py && python3 /tmp/setup.py
+#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/install.sh | bash
+#    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
+#
+#  Pass the branch explicitly when it's not unified_mneme:
+#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
 #
 #  Safe to re-run — every step checks first and only fills in what's missing.
 # ============================================================================
 set -e
 
+# Which repo branch to install. The README passes this (main vs unified_mneme);
+# it drives the self-update URL, the clone, and the tarball fallback so that
+# following the `main` README installs the memory-only build and following the
+# `unified_mneme` README installs the full build.
+BRANCH="${MNEME_BRANCH:-unified_mneme}"
+
 # Self-update: always run the latest version from the repo (cache-busted).
 if [ -z "${MNEME_INSTALL_UPDATED:-}" ]; then
   export MNEME_INSTALL_UPDATED=1
-  _URL="https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/install.sh"
+  _URL="https://raw.githubusercontent.com/flyersean/Mneme/$BRANCH/scripts/install.sh"
   if curl -sSL --fail -o /tmp/mneme_install.sh "$_URL?$(date +%s)" 2>/dev/null && [ -s /tmp/mneme_install.sh ]; then
     exec bash /tmp/mneme_install.sh
   fi
@@ -94,7 +103,7 @@ else
 fi
 
 # ── 3. Proxy code ─────────────────────────────────────────────────────
-echo; echo "[3/3] Proxy code (unified_mneme)"
+echo; echo "[3/3] Proxy code ($BRANCH)"
 
 REPO_DIR="${MNEME_REPO_DIR:-$HOME/mneme/repo}"
 if [ -f "$REPO_DIR/proxy/mneme_proxy.py" ]; then
@@ -103,11 +112,11 @@ else
   echo "  downloading into $REPO_DIR ..."
   mkdir -p "$(dirname "$REPO_DIR")"
   if command -v git >/dev/null 2>&1; then
-    git clone --depth 1 -b unified_mneme https://github.com/flyersean/Mneme.git "$REPO_DIR"
+    git clone --depth 1 -b "$BRANCH" https://github.com/flyersean/Mneme.git "$REPO_DIR"
   else
     echo "  git not found — downloading tarball..."
     mkdir -p "$REPO_DIR"
-    curl -sSL --fail "https://codeload.github.com/flyersean/Mneme/tar.gz/refs/heads/unified_mneme" | tar xz -C "$REPO_DIR" --strip-components=1
+    curl -sSL --fail "https://codeload.github.com/flyersean/Mneme/tar.gz/refs/heads/$BRANCH" | tar xz -C "$REPO_DIR" --strip-components=1
   fi
   if [ -f "$REPO_DIR/proxy/mneme_proxy.py" ]; then
     echo "  ✓ proxy code ready"
@@ -123,7 +132,7 @@ echo "════════════════════════�
 echo "  Install complete."
 echo
 echo "  Next, run the setup wizard to pick your backend and models:"
-echo "    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_setup.py && python3 /tmp/setup.py"
+echo "    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/$BRANCH/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo
 echo "  (Setup asks: OpenRouter or Ollama → models → Pi yes/no → port.)"
 echo "══════════════════════════════════════════════════════════════"
