@@ -3742,9 +3742,10 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         "Is there a tool or method you used here that you would want available "
         "again for a FUTURE similar task — for example a command like pdftotext, "
         "a library you installed, or an approach you figured out? If yes, output "
-        "ONE imperative rule: 'WHEN doing <task>, use <tool or method>' and name "
-        "the specific command/tool/library. If nothing here is worth reusing, "
-        "output exactly: NO"
+        "ONE imperative rule: 'WHEN doing <specific task>, use <specific tool>' — "
+        "name the exact command/tool/library AND describe the situation precisely "
+        "enough that it would NOT be applied to a different-but-similar task. If "
+        "nothing here is worth reusing, output exactly: NO"
     )
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
@@ -3755,7 +3756,10 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         if not rule or rule.upper().split()[0] == "NO":
             return
         if len(rule) > 10 and not _is_junk_directive(rule):
-            _save_strategy(rule, "B", problem_type=ptype or "other")
+            # abstract=False: keep the tool name + the "when" context verbatim —
+            # "use pdftotext for PDF text" is only useful with both. Abstraction
+            # turned it into "use a purpose-built utility", which is unactionable.
+            _save_strategy(rule, "B", problem_type=ptype or "other", abstract=False)
             print(f"  [REUSABLE-STRATEGY] {rule[:70]}...", flush=True)
     except Exception as e:
         _log_error("_ask_reusable_strategy", e)

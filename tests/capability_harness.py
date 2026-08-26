@@ -77,8 +77,13 @@ class RunResult:
     answer: str = ""
     tools: List[str] = field(default_factory=list)       # tool names, in order
     results: List[str] = field(default_factory=list)      # tool result strings, aligned with tools
+    commands: List[str] = field(default_factory=list)     # the key arg (command/query/path) per tool call
     elapsed: float = 0.0
     tokens: Optional[dict] = None
+
+    def used(self, substr: str) -> bool:
+        """Did any tool call's key arg (command/query/path) mention this?"""
+        return any(substr in (c or "") for c in self.commands)
 
     @property
     def failures(self) -> int:
@@ -246,8 +251,18 @@ def run_task(base_url: str, content: str, timeout: int = 300) -> RunResult:
     trace = d.get("tool_trace", []) or []
     tools = [t.get("tool", "?") for t in trace]
     results = [str(t.get("result", "") or "") for t in trace]
+    commands = []
+    for t in trace:
+        args = t.get("args") or {}
+        key = ""
+        if isinstance(args, dict):
+            for k in ("command", "query", "path", "file_path", "name", "url"):
+                if args.get(k) is not None:
+                    key = str(args[k])
+                    break
+        commands.append(key)
     return RunResult(answer=msg.get("content", ""), tools=tools, results=results,
-                     elapsed=elapsed, tokens=d.get("usage"))
+                     commands=commands, elapsed=elapsed, tokens=d.get("usage"))
 
 
 # ─── Deterministic environment generators ────────────────────────────────────
@@ -404,6 +419,56 @@ def _make_png(width: int, height: int) -> bytes:
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
+def _make_docx(text: str) -> bytes:
+    """Minimal valid .docx (a ZIP of WordprocessingML XML), stdlib-only, with the
+    text in a DEFLATE-compressed `word/document.xml` so `strings`/`grep` can't see
+    it. `pdftotext` cannot read it — this is the 'similar task, wrong tool' case."""
+    import io
+    import zipfile
+
+    content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '</Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/></Relationships>')
+    document = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/document.xml", document)
+    return buf.getvalue()
+
+
+def make_env_docx_text(seed: int = 13) -> Environment:
+    """Text extraction from a .docx — same task shape as pdf_text, but pdftotext
+    does NOT work here. The model must use `unzip`/python-docx, NOT the PDF tool.
+    Used as the NEGATIVE case for 'does the saved rule fire on the wrong task?'."""
+    rng = __import__("random").Random(seed)
+    sub1 = rng.randint(1000, 9999)
+    sub2 = rng.randint(1000, 9999)
+    return Environment(
+        id="docx_text",
+        task1="Extract the text from data/notes.docx and report the amount after 'SUBTOTAL:'.",
+        task2="Extract the text from data/notes2.docx and report the amount after 'SUBTOTAL:'.",
+        oracle1=str(sub1),
+        oracle2=str(sub2),
+        capability="docx text extraction",
+        discoverable=True,  # unzip / python-docx; NOT pdftotext
+        files={"notes.docx": _make_docx(f"Invoice. SUBTOTAL: {sub1}"),
+               "notes2.docx": _make_docx(f"Invoice. SUBTOTAL: {sub2}")},
+    )
+
+
 def make_env_png_dims(seed: int = 5) -> Environment:
     """A genuinely DISCOVERABLE gap: extracting image dimensions from a PNG. The
     model has no stdlib call that does this in one line — it must FIND a tool
@@ -460,4 +525,4 @@ def make_env_timestamps(seed: int = 3) -> Environment:
     )
 
 
-ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims, make_env_pdf_text]
+ALL_ENVIRONMENTS = [make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims, make_env_pdf_text, make_env_docx_text]

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from capability_harness import (  # noqa: E402
     RunResult, Environment, check_oracle, classify_single, method_reuse_probe,
     unnecessary_work, score, make_env_records, make_env_binary, make_env_timestamps,
-    make_env_png_dims, make_env_pdf_text,
+    make_env_png_dims, make_env_pdf_text, make_env_docx_text,
 )
 
 _TESTS = []
@@ -214,9 +214,23 @@ def test_pdf_is_compressed_and_oracle_correct():
 
 
 @test
+def test_docx_is_zip_and_oracle_correct():
+    import zipfile
+    from capability_harness import make_env_docx_text
+    e = make_env_docx_text(seed=13)
+    blob = e.files["notes.docx"]
+    z = zipfile.ZipFile(__import__("io").BytesIO(blob))
+    doc = z.read("word/document.xml").decode("utf-8")
+    assert f"SUBTOTAL: {e.oracle1}" in doc, f"oracle not in docx text: {doc!r}"
+    # text is DEFLATE-compressed inside the zip -> raw bytes must not leak it
+    assert f"SUBTOTAL: {e.oracle1}".encode() not in blob, "docx text not compressed"
+    assert make_env_docx_text(seed=13).oracle1 == e.oracle1
+
+
+@test
 def test_all_envs_generate_and_are_consistent():
     for mk in (make_env_records, make_env_binary, make_env_timestamps, make_env_png_dims,
-               make_env_pdf_text):
+               make_env_pdf_text, make_env_docx_text):
         e = mk()
         assert e.id and e.task1 and e.task2 and e.oracle1 and e.oracle2
         assert e.files, f"{e.id} has no data files"
