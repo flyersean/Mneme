@@ -4777,6 +4777,30 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
         print(f"  [STRATEGY][ERR] {str(e)[:100]}", flush=True)
 
 
+def _reset_memory():
+    """Wipe all learned state for a clean test run: chunks, strategies, tools,
+    capability edges, the FAISS index, the staging buffer, and pending links.
+    Exposed via POST /reset so the capability harness can start each trial fresh
+    (answers must never leak between trials from a warm DB)."""
+    global _index, _id_map
+    with _db_lock:
+        for table in ("chunks", "strategies", "tools", "capability_edges"):
+            try:
+                db.execute(f"DELETE FROM {table}")
+            except Exception as e:
+                _log_error(f"_reset_memory:{table}", e)
+        db.commit()
+    with faiss_lock():
+        if FAISS_OK:
+            _index = faiss.IndexFlatIP(DIM)
+        _id_map = []
+        _save_index()
+    staging.flush()  # discard staged-but-unarchived messages
+    with _pending_links_lock:
+        _pending_strategy_links.clear()
+    print("  [RESET] memory wiped (chunks/strategies/tools/edges/faiss/staging)", flush=True)
+
+
 if FLASK_OK:
     app = Flask(__name__)
     CORS(app)
@@ -5265,6 +5289,18 @@ if FLASK_OK:
         except Exception as e:
             print(f"  [SAVE][ERROR] {e}", flush=True)
             return _cors_response({"saved": False, "error": str(e)}, status=500)
+
+    @app.route("/reset", methods=["POST"])
+    def reset():
+        """Wipe all learned state (memory, strategies, tools, capability edges,
+        FAISS index) for a clean test run. The capability harness calls this
+        before each trial so no answer leaks in from a warm DB."""
+        try:
+            _reset_memory()
+            return _cors_response({"reset": True})
+        except Exception as e:
+            print(f"  [RESET][ERROR] {e}", flush=True)
+            return _cors_response({"reset": False, "error": str(e)}, status=500)
     
     # ── Learning Mode ──────────────────────────────────────────
     
