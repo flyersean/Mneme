@@ -334,7 +334,7 @@ def _or_headers() -> dict:
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
-MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "0") == "1"  # "1" = inject memory chunks only (light memory-explainer prompt, no tagging/meta-principles/directives)
+MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "0") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop.
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
@@ -1659,7 +1659,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     # model call (with heavy reasoning) per archived chunk, which on a hosted
     # backend is expensive AND floods OpenRouter with concurrent requests that
     # starve the foreground chat turn (the cause of the web-read synthesis hang).
-    if is_indexable and vector is not None and os.environ.get("MNEME_BELIEF_EVOLUTION", "0") == "1":
+    if is_indexable and vector is not None and not MEMORY_ONLY and os.environ.get("MNEME_BELIEF_EVOLUTION", "0") == "1":
         _enqueue(_check_belief_evolution, chunk_id, topic_label)
 
 def load_chunk(chunk_id: str) -> Optional[dict]:
@@ -2243,7 +2243,7 @@ def build_context(query: str) -> Tuple[str, str]:
     # floor — they do NOT inject as memory, but their linked strategies do
     # (strategies generalize across same-concept queries). Linked retrieval
     # key, not the problem_type taxonomy (docs/strategy-retrieval-spec.md).
-    strat_floor = _strategy_floor_chunks(query, q_vec=_qvec)
+    strat_floor = _strategy_floor_chunks(query, q_vec=_qvec) if not MEMORY_ONLY else []
     strategy_chunk_ids = list(all_ids) + [c for c in strat_floor if c not in all_ids]
     
     # Batch-fetch grades for all candidates — avoids per-chunk SQLite hits during sort
@@ -2320,6 +2320,9 @@ def build_context(query: str) -> Tuple[str, str]:
         # No memory chunks — inject strategies as fallback context. (Meta-principles
         # live in the fixed system message now — see process_chat — so they stay a
         # cacheable prefix instead of re-shipping in the variable tail.)
+        # Memory-only mode: no strategies and no preferences — just the budget line.
+        if MEMORY_ONLY:
+            return _finalize_context(""), ptype
         strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
         if strat_text:
             _INJECTED_STRATEGY_IDS.clear()
@@ -2344,7 +2347,7 @@ def build_context(query: str) -> Tuple[str, str]:
         context += "\n".join(f"  {r}" for r in struct_refs)
     
     # Inject strategy directives ABOVE memory — they have higher epistemic weight
-    strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
+    strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype) if not MEMORY_ONLY else ("", [])
     if strat_text and not MEMORY_ONLY:
         _INJECTED_STRATEGY_IDS.clear()
         _INJECTED_STRATEGY_IDS.update(strat_ids)
@@ -2644,7 +2647,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     if ptype == "error":
         ptype = "other"  # "error" is an outcome, not a task type
     
-    strategy = generate_strategy(msgs, outcome)
+    strategy = generate_strategy(msgs, outcome) if not MEMORY_ONLY else ""
     # Don't save a "Do NOT repeat" strategy for an honest-terminal answer
     # (undefined / market price / I don't know / clarification) — those are
     # correct-but-uncitable results, not failures. Saving one would poison
@@ -3910,9 +3913,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _enqueue(archive_staging)
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
-    # ── Learn trigger: <<LEARN problem:...>> runs learning mode ──
+    # ── Learn trigger: <<LEARN problem:...>> runs learning mode (disabled in memory-only) ──
     learn_match = _learn_re.search(full_user_msg)
-    if learn_match:
+    if learn_match and not MEMORY_ONLY:
         learn_problem = learn_match.group(1).strip()
         user_msg = _learn_re.sub("", user_msg).strip()
         if not user_msg:
@@ -3983,9 +3986,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     ) if (p or "").strip()]
     dynamic_tail = "\n\n".join(_advisory)
     _stuck, _stuck_reason = _detect_stuck(messages)
-    _is_edge = _is_capability_edge(cur_ptype)
-    _in_build = _in_build_mode(messages)
-    _in_reuse = _in_reuse_mode(messages)
+    # In memory-only mode there is no capability-edge tracking / overcome /
+    # build-reuse loop, so force these off and fall through to the plain nudge.
+    _is_edge = _is_capability_edge(cur_ptype) if not MEMORY_ONLY else False
+    _in_build = _in_build_mode(messages) if not MEMORY_ONLY else False
+    _in_reuse = _in_reuse_mode(messages) if not MEMORY_ONLY else False
     # A KNOWN capability edge routes straight into overcome mode (hard stop) — the
     # point of flagging an edge is to overcome it (build/reuse a tool), not just to
     # name it and stop. Stuck-now and known-edge share the same deliberation gate.
@@ -4378,7 +4383,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Novel-procedure detection: a working NEW technique (custom header, API
     # endpoint, method override) is a "great" outcome even without a pre-flagged
     # capability edge. Grade it A and persist it so the model can reuse it.
-    if grade == "B":
+    if grade == "B" and not MEMORY_ONLY:
         _np_desc, _np_cmd = _detect_novel_procedure(messages)
         if _np_desc:
             grade = "A"
@@ -4415,14 +4420,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             and "SUCCESS" not in _trail_statuses
             and grade not in ("D", "F")):
         _eff_grade = "F"
-    _record_capability(cur_ptype, _eff_grade)
+    if not MEMORY_ONLY:
+        _record_capability(cur_ptype, _eff_grade)
 
     # Overcome-mode outcome: if the model was deliberating (stuck now, a known
     # capability edge, or already inside an overcome episode), parse its reply and
     # record the decision — build_tool (attempted), reuse_tool (attempted), or a
     # TOOL_SAVE marker (overcame + saved tool). No declare_edge: an edge surfaces
     # when the build loop exhausts its budget, not via a model declaration.
-    if _stuck or _is_edge or _in_build or _in_reuse:
+    if not MEMORY_ONLY and (_stuck or _is_edge or _in_build or _in_reuse):
         try:
             _oo = _handle_overcome_reply(db, cur_ptype, _resp_content)
             if _oo != "none":
@@ -4437,17 +4443,18 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # inline `pip install`, a small parser) happen with zero failures and were
     # being missed. The combined trail above is still computed for the failure
     # ladder + logging; the learner now uses the raw tool trace for tool identity.
-    if grade in ("A", "B") and _tool_trace and ASK_REUSABLE:
+    if grade in ("A", "B") and _tool_trace and not MEMORY_ONLY and ASK_REUSABLE:
         try:
             _enqueue(_ask_reusable_strategy, messages, _tool_trace, _answer, grade, cur_ptype)
         except Exception as e:
             _log_error("process_chat:reusable_strategy_enqueue", e)
 
     # Phase 4.2/4.3: close the telemetry loop on injected strategies
-    try:
-        _consume_injected_strategies(grade)
-    except Exception as e:
-        _log_error("process_chat:consume_strategies", e)
+    if not MEMORY_ONLY:
+        try:
+            _consume_injected_strategies(grade)
+        except Exception as e:
+            _log_error("process_chat:consume_strategies", e)
 
     # Phase 5.2: embedding-distance check on self-reported A/B grades
     try:
@@ -5094,7 +5101,8 @@ if FLASK_OK:
             _check_suspect_grade(grade, ct, messages)
         except Exception as e:
             _log_error("chat_stream:suspect_grade", e)
-        _enqueue(_strategy_lifecycle, grade, messages, result.get("_infra_failure", False))
+        if not MEMORY_ONLY:
+            _enqueue(_strategy_lifecycle, grade, messages, result.get("_infra_failure", False))
         content = result.get("content", "")
         tool_calls = result.get("tool_calls", [])
 
@@ -5337,6 +5345,8 @@ if FLASK_OK:
         """Proxy-driven learning mode: parameter cycling + strategy extraction.
         POST body: {problem, iterations?, params?}
         Cycles through parameter sets, grades at standard temp, extracts strategies."""
+        if MEMORY_ONLY:
+            return _cors_response({"error": "learning mode disabled in memory-only build"}, status=403)
         data = request.get_json(force=True)
         problem = data.get("problem", "")
         iterations = min(data.get("iterations", 5), 10)
