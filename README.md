@@ -16,6 +16,13 @@ to re-enable it; the `unified_mneme` branch runs with it on.
 OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads
 required when running against a hosted provider.
 
+**Three models, one DB.** Mneme runs three models against a single shared memory
+store (one SQLite DB + one FAISS index): the **chat** model (answers you), the
+**embedder** (turns text into vectors), and the **labeler** (tags topics). All
+three read/write the same DB, so memory is shared and consistent. The chat model
+is fixed by config — the request's `model` field is not used to route to a
+different chat model.
+
 ```
 Any OpenAI client ──▶ Mneme Proxy (:8080) ──▶ your model backend (Ollama or OpenAI-compatible)
                            │
@@ -41,7 +48,7 @@ prepares the machine; the setup wizard asks how you want to run it.
 ### 1. Install (dependencies + Ollama + proxy code)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
 ```
 
 Installs the Python dependencies, Ollama (idempotent — harmless even for a
@@ -51,7 +58,7 @@ only fills in what's missing.
 ### 2. Setup (backend, models, Pi)
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && python3 /tmp/setup.py
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
 ```
 
 The wizard walks four steps:

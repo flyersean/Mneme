@@ -78,6 +78,7 @@ storage:
   chunk_dir: ~/mneme/chunks
   port: 8080
   inject_system: true
+  memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
   staging_turns: 6           # flush cadence (the every-6-turns knob)
   staging_idle: 120          # seconds of inactivity before flush
   belief_evolution: false    # gated off by default — floods the backend
