@@ -203,6 +203,37 @@ self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
 ---
 
+## Multiple instances — one DB, many models
+
+Mneme can run several proxy instances against one shared memory DB. Each
+instance listens on its own port (8080, 8081, 8082, …) and runs its own chat
+model + backend; they all read/write the same memory.
+
+To add an instance, run the setup wizard again and point it at the same DB
+directory. It detects the existing DB and offers **"Add another proxy instance"**.
+The wizard auto-picks the next free port, asks for the new instance's chat model
+(and backend), and writes a per-instance start script (`start_proxy_<port>.sh`).
+
+Two hard rules:
+
+1. **Same embedder everywhere.** Every instance sharing a DB must use the SAME
+   embedding model. The vectors in one DB live in one semantic space. If
+   instance A embeds with `snowflake-arctic-embed2` (Ollama) and instance B with
+   `voyage-4-lite` (OpenRouter), both are 1024-dim so FAISS won't crash — but
+   similarity across them is garbage. The startup health check flags "different
+   embed model, same dim" but does not prevent it. The wizard locks the embedder
+   (and labeler) to the first setup's choice; don't change them on a shared DB.
+
+2. **Same machine is rock solid; cross-machine needs a real shared filesystem.**
+   On one machine, instances share the DB with plain file locking (SQLite WAL +
+   fcntl on the FAISS index). Across machines, the DB directory must live on
+   shared storage (NFS/S3-mount), and the fcntl lock is only reliable on NFSv4 —
+   on NFSv3 or a plain S3 mount, concurrent writes aren't safely serialized. So
+   "one instance on RunPod + one on an Ollama pod" needs a proper shared
+   filesystem, not just network reachability.
+
+---
+
 ## Features
 
 **Core memory**
