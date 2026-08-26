@@ -331,15 +331,13 @@ def setup_ollama_models():
     return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
-def create_context_modelfile(base_model, ctx_size, name="mneme-chat"):
-    """Create a derived Ollama model with an explicit context window, so num_ctx
-    matches what the proxy expects. `name` defaults to 'mneme-chat' but a second
-    instance passes a unique name (e.g. 'mneme-chat-8081') so multiple instances
-    don't overwrite each other's derived model. Returns the derived model name on
-    success, or the base model name if `ollama create` fails."""
+def create_context_modelfile(base_model, ctx_size):
+    """Create a derived Ollama model ('mneme-chat') with an explicit context
+    window, so num_ctx matches what the proxy expects. Returns the derived model
+    name on success, or the base model name if `ollama create` fails."""
     if not shutil.which("ollama"):
         return base_model
-    mf = os.path.join(MEMORY_DIR, f"Modelfile.{name}")
+    mf = os.path.join(MEMORY_DIR, "Modelfile")
     content = (
         f"# Mneme — derived from {base_model} (quantized base)\n"
         f"# Pins the context window to match sampling.ctx_tokens in mneme.yaml.\n"
@@ -349,10 +347,10 @@ def create_context_modelfile(base_model, ctx_size, name="mneme-chat"):
     try:
         with open(mf, "w") as f:
             f.write(content)
-        r = run(f"ollama create {name} -f {mf}", timeout=300)
+        r = run(f"ollama create mneme-chat -f {mf}", timeout=300)
         if r.returncode == 0:
-            print(f"  ✓ created '{name}' (num_ctx={ctx_size}) from {base_model}")
-            return name
+            print(f"  ✓ created 'mneme-chat' (num_ctx={ctx_size}) from {base_model}")
+            return "mneme-chat"
     except Exception:
         pass
     print(f"  ⚠ could not create Modelfile — using {base_model} as-is")
@@ -565,233 +563,6 @@ def start_proxy(backend, models, port):
     return False
 
 
-# ── Multi-instance (shared DB) ──────────────────────────────────
-# Multiple proxy instances share ONE memory DB dir. The FIRST setup writes the
-# shared config (mneme.yaml) + saves the shared settings to setup_config.json so
-# a later "add instance" can lock the embedder/labeler (the vectors in one DB
-# must all come from the SAME embedder or similarity is meaningless). Each added
-# instance gets its own start script that overrides only the chat model + port.
-
-def _count_chunks(memory_dir):
-    try:
-        import sqlite3
-        c = sqlite3.connect(os.path.join(memory_dir, "mneme.db"))
-        n = c.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        c.close()
-        return n
-    except Exception:
-        return "?"
-
-
-def _scfg_path(memory_dir):
-    return os.path.join(memory_dir, "setup_config.json")
-
-
-def load_shared_config(memory_dir):
-    """Read the shared-instance metadata saved by the first setup. {} when absent."""
-    p = _scfg_path(memory_dir)
-    if os.path.exists(p):
-        try:
-            with open(p) as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-def save_shared_config(memory_dir, models, backend):
-    """Persist the shared settings (embedder/labeler + their backends) so a later
-    'add instance' locks them to this DB's original choice."""
-    with open(_scfg_path(memory_dir), "w") as f:
-        json.dump({
-            "db_dir": memory_dir,
-            "backend": backend,
-            "embed_model": models.get("embed_model", ""),
-            "embed_backend": backend,
-            "label_model": models.get("label_model", ""),
-            "label_backend": backend,
-        }, f, indent=2)
-
-
-def db_exists(memory_dir):
-    return os.path.exists(os.path.join(memory_dir, "mneme.db"))
-
-
-def pick_chat_model(chat_backend, derived_name="mneme-chat"):
-    """Pick (and pull, for Ollama) ONLY the chat model for an added instance.
-    The embedder/labeler are locked to the shared DB and are NOT asked here."""
-    if chat_backend == "openrouter":
-        main_opts = [
-            ("stealth/ox-alpha           (free frontier coder, 1M ctx, reasoning)", "stealth/ox-alpha"),
-            ("deepseek/deepseek-v4-flash  (cheapest thinking MoE)", "deepseek/deepseek-v4-flash"),
-            ("deepseek/deepseek-chat      (V3, non-thinking)", "deepseek/deepseek-chat"),
-            ("qwen/qwen3-32b              (open-weight)", "qwen/qwen3-32b"),
-            ("Custom (enter any OpenRouter model id)", "__custom__"),
-        ]
-        idx = choose("Chat model", [m[0] for m in main_opts])
-        if main_opts[idx][1] == "__custom__":
-            return ask("Enter OpenRouter model id", OR_DEFAULT_MAIN) or OR_DEFAULT_MAIN
-        return main_opts[idx][1]
-
-    ensure_ollama()
-    pulled = get_pulled_models()
-    entries = []
-    if pulled:
-        entries.append(("── Already pulled ──", None))
-        for p in pulled:
-            entries.append((f"{p}  (pulled)", p))
-    entries.append(("── Pull a recommended model ──", None))
-    entries += [
-        ("qwen3:32b  (strong general model)", "qwen3:32b"),
-        ("qwen3:14b  (lighter)", "qwen3:14b"),
-        ("llama3.1:8b  (small)", "llama3.1:8b"),
-    ]
-    entries.append(("Custom (enter any Ollama model name)", "__custom__"))
-    model = _menu("Chat model", entries)
-    if model == "__custom__":
-        model = ask("Enter Ollama model name") or "qwen3:32b"
-    pull_model(model)
-    ctx_opts = [("32K (fast)", 32000), ("64K", 64000), ("129K (needs big VRAM)", 129000)]
-    idx = choose("Context window", [c[0] for c in ctx_opts])
-    ctx_size = ctx_opts[idx][1]
-    return create_context_modelfile(model, ctx_size, name=derived_name)
-
-
-def write_instance_start_script(memory_dir, port, chat_backend, chat_model,
-                                embed_model, embed_backend, label_model, label_backend,
-                                inject, memory_only):
-    """Write a per-instance start script: overrides the shared config with this
-    instance's chat model + port, points at the shared DB, and reuses the locked
-    embedder/labeler (keeping their original backends via MNEME_*_BACKEND)."""
-    os.makedirs(memory_dir, exist_ok=True)
-    path = os.path.join(memory_dir, f"start_proxy_{port}.sh")
-    lines = [
-        "#!/bin/bash",
-        f"# Mneme proxy instance — chat model: {chat_model} (port {port})",
-        f"# Shares the memory DB with other instances at: {memory_dir}",
-        f"# Start/restart with:  {path}",
-        "",
-    ]
-    if chat_backend == "openrouter":
-        lines += [
-            "# Source the saved OpenRouter key unless one is already exported",
-            f'if [ -z "${{OPENROUTER_API_KEY:-}}" ] && [ -f "{KEY_FILE}" ]; then',
-            f'  export $(grep -v "^#" "{KEY_FILE}" | xargs)',
-            "fi",
-        ]
-    lines += [
-        f'export MNEME_BACKEND="{chat_backend}"',
-        f'export MNEME_MODEL="{chat_model}"',
-        f'export EMBED_MODEL="{embed_model}"',
-        f'export LABEL_MODEL="{label_model}"',
-    ]
-    # Aux backends: only set when they differ from this instance's chat backend,
-    # so the embedder/labeler keep running where the DB originally set them up.
-    if embed_backend and embed_backend != chat_backend:
-        lines.append(f'export MNEME_EMBED_BACKEND="{embed_backend}"')
-    if label_backend and label_backend != chat_backend:
-        lines.append(f'export MNEME_LABEL_BACKEND="{label_backend}"')
-    lines += [
-        f'export MNEME_CHUNK_DIR="{memory_dir}"',
-        f'export MNEME_PORT="{port}"',
-        f'export MNEME_MEMORY_ONLY="{"1" if memory_only else "0"}"',
-        f'export MNEME_INJECT_SYSTEM="{inject}"',
-        "export PYTHONDONTWRITEBYTECODE=1",
-        "",
-        f'cd "{REPO_ROOT}"',
-        "exec python3 -uB proxy/mneme_proxy.py",
-        "",
-    ]
-    with open(path, "w") as f:
-        f.write("\n".join(lines))
-    os.chmod(path, 0o755)
-    return path
-
-
-def start_instance(memory_dir, port, chat_backend, chat_model,
-                   embed_model, embed_backend, label_model, label_backend,
-                   inject, memory_only):
-    """Launch an added instance and wait for its health check."""
-    env = os.environ.copy()
-    env["MNEME_CHUNK_DIR"] = memory_dir
-    env["MNEME_PORT"] = str(port)
-    env["MNEME_BACKEND"] = chat_backend
-    env["MNEME_MODEL"] = chat_model
-    env["EMBED_MODEL"] = embed_model
-    env["LABEL_MODEL"] = label_model
-    if embed_backend and embed_backend != chat_backend:
-        env["MNEME_EMBED_BACKEND"] = embed_backend
-    if label_backend and label_backend != chat_backend:
-        env["MNEME_LABEL_BACKEND"] = label_backend
-    env["MNEME_MEMORY_ONLY"] = "1" if memory_only else "0"
-    env["MNEME_INJECT_SYSTEM"] = inject
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if chat_backend == "openrouter":
-        env["OPENROUTER_API_KEY"] = load_saved_key()
-    log = open(f"/tmp/mneme_{port}.log", "w")
-    subprocess.Popen([sys.executable, "-uB", "proxy/mneme_proxy.py"],
-                     cwd=REPO_ROOT, env=env, stdout=log, stderr=log, start_new_session=True)
-    print(f"  Starting proxy on port {port}...", end=" ", flush=True)
-    for _ in range(30):
-        time.sleep(1)
-        try:
-            d = json.loads(urllib.request.urlopen(f"http://localhost:{port}/health", timeout=3).read())
-            print(f"running ({d.get('chunks', 0)} chunks, backend={d.get('backend')})")
-            return True
-        except Exception:
-            continue
-    print(f"timeout — check /tmp/mneme_{port}.log")
-    return False
-
-
-def _add_instance(memory_dir, shared, memory_only):
-    """Add a new proxy instance to an existing shared DB."""
-    print("\n\033[1mAdd a proxy instance to the existing DB\033[0m")
-    print(f"  Shared DB:  {memory_dir}")
-    embed_model = shared.get("embed_model") or OL_DEFAULT_EMBED
-    embed_backend = shared.get("embed_backend") or "ollama"
-    label_model = shared.get("label_model") or OL_DEFAULT_LABEL
-    label_backend = shared.get("label_backend") or "ollama"
-    print(f"  Embedder (locked): {embed_model}  ({embed_backend})")
-    print(f"  Labeler  (locked): {label_model}  ({label_backend})")
-
-    idx = choose("Chat backend for this instance?", [
-        "OpenRouter (hosted — needs an API key)",
-        "Ollama (local — models run on this machine)",
-    ])
-    chat_backend = "openrouter" if idx == 0 else "ollama"
-
-    port = int(ask("Port for this instance", str(free_port(DEFAULT_PORT))) or DEFAULT_PORT)
-
-    if chat_backend == "openrouter":
-        ask_and_validate_key()
-        chat_model = pick_chat_model(chat_backend)
-    else:
-        chat_model = pick_chat_model(chat_backend, derived_name=f"mneme-chat-{port}")
-
-    idx = choose("Inject Mneme's system instructions?", [
-        "Yes (default — inject the memory instructions + toolset prompt)",
-        "No (skip — use a merged prompt from your own harness)",
-    ])
-    inject = "1" if idx == 0 else "0"
-
-    script = write_instance_start_script(memory_dir, port, chat_backend, chat_model,
-                                         embed_model, embed_backend, label_model, label_backend,
-                                         inject, memory_only)
-    started = start_instance(memory_dir, port, chat_backend, chat_model,
-                             embed_model, embed_backend, label_model, label_backend,
-                             inject, memory_only)
-
-    print("\n\033[1mInstance added.\033[0m")
-    print(f"  Chat model:  {chat_model}  (backend {chat_backend})")
-    print(f"  Port:        {port}")
-    print(f"  Start:       {script}")
-    print(f"  Log:         /tmp/mneme_{port}.log")
-    print(f"  Shared DB:   {memory_dir}")
-    print(f"  Chat UI:     http://localhost:{port}/")
-    return 0 if started else 1
-
-
 def create_access_symlinks():
     """Expose the memory dir + repo to JupyterLab's file browser via /workspace
     symlinks, so a user can browse and download the DB, config, and prompts from
@@ -822,7 +593,7 @@ def create_access_symlinks():
 
 # ── Main ─────────────────────────────────────────────────────────
 def main():
-    global REPO_ROOT, MEMORY_DIR
+    global REPO_ROOT
     banner()
     REPO_ROOT = find_repo()
     print(f"  Repo: {REPO_ROOT}")
@@ -833,25 +604,7 @@ def main():
     else:
         print(f"  Branch: {branch} → full build (strategy/learning layer on)")
 
-    # 0. Memory DB location — shared by every instance of this Mneme install.
-    #    Point it at a mounted shared volume to let instances on OTHER machines
-    #    use the same memory (same-machine multi-instance needs no special setup).
-    print("\n\033[1mStep 0/4 — Memory DB location\033[0m")
-    _default_db = os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks")
-    MEMORY_DIR = os.path.expanduser(ask("Memory DB directory (shared by all instances)", _default_db) or _default_db)
     os.makedirs(MEMORY_DIR, exist_ok=True)
-
-    # Existing DB? Offer to add an instance instead of a full fresh setup.
-    if db_exists(MEMORY_DIR):
-        shared = load_shared_config(MEMORY_DIR)
-        print(f"\n  Existing memory DB found at {MEMORY_DIR} ({_count_chunks(MEMORY_DIR)} chunks).")
-        idx = choose("What would you like to do?", [
-            "Add another proxy instance (new chat model + port, sharing this DB)",
-            "Reconfigure this install (re-pick backend / models / port — keeps the DB)",
-        ])
-        if idx == 0:
-            return _add_instance(MEMORY_DIR, shared, memory_only)
-        # else fall through to the full setup below (reconfigure).
 
     # 1. Backend
     print("\n\033[1mStep 1/4 — Backend\033[0m")
@@ -888,7 +641,6 @@ def main():
 
     # Write config + start script, then launch.
     cfg_path = write_config(backend, models, port, inject, memory_only)
-    save_shared_config(MEMORY_DIR, models, backend)
     start_script = write_start_script(backend, models, port)
     print(f"\n  Config:      {cfg_path}")
     print(f"  Start/stop:  {start_script}")
