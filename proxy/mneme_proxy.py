@@ -3688,6 +3688,12 @@ def _novelty_thinking_mode(problem: str, iterations: int = 4, custom_features: l
 # _tool_failure_nudge).
 
 
+# "Just ask" learning is a LIVE-model behavior (the model self-reports whether it
+# learned something reusable). Deterministic unit tests disable it via
+# MNEME_ASK_REUSABLE=0, because a ScriptedModel has no meaningful answer.
+ASK_REUSABLE = os.environ.get("MNEME_ASK_REUSABLE", "1") not in ("0", "false", "False", "no")
+
+
 def _tool_summary(tool_trace):
     """Compact 'tool: key-arg' list so the model can recall what it actually did
     (the old status-only trail couldn't see WHICH tool was called)."""
@@ -4422,7 +4428,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # inline `pip install`, a small parser) happen with zero failures and were
     # being missed. The combined trail above is still computed for the failure
     # ladder + logging; the learner now uses the raw tool trace for tool identity.
-    if grade in ("A", "B") and _tool_trace:
+    if grade in ("A", "B") and _tool_trace and ASK_REUSABLE:
         try:
             _enqueue(_ask_reusable_strategy, messages, _tool_trace, _answer, grade, cur_ptype)
         except Exception as e:
