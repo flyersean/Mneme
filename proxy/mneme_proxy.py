@@ -3739,10 +3739,12 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         f"{task[:MAX_ABSTRACT_INPUT]}\n\n"
         f"Tools you called:\n{_tool_summary(tool_trace)}\n\n"
         f"Final answer: {answer_clean[:MAX_ABSTRACT_INPUT]}\n\n"
-        "Did you build a new tool, install a new library/tool, or figure out a "
-        "method that is NEW and reusable for FUTURE tasks? If yes, output ONE "
-        "imperative rule: 'WHEN doing <task>, use <tool or method>' (name the "
-        "tool/library). If nothing is genuinely new and reusable, output exactly: NO"
+        "Is there a tool or method you used here that you would want available "
+        "again for a FUTURE similar task — for example a command like pdftotext, "
+        "a library you installed, or an approach you figured out? If yes, output "
+        "ONE imperative rule: 'WHEN doing <task>, use <tool or method>' and name "
+        "the specific command/tool/library. If nothing here is worth reusing, "
+        "output exactly: NO"
     )
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
