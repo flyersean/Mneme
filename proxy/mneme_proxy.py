@@ -1092,7 +1092,7 @@ def _truncate_tool_result(content: str) -> str:
 
 
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
-                      max_tokens=-1, timeout=None, model=None) -> dict:
+                      max_tokens=-1, timeout=None, model=None, no_reasoning=False) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
     dict shape as the Ollama path: {content, thinking, tool_calls, eval_count,
     done_reason}. OpenRouter normalizes thinking models' reasoning into
@@ -1117,9 +1117,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     #       the model treats it as a goal and over-thinks MORE, so don't use it.)
     _reasoning = {}
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
-    if _reffort:
+    if _reffort and not no_reasoning:
         _reasoning["effort"] = _reffort
-    if os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
+    if no_reasoning or os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
         _reasoning["enabled"] = False
     if _reasoning:
         payload["reasoning"] = _reasoning
@@ -1360,7 +1360,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 def _query_model_impl(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
                 timeout: Optional[int] = None, format_schema=None, model: str = None,
-                backend: str = None) -> dict:
+                backend: str = None, no_reasoning: bool = False) -> dict:
     """Send to Ollama, return {content, thinking, eval_count, done_reason}.
     Pass options dict for top_p, top_k, mirostat, etc. `timeout` controls the
     Ollama read timeout — raise it for long generations (novelty thinking).
@@ -1477,7 +1477,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     msgs = sys_msgs + non_sys
     
     if use_openai:
-        return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout, _model)
+        return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout, _model, no_reasoning)
     try:
         r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
     except requests.exceptions.ReadTimeout:
@@ -1512,7 +1512,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 def query_model(messages: list, system: str = None, temperature: float = None,
                 max_tokens: int = None, tools: list = None, options: dict = None,
                 timeout: Optional[int] = None, format_schema=None, model: str = None,
-                backend: str = None) -> dict:
+                backend: str = None, no_reasoning: bool = False) -> dict:
     """Timing wrapper around _query_model_impl — logs one line per model call.
 
     Fields: caller (function that invoked query_model), tid (bg = _BG_QUEUE
@@ -1527,7 +1527,7 @@ def query_model(messages: list, system: str = None, temperature: float = None,
         _caller = "?"
     _tid = "bg" if threading.current_thread().name.startswith("mneme-bg") else "req"
     res = _query_model_impl(messages, system, temperature, max_tokens, tools,
-                            options, timeout, format_schema, model, backend)
+                            options, timeout, format_schema, model, backend, no_reasoning)
     _dur = time.time() - _t0
     if isinstance(res, dict):
         _done = res.get("done_reason", "?")
@@ -3745,7 +3745,10 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         "tool/library). If nothing is genuinely new and reusable, output exactly: NO"
     )
     try:
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+        # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
+        # task — thinking-on makes Qwen ramble or time out on it.
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
+                        no_reasoning=True)
         rule = (r.get("content") or "").strip()
         if not rule or rule.upper().split()[0] == "NO":
             return
