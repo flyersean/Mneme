@@ -549,6 +549,41 @@ def test_load_instruction_override_wins():
 
 
 @test
+def test_instruction_per_instance_isolation():
+    """Per-instance instruction files: an edit saved through one proxy port is
+    written to instance_<port>/ and only that instance sees it; other ports fall
+    back to the shared default. Regression for the multi-instance /instructions
+    editor leaking edits across proxies."""
+    root = os.path.join(os.environ.get("MNEME_CHUNK_DIR", ""), "instructions")
+    os.makedirs(os.path.join(root, "default"), exist_ok=True)
+    old_port = os.environ.get("MNEME_PORT")
+    try:
+        os.environ["MNEME_PORT"] = "8081"
+        p1 = mp.save_instruction("explore", "INSTANCE-8081-EDIT")
+        assert "instance_8081" in p1, p1
+        assert mp._load_instruction("explore") == "INSTANCE-8081-EDIT"
+
+        # A different port must NOT see 8081's edit — it falls back to the default.
+        os.environ["MNEME_PORT"] = "8080"
+        assert "INSTANCE-8081-EDIT" not in mp._load_instruction("explore")
+        assert "EXPLORE DIRECTIVE" in mp._load_instruction("explore")
+
+        # And 8080's own edit stays separate from 8081's.
+        p0 = mp.save_instruction("explore", "INSTANCE-8080-EDIT")
+        assert "instance_8080" in p0, p0
+        assert mp._load_instruction("explore") == "INSTANCE-8080-EDIT"
+        os.environ["MNEME_PORT"] = "8081"
+        assert mp._load_instruction("explore") == "INSTANCE-8081-EDIT"
+    finally:
+        if old_port is None:
+            os.environ.pop("MNEME_PORT", None)
+        else:
+            os.environ["MNEME_PORT"] = old_port
+        for sub in ("instance_8080", "instance_8081"):
+            shutil.rmtree(os.path.join(root, sub), ignore_errors=True)
+
+
+@test
 def test_detect_stuck_consecutive_failures():
     # Recovery window (Phase 2): 2 consecutive failures is NOT stuck (the model
     # still gets to try a different tool); 3 consecutive failures IS stuck.

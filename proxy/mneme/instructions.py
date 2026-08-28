@@ -11,8 +11,11 @@ shipped prompt is written to disk so it can be READ and EDITED like system_promp
 
 Directory layout (under $MNEME_CHUNK_DIR/instructions/):
 
-    default/<name>.txt       — the prompt (auto-created on first run; edit to override)
-    <model-dir>/<name>.txt   — per-model override (wins over default/)
+    default/<name>.txt          — the prompt (auto-created on first run; edit to override)
+    <model-dir>/<name>.txt      — per-model override (wins over default/)
+    instance_<port>/<name>.txt  — per-instance override (wins over model + default;
+                                   each proxy port has its OWN instructions, so an
+                                   edit on 8081 only affects the 8081 instance)
 
 Each file carries optional frontmatter (self-documenting), commented lines that the
 loader strips before substitution:
@@ -274,29 +277,44 @@ def materialize_instructions():
         print(f"  [INSTRUCTIONS] materialized {created} prompt file(s) under {default_dir}", flush=True)
 
 
+def _live_instruction_path(name):
+    """Path of the file that actually supplies `name`'s content for THIS instance
+    (instance_<port>/ > <model>/ > default/). Returns the default path when no
+    override file exists yet."""
+    for subdir in _override_subdirs():
+        p = os.path.join(_instructions_dir(), subdir, name + ".txt")
+        if os.path.isfile(p):
+            body, _ = _parse_instruction_file(p)
+            if body is not None:
+                return p
+    return os.path.join(_instructions_dir(), "default", name + ".txt")
+
+
 def list_instructions():
-    """Return the prompts in conversation order, reading the LIVE default/ files
-    (with the code default as fallback). Each entry: {name, when, vars, used_by,
-    content, path, model_override}. Used by the /instructions reference page."""
+    """Return the prompts in conversation order, reading the LIVE files for THIS
+    instance (instance_<port>/ > <model>/ > default/, with the code default as
+    fallback). Each entry: {name, when, vars, used_by, content, path, instance}.
+    Used by the /instructions reference page."""
     ordered = list(INSTRUCTION_ORDER)
     for name in DEFAULT_INSTRUCTIONS:  # any default not in the order list (defensive)
         if name not in ordered:
             ordered.append(name)
-    model_dir = _model_override_dir()
     result = []
     for name in ordered:
         when, vars_, used_by = INSTRUCTION_META.get(name, ("", "", ""))
-        path = os.path.join(_instructions_dir(), "default", name + ".txt")
         body = None
-        if os.path.isfile(path):
-            body, _ = _parse_instruction_file(path)
+        path = ""
+        for subdir in _override_subdirs():
+            p = os.path.join(_instructions_dir(), subdir, name + ".txt")
+            if os.path.isfile(p):
+                b, _ = _parse_instruction_file(p)
+                if b is not None:
+                    body = b
+                    path = p
+                    break
         if body is None:
             body = DEFAULT_INSTRUCTIONS.get(name, "")
-        model_override = ""
-        if model_dir:
-            mp = os.path.join(_instructions_dir(), model_dir, name + ".txt")
-            if os.path.isfile(mp):
-                model_override = mp
+            path = os.path.join(_instructions_dir(), "default", name + ".txt")
         result.append({
             "name": name,
             "when": when,
@@ -304,13 +322,14 @@ def list_instructions():
             "used_by": used_by,
             "content": body,
             "path": path,
-            "model_override": model_override,
+            "instance": _instance_dir() or "default",
         })
     return result
 
 
 def save_instruction(name, content):
-    """Write a user-edited prompt body back to default/<name>.txt, preserving the
+    """Write a user-edited prompt body for THIS instance (instance_<port>/<name>.txt
+    when MNEME_PORT is set, else default/<name>.txt), preserving the
     self-documenting frontmatter (reconstructed from INSTRUCTION_META). Returns the
     path written; raises OSError on failure. Unknown names raise ValueError."""
     if name not in DEFAULT_INSTRUCTIONS:
@@ -323,7 +342,8 @@ def save_instruction(name, content):
         head.append(f"# vars: {vars_}")
     if used_by:
         head.append(f"# used_by: {used_by}")
-    path = os.path.join(_instructions_dir(), "default", name + ".txt")
+    subdir = _instance_dir() or "default"
+    path = os.path.join(_instructions_dir(), subdir, name + ".txt")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         if head:
@@ -335,7 +355,8 @@ def save_instruction(name, content):
 def _load_instruction(name, default=None, vars=None):
     """Return the instruction text for `name`.
 
-    Precedence: per-model override > default/ override > `default` (code).
+    Precedence: per-instance override > per-model override > default/ override
+    > `default` (code).
     `vars` maps {{placeholder}} -> value. A missing/malformed override file
     falls back to `default` and logs; an unknown placeholder raises.
     """
@@ -353,9 +374,7 @@ def _load_instruction(name, default=None, vars=None):
 
 def _read_override(name):
     """Return the override body for `name`, or None if none exists/parses."""
-    for subdir in (_model_override_dir(), "default"):
-        if not subdir:
-            continue
+    for subdir in _override_subdirs():
         path = os.path.join(_instructions_dir(), subdir, name + ".txt")
         if not os.path.isfile(path):
             continue
@@ -373,6 +392,25 @@ def _model_override_dir():
     if not model:
         return ""
     return re.sub(r'[^a-zA-Z0-9_.-]+', '_', model)
+
+
+def _instance_dir():
+    """Per-INSTANCE override subdir, keyed by the proxy's port. Two proxies on
+    different ports get DIFFERENT instruction files — an edit made through one
+    proxy's /instructions page only affects that instance. Empty when MNEME_PORT
+    isn't set (single unnamed instance → edits land in default/)."""
+    port = os.environ.get("MNEME_PORT", "").strip()
+    if not port:
+        return ""
+    return f"instance_{port}"
+
+
+def _override_subdirs():
+    """Ordered override layers, most-specific first: this instance's port, then
+    the model, then the shared default."""
+    subdirs = [s for s in (_instance_dir(), _model_override_dir()) if s]
+    subdirs.append("default")
+    return subdirs
 
 
 def _parse_instruction_file(path):

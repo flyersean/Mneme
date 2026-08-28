@@ -38,7 +38,7 @@ from mneme.tool_trail import (
     _tool_failure_nudge,
     _recent_attempts_summary,
 )
-from mneme.instructions import _load_instruction, materialize_instructions, list_instructions, save_instruction, _instructions_dir
+from mneme.instructions import _load_instruction, materialize_instructions, list_instructions, save_instruction, _instructions_dir, _live_instruction_path
 from mneme.overcome import (
     _detect_stuck,
     _overcome_directive,
@@ -4956,7 +4956,7 @@ if FLASK_OK:
     def instructions_raw(name):
         if not re.fullmatch(r"[a-z_]+", name):
             return _cors_response({"error": "invalid instruction name"}, status=400)
-        path = os.path.join(_instructions_dir(), "default", name + ".txt")
+        path = _live_instruction_path(name)
         if not os.path.isfile(path):
             return _cors_response({"error": f"no file for {name}"}, status=404)
         try:
