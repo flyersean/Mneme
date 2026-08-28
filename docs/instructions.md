@@ -7,8 +7,14 @@ edit, no hand-creating a file with the right format. Edit a file to change that
 prompt; delete it to revert to the built-in default.
 
     instructions/
-      default/<name>.txt      — the prompt (auto-created on first run; edit to override)
-      <model-name>/<name>.txt — per-model override (wins over default/)
+      default/<name>.txt          — the prompt (auto-created on first run; edit to override)
+      <model-name>/<name>.txt     — per-model override (wins over default/)
+      instance_<port>/<name>.txt  — per-instance override (wins over model + default)
+
+The `instance_<port>/` layer is what keeps multi-instance setups isolated: an
+edit made through the /instructions page on port 8081 is written to
+`instance_8081/` and only the 8081 proxy reads it — 8080 and others keep their
+own files (falling back to `default/` where they have no override).
 
 A missing or malformed file falls back to the code default and logs loudly — a
 bad instruction file degrades to the shipped default, never to a broken
