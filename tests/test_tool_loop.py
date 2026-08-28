@@ -1289,8 +1289,9 @@ def test_memory_only_uses_light_prompt():
     try:
         mp.MEMORY_ONLY = True
         blk = mp._system_prompt_block()
-        # Drops the behavioral obligations...
-        assert "Source Tagging" not in blk, "memory-only must drop source-tagging rules"
+        # Keeps source-tagging (grading is still active in memory-only mode and
+        # depends on [source]/[guess] tags) but drops the learning-layer obligations...
+        assert "Source Tagging" in blk, "memory-only must keep source-tagging rules (grading depends on them)"
         assert "Tool Outcome Tagging" not in blk, "memory-only must drop tool-tagging rules"
         # ...but still explains how memory works...
         assert "Memory Chunk Format" in blk, "memory-only must keep the chunk-format legend"
