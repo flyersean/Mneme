@@ -919,8 +919,18 @@ def main():
     #    Point it at a mounted shared volume to let instances on OTHER machines
     #    use the same memory (same-machine multi-instance needs no special setup).
     print("\n\033[1mStep 0/4 — Memory DB location\033[0m")
-    _default_db = os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks")
-    MEMORY_DIR = os.path.expanduser(ask("Memory DB directory (shared by all instances)", _default_db) or _default_db)
+    _default_db = os.path.abspath(os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks"))
+    # Normalize to an ABSOLUTE path. The proxy resolves a relative chunk_dir against
+    # ITS OWN cwd (the repo), which differs from where setup runs — so "./workspace/chunks"
+    # silently lands in /root/mneme/repo/workspace/chunks (ephemeral) instead of
+    # /workspace/chunks (persistent). abspath() makes the stored path deterministic
+    # no matter where setup or the proxy runs from.
+    _raw = ask("Memory DB directory (shared by all instances)", _default_db) or _default_db
+    MEMORY_DIR = os.path.abspath(os.path.expanduser(_raw))
+    if MEMORY_DIR != _raw:
+        print(f"  → resolved to: {MEMORY_DIR}")
+    if os.path.isdir("/workspace") and not (MEMORY_DIR == "/workspace" or MEMORY_DIR.startswith("/workspace/")):
+        print("  ⚠ /workspace is the persistent volume here — a path outside it is wiped on stop/restart.")
     os.makedirs(MEMORY_DIR, exist_ok=True)
 
     # Existing DB? Offer to add an instance, reconfigure, or wipe it for a fresh
