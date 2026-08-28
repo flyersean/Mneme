@@ -659,6 +659,41 @@ def db_exists(memory_dir):
     return os.path.exists(os.path.join(memory_dir, "mneme.db"))
 
 
+def wipe_db(memory_dir):
+    """Delete the memory DB, FAISS index, and generated config/start files so a
+    'new install' starts from zero. Returns the paths removed. Leaves anything it
+    doesn't recognize untouched."""
+    removed = []
+    for name in ("mneme.db", "mneme.db-wal", "mneme.db-shm",
+                 "faiss.index", "faiss.idmap", "faiss.lock",
+                 "mneme.yaml", "setup_config.json"):
+        p = os.path.join(memory_dir, name)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+                removed.append(p)
+            except OSError:
+                pass
+    # per-instance start scripts (start_proxy.sh, start_proxy_8081.sh, …)
+    try:
+        for name in sorted(os.listdir(memory_dir)):
+            if name.startswith("start_proxy") and name.endswith(".sh"):
+                p = os.path.join(memory_dir, name)
+                try:
+                    os.remove(p)
+                    removed.append(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    # instruction overrides (re-materialized fresh from code defaults on next start)
+    inst = os.path.join(memory_dir, "instructions")
+    if os.path.isdir(inst):
+        shutil.rmtree(inst, ignore_errors=True)
+        removed.append(inst)
+    return removed
+
+
 def pick_chat_model(chat_backend, derived_name="mneme-chat"):
     """Pick (and pull, for Ollama) ONLY the chat model for an added instance.
     The embedder/labeler are locked to the shared DB and are NOT asked here."""
@@ -884,7 +919,8 @@ def main():
     MEMORY_DIR = os.path.expanduser(ask("Memory DB directory (shared by all instances)", _default_db) or _default_db)
     os.makedirs(MEMORY_DIR, exist_ok=True)
 
-    # Existing DB? Offer to add an instance or reconfigure instead of a fresh setup.
+    # Existing DB? Offer to add an instance, reconfigure, or wipe it for a fresh
+    # install.
     reconf_port = None
     if db_exists(MEMORY_DIR):
         shared = load_shared_config(MEMORY_DIR)
@@ -892,15 +928,31 @@ def main():
         idx = choose("What would you like to do?", [
             "Add another proxy instance (new chat model + port, sharing this DB)",
             "Reconfigure this install (re-pick backend / models / port — keeps the DB)",
+            "New install (wipe this DB and start fresh with all new settings)",
         ])
         if idx == 0:
             return _add_instance(MEMORY_DIR, shared, memory_only)
-        # Reconfigure: reuse the SAVED port as the default (not the next free
-        # port) and stop the old instance there so it's a true stop-and-restart,
-        # not a duplicate on a new port.
-        reconf_port = shared.get("port")
-        if reconf_port:
-            print(f"  Reconfiguring — reusing port {reconf_port} (old instance there will be stopped).")
+        if idx == 2:
+            # New install: stop any running instance, wipe the DB, then fall
+            # through to the fresh setup below (reconf_port stays None so the
+            # fresh defaults — port 8080 etc. — apply).
+            ans = ask("Wipe the existing memory DB and start fresh? This permanently deletes ALL saved memory. [y/N]", "N").strip().lower()
+            if ans not in ("y", "yes"):
+                print("  Cancelled — keeping the existing install.")
+                return 0
+            _old_port = shared.get("port")
+            if _old_port and stop_proxy_on_port(_old_port):
+                print(f"  Stopped old instance on port {_old_port}.")
+                time.sleep(1)
+            wiped = wipe_db(MEMORY_DIR)
+            print(f"  Wiped {len(wiped)} file(s). Starting a fresh install...")
+        else:
+            # Reconfigure: reuse the SAVED port as the default (not the next free
+            # port) and stop the old instance there so it's a true stop-and-restart,
+            # not a duplicate on a new port.
+            reconf_port = shared.get("port")
+            if reconf_port:
+                print(f"  Reconfiguring — reusing port {reconf_port} (old instance there will be stopped).")
 
     # 1. Backend
     print("\n\033[1mStep 1/4 — Backend\033[0m")

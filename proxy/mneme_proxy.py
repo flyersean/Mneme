@@ -516,6 +516,13 @@ _BG_N_WORKERS = 2
 _bg_started = False
 _bg_start_lock = threading.Lock()
 
+# ── Turn cancellation (the chat UI "Stop" button) ────────────────
+# A single process-wide event. The /cancel endpoint sets it; the foreground
+# generation loops (Ollama + OpenRouter streaming) poll it between chunks and
+# abort, so a runaway "thinking" turn can be stopped without restarting the
+# proxy. Cleared at the start of each chat request.
+_cancel_event = threading.Event()
+
 def _bg_worker():
     while True:
         try:
@@ -1249,6 +1256,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
+            if _cancel_event.is_set():
+                print("  [CANCEL] user stopped the turn — aborting OpenRouter stream", flush=True)
+                finish_reason = "cancelled"
+                break
             if not got_first:
                 got_first = True
                 _bump_socket()
@@ -1509,6 +1520,11 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
+            if _cancel_event.is_set():
+                # User hit "Stop" — abort and return whatever we have so far.
+                print("  [CANCEL] user stopped the turn — aborting Ollama stream", flush=True)
+                done_reason = "cancelled"
+                break
             if not raw:
                 continue
             got_first = True
@@ -4240,6 +4256,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _continue_attempts = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
+        if _cancel_event.is_set():
+            # User hit "Stop" between rounds — end the turn immediately.
+            result["done_reason"] = "cancelled"
+            break
         # Context-size guard: if the followup has bloated (many file reads via
         # bash), force a final synthesis NOW instead of growing the payload until
         # OpenRouter times out on re-query. This is a hard backstop; legitimate
@@ -4265,7 +4285,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # (Infra timeouts/errors land in the fallback below, not here.)
             if (_is_near_empty(result.get("content") or "")
                     and _continue_attempts < MAX_EMPTY_RETRY
-                    and result.get("done_reason") not in ("timeout", "error")):
+                    and result.get("done_reason") not in ("timeout", "error", "cancelled")):
                 _continue_attempts += 1
                 _near = (result.get("content") or "").strip()
                 print(f"  [CONTINUE] near-empty answer ({_near!r}) — prompting model to continue "
@@ -4382,18 +4402,22 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # (no "it quit" boilerplate — the user can see the model gave up).
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         _why = result.get("done_reason") or "unknown"
-        if _why == "timeout":
-            result["content"] = ("[The reply stalled — the model provider stopped responding "
-                                 "mid-generation and the automatic retry also timed out. "
-                                 "Please try again, or ask a more focused question.]")
-        elif _why == "error":
-            result["content"] = (f"[The model provider returned an error "
-                                 f"({result.get('error_type', 'unknown')}); the retry also failed. "
-                                 "Please try again.]")
+        if _why == "cancelled":
+            result["content"] = "[Stopped by user.]"
+            print("  [CANCEL] turn stopped by user — no final answer", flush=True)
         else:
-            result["content"] = "[The model returned an empty response and could not answer. Please try again.]"
-        _failed = True
-        print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}) — returned explanatory message", flush=True)
+            if _why == "timeout":
+                result["content"] = ("[The reply stalled — the model provider stopped responding "
+                                     "mid-generation and the automatic retry also timed out. "
+                                     "Please try again, or ask a more focused question.]")
+            elif _why == "error":
+                result["content"] = (f"[The model provider returned an error "
+                                     f"({result.get('error_type', 'unknown')}); the retry also failed. "
+                                     "Please try again.]")
+            else:
+                result["content"] = "[The model returned an empty response and could not answer. Please try again.]"
+            _failed = True
+            print(f"  [EMPTY-ANSWER] loop/synthesis ended empty (done_reason={_why}) — returned explanatory message", flush=True)
     
     # Whether the failure (if any) was an infrastructure timeout rather than a
     # genuine model mistake. Timeouts carry no introspectable lesson, so the
@@ -4980,6 +5004,12 @@ if FLASK_OK:
         except OSError as e:
             return _cors_response({"error": str(e)}, status=500)
 
+    # ── Turn cancellation (the chat UI "Stop" button) ──
+    @app.route("/cancel", methods=["POST"])
+    def cancel_turn():
+        _cancel_event.set()
+        return _cors_response({"ok": True})
+
     # ── OPTIONS preflight for all routes ──
     @app.route("/v1/chat/completions", methods=["OPTIONS"])
     @app.route("/api/chat/completions", methods=["OPTIONS"])
@@ -4996,6 +5026,7 @@ if FLASK_OK:
     def chat_completions():
         data = request.get_json(force=True)
         stream = data.get("stream", False)
+        _cancel_event.clear()  # fresh turn — clear any stale stop request
 
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
