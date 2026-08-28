@@ -208,6 +208,8 @@
   }
   #send:hover { background: #1d4ed8; }
   #send:disabled { opacity: .5; cursor: not-allowed; }
+  #send.stop { background: #dc2626; }
+  #send.stop:hover { background: #b91c1c; }
 </style>
 </head>
 <body>
@@ -250,6 +252,7 @@ const optTools = document.getElementById("opt-tools");
 
 let history = [];   // [{role, content}]
 let busy = false;
+let controller = null;   // AbortController for the in-flight turn
 
 // persisted display settings
 function loadSetting(key, def) {
@@ -351,7 +354,18 @@ function appendThinking() {
   return row;
 }
 
-// ── send ─────────────────────────────────────────────────────────
+// ── send / stop ──────────────────────────────────────────────────
+function setBusyUI(b) {
+  sendBtn.textContent = b ? "Stop" : "Send";
+  sendBtn.classList.toggle("stop", b);
+}
+
+async function stopTurn() {
+  // Abort the client request AND tell the server to halt the in-flight turn.
+  if (controller) controller.abort();
+  try { await fetch("/cancel", { method: "POST" }); } catch (e) {}
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text || busy) return;
@@ -361,14 +375,16 @@ async function send() {
   history.push({ role: "user", content: text });
 
   busy = true;
-  sendBtn.disabled = true;
+  setBusyUI(true);
   const thinkingRow = appendThinking();
+  controller = new AbortController();
 
   try {
     const resp = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, messages: history, stream: false })
+      body: JSON.stringify({ model: MODEL, messages: history, stream: false }),
+      signal: controller.signal
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json();
@@ -387,16 +403,24 @@ async function send() {
     history.push({ role: "assistant", content: content });
   } catch (e) {
     thinkingRow.remove();
-    appendMessage("assistant", "(error: " + e.message + ")");
+    if (e.name === "AbortError") {
+      appendMessage("assistant", "[stopped]");
+    } else {
+      appendMessage("assistant", "(error: " + e.message + ")");
+    }
   } finally {
     busy = false;
-    sendBtn.disabled = false;
+    controller = null;
+    setBusyUI(false);
     input.focus();
   }
 }
 
 // ── wiring ───────────────────────────────────────────────────────
-sendBtn.addEventListener("click", send);
+sendBtn.addEventListener("click", () => {
+  if (busy) stopTurn();
+  else send();
+});
 
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
