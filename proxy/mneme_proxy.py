@@ -112,6 +112,8 @@ _CONFIG_ENV_MAP = {
     "sampling.ctx_tokens": "MNEME_CTX_TOKENS",
     "sampling.completion_reserve": "MNEME_COMPLETION_RESERVE",
     "sampling.max_tokens": "MNEME_MAX_TOKENS",
+    "sampling.reasoning_enabled": "MNEME_REASONING_ENABLED",
+    "sampling.reasoning_effort": "MNEME_REASONING_EFFORT",
     "timeouts.chat_timeout": "MNEME_CHAT_TIMEOUT",
     "timeouts.ollama_chat_timeout": "MNEME_OLLAMA_CHAT_TIMEOUT",
     "timeouts.first_token_timeout": "MNEME_FIRST_TOKEN_TIMEOUT",
@@ -1108,18 +1110,19 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
     }
-    # Reasoning controls (opt-in, model-specific):
-    #   MNEME_REASONING_EFFORT=low|high|max  -> reasoning.effort (models WITH effort levels,
-    #       e.g. deepseek xhigh|high, Ox Alpha low|high|max).
-    #   MNEME_REASONING_ENABLED=0/off        -> reasoning.enabled=false (Qwen3.6-style models:
-    #       thinking is binary on/off, no effort levels. Disabling = "instruct mode", fast,
-    #       zero thinking tokens. Qwen's "thinking_budget"/reasoning.max_tokens is NOT a cap —
-    #       the model treats it as a goal and over-thinks MORE, so don't use it.)
+    # Reasoning is OFF by default — a reasoning model (e.g. Qwen3.6) can
+    # runaway-think on a trivial ask. Opt back in with either:
+    #   MNEME_REASONING_ENABLED=1/true/on   -> binary on/off thinking (Qwen3.6-style)
+    #   MNEME_REASONING_EFFORT=low|high|max -> effort models (deepseek, Ox Alpha)
+    # Qwen's "thinking_budget"/reasoning.max_tokens is NOT a cap — the model
+    # treats it as a goal and over-thinks MORE, so don't use it.
     _reasoning = {}
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
+    _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
     if _reffort and not no_reasoning:
         _reasoning["effort"] = _reffort
-    if no_reasoning or os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
+        _reasoning_on = True
+    if no_reasoning or not _reasoning_on:
         _reasoning["enabled"] = False
     if _reasoning:
         payload["reasoning"] = _reasoning
@@ -1444,11 +1447,11 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "model": _model, "stream": True, "messages": msgs,
         "options": opts
     }
-    # Thinking kill-switch (mirrors Hermes's think=False / reasoning_effort="none"):
-    # when reasoning is explicitly disabled, tell Ollama not to think. Off by
-    # default (thinking on — same as Hermes's empty reasoning_effort), so a
-    # reasoning model keeps its normal behavior unless you opt out.
-    if no_reasoning or os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
+    # Thinking is OFF by default — a reasoning model (e.g. Qwen3.6 abliterated)
+    # can runaway-think on a trivial ask, so tell Ollama not to think unless the
+    # user opted back in with MNEME_REASONING_ENABLED=1/true/on.
+    _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
+    if no_reasoning or not _reasoning_on:
         payload["think"] = False
     if tools:
         payload["tools"] = tools
