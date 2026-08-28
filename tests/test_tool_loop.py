@@ -223,6 +223,34 @@ def test_tool_call_with_stop_reason_is_executed():
 
 
 @test
+def test_command_tags_stripped_from_model_input():
+    """Regression: a bare <<SAVE>> (or any <<COMMAND>>) must never reach the model.
+    The old `if cleaned:` guard skipped command-only messages, so a "<<SAVE>>"
+    echoed back in the client's history leaked into the model's context."""
+    model = ScriptedModel()
+    model.queue = [_answer("Understood. I have recorded your message and will remember it.")]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: []
+
+    # <<SAVE>> as a prior turn (echoed history) followed by a normal message.
+    mp.process_chat(
+        [
+            {"role": "user", "content": "<<SAVE>>"},
+            {"role": "assistant", "content": "saved"},
+            {"role": "user", "content": "hello there"},
+        ],
+        session_id="test", tools=[],
+    )
+
+    # No user message the model saw may contain the raw command.
+    for call_msgs in model.seen:
+        for m in call_msgs:
+            if m.get("role") == "user":
+                txt = mp._extract_text(m.get("content", ""))
+                assert "<<SAVE>>" not in txt, f"raw <<SAVE>> leaked to model: {m!r}"
+
+
+@test
 def test_search_loop_terminates_with_answer():
     """BUG 1 (loop): a model that needs TWO rounds of memory search must still
     terminate with a final answer (no dropped calls, no infinite loop)."""
