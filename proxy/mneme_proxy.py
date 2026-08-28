@@ -1409,10 +1409,19 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # Sampling defaults come from env/config, then per-model overrides from the
     # config `models:` block (P8). Explicit per-call `options` still win.
     _model_cfg = (CONFIG_DATA.get("models") or {}).get(MODEL) or {}
+    # Output + context knobs (match Hermes's custom/Ollama provider defaults):
+    #   num_predict = max_tokens (default 65536 — Hermes's default_max_tokens).
+    #   num_ctx     = MNEME_CTX_TOKENS (default 262000 — Hermes's context_length).
+    # Without num_predict, Ollama uses its own version-dependent default, which
+    # for a reasoning model can mean unbounded thinking even on a trivial ask.
+    _num_predict = max_tokens if (max_tokens and max_tokens > 0) else int(os.environ.get("MNEME_MAX_TOKENS", "65536"))
+    _num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "262000"))
     opts = {
         "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),
         "top_k": int(os.environ.get("MNEME_TOP_K", "64")),
+        "num_predict": _num_predict,
+        "num_ctx": _num_ctx,
     }
     for _k in ("temperature", "top_p", "top_k"):
         if _model_cfg.get(_k) is not None:
@@ -1424,6 +1433,12 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "model": _model, "stream": True, "messages": msgs,
         "options": opts
     }
+    # Thinking kill-switch (mirrors Hermes's think=False / reasoning_effort="none"):
+    # when reasoning is explicitly disabled, tell Ollama not to think. Off by
+    # default (thinking on — same as Hermes's empty reasoning_effort), so a
+    # reasoning model keeps its normal behavior unless you opt out.
+    if no_reasoning or os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("0", "false", "off", "no", "disabled"):
+        payload["think"] = False
     if tools:
         payload["tools"] = tools
     if format_schema:
@@ -1435,7 +1450,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # "continue" answer from stale context. Now trim by a real token budget,
     # never split an assistant(tool_calls)/tool-result pair, and always keep
     # the newest message.
-    ctx_tokens = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))  # 256k default; deepseek-v4-flash has 1M ctx
+    ctx_tokens = _num_ctx  # same value sent to Ollama as num_ctx
     reserve    = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
     budget     = max(4096, ctx_tokens - reserve)
 
