@@ -952,28 +952,10 @@ def _hybrid_search(query: str, top_k: int, faiss_results: list):
 
 # ─── Model Interface ───────────────────────────────────────────
 
-SYSTEM_PROMPT_FILE = os.path.join(os.path.dirname(__file__), "system_prompt.md")
-def _load_system_prompt():
-    try:
-        with open(SYSTEM_PROMPT_FILE) as f:
-            return f.read().strip()
-    except Exception as e:
-        _log_error("_load_system_prompt", e)
-        return "You are a helpful AI assistant."
-
-SYSTEM_PROMPT = _load_system_prompt()
-
-SYSTEM_PROMPT_MEMORY_FILE = os.path.join(os.path.dirname(__file__), "system_prompt_memory.md")
-def _load_system_prompt_memory():
-    try:
-        with open(SYSTEM_PROMPT_MEMORY_FILE) as f:
-            return f.read().strip()
-    except Exception as e:
-        _log_error("_load_system_prompt_memory", e)
-        return _load_system_prompt()
-
-SYSTEM_PROMPT_MEMORY = _load_system_prompt_memory()
-
+# The fixed system prompts (system_prompt.md / system_prompt_memory.md) are now
+# loaded via mneme.instructions._load_instruction, so they're editable through
+# the /instructions page like every other injected prompt (code-default + disk
+# override + graceful fallback). See _system_prompt_block() below.
 
 MISSION_FILE = os.path.join(os.path.dirname(__file__), "mission.md")
 def _load_mission() -> str:
@@ -993,7 +975,10 @@ def _system_prompt_block() -> str:
     The VARIABLE memory chunks are injected separately at the tail (process_chat)."""
     if INJECT_SYSTEM == "0":
         return ""
-    prompt = SYSTEM_PROMPT_MEMORY if MEMORY_ONLY else SYSTEM_PROMPT
+    if MEMORY_ONLY:
+        prompt = _load_instruction("system_prompt_memory")
+    else:
+        prompt = _load_instruction("system_prompt")
     block = "=== MNEME INSTRUCTIONS ===\n" + prompt
     if MISSION:
         block += "\n\n" + MISSION
@@ -1436,7 +1421,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         opts.update(options)
     
     payload = {
-        "model": _model, "stream": False, "messages": msgs,
+        "model": _model, "stream": True, "messages": msgs,
         "options": opts
     }
     if tools:
@@ -1486,35 +1471,93 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     
     if use_openai:
         return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout, _model, no_reasoning)
+    # Stream the Ollama response so a slow cold-start or long reasoning pass is
+    # NOT subject to a total-generation wall. The timeout tuple is
+    # (connect, read-between-bytes): the read timeout is the Ollama budget, so a
+    # legitimate 90s model load is fine as long as bytes eventually flow; only a
+    # genuine hang (no byte for `timeout` seconds) aborts. This is the same
+    # model Hermes/Jan/Pi use — streaming, no total wall.
     try:
-        r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=timeout)
-    except requests.exceptions.ReadTimeout:
-        print(f"  [GRIND-GUARD] Ollama generation exceeded {timeout}s — aborting (done_reason=timeout)", flush=True)
+        r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, stream=True,
+                          timeout=(CONNECT_TIMEOUT, timeout))
+        r.encoding = "utf-8"
+    except requests.exceptions.RequestException as e:
+        print(f"  [GRIND-GUARD] Ollama request failed ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
-    d = r.json()
-    if "error" in d:
-        print(f"  [ERROR] Ollama returned: {d['error']}", flush=True)
-        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
-    msg = d.get("message", {})
-    content = msg.get("content", "")
-    thinking = msg.get("thinking", "")
-    tool_calls = msg.get("tool_calls", [])
-    # Reasoning models (gemma4) sometimes put the answer in "thinking" and leave
-    # "content" empty. Fall back to thinking so generations aren't dropped.
-    # BUT NOT when the model emitted tool_calls — those must stay tool_calls
-    # (filling content with thinking would mask the pending tool call).
+
+    content_parts = []
+    thinking_parts = []
+    tool_calls = []
+    done_reason = "stop"
+    eval_count = 0
+    got_first = False
+
+    try:
+        for raw in r.iter_lines(decode_unicode=True):
+            if not raw:
+                continue
+            got_first = True
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                continue
+            if obj.get("error"):
+                print(f"  [ERROR] Ollama stream error: {obj['error']}", flush=True)
+                return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "error"}
+            msg = obj.get("message") or {}
+            if msg.get("content"):
+                content_parts.append(msg["content"])
+            if msg.get("thinking"):
+                thinking_parts.append(msg["thinking"])
+            # Ollama streams tool calls as complete objects (function.name +
+            # function.arguments, arguments often already a dict). Tolerate a
+            # string-encoded arguments field too.
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                if not fn.get("name"):
+                    continue
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args) if args.strip() else {}
+                    except Exception:
+                        args = {}
+                tool_calls.append({
+                    "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                    "type": tc.get("type", "function"),
+                    "function": {"name": fn["name"], "arguments": args},
+                })
+            if obj.get("done"):
+                done_reason = obj.get("done_reason") or done_reason
+                eval_count = obj.get("eval_count", eval_count)
+                break
+    except requests.exceptions.RequestException as e:
+        tag = "no first token" if not got_first else "mid-response stall"
+        print(f"  [GRIND-GUARD] Ollama stream aborted ({tag}) ({type(e).__name__}: {e})", flush=True)
+        if not got_first:
+            # Cold-start/hang before any token — retryable (a warm retry recovers).
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+        # Mid-stream stall: fall through and return the partial answer below
+        # (better than a silent "no response").
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+
+    content = "".join(content_parts)
+    thinking = "".join(thinking_parts)
+    # Reasoning models sometimes leave content empty and put the answer in
+    # thinking. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:
         content = thinking
-    result = {
-        "content": content,
-        "thinking": thinking,
-        "tool_calls": tool_calls,
-        "eval_count": d.get("eval_count", 0),
-        "done_reason": d.get("done_reason", "?"),
-    }
-    if not result["content"] and not result["tool_calls"]:
-        print(f"  [WARN] Empty content from Ollama. done_reason={result['done_reason']} eval_count={result['eval_count']}", flush=True)
-    return result
+    if not content and not tool_calls:
+        print(f"  [WARN] Empty content from Ollama. done_reason={done_reason} eval_count={eval_count}", flush=True)
+    return {"content": content, "thinking": thinking, "tool_calls": tool_calls,
+            "eval_count": eval_count, "done_reason": done_reason}
 
 
 def query_model(messages: list, system: str = None, temperature: float = None,
@@ -4466,9 +4509,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         except Exception as e:
             _log_error("process_chat:consume_strategies", e)
 
-    # Phase 5.2: embedding-distance check on self-reported A/B grades
+    # Phase 5.2: embedding-distance check on self-reported A/B grades.
+    # Backgrounded: it makes two embed() calls (query + answer) that would
+    # otherwise add embed latency/timeout to every A/B turn on the request
+    # thread. It only logs, so nothing depends on it finishing synchronously.
     try:
-        _check_suspect_grade(grade, result.get("content", ""), messages)
+        _enqueue(_check_suspect_grade, grade, result.get("content", ""), messages)
     except Exception as e:
         _log_error("process_chat:suspect_grade", e)
 
@@ -5106,9 +5152,9 @@ if FLASK_OK:
         grade = result.get("_grade", "C")
         # (Injected-strategy telemetry is consumed inside process_chat — a
         # second call here would be a no-op and double-log the [CONSUME] line.)
-        # Phase 5.2: embedding-distance check on self-reported A/B grades
+        # Phase 5.2: embedding-distance check on self-reported A/B grades (backgrounded)
         try:
-            _check_suspect_grade(grade, ct, messages)
+            _enqueue(_check_suspect_grade, grade, ct, messages)
         except Exception as e:
             _log_error("chat_stream:suspect_grade", e)
         if not MEMORY_ONLY:

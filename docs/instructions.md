@@ -18,6 +18,8 @@ injection. Placeholders use `{{var}}`; an unknown placeholder fails loudly.
 
 | name                    | when injected                                        | vars                          | used_by                |
 |-------------------------|------------------------------------------------------|-------------------------------|------------------------|
+| `system_prompt`         | always — fixed system prompt (full build)            | —                             | `_system_prompt_block` |
+| `system_prompt_memory`  | always — fixed system prompt (memory-only build)     | —                             | `_system_prompt_block` |
 | `explore`               | user explicitly asks for a NEW method                | —                             | `_explore_directive`   |
 | `capability_edge`       | task type is a flagged edge → hard stop: build/reuse | `{{problem_type}}`            | `_capability_directive`|
 | `overcome`              | model is stuck (3 failures / 6 rounds), hard stop    | `{{problem_type}}`, `{{reason}}` | `_overcome_directive` |
