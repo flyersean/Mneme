@@ -421,6 +421,7 @@ sampling:
   temperature: 0.2
   top_p: 0.9
   ctx_tokens: {ctx_tokens}
+  max_tokens: 65536
   completion_reserve: 8192
 
 timeouts:
