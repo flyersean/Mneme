@@ -43,12 +43,29 @@ def _instructions_dir() -> str:
 _FRONTMATTER_RE = re.compile(r'^\s*#\s*(when|vars|used_by)\s*:\s*(.*)$')
 _VAR_RE = re.compile(r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}')
 
+# instructions.py lives at proxy/mneme/instructions.py; the shipped .md prompts
+# live at proxy/system_prompt.md (and proxy/system_prompt_memory.md).
+_PROXY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read_shipped_md(name: str, fallback: str = "") -> str:
+    """Read a shipped .md prompt from proxy/ — the code-default for the fixed
+    system prompts. Returns `fallback` if the file is missing, so a deleted
+    system_prompt.md degrades gracefully instead of injecting an empty prompt."""
+    try:
+        with open(os.path.join(_PROXY_DIR, name + ".md"), encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return fallback
+
 
 # ── Shipped defaults (the code-default layer) ──────────────────────────
 # Each name maps to the exact string that was previously hardcoded inline. An
 # override file replaces it; a missing/malformed override falls back here.
 
 DEFAULT_INSTRUCTIONS = {
+    "system_prompt": _read_shipped_md("system_prompt", "You are a helpful AI assistant."),
+    "system_prompt_memory": _read_shipped_md("system_prompt_memory", "You are a helpful AI assistant."),
     "explore": (
         "\n\n=== EXPLORE DIRECTIVE (user-requested) ===\n"
         "The user explicitly asked you to try a NEW method not covered by your "
@@ -170,6 +187,8 @@ DEFAULT_INSTRUCTIONS = {k: v.strip() for k, v in DEFAULT_INSTRUCTIONS.items()}
 # materialize_instructions() writes into the on-disk files). Kept in sync with
 # docs/instructions.md. `vars` is a space-separated list of {{placeholders}}.
 INSTRUCTION_META = {
+    "system_prompt": ("always — fixed system prompt (full build, injected as a system message)", "", "_system_prompt_block"),
+    "system_prompt_memory": ("always — fixed system prompt (memory-only build, MEMORY_ONLY=1)", "", "_system_prompt_block"),
     "explore": ("user explicitly asks for a NEW method", "", "_explore_directive"),
     "capability_edge": ("task type is a flagged edge → hard stop: build/reuse", "{{problem_type}}", "_capability_directive"),
     "overcome": ("model is stuck (3 failures / 6 rounds), hard stop", "{{problem_type}} {{reason}}", "_overcome_directive"),
@@ -195,6 +214,8 @@ INSTRUCTION_META = {
 # Not every prompt fires every turn — this is the "if a conversation escalates
 # fully" order. Anything not listed here (shouldn't happen) is appended last.
 INSTRUCTION_ORDER = [
+    "system_prompt",             # always — fixed system prompt (full build)
+    "system_prompt_memory",      # always — fixed system prompt (memory-only build)
     "meta_principles_header",     # always — context build, every turn
     "system_directives_header",   # always — context build, every turn
     "user_preferences_header",    # always — context build, every turn
