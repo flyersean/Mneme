@@ -404,6 +404,14 @@ OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "300"))
 FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "180"))
 CONNECT_TIMEOUT = 15  # TCP+TLS connect timeout for OpenAI-style calls
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))
+
+
+def _main_chat_timeout() -> int:
+    """Timeout for the FOREGROUND chat turn. Ollama gets the longer cold-start
+    budget (OLLAMA_CHAT_TIMEOUT); OpenAI-style backends get the anti-grind
+    guardrail (CHAT_TIMEOUT). Previously the main turn hardcoded CHAT_TIMEOUT,
+    so Ollama users with a slow cold start timed out at the hosted-model budget."""
+    return OLLAMA_CHAT_TIMEOUT if not _backend_is_openai() else CHAT_TIMEOUT
 EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
 LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 
@@ -3816,7 +3824,7 @@ def _execute_search_tool_calls(search_calls):
     return "\n\n".join(result_texts), trace
 
 
-def _query_retry_timeout(msgs, tools=None, timeout=CHAT_TIMEOUT):
+def _query_retry_timeout(msgs, tools=None, timeout=None):
     """query_model with ONE retry on a transient provider failure.
 
     A transient OpenRouter stream stall (the GRIND-GUARD aborts with
@@ -3824,8 +3832,10 @@ def _query_retry_timeout(msgs, tools=None, timeout=CHAT_TIMEOUT):
     (done_reason="error") should not kill the whole turn. The initial query in
     process_chat already retries this case; the tool-loop re-queries and the
     hard-stop queries were missing it, so a single stalled re-query returned
-    empty ("(no response)") with no recovery.
-    """
+    empty ("(no response)") with no recovery. Timeout defaults to the
+    backend-aware foreground budget (Ollama cold-start vs hosted anti-grind)."""
+    if timeout is None:
+        timeout = _main_chat_timeout()
     result = query_model(msgs, tools=tools, timeout=timeout)
     dr = result.get("done_reason", "")
     empty = not (result.get("content") or "").strip() and not result.get("tool_calls")
@@ -4059,7 +4069,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                         f.write("\n...\n")
         except Exception:
             pass
-    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=CHAT_TIMEOUT)
+    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=_main_chat_timeout())
     # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
     # or empty reasoning), retry once with a nudge, then fall back to a clear
     # message so the client never sees an empty/"None" reply.
@@ -4072,19 +4082,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # without a single byte, or dies mid-generation; retry once on a fresh
             # connection before declaring a capability edge.
             print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
-            result = query_model(full_msgs, tools=msg_tools, timeout=CHAT_TIMEOUT)
+            result = query_model(full_msgs, tools=msg_tools, timeout=_main_chat_timeout())
             if not (result.get("content") or "").strip() and not result.get("tool_calls"):
                 _failed = True
         elif dr == "timeout":
             # Grind guardrail: generation exceeded budget — retrying would just
             # grind again. Fall through to the capability-edge message.
-            print(f"  [GRIND] generation exceeded {CHAT_TIMEOUT}s — capability edge, no retry", flush=True)
+            print(f"  [GRIND] generation exceeded {_main_chat_timeout()}s — capability edge, no retry", flush=True)
             _failed = True
         else:
             print(f"  [EMPTY] empty reply (done_reason={dr}) — retrying once", flush=True)
             _retry = [m for m in full_msgs if m.get("role") != "system"]
             _retry.append({"role": "user", "content": "(Your previous reply was empty. Give a direct answer now.)"})
-            result = query_model(_retry, tools=msg_tools, timeout=CHAT_TIMEOUT)
+            result = query_model(_retry, tools=msg_tools, timeout=_main_chat_timeout())
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         result["content"] = ("[The model returned an empty response and could not answer. "
                              "This is a possible capability edge — flag for tool-building.]")

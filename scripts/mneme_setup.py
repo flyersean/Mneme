@@ -424,8 +424,8 @@ sampling:
   completion_reserve: 8192
 
 timeouts:
-  chat_timeout: 60
-  ollama_chat_timeout: 120
+  chat_timeout: 300
+  ollama_chat_timeout: 300
   first_token_timeout: 30
   novelty_timeout: 600
   embed_timeout: 60
