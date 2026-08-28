@@ -423,6 +423,10 @@ sampling:
   ctx_tokens: {ctx_tokens}
   max_tokens: 65536
   completion_reserve: 8192
+  # Reasoning/thinking is OFF by default (a reasoning model can runaway-think on
+  # a trivial ask). Set reasoning_enabled: 1 to opt back in; reasoning_effort
+  # (low/high/max) is for effort-level models (deepseek etc.), not Qwen3.6.
+  reasoning_enabled: 0
 
 timeouts:
   chat_timeout: 300

@@ -154,9 +154,11 @@ OpenAI-compatible provider ignores them):
 | temperature | 0.3 | [env] `MNEME_TEMPERATURE` (note: global default is currently 0.3 = `OLLAMA_TEMP`; P8 flags that Muse's 1.0 leaked globally) |
 | top_p | 0.95 | [env] `MNEME_TOP_P` |
 | top_k | 64 | [env] `MNEME_TOP_K` (ollama only) |
-| ctx_tokens | 256000 | [env] `MNEME_CTX_TOKENS` |
+| ctx_tokens | 256000 | [env] `MNEME_CTX_TOKENS` (sent to Ollama as `num_ctx`) |
 | completion_reserve | 8192 | [env] `MNEME_COMPLETION_RESERVE` |
-| max_tokens | 2048 | [new] output cap |
+| max_tokens | 65536 | [env] `MNEME_MAX_TOKENS` (sent to Ollama as `num_predict`; matches Hermes `default_max_tokens`) |
+| reasoning_enabled | 0 (off) | [env] `MNEME_REASONING_ENABLED`. Thinking is OFF by default — a reasoning model (Qwen3.6 etc.) can runaway-think on a trivial ask. Set `1` to opt in. |
+| reasoning_effort | — | [env] `MNEME_REASONING_EFFORT` (low/high/max) for effort-level models (deepseek); implies reasoning on. |
 
 ### timeouts
 | key | default | today |
