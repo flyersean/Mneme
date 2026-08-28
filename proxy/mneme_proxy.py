@@ -1154,13 +1154,54 @@ def _parse_json_tool_calls(content):
     return out, residual.strip()
 
 
-def _parse_text_tool_calls(content):
-    """Normalize non-native text tool calls -> OpenAI-format tool_calls.
-    Tries DSML, then Gemma ```tool_code```, then fenced JSON. Returns
-    (tool_calls, residual)."""
+# Gemma 3/4 (via Ollama) emit tool calls as XML: <tool_call>{json}</tool_call>
+# where the body is {"name":..., "arguments":...}. Ollama does NOT fold these
+# into native message.tool_calls, so we parse them here.
+_GEM_XML_TC_RE = re.compile(r'<(tool_call|function_call)\b[^>]*>(.*?)</\1>', re.S | re.I)
+
+
+def _parse_xml_tool_calls(content):
+    """Gemma <tool_call>{json}</tool_call> XML tool calls -> (tool_calls, residual).
+    Body is normally a JSON object {"name", "arguments"}; also tolerates a
+    name="..." attribute on the opening tag."""
     if not content:
         return [], content
-    for parser in (_parse_dsml_tool_calls, _parse_gemma_tool_calls, _parse_json_tool_calls):
+    out = []
+    for m in _GEM_XML_TC_RE.finditer(content):
+        open_tag = m.group(0).split(">", 1)[0] + ">"
+        body = m.group(2).strip()
+        name = None
+        arguments = {}
+        am = re.search(r'\bname\s*=\s*"([^"]+)"', open_tag)
+        if am:
+            name = am.group(1)
+        if body:
+            try:
+                obj = json.loads(body)
+            except Exception:
+                obj = None
+            if isinstance(obj, dict):
+                name = obj.get("name") or name
+                arguments = obj.get("arguments") or obj.get("args") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+        if name:
+            out.append({"id": f"call_{uuid.uuid4().hex[:24]}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments}})
+    if not out:
+        return [], content
+    residual = _GEM_XML_TC_RE.sub("", content).strip()
+    return out, residual
+
+
+def _parse_text_tool_calls(content):
+    """Normalize non-native text tool calls -> OpenAI-format tool_calls.
+    Tries DSML, then Gemma <tool_call> XML, then Gemma ```tool_code```, then
+    fenced JSON. Returns (tool_calls, residual)."""
+    if not content:
+        return [], content
+    for parser in (_parse_dsml_tool_calls, _parse_xml_tool_calls, _parse_gemma_tool_calls, _parse_json_tool_calls):
         tcs, residual = parser(content)
         if tcs:
             return tcs, residual

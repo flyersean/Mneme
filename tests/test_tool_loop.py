@@ -798,6 +798,12 @@ def test_text_tool_calls_parsed():
     assert len(tcs2) == 1 and tcs2[0]["function"]["name"] == "search_memory", tcs2
     assert tcs2[0]["function"]["arguments"] == {"query": "api key"}, tcs2
 
+    # Gemma <tool_call> XML with JSON body
+    xml = '<tool_call>\n{"name": "bash", "arguments": {"command": "ls /tmp"}}\n</tool_call>'
+    tcs3, res3 = mp._parse_text_tool_calls(xml)
+    assert len(tcs3) == 1 and tcs3[0]["function"]["name"] == "bash", tcs3
+    assert tcs3[0]["function"]["arguments"] == {"command": "ls /tmp"}, tcs3
+
     # plain prose with a JSON-looking object but no arguments key -> untouched
     plain = 'Here is a normal answer with {"name": "data"} but no arguments key.'
     assert mp._parse_text_tool_calls(plain) == ([], plain)
