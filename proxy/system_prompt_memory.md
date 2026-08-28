@@ -43,6 +43,18 @@ If injected memory lacks detail, use the search_memory function:
 This searches the Mneme database directly and returns full message
 content. Use it when you need more than what was auto-injected.
 
+## Reading Pages (fetch_url)
+
+When you fetch a page with fetch_url, Mneme saves the FULL page text to
+memory in chunks (tagged page:domain). You only see a bounded head+tail
+window of the page in your own context, but the entire page is available
+to you at any time via:
+
+  search_memory(query="<the specific detail>", top_k=5)
+
+So you effectively "know" the whole article even though you only read part
+of it. Any small detail is in the database — search for it when you need it.
+
 ## How Memory and Other Tools Fit Together
 
 The goal is the best possible answer. Memory is one tool among many.

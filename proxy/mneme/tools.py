@@ -446,7 +446,13 @@ def _exec_read_file(path, start=None, end=None):
 
 
 def _exec_fetch_url(url):
-    """Fetch a URL and return clean text (HTML/CSS/JS stripped), capped at 12000 chars."""
+    """Fetch a URL and return clean text (HTML/CSS/JS stripped).
+
+    Returns the FULL page text (generous cap for pathological pages). The proxy
+    stages the full text into memory as page:<domain> chunks and forwards only a
+    bounded head+tail window to the model, so the model isn't flooded but the
+    entire page is retrievable via search_memory.
+    """
     url = (url or "").strip()
     if not url.lower().startswith(("http://", "https://")):
         return f"[fetch_url: invalid URL: {url}]"
@@ -463,11 +469,7 @@ def _exec_fetch_url(url):
         text = _unescape(text)
         text = _re.sub(r"[ \t\r\f\v]+", " ", text)
         text = _re.sub(r"\n\s*\n+", "\n", text).strip()
-        if len(text) > 12000:
-            text = (text[:9000]
-                    + f"\n\n[... truncated: {len(text)} chars total ...]\n\n"
-                    + text[-3000:])
-        return text if text else "[fetch_url: empty page]"
+        return text[:300000] if text else "[fetch_url: empty page]"
     except Exception as e:
         return f"[fetch_url error: {type(e).__name__}: {e}]"
 

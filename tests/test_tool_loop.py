@@ -251,6 +251,30 @@ def test_command_tags_stripped_from_model_input():
 
 
 @test
+def test_stage_page_content_chunks_and_tags_source():
+    """fetch_url now returns the full page; _stage_page_content must chunk it
+    into page:<domain> source chunks so the whole page is retrievable."""
+    captured = []
+    orig_add = mp.staging.add
+    orig_flush = mp.staging.should_flush
+    orig_cs = mp.CHUNK_SIZE
+    mp.CHUNK_SIZE = 1000
+    mp._stage_page_content._seen = set()
+    mp.staging.add = lambda role, content, **kw: captured.append((role, content, kw.get("source")))
+    mp.staging.should_flush = lambda: False
+    try:
+        n = mp._stage_page_content("A" * 5500, "https://en.wikipedia.org/wiki/Foo")
+    finally:
+        mp.staging.add = orig_add
+        mp.staging.should_flush = orig_flush
+        mp.CHUNK_SIZE = orig_cs
+    assert n == 6, f"expected 6 chunks (5500/1000), got {n}"
+    assert all(c[0] == "assistant" for c in captured), captured
+    assert all(c[2] == "page:en.wikipedia.org" for c in captured), captured
+    assert "".join(c[1] for c in captured) == "A" * 5500, "chunks must reassemble the full page"
+
+
+@test
 def test_search_loop_terminates_with_answer():
     """BUG 1 (loop): a model that needs TWO rounds of memory search must still
     terminate with a final answer (no dropped calls, no infinite loop)."""
