@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue
+import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue, ast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -1050,6 +1050,123 @@ def _parse_dsml_tool_calls(content):
     return out, residual.strip()
 
 
+# ── Non-native tool-call parsing (text formats) ──────────────────────────
+# OpenAI/Qwen-style models emit native `message.tool_calls`. Some models emit
+# tool calls as TEXT in `content` instead, which the Ollama path would otherwise
+# drop (it only reads the native field). Normalize the common text formats into
+# OpenAI-format tool_calls:
+#   - DeepSeek (some providers): <|DSML|invoke ...>         (handled above)
+#   - Gemma 3/4: ```tool_code ...``` blocks, Python-call syntax
+#   - various: a fenced ```json object with {"name", "arguments"}
+_GEM_TC_RE = re.compile(r'```tool_code\s*(.*?)\s*```', re.S)
+
+
+def _ast_value(node):
+    """Best-effort AST literal -> Python value; fall back to source text."""
+    try:
+        return ast.literal_eval(node)
+    except Exception:
+        try:
+            return ast.unparse(node)
+        except Exception:
+            return ""
+
+
+def _parse_tool_code_block(code):
+    """Parse one `func(kw=val, ...)` Python call into (name, args) or (None, None)."""
+    code = (code or "").strip()
+    if not code:
+        return None, None
+    try:
+        tree = ast.parse(code, mode="eval")
+    except Exception:
+        return None, None
+    node = tree.body
+    if isinstance(node, ast.Expr):
+        node = node.value
+    if not isinstance(node, ast.Call):
+        return None, None
+    if isinstance(node.func, ast.Name):
+        name = node.func.id
+    elif isinstance(node.func, ast.Attribute):
+        try:
+            name = ast.unparse(node.func)
+        except Exception:
+            return None, None
+    else:
+        return None, None
+    args = {}
+    for kw in node.keywords:
+        if kw.arg:
+            args[kw.arg] = _ast_value(kw.value)
+    for i, pos in enumerate(node.args):
+        args[f"arg{i}"] = _ast_value(pos)
+    return name, args
+
+
+def _parse_gemma_tool_calls(content):
+    """Gemma 3/4 emit ```tool_code``` blocks with Python-call syntax.
+    Returns (tool_calls, residual)."""
+    if not content:
+        return [], content
+    out = []
+    for m in _GEM_TC_RE.finditer(content):
+        name, args = _parse_tool_code_block(m.group(1))
+        if name:
+            out.append({"id": f"call_{uuid.uuid4().hex[:24]}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": args}})
+    if not out:
+        return [], content
+    residual = _GEM_TC_RE.sub("", content).strip()
+    return out, residual
+
+
+def _parse_json_tool_calls(content):
+    """A fenced ```json block whose object carries both "name" and "arguments"
+    is treated as a tool call. Returns (tool_calls, residual)."""
+    if not content:
+        return [], content
+    out = []
+    spans = []
+    for m in re.finditer(r'```(?:json)?\s*(.*?)\s*```', content, re.S):
+        text = m.group(1).strip()
+        try:
+            data = json.loads(text)
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for obj in items:
+            if not isinstance(obj, dict):
+                continue
+            name = obj.get("name")
+            arguments = obj.get("arguments") or obj.get("args") or {}
+            if isinstance(name, str) and name:
+                out.append({"id": f"call_{uuid.uuid4().hex[:24]}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments}})
+                spans.append(m.span())
+    if not out:
+        return [], content
+    residual = content
+    for start, end in spans:
+        residual = residual[:start] + residual[end:]
+    return out, residual.strip()
+
+
+def _parse_text_tool_calls(content):
+    """Normalize non-native text tool calls -> OpenAI-format tool_calls.
+    Tries DSML, then Gemma ```tool_code```, then fenced JSON. Returns
+    (tool_calls, residual)."""
+    if not content:
+        return [], content
+    for parser in (_parse_dsml_tool_calls, _parse_gemma_tool_calls, _parse_json_tool_calls):
+        tcs, residual = parser(content)
+        if tcs:
+            return tcs, residual
+    return [], content
+
+
 def _serialize_tool_call_arguments(msgs: list) -> list:
     """Return a copy of msgs with assistant tool_call arguments re-encoded as JSON
     strings (OpenAI spec). _query_openrouter parses the model's string arguments
@@ -1584,6 +1701,15 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
     content = "".join(content_parts)
     thinking = "".join(thinking_parts)
+    # Non-native tool calls (Gemma ```tool_code```, DeepSeek DSML, fenced JSON):
+    # some models emit tool calls as TEXT in `content` instead of the native
+    # `message.tool_calls` field. Parse them so the tool loop actually executes
+    # them instead of leaking raw markup as the "answer".
+    if not tool_calls and content:
+        _text_tcs, content = _parse_text_tool_calls(content)
+        if _text_tcs:
+            tool_calls = _text_tcs
+            done_reason = "tool_calls"
     # Reasoning models sometimes leave content empty and put the answer in
     # thinking. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:

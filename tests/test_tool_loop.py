@@ -780,6 +780,30 @@ def test_dsml_tool_calls_parsed():
 
 
 @test
+def test_text_tool_calls_parsed():
+    """Gemma 3/4 emit tool calls as ```tool_code``` text (Python-call syntax), not
+    native message.tool_calls. The Ollama path must parse these back into
+    tool_calls so the loop executes them, plus tolerate a fenced-JSON form, and
+    never false-positive on ordinary prose."""
+    # Gemma ```tool_code``` block with narration
+    gem = 'Okay, I need to list files.\n```tool_code\nbash(command="ls /tmp")\n```'
+    tcs, res = mp._parse_text_tool_calls(gem)
+    assert len(tcs) == 1 and tcs[0]["function"]["name"] == "bash", tcs
+    assert tcs[0]["function"]["arguments"] == {"command": "ls /tmp"}, tcs
+    assert res == "Okay, I need to list files.", f"narration should survive: {res!r}"
+
+    # fenced JSON {name, arguments}
+    js = 'Let me search.\n```json\n{"name": "search_memory", "arguments": {"query": "api key"}}\n```'
+    tcs2, res2 = mp._parse_text_tool_calls(js)
+    assert len(tcs2) == 1 and tcs2[0]["function"]["name"] == "search_memory", tcs2
+    assert tcs2[0]["function"]["arguments"] == {"query": "api key"}, tcs2
+
+    # plain prose with a JSON-looking object but no arguments key -> untouched
+    plain = 'Here is a normal answer with {"name": "data"} but no arguments key.'
+    assert mp._parse_text_tool_calls(plain) == ([], plain)
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()
