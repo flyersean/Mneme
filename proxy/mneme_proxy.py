@@ -4178,13 +4178,17 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _enqueue(_run_learning_mode, learn_problem, 5)
         print(f"  [LEARN] Triggered via <<LEARN>>: {learn_problem[:80]}", flush=True)
 
-    # Strip all <<COMMANDS>> from user messages
+    # Strip all <<COMMANDS>> from user messages — both the current turn and any
+    # echoed history. Always apply even when the message is ONLY a command: the
+    # old `if cleaned:` guard skipped empty results and left a bare "<<SAVE>>"
+    # in the history, which the client echoes back on the next turn so the model
+    # sees the raw command.
     _cmd_re = re.compile(r"<<[A-Z_]+(?:\s+[^>]+)?>>")
     for m in messages:
         if m.get("role") == "user":
             raw = _extract_text(m.get("content", ""))
-            cleaned = _cmd_re.sub("", raw).strip()
-            if cleaned: m["content"] = cleaned
+            if _cmd_re.search(raw):
+                m["content"] = _cmd_re.sub("", raw).strip()
     user_msgs2 = [_extract_text(m["content"])[:MAX_QUERY_CHARS] for m in reversed(messages) if m.get("role") == "user"][:1]
     user_msg = " ".join(reversed(user_msgs2))
 
