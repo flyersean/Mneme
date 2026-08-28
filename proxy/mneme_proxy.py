@@ -3128,6 +3128,38 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
+def _stage_page_content(content: str, url: str = "") -> int:
+    """Chunk a fetched page and stage it as page:<domain> source chunks.
+
+    The full page text goes into the staging buffer (archived to the chunks table
+    on flush), while the model only ever sees a bounded head+tail window. So a huge
+    page is fully retrievable via search_memory without flooding the context.
+    Returns the number of chunks staged (0 if already staged or too small).
+    """
+    if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
+        return 0
+    domain = "unknown"
+    m = re.match(r"https?://(?:www\.)?([^/\s]+)", (url or ""))
+    if m:
+        domain = m.group(1)
+    source = f"page:{domain}"
+    import hashlib
+    h = hashlib.md5(content[:200].encode()).hexdigest()
+    seen = getattr(_stage_page_content, "_seen", set())
+    if h in seen:
+        return 0
+    seen.add(h)
+    _stage_page_content._seen = seen
+    n = 0
+    for i in range(0, len(content), CHUNK_SIZE):
+        staging.add("assistant", content[i:i + CHUNK_SIZE], source=source)
+        n += 1
+    print(f"  [PAGE-STAGE] {len(content)} chars -> {n} chunks (source={source})", flush=True)
+    if staging.should_flush():
+        _enqueue(archive_staging)
+    return n
+
+
 def compress_large_tool_results(messages: list) -> list:
     """Stage large tool outputs for archival AND bound what the model sees.
 
@@ -4534,6 +4566,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _t0 = time.time()
             _tool_rounds += 1
             res = mntools.execute_readonly_tool(nm, args)
+            # Stage fetched pages into memory (page:<domain> chunks) so the full
+            # text is retrievable via search_memory even though the model only
+            # sees the bounded head+tail window below.
+            if nm == "fetch_url":
+                _stage_page_content(res, (args or {}).get("url", ""))
             _tool_trace.append(_trace(nm, args, res, _t0))
             _label = "WEB-SEARCH" if nm == "web_search" else "TOOL-REGISTRY"
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
