@@ -275,6 +275,17 @@ def test_stage_page_content_chunks_and_tags_source():
 
 
 @test
+def test_paragraph_chunks_split_on_boundaries():
+    # Short paragraphs coalesce under target, keeping the newline separators.
+    assert mp._paragraph_chunks("alpha\nbeta\ngamma", 100) == ["alpha\nbeta\ngamma"]
+    # Paragraphs are not merged past target — the boundary is respected.
+    text = "\n".join(["a" * 40, "b" * 40, "c" * 40])
+    assert mp._paragraph_chunks(text, 100) == ["a" * 40 + "\n" + "b" * 40, "c" * 40]
+    # A single over-long paragraph is hard-split on the target.
+    assert mp._paragraph_chunks("z" * 250, 100) == ["z" * 100, "z" * 100, "z" * 50]
+
+
+@test
 def test_search_loop_terminates_with_answer():
     """BUG 1 (loop): a model that needs TWO rounds of memory search must still
     terminate with a final answer (no dropped calls, no infinite loop)."""
