@@ -532,6 +532,39 @@ def free_port(start=8080):
     return 8080
 
 
+def _pid_on_port(port):
+    """PID of the process listening on `port`, or None. Reads `ss -ltnp` (present
+    on standard Linux images, incl. RunPod)."""
+    try:
+        import re
+        out = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            m = re.search(rf":{port}\s.*pid=(\d+)", line)
+            if m:
+                return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def stop_proxy_on_port(port):
+    """Stop a running Mneme proxy on `port` (best-effort). Returns True if one was
+    found and killed. SIGTERM first, SIGKILL if it doesn't exit within 5s."""
+    pid = _pid_on_port(port)
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 15)  # SIGTERM
+        for _ in range(10):
+            time.sleep(0.5)
+            if _pid_on_port(port) is None:
+                return True
+        os.kill(pid, 9)  # SIGKILL
+        return True
+    except Exception:
+        return False
+
+
 def start_proxy(backend, models, port):
     env = os.environ.copy()
     env["MNEME_CHUNK_DIR"] = MEMORY_DIR
@@ -599,18 +632,26 @@ def load_shared_config(memory_dir):
     return {}
 
 
-def save_shared_config(memory_dir, models, backend):
+def save_shared_config(memory_dir, models, backend, port=None, inject=None, memory_only=None):
     """Persist the shared settings (embedder/labeler + their backends) so a later
-    'add instance' locks them to this DB's original choice."""
+    'add instance' locks them to this DB's original choice, and 'reconfigure' can
+    recover the original port + injection settings."""
+    data = {
+        "db_dir": memory_dir,
+        "backend": backend,
+        "embed_model": models.get("embed_model", ""),
+        "embed_backend": backend,
+        "label_model": models.get("label_model", ""),
+        "label_backend": backend,
+    }
+    if port is not None:
+        data["port"] = int(port)
+    if inject is not None:
+        data["inject"] = inject
+    if memory_only is not None:
+        data["memory_only"] = bool(memory_only)
     with open(_scfg_path(memory_dir), "w") as f:
-        json.dump({
-            "db_dir": memory_dir,
-            "backend": backend,
-            "embed_model": models.get("embed_model", ""),
-            "embed_backend": backend,
-            "label_model": models.get("label_model", ""),
-            "label_backend": backend,
-        }, f, indent=2)
+        json.dump(data, f, indent=2)
 
 
 def db_exists(memory_dir):
@@ -781,6 +822,7 @@ def _add_instance(memory_dir, shared, memory_only):
     started = start_instance(memory_dir, port, chat_backend, chat_model,
                              embed_model, embed_backend, label_model, label_backend,
                              inject, memory_only)
+    create_access_symlinks()
 
     print("\n\033[1mInstance added.\033[0m")
     print(f"  Chat model:  {chat_model}  (backend {chat_backend})")
@@ -841,7 +883,8 @@ def main():
     MEMORY_DIR = os.path.expanduser(ask("Memory DB directory (shared by all instances)", _default_db) or _default_db)
     os.makedirs(MEMORY_DIR, exist_ok=True)
 
-    # Existing DB? Offer to add an instance instead of a full fresh setup.
+    # Existing DB? Offer to add an instance or reconfigure instead of a fresh setup.
+    reconf_port = None
     if db_exists(MEMORY_DIR):
         shared = load_shared_config(MEMORY_DIR)
         print(f"\n  Existing memory DB found at {MEMORY_DIR} ({_count_chunks(MEMORY_DIR)} chunks).")
@@ -851,7 +894,12 @@ def main():
         ])
         if idx == 0:
             return _add_instance(MEMORY_DIR, shared, memory_only)
-        # else fall through to the full setup below (reconfigure).
+        # Reconfigure: reuse the SAVED port as the default (not the next free
+        # port) and stop the old instance there so it's a true stop-and-restart,
+        # not a duplicate on a new port.
+        reconf_port = shared.get("port")
+        if reconf_port:
+            print(f"  Reconfiguring — reusing port {reconf_port} (old instance there will be stopped).")
 
     # 1. Backend
     print("\n\033[1mStep 1/4 — Backend\033[0m")
@@ -879,7 +927,7 @@ def main():
 
     # 4. Port + injection
     print("\n\033[1mStep 4/4 — Port & instructions\033[0m")
-    port = int(ask("Proxy port", str(free_port(DEFAULT_PORT))) or DEFAULT_PORT)
+    port = int(ask("Proxy port", str(reconf_port or free_port(DEFAULT_PORT))) or (reconf_port or DEFAULT_PORT))
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
         "No (skip — use a merged prompt from your own harness)",
@@ -888,13 +936,20 @@ def main():
 
     # Write config + start script, then launch.
     cfg_path = write_config(backend, models, port, inject, memory_only)
-    save_shared_config(MEMORY_DIR, models, backend)
+    save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only)
     start_script = write_start_script(backend, models, port)
     print(f"\n  Config:      {cfg_path}")
     print(f"  Start/stop:  {start_script}")
 
     if install_pi:
         setup_pi(models.get("ctx_size"), branch)
+
+    # Reconfigure: stop the old instance on its saved port before starting the
+    # new one (a restart, not a second instance).
+    if reconf_port is not None:
+        if stop_proxy_on_port(reconf_port):
+            print(f"  Stopped old instance on port {reconf_port}.")
+            time.sleep(1)
 
     started = start_proxy(backend, models, port)
     create_access_symlinks()
