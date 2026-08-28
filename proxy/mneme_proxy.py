@@ -794,9 +794,12 @@ def _blob_to_vec(blob: bytes) -> Optional[np.ndarray]:
 
 # ─── Embedding: chunk + pool for long text ─────────────────────
 
-# arctic-embed2 token limit is 8192; ~4000 chars is safely under even with
-# dense prose. Overlap keeps sentence context across chunk boundaries.
-CHUNK_CHARS    = 4000
+# arctic-embed2 token limit is 8192 TOKENS, not chars. Dense text (Wikipedia
+# references/citations/URLs) tokenizes ~2-3 tokens/char, so a 4000-char window
+# can blow past 8192 and Ollama returns 500 "input length exceeds the context
+# length", silently leaving the chunk pending_embed. 2000 chars is safely under
+# even for token-dense content (≈4-6k tokens). Overlap keeps sentence context.
+CHUNK_CHARS    = int(os.environ.get("MNEME_CHUNK_CHARS", "2000"))
 CHUNK_OVERLAP  = 200
 
 def chunk_text(text: str,
