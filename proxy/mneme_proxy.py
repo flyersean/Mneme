@@ -140,6 +140,7 @@ _CONFIG_ENV_MAP = {
     "retrieval.max_siblings": "MNEME_MAX_SIBLINGS",
     "retrieval.max_chunk_words": "MNEME_MAX_CHUNK_WORDS",
     "retrieval.max_chunk_size": "MNEME_MAX_CHUNK_SIZE",
+    "retrieval.page_max_chunk_size": "MNEME_PAGE_MAX_CHUNK_SIZE",
     "caps.max_history_messages": "MNEME_MAX_HISTORY_MESSAGES",
     "caps.db_msg_cap": "MNEME_DB_MSG_CAP",
     "caps.compress_threshold": "MNEME_COMPRESS_THRESHOLD",
@@ -2756,6 +2757,13 @@ def _merge_small_groups(groups: list) -> list:
 
 
 MAX_CHUNK_SIZE = int(os.environ.get("MNEME_MAX_CHUNK_SIZE", "10000"))  # chars per chunk for embedding
+# Page-source chunks are kept FINER than general chunks: a fetched page is split
+# at paragraph boundaries into ~CHUNK_SIZE pieces and must NOT be re-merged up to
+# MAX_CHUNK_SIZE (10k), or a specific sub-topic (e.g. "Turing Test" buried in a
+# broad wiki article) gets diluted below the injection floor. Slightly larger
+# than CHUNK_SIZE so paragraph-aligned pieces (which can overshoot) still fit
+# whole without re-splitting.
+PAGE_MAX_CHUNK_SIZE = int(os.environ.get("MNEME_PAGE_MAX_CHUNK_SIZE", "4000"))  # chars per page-source chunk
 
 
 def _archive_group(topic_label: str, msgs: list) -> int:
@@ -2776,12 +2784,16 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     if source == "unknown":
         source = _infer_source(msgs)
     
+    # Page-source chunks stay fine-grained so a specific sub-topic keeps a focused
+    # embedding; everything else merges up to the general MAX_CHUNK_SIZE.
+    max_size = PAGE_MAX_CHUNK_SIZE if source.startswith("page:") else MAX_CHUNK_SIZE
+    
     # If group is small enough, archive as single chunk
-    if len(user_text) <= MAX_CHUNK_SIZE:
+    if len(user_text) <= max_size:
         descriptive = _llm_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
         return _archive_single_chunk(msgs, user_text, descriptive, source=source)
     
-    # Split into sibling chunks by MAX_CHUNK_SIZE
+    # Split into sibling chunks by max_size
     total = 0
     offset = 0
     seq_base = db.execute(
@@ -2799,7 +2811,7 @@ def _archive_group(topic_label: str, msgs: list) -> int:
             continue
         
         frag = m["content"][:5000]
-        if current_text and len(current_text) + len(frag) > MAX_CHUNK_SIZE:
+        if current_text and len(current_text) + len(frag) > max_size:
             # Archive current batch
             descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
             label = f"{descriptive[:30]}_p{seq_base}"
@@ -3128,13 +3140,40 @@ def get_tool_chunk(chunk_id: str) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
+def _paragraph_chunks(text: str, target: int) -> list:
+    """Split text into chunks of ~`target` chars, breaking on paragraph (\n)
+    boundaries so each chunk is a coherent, focused unit. A single over-long
+    paragraph is hard-split on the target."""
+    chunks = []
+    current = ""
+    for para in (p.strip() for p in text.split("\n")):
+        if not para:
+            continue
+        if len(para) > target:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(para), target):
+                chunks.append(para[i:i + target])
+            continue
+        if current and len(current) + len(para) + 1 > target:
+            chunks.append(current)
+            current = para
+        else:
+            current = (current + "\n" + para) if current else para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _stage_page_content(content: str, url: str = "") -> int:
     """Chunk a fetched page and stage it as page:<domain> source chunks.
 
     The full page text goes into the staging buffer (archived to the chunks table
     on flush), while the model only ever sees a bounded head+tail window. So a huge
     page is fully retrievable via search_memory without flooding the context.
-    Returns the number of chunks staged (0 if already staged or too small).
+    Split at paragraph boundaries so each chunk is a focused unit. Returns the
+    number of chunks staged (0 if already staged or too small).
     """
     if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
         return 0
@@ -3151,8 +3190,8 @@ def _stage_page_content(content: str, url: str = "") -> int:
     seen.add(h)
     _stage_page_content._seen = seen
     n = 0
-    for i in range(0, len(content), CHUNK_SIZE):
-        staging.add("assistant", content[i:i + CHUNK_SIZE], source=source)
+    for piece in _paragraph_chunks(content, CHUNK_SIZE):
+        staging.add("assistant", piece, source=source)
         n += 1
     print(f"  [PAGE-STAGE] {len(content)} chars -> {n} chunks (source={source})", flush=True)
     if staging.should_flush():
