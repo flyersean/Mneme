@@ -289,6 +289,22 @@ def load_config():
 
 
 # ─── Config ────────────────────────────────────────────────────
+# Sampling knobs that may be hot-reloaded live (edit mneme.yaml -> the next
+# request picks them up without a proxy restart). Keys are mneme.yaml
+# `sampling.*` names; values are the env vars the code reads at request time.
+_SAMPLING_ENV_MAP = {
+    "temperature": "MNEME_TEMPERATURE",
+    "top_p": "MNEME_TOP_P",
+    "top_k": "MNEME_TOP_K",
+    "ctx_tokens": "MNEME_CTX_TOKENS",
+    "completion_reserve": "MNEME_COMPLETION_RESERVE",
+    "max_tokens": "MNEME_MAX_TOKENS",
+    "reasoning_enabled": "MNEME_REASONING_ENABLED",
+    "reasoning_effort": "MNEME_REASONING_EFFORT",
+}
+# Env vars the user exported BEFORE the config file loaded stay pinned: hot-reload
+# will never override them (preserves the documented env > file precedence).
+_USER_PINNED_ENV = {env for env in _SAMPLING_ENV_MAP.values() if env in os.environ}
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
 
@@ -343,6 +359,51 @@ DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
 
 # Sampling defaults (per-model overrides live in config `models:`)
 OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
+
+# ─── Live sampling hot-reload ─────────────────────────────────
+# The full config is read once at startup, but generation knobs (temperature /
+# top_p / top_k / max_tokens / num_predict) are re-read from the SAME per-instance
+# mneme.yaml whenever its mtime changes, so a running swarm can tune them without
+# a restart. Only the `sampling` + `models` sections are refreshed; provider/model
+# identity is still restart-only (swapping the model mid-flight is not supported).
+_CONFIG_MTIME = 0.0
+
+
+def _reload_sampling_if_changed():
+    global _CONFIG_MTIME, OLLAMA_TEMP
+    path = CONFIG_PATH
+    if not path or not os.path.exists(path):
+        return
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return
+    if mtime == _CONFIG_MTIME:
+        return
+    _CONFIG_MTIME = mtime
+    try:
+        data = _parse_config_file(path)
+    except Exception as e:
+        print(f"  [CONFIG] hot-reload parse failed ({e}) — keeping current settings", flush=True)
+        return
+    # Per-model overrides are read from CONFIG_DATA at request time, so refreshing
+    # this section is enough to make `models:` changes live.
+    if "models" in data:
+        CONFIG_DATA["models"] = data["models"] or {}
+    # Scalar sampling keys -> refresh env (respecting user-pinned env overrides).
+    sampling = data.get("sampling") or {}
+    changed = []
+    for key, env in _SAMPLING_ENV_MAP.items():
+        if env in _USER_PINNED_ENV:
+            continue
+        if key in sampling and sampling[key] is not None:
+            os.environ[env] = _config_scalar(sampling[key])
+            changed.append(key)
+    if "temperature" in sampling and sampling["temperature"] is not None \
+            and "MNEME_TEMPERATURE" not in _USER_PINNED_ENV:
+        OLLAMA_TEMP = float(sampling["temperature"])
+    print(f"  [CONFIG] hot-reloaded sampling + models ({', '.join(changed) or 'models-only'})", flush=True)
+
 
 # ─── Multi-pass compression config ───
 MAX_HISTORY_MESSAGES = int(os.environ.get("MNEME_MAX_HISTORY_MESSAGES", "32"))  # trim conversation to keep predict budget free
@@ -5294,6 +5355,7 @@ if FLASK_OK:
     @app.route("/api/chat/completions", methods=["POST"])
     @app.route("/chat/completions", methods=["POST"])
     def chat_completions():
+        _reload_sampling_if_changed()  # live-apply any mneme.yaml sampling edits
         data = request.get_json(force=True)
         stream = data.get("stream", False)
         _cancel_event.clear()  # fresh turn — clear any stale stop request
