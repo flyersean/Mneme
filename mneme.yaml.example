@@ -22,7 +22,8 @@
 #  TUNING CHEAT-SHEET
 #    * retrieval.inject_min_similarity  — the "how similar before I inject a
 #      memory" gate. RAISE -> fewer / only high-confidence memories; LOWER ->
-#      more recall (and more noise).
+#      more recall (and more noise). ⚠ EMBEDDER-DEPENDENT: re-tune this whenever
+#      you change the embedding model — see the retrieval section below.
 #    * sampling.temperature             — creativity. Lower = more deterministic.
 #    * retrieval.max_injected_tokens    — how much memory to stuff into the prompt.
 #
