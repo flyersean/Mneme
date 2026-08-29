@@ -187,8 +187,8 @@ DEFAULT_INSTRUCTIONS = {k: v.strip() for k, v in DEFAULT_INSTRUCTIONS.items()}
 
 
 # Self-documentation for each prompt (the "when / vars / used_by" frontmatter that
-# materialize_instructions() writes into the on-disk files). Kept in sync with
-# docs/instructions.md. `vars` is a space-separated list of {{placeholders}}.
+# materialize_instructions() writes into the on-disk files).
+# `vars` is a space-separated list of {{placeholders}}.
 INSTRUCTION_META = {
     "system_prompt": ("always — fixed system prompt (full build, injected as a system message)", "", "_system_prompt_block"),
     "system_prompt_memory": ("always — fixed system prompt (memory-only build, MEMORY_ONLY=1)", "", "_system_prompt_block"),

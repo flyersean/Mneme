@@ -1,8 +1,8 @@
 # Strategy Retrieval & Categorization — Source-Chunk Linkage
 
 Branch: `unified_mneme`
-Status: SPEC (pre-implementation). Supersedes the `problem_type` taxonomy described
-in `docs/strategy-roadmap.md` §2 as the retrieval mechanism for strategies.
+Status: SPEC. Supersedes the `problem_type` taxonomy as the retrieval mechanism
+for strategies.
 
 ---
 

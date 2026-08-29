@@ -1,6 +1,6 @@
 """Mneme tool system — native bootstrap tools, tool registry, retrieval injection.
 
-Three responsibilities, per docs/tool-system.md:
+Three responsibilities:
 
   1. Native tools      — a minimal bootstrap toolset (``bash`` + ``write``) owned
      by the proxy so the model can build and run tools with no harness present.
