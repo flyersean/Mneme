@@ -2092,6 +2092,18 @@ def _calibrate_noise(n_samples: int = 3) -> float:
         return sum(scores) / len(scores)  # average minimum across samples
     return 0.20
 
+
+def _clamp_noise_baseline(raw: float, inject_min: float = None) -> float:
+    """Clamp the calibrated noise baseline so it stays meaningfully below the
+    inject floor. _calibrate_noise() drifts UP as the corpus grows (more chunks =
+    higher chance of a coincidental close match to random gibberish); if it ever
+    reaches INJECT_MIN_SIMILARITY, the dynamic-K step (score = sim - noise)
+    rejects chunks that cleared the threshold, silently raising the floor."""
+    if inject_min is None:
+        inject_min = INJECT_MIN_SIMILARITY
+    return min(raw, inject_min - 0.15)
+
+
 def _embed_query(query):
     """Embed a query once, retrying on a cold/missed embed. Returns the vector or
     None. Shared by route_query and _strategy_floor_chunks so a turn embeds the
@@ -5922,9 +5934,18 @@ materialize_instructions()
 # them pending_embed and defers embedding to here). The bg worker queue reuses the
 # check_same_thread=False connection and the faiss file lock, so it is safe.
 _enqueue(_reembed_pending)
-# Calibrate noise baseline AFTER FAISS is loaded
-BASELINE_NOISE = _calibrate_noise()
-print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f}", flush=True)
+# Calibrate noise baseline AFTER FAISS is loaded, then CLAMP it below the inject
+# floor. _calibrate_noise() embeds random gibberish and measures its similarity
+# to the nearest chunks; that value drifts UP as the corpus grows (more chunks =
+# higher chance of a coincidental close match) and in an anisotropic embedding
+# space unrelated content already has a positive floor. If the noise baseline
+# reaches INJECT_MIN_SIMILARITY, the dynamic-K step (score = sim - BASELINE_NOISE)
+# rejects every chunk that clears the threshold — silently raising the effective
+# floor. Clamp it so it can never approach the inject floor.
+_raw_noise = _calibrate_noise()
+BASELINE_NOISE = _clamp_noise_baseline(_raw_noise)
+print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f} "
+      f"(raw {_raw_noise:.4f}, clamp {INJECT_MIN_SIMILARITY - 0.15:.4f})", flush=True)
 _dump_config()
 print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
