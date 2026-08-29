@@ -512,6 +512,22 @@ def test_inject_min_similarity_allows_above_floor():
 
 
 @test
+def test_noise_baseline_clamped_below_inject_floor():
+    """The calibrated noise baseline must never approach the inject floor, or the
+    dynamic-K step (score = sim - noise) drops chunks that cleared the threshold."""
+    inj = 0.45
+    ceil = inj - 0.15
+    # high raw noise clamps down to inject - 0.15
+    assert mp._clamp_noise_baseline(0.47, inject_min=inj) == ceil
+    assert mp._clamp_noise_baseline(0.60, inject_min=inj) == ceil
+    # low raw noise passes through unchanged
+    assert mp._clamp_noise_baseline(0.20, inject_min=inj) == 0.20
+    # the clamp always keeps the baseline strictly below the inject floor
+    for raw in (0.0, 0.1, 0.3, 0.45, 0.6, 0.9):
+        assert mp._clamp_noise_baseline(raw, inject_min=inj) <= ceil, raw
+
+
+@test
 def test_keyword_fallback_disabled_by_default():
     """Default: sparse FAISS results are NOT padded with substring matches."""
     assert mp.KEYWORD_FALLBACK is False, "keyword fallback should default to off"
