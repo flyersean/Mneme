@@ -250,6 +250,11 @@ Two hard rules:
 - FAISS vector search gated by an absolute `inject_min_similarity` floor
 - Recency-weighted scoring (cycle-based, not wall-clock)
 - Source tracking (user, model, tool:*, page:*, document:*)
+- Full-page chunking: `fetch_url` stages the ENTIRE fetched page as
+  fine-grained `page:<domain>` chunks (paragraph-aligned, capped below
+  `max_chunk_size`), so a huge wiki article is fully retrievable later via
+  `search_memory` even though the model only ever sees a bounded head+tail
+  window.
 - Embedding reliability: startup health check probes the embedder and fails
   loud on a dim mismatch; a failed embed is stored `pending_embed` and
   re-embedded on next startup (no silent dead vectors)
@@ -305,7 +310,7 @@ web_search hand-off, search-loop exhaustion), the injection gate
 the capability-edge → overcome routing, the injected-prompt materializer,
 provenance grading (honest-terminal detection, source/URL normalization,
 tool-trace URL extraction, fabricated-citation fails), and the two-floor
-retrieval helpers. 58 tests.
+retrieval helpers. 63 tests.
 
 ---
 
