@@ -90,6 +90,30 @@ else
   command -v ollama >/dev/null 2>&1 && echo "  ✓ ollama installed" || echo "  ⚠ install failed — run: curl -fsSL https://ollama.com/install.sh | sh"
 fi
 
+# Pin keep-alive as the server DEFAULT via a systemd drop-in. The exports above
+# only reach a `nohup ollama serve` child; the official installer runs Ollama as
+# a systemd service with a clean environment, so without this the running server
+# keeps the 5m default and unloads models between swarm steps. Idempotent.
+if systemctl cat ollama.service >/dev/null 2>&1; then
+  mkdir -p /etc/systemd/system/ollama.service.d
+  cat > /etc/systemd/system/ollama.service.d/10-mneme.conf <<'EOF'
+[Service]
+Environment=OLLAMA_KEEP_ALIVE=-1
+Environment=OLLAMA_FLASH_ATTENTION=0
+EOF
+  systemctl daemon-reload
+  systemctl restart ollama 2>/dev/null || systemctl start ollama 2>/dev/null || true
+  # Wait for the restarted service to come back before the "is it answering"
+  # check below, so we don't fire a competing nohup instance on a port race.
+  for _ in $(seq 1 20); do
+    curl -s --max-time 2 http://localhost:11434 >/dev/null 2>&1 && break
+    sleep 1
+  done
+  echo "  ✓ ollama systemd drop-in written (keep_alive=-1, flash_attention=0) + restarted"
+else
+  echo "  (no ollama systemd unit — keep-alive relies on the env export above)"
+fi
+
 # Start Ollama if it isn't answering.
 if ! curl -s --max-time 2 http://localhost:11434 >/dev/null 2>&1; then
   echo "  starting ollama serve..."
