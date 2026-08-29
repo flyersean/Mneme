@@ -88,7 +88,9 @@ retrieval:
   route_threshold: 0.08
   classify_threshold: 0.78
   baseline_noise: 0.20       # fallback only; _calibrate_noise() overrides at startup
-  inject_min_similarity: 0.62  # absolute cosine floor — below this, nothing is injected
+  inject_min_similarity: 0.45  # absolute cosine floor — below this, nothing is injected.
+                               # ⚠ EMBEDDER-DEPENDENT: every embedder has its own similarity
+                               # scale — tune per model (voyage-4-lite ~0.62, snowflake-arctic-embed2 ~0.45)
   keyword_fallback: false      # pad sparse FAISS with LIKE-substring matches (junk-prone)
   age_decay_days: 7
   max_siblings: 3
@@ -187,7 +189,7 @@ OpenAI-compatible provider ignores them):
 | route_threshold | 0.08 | [const] `ROUTE_THRESHOLD` |
 | classify_threshold | 0.78 | [const] `CLASSIFY_THRESHOLD` |
 | baseline_noise | 0.20 | [const] `BASELINE_NOISE` (fallback; calibrated at startup) |
-| inject_min_similarity | 0.62 | [const] `INJECT_MIN_SIMILARITY` — absolute cosine floor; below it, nothing is injected |
+| inject_min_similarity | 0.45 | [const] `INJECT_MIN_SIMILARITY` — absolute cosine floor; below it, nothing is injected. **Embedder-dependent**: every embedding model has its own similarity scale — measure and tune (voyage-4-lite ~0.62, snowflake-arctic-embed2 ~0.45) |
 | keyword_fallback | false | [const] `KEYWORD_FALLBACK` — pad sparse FAISS with LIKE-substring matches (off by default) |
 | age_decay_days | 7 | [const] `AGE_DECAY_DAYS` |
 | max_siblings | 3 | [const] `MAX_SIBLINGS` |
