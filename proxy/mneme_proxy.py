@@ -362,17 +362,22 @@ CLASSIFY_THRESHOLD = float(os.environ.get("MNEME_CLASSIFY_THRESHOLD", "0.78"))
 ROUTE_THRESHOLD    = float(os.environ.get("MNEME_ROUTE_THRESHOLD", "0.08"))  # tunable: raise for stricter matching, lower for more recall
 BASELINE_NOISE     = float(os.environ.get("MNEME_BASELINE_NOISE", "0.20"))  # fallback — overridden at startup by _calibrate_noise()
 # Absolute injection floor: a chunk is injected only if its raw cosine similarity
-# is >= this value; below it, nothing is injected. Tunable per setup — embedder and
-# corpus similarity scales differ, so this needs hand-tuning on each deployment.
-# Default 0.62 sits above the voyage-4-lite noise floor (~0.48) and below its
-# relevant-signal band (~0.70-0.72).
-INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.62"))
+# is >= this value; below it, nothing is injected. **This is embedder-dependent**
+# — every embedding model has its own similarity scale (noise floor vs relevant
+# band), so the default below is a starting point, NOT a universal constant.
+# Measure your own: embed some obviously-relevant and obviously-irrelevant
+# queries and set this just above the noise floor. Known scales:
+#   voyage-4-lite            noise ~0.48, relevant ~0.70-0.72  -> 0.62 works
+#   snowflake-arctic-embed2  noise ~0.32, relevant ~0.40-0.64  -> 0.45 is the
+#     default here; 0.62 silently drops most relevant matches.
+INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.45"))
 # Strategy-only floor (below the memory floor). A chunk below INJECT_MIN_SIMILARITY
 # does NOT inject as memory, but if it sits at/above this floor its LINKED
 # strategies still inject — strategies are meant to generalize (same-concept,
-# medium similarity) where memory is same-topic (high similarity). Measured on
-# voyage-4-lite: same-concept sits ~0.43-0.62 (docs/strategy-retrieval-spec.md).
-STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.55"))
+# medium similarity) where memory is same-topic (high similarity). MUST stay below
+# INJECT_MIN_SIMILARITY, and is just as embedder-dependent (same-concept band
+# differs per model: voyage-4-lite ~0.43-0.62; snowflake-arctic-embed2 ~0.33-0.45).
+STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.40"))
 # Keyword fallback: when FAISS returns fewer than top_k hits, pad the result list
 # with SQLite LIKE-substring matches. OFF by default — substring hits carry no
 # semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").

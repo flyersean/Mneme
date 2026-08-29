@@ -447,7 +447,10 @@ storage:
 
 retrieval:
   max_injected_tokens: 8000
-  inject_min_similarity: 0.62
+  # inject_min_similarity is EMBEDDER-DEPENDENT: every embedding model has its
+  # own similarity scale, so tune this to YOUR embedder (see mneme.yaml.example).
+  #   voyage-4-lite: ~0.62   snowflake-arctic-embed2: ~0.45
+  inject_min_similarity: 0.45
   keyword_fallback: false
   route_threshold: 0.08
   classify_threshold: 0.78

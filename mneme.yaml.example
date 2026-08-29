@@ -92,11 +92,16 @@ storage:
 # Memory retrieval: what gets injected into the prompt each turn.
 retrieval:
   max_injected_tokens: 8000  # token budget for memory stuffed into the prompt (~6-8 chunks)
-  inject_min_similarity: 0.62  # THE main knob: absolute similarity floor. A memory is injected
-                               # only if it scores >= this. Below it -> inject NOTHING. Tune per setup
-                               # (embedders have different similarity scales). RAISE = stricter/fewer,
-                               # LOWER = more recall.
-  strategy_min_similarity: 0.55  # SECOND floor (must be < inject_min_similarity). A chunk scoring
+  inject_min_similarity: 0.45  # THE main knob: absolute similarity floor. A memory is injected
+                               # only if it scores >= this. Below it -> inject NOTHING.
+                               # ⚠ EMBEDDER-DEPENDENT — every embedding model has its own
+                               # similarity scale, so tune this per embedder, not once. Measure it by
+                               # embedding a few obviously-relevant vs obviously-irrelevant queries.
+                               #   voyage-4-lite:            noise ~0.48, relevant ~0.70 -> use ~0.62
+                               #   snowflake-arctic-embed2:  noise ~0.32, relevant ~0.40 -> use ~0.45
+                               # RAISE = stricter/fewer; LOWER = more recall (and more noise).
+  strategy_min_similarity: 0.40  # SECOND floor (must be < inject_min_similarity). Same embedder
+                                 # dependency as above. A chunk scoring
                                  # in [strategy_min_similarity, inject_min_similarity) does NOT inject
                                  # as memory, but any strategy LINKED to that chunk still injects — so
                                  # a learned approach generalizes to same-concept queries that fall just

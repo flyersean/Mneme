@@ -159,11 +159,20 @@ The knobs you'll actually touch (see `mneme.yaml.example` for full comments):
 | `providers.<name>.embed_model` | `voyageai/voyage-4-lite` | embedding model (must be 1024-dim) |
 | `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (must be non-thinking) |
 | `sampling.temperature` | `0.2` | creativity — lower is more deterministic |
-| `retrieval.inject_min_similarity` | `0.62` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall |
-| `retrieval.strategy_min_similarity` | `0.55` | second, lower floor — chunks in `[strategy_min, inject_min)` don't inject as memory, but their **linked strategies** still do (a learned approach generalizes to same-concept queries just under the memory floor) |
+| `retrieval.inject_min_similarity` | `0.45` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall. **Embedder-dependent** — see the note below. |
+| `retrieval.strategy_min_similarity` | `0.40` | second, lower floor — chunks in `[strategy_min, inject_min)` don't inject as memory, but their **linked strategies** still do (a learned approach generalizes to same-concept queries just under the memory floor). Must stay below `inject_min_similarity`; embedder-dependent too. |
 | `retrieval.max_injected_tokens` | `8000` | token budget for memory stuffed into the prompt |
 
 Full reference: [`docs/config-spec.md`](docs/config-spec.md).
+
+> **Tuning `inject_min_similarity` per embedder.** This is the one setting you
+> must NOT copy blindly between deployments: every embedding model has its own
+> similarity scale, so a threshold that works for one silently drops most
+> relevant memories for another. Measure yours by embedding a few
+> obviously-relevant and obviously-irrelevant queries and set the floor just
+> above the noise. Reference scales: `voyage-4-lite` noise ~0.48 / relevant
+> ~0.70 → use ~0.62; `snowflake-arctic-embed2` noise ~0.32 / relevant ~0.40 →
+> use ~0.45 (the default). `strategy_min_similarity` must always stay below it.
 
 > Note: `route_threshold` and `classify_threshold` in the config are legacy —
 > `route_threshold` is only used by the `/search` debug endpoint and
