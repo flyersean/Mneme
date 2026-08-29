@@ -86,7 +86,7 @@ storage:
   port: 8080                 # HTTP port the proxy listens on
   inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
   memory_only: false         # true = memory-only build: strategy/self-improving layer OFF (memory + grading + tools stay on). main branch defaults true, unified_mneme defaults false.
-  staging_turns: 6           # flush the recent conversation into a memory chunk every N turns
+  staging_turns: 1           # flush the recent conversation into a memory chunk every N turns (swarm default: 1 = every turn)
   staging_idle: 120          # ...or after this many seconds of silence (whichever first)
   belief_evolution: false    # experimental — OFF (floods the backend)
 

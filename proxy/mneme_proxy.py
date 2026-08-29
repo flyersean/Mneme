@@ -415,7 +415,7 @@ COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
 # Staging: archive after N user turns or idle seconds
-STAGING_TURNS  = int(os.environ.get("MNEME_STAGING_TURNS", "6"))
+STAGING_TURNS  = int(os.environ.get("MNEME_STAGING_TURNS", "1"))  # swarm default: flush every turn
 STAGING_IDLE   = int(os.environ.get("MNEME_STAGING_IDLE", "120"))
 
 # Routing thresholds (same as KV version)

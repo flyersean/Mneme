@@ -79,7 +79,7 @@ storage:
   port: 8080
   inject_system: true
   memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
-  staging_turns: 6           # flush cadence (the every-6-turns knob)
+  staging_turns: 1           # flush cadence — swarm default: every turn (general Mneme: 6)
   staging_idle: 120          # seconds of inactivity before flush
   belief_evolution: false    # gated off by default — floods the backend
 
@@ -178,7 +178,7 @@ OpenAI-compatible provider ignores them):
 | chunk_dir | `~/mneme/chunks` | [env] `MNEME_CHUNK_DIR` |
 | port | 8080 | [env] `MNEME_PORT` |
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
-| staging_turns | 6 | [const] `STAGING_TURNS` |
+| staging_turns | 1 | [const] `STAGING_TURNS` |
 | staging_idle | 120 | [const] `STAGING_IDLE` |
 | belief_evolution | false | [env] `MNEME_BELIEF_EVOLUTION` (just added) |
 

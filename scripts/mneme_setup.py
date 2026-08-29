@@ -441,7 +441,7 @@ storage:
   port: {port}
   inject_system: {inject}
   memory_only: {memory_only}
-  staging_turns: 6
+  staging_turns: 1   # swarm default: flush to memory after every turn
   staging_idle: 120
   belief_evolution: false
 
