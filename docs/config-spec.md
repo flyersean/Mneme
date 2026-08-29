@@ -204,7 +204,7 @@ OpenAI-compatible provider ignores them):
 | compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
 | compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
 
-### tools (native bootstrap + built-tool registry — see docs/tool-system.md)
+### tools (native bootstrap + built-tool registry)
 | key | default | today |
 |---|---|---|
 | native | auto | `NATIVE_TOOLS_MODE` (auto/on/off) — inject proxy-owned bash/write unless the client supplied its own |

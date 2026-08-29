@@ -4318,7 +4318,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # constant, so this stays a stable, cacheable prefix. The VARIABLE advisory
     # directives (saved-tool hint, explore, relevant tools) + memory + preferences
     # go to the TAIL (prepended to the last user message) alongside the memory
-    # context (docs/build-plan.md Phase 1).
+    # context.
     # A KNOWN capability edge is NOT injected here — it routes into the hard-stop
     # overcome path below, because the point of flagging an edge is to OVERCOME
     # it, not name it and stop.

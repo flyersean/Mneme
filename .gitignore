@@ -1,1 +1,16 @@
+# Python
 __pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Mneme runtime state — generated at install/setup, never committed
+mneme.yaml
+chunks/
+*.db
+faiss.index
+*.log
+
+# OS
+.DS_Store
