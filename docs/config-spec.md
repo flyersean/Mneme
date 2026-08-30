@@ -75,7 +75,8 @@ timeouts:
   edge_ratio: 0.5
 
 storage:
-  chunk_dir: ~/mneme/chunks
+  chunk_dir: ~/mneme/chunks      # per-instance dir: config + prompts + logs
+  db_path: ~/mneme/chunks/mneme.db  # memory DB file — SQLite + FAISS index live beside it (portable; shareable across proxies/machines)
   port: 8080
   inject_system: true
   memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
@@ -176,6 +177,7 @@ OpenAI-compatible provider ignores them):
 | key | default | today |
 |---|---|---|
 | chunk_dir | `~/mneme/chunks` | [env] `MNEME_CHUNK_DIR` |
+| db_path | `<chunk_dir>/mneme.db` | [env] `MNEME_DB_PATH` — the memory DB file; the FAISS index lives beside it. Defaults to `<chunk_dir>/mneme.db` when unset (back-compat). |
 | port | 8080 | [env] `MNEME_PORT` |
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
 | staging_turns | 1 | [const] `STAGING_TURNS` |

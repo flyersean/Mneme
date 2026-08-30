@@ -124,6 +124,7 @@ _CONFIG_ENV_MAP = {
     "timeouts.edge_ratio": "MNEME_EDGE_RATIO",
     "storage.chunk_dir": "MNEME_CHUNK_DIR",
     "storage.port": "MNEME_PORT",
+    "storage.db_path": "MNEME_DB_PATH",
     "storage.inject_system": "MNEME_INJECT_SYSTEM",
     "storage.memory_only": "MNEME_MEMORY_ONLY",
     "storage.staging_turns": "MNEME_STAGING_TURNS",
@@ -355,7 +356,9 @@ CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
-DB_PATH     = os.path.join(CHUNK_DIR, "mneme.db")
+_db_path   = os.environ.get("MNEME_DB_PATH")
+DB_PATH    = os.path.expanduser(_db_path) if _db_path else os.path.join(CHUNK_DIR, "mneme.db")
+DB_DIR     = os.path.dirname(DB_PATH) or "."
 
 # Sampling defaults (per-model overrides live in config `models:`)
 OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
@@ -548,6 +551,7 @@ ERROR_LOG_FILE = os.path.join(CHUNK_DIR, "errors.log")
 # _log_error was extracted to mneme/util.py (imported at top of this file).
 
 os.makedirs(CHUNK_DIR, exist_ok=True)
+os.makedirs(DB_DIR, exist_ok=True)
 
 # ─── Structured-output helper (Phase 2) ─────────────────────────
 # Parses model reply as JSON; on failure falls back to a regex parse and logs
@@ -783,9 +787,9 @@ except ImportError:
 _idx_lock = threading.Lock()
 
 # Multi-writer FAISS: disk persistence + file locking
-FAISS_INDEX_FILE = os.path.join(CHUNK_DIR, "faiss.index")
-FAISS_IDMAP_FILE = os.path.join(CHUNK_DIR, "faiss.idmap")
-FAISS_LOCK_FILE   = os.path.join(CHUNK_DIR, "faiss.lock")
+FAISS_INDEX_FILE = os.path.join(DB_DIR, "faiss.index")
+FAISS_IDMAP_FILE = os.path.join(DB_DIR, "faiss.idmap")
+FAISS_LOCK_FILE   = os.path.join(DB_DIR, "faiss.lock")
 
 import fcntl
 
