@@ -25,6 +25,7 @@ import getpass
 import subprocess
 import urllib.request
 import urllib.error
+import re
 
 # ── Defaults ─────────────────────────────────────────────────────
 DEFAULT_PORT = 8080
@@ -331,14 +332,26 @@ def setup_ollama_models():
     return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
-def create_context_modelfile(base_model, ctx_size, name="mneme-chat"):
+def _derived_model_name(base_model, ctx_size):
+    """Deterministic derived-model name keyed on the base model + context window
+    (NOT the port). Instances sharing a base model + context then share one
+    derived name, so Ollama keeps a single resident copy of the weights instead
+    of one per port. ':' '/' '.' are sanitized to '-' for a valid name."""
+    frag = re.sub(r"[^a-zA-Z0-9]+", "-", base_model).strip("-").lower()
+    return f"mneme-chat-{frag}-{int(ctx_size) // 1000}k"
+
+
+def create_context_modelfile(base_model, ctx_size, name=None):
     """Create a derived Ollama model with an explicit context window, so num_ctx
-    matches what the proxy expects. `name` defaults to 'mneme-chat' but a second
-    instance passes a unique name (e.g. 'mneme-chat-8081') so multiple instances
-    don't overwrite each other's derived model. Returns the derived model name on
-    success, or the base model name if `ollama create` fails."""
+    matches what the proxy expects. `name` is auto-derived from the base model +
+    context window when omitted, so instances pointing at the SAME base + context
+    collapse onto one derived model (one resident copy in VRAM). Returns the
+    derived model name on success, or the base model name if `ollama create`
+    fails."""
     if not shutil.which("ollama"):
         return base_model
+    if name is None:
+        name = _derived_model_name(base_model, ctx_size)
     mf = os.path.join(MEMORY_DIR, f"Modelfile.{name}")
     content = (
         f"# Mneme — derived from {base_model} (quantized base)\n"
@@ -701,7 +714,7 @@ def wipe_db(memory_dir):
     return removed
 
 
-def pick_chat_model(chat_backend, derived_name="mneme-chat"):
+def pick_chat_model(chat_backend):
     """Pick (and pull, for Ollama) ONLY the chat model for an added instance.
     The embedder/labeler are locked to the shared DB and are NOT asked here."""
     if chat_backend == "openrouter":
@@ -738,7 +751,7 @@ def pick_chat_model(chat_backend, derived_name="mneme-chat"):
     ctx_opts = [("32K (fast)", 32000), ("64K", 64000), ("129K (needs big VRAM)", 129000)]
     idx = choose("Context window", [c[0] for c in ctx_opts])
     ctx_size = ctx_opts[idx][1]
-    return create_context_modelfile(model, ctx_size, name=derived_name)
+    return create_context_modelfile(model, ctx_size)
 
 
 def write_instance_start_script(memory_dir, port, chat_backend, chat_model,
@@ -851,7 +864,7 @@ def _add_instance(memory_dir, shared, memory_only):
         ask_and_validate_key()
         chat_model = pick_chat_model(chat_backend)
     else:
-        chat_model = pick_chat_model(chat_backend, derived_name=f"mneme-chat-{port}")
+        chat_model = pick_chat_model(chat_backend)
 
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
