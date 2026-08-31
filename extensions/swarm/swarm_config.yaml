@@ -17,6 +17,11 @@
 # orchestrator from, so the brief, intermediate boards, and final output all live in
 # that directory (see extensions/swarm/README.md).
 #
+# Any step may set `options:` to override generation settings for THAT step's call
+# only (without touching the proxy's global config):
+#   backend=mneme:  OpenAI-style — { temperature, top_p, top_k, max_tokens }
+#   backend=ollama: Ollama options — { temperature, top_p, top_k, num_predict }
+#
 # Loop: outline -> draft -> review -(REVISE)-> revise -(goto)-> review ... until
 # review outputs "VERDICT: APPROVE", then finalize and stop.
 
@@ -27,6 +32,7 @@ steps:
   - name: outline
     backend: mneme
     port: 8080
+    # options: { temperature: 0.7 }   # per-step override — wins over the proxy config for this call only
     system_prompt: "You are the Outline step. Given a raw story brief, write a short chapter outline. Be concise."
     read_dir: raw
     write_dir: brain/outline

@@ -4276,7 +4276,8 @@ def _is_near_empty(text):
 MAX_EMPTY_RETRY = 2
 
 
-def process_chat(messages: list, session_id: str = "default", tools: list = None) -> dict:
+def process_chat(messages: list, session_id: str = "default", tools: list = None,
+                 options: dict = None, max_tokens: int = None) -> dict:
     # Extract the retrieval query from ONLY the last user message. Scoping retrieval
     # to the current turn means a follow-up ("try again", a correction) doesn't
     # re-surface chunks matched by earlier turns' keywords — which was re-injecting
@@ -4473,7 +4474,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                         f.write("\n...\n")
         except Exception:
             pass
-    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=_main_chat_timeout())
+    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=_main_chat_timeout(),
+                         options=options, max_tokens=max_tokens)
     # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
     # or empty reasoning), retry once with a nudge, then fall back to a clear
     # message so the client never sees an empty/"None" reply.
@@ -4486,7 +4488,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # without a single byte, or dies mid-generation; retry once on a fresh
             # connection before declaring a capability edge.
             print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
-            result = query_model(full_msgs, tools=msg_tools, timeout=_main_chat_timeout())
+            result = query_model(full_msgs, tools=msg_tools, timeout=_main_chat_timeout(),
+                                 options=options, max_tokens=max_tokens)
             if not (result.get("content") or "").strip() and not result.get("tool_calls"):
                 _failed = True
         elif dr == "timeout":
@@ -5363,6 +5366,10 @@ if FLASK_OK:
         data = request.get_json(force=True)
         stream = data.get("stream", False)
         _cancel_event.clear()  # fresh turn — clear any stale stop request
+        # Per-request generation overrides (OpenAI-standard): temperature/top_p/top_k
+        # win over config + per-model overrides; max_tokens maps to num_predict/max_tokens.
+        _gen_opts = {k: data[k] for k in ("temperature", "top_p", "top_k") if data.get(k) is not None} or None
+        _max_tokens = data.get("max_tokens")
 
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
@@ -5377,9 +5384,11 @@ if FLASK_OK:
         session_id = f"conv_{h}_{int(time.time()) % 100000}" if user_count <= 1 else "default"
         
         if stream:
-            return _chat_stream(messages, tools=data.get("tools"), session_id=session_id)
+            return _chat_stream(messages, tools=data.get("tools"), session_id=session_id,
+                                options=_gen_opts, max_tokens=_max_tokens)
         
-        result = process_chat(messages, tools=data.get("tools"), session_id=session_id)
+        result = process_chat(messages, tools=data.get("tools"), session_id=session_id,
+                              options=_gen_opts, max_tokens=_max_tokens)
 
         # Parse [GRADE:] and [STRATEGY:] from model output
         ct = result.get("content", "")
@@ -5528,8 +5537,9 @@ if FLASK_OK:
             })
     
     # ── Chat completions (SSE streaming) ──
-    def _chat_stream(messages, tools=None, session_id="default"):
-        result = process_chat(messages, tools=tools, session_id=session_id)
+    def _chat_stream(messages, tools=None, session_id="default", options=None, max_tokens=None):
+        result = process_chat(messages, tools=tools, session_id=session_id,
+                              options=options, max_tokens=max_tokens)
         ct = result.get("content", "")
         grade = result.get("_grade", "C")
         # (Injected-strategy telemetry is consumed inside process_chat — a

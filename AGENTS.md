@@ -207,6 +207,11 @@ response is standard OpenAI shape; extract the text at:
 response.json()["choices"][0]["message"]["content"]
 ```
 
+Per-request generation overrides (OpenAI-standard) may be added and they win over the
+proxy's own config for that call only: `temperature`, `top_p`, `top_k` (Ollama only), and
+`max_tokens` (mapped to `num_predict` on Ollama). This is how a per-step `options:` in the
+swarm config tunes a single model call without touching the proxy's global sampling.
+
 ### 4.2 Full endpoint table
 
 | Method | Path | Purpose |
@@ -240,6 +245,7 @@ steps:
   - name: outline                     # name = label AND goto/if jump target
     backend: mneme                    # "mneme" (default) | "ollama"
     port: 8080                        # required for backend=mneme
+    options: { temperature: 0.7 }     # per-step override (wins over the proxy config for THIS call only)
     system_prompt: "You are the Outline step. ..."
     read_dir: raw                     # directory to read context from (relative to cwd)
     write_dir: brain/outline          # directory to write output.txt into
@@ -280,7 +286,7 @@ steps:
 | `backend` | no | `mneme` (default) or `ollama` |
 | `port` | mneme only | proxy port to POST to |
 | `model` | ollama only | Ollama model name |
-| `options` | no | Ollama gen options (`temperature`/`num_predict`/`top_p`/`top_k`) |
+| `options` | no | per-step generation override. `mneme`: OpenAI-style `temperature`/`top_p`/`top_k`/`max_tokens`. `ollama`: Ollama `temperature`/`top_p`/`top_k`/`num_predict`. Wins over the proxy's config for this call only. |
 | `system_prompt` | no | system message. For `mneme`, the role prompt usually lives in the proxy's own `instructions/`; only set here for an extra prepended instruction. |
 | `read_dir` | no | dir to read all files from (recursive, dot-files skipped) → `"NO_INPUT"` if absent/empty |
 | `write_dir` | no | dir to write `output.txt` into |

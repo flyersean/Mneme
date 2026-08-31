@@ -13,8 +13,10 @@ CONFIG (swarm_config.yaml)
     backend       "mneme" (default) | "ollama"
     port          Mneme proxy port            (required for backend=mneme)
     model         Ollama model name           (required for backend=ollama)
-    options       Ollama generation options   (backend=ollama only, e.g.
-                  temperature / num_predict / top_p / top_k)
+    options       generation overrides. backend=ollama: Ollama options
+                  (temperature / num_predict / top_p / top_k). backend=mneme:
+                  OpenAI-style per-request overrides (temperature / top_p / top_k /
+                  max_tokens) that win over the proxy's own config for THIS call only.
     system_prompt optional system message. For ollama this is the role prompt; for
                   mneme the role prompt normally lives in that proxy's own
                   system_prompt.md, so leave it unset there unless you want an
@@ -161,6 +163,8 @@ class Orchestrator:
             messages.append({"role": "system", "content": step["system_prompt"]})
         messages.append({"role": "user", "content": context})
         payload = {"model": "default", "messages": messages}
+        if step.get("options"):
+            payload.update(step["options"])
         timeout = step.get("timeout") or self.timeout
         try:
             r = requests.post(url, json=payload, timeout=timeout)
