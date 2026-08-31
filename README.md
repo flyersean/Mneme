@@ -311,6 +311,18 @@ Two deliberate runtime details are worth knowing:
 - **Prefix-cache-stable context.** The fixed instruction block (system prompt + meta-principles) sits at the front of every request as a byte-stable prefix; all *variable* content (memory, strategies, preferences, tool hints) is appended at the tail, never inserted mid-prefix — so any prefix-caching backend (OpenRouter, Ollama, etc.) can reuse the cached prefix across turns.
 - **Serialized writes.** The one SQLite connection is shared by the request thread + two archival workers, so every write+commit pair is guarded by a re-entrant lock — no "cannot commit, no transaction is active" races.
 
+## Extensions
+
+Non-core consumers of Mneme live in `extensions/` — they use the proxy over HTTP but are
+not part of the proxy stack:
+
+- `extensions/pi` — Pi coding-agent tools that let Pi call Mneme's memory/web tools.
+- `extensions/swarm` — a config-driven orchestrator that drives several Mneme proxies
+  (and/or raw Ollama models) through a loop (the example is an
+  outline→draft→review→finalize story loop with `goto`/`if` control flow). It talks to
+  proxies only over HTTP, so it can be swapped for any other driver without touching proxy
+  code. See `extensions/swarm/README.md`.
+
 ## Branches
 
 - `main` — **memory-only build** (this branch). The latest code with the strategy/self-improving layer disabled by default (`MNEME_MEMORY_ONLY=1`). Memory retrieval, provenance grading, and the full toolset stay on. Start here if you only want memory; set `MNEME_MEMORY_ONLY=0` to re-enable the learning layer.

@@ -1,0 +1,67 @@
+# Swarm example config — a creative-writing loop driving 5 Mneme proxies (3 models).
+#
+# This is an EXAMPLE consumer of the Mneme proxy stack. The orchestrator only talks
+# to proxies over HTTP (localhost:<port>/v1/chat/completions), so it has no path or
+# code dependency on the Mneme repo — it just needs the proxies running.
+#
+# Ports below are the EXAMPLE layout (one model per proxy; two roles may share a
+# model via two ports). On RunPod, avoid 8081 — nginx reserves it.
+#   8080 = outline  (e.g. gemma4:12b)
+#   8082 = draft    (e.g. qwen2.5:14b)
+#   8084 = review   (e.g. gemma4:12b)
+#   8083 = revise   (e.g. llama3.1:8b)
+#   8085 = finalize (e.g. qwen2.5:14b)
+# Point each port at whatever model you run behind that proxy.
+#
+# read_dir / write_dir / clear_dir are RELATIVE to the directory you run the
+# orchestrator from, so the brief, intermediate boards, and final output all live in
+# that directory (see extensions/swarm/README.md).
+#
+# Loop: outline -> draft -> review -(REVISE)-> revise -(goto)-> review ... until
+# review outputs "VERDICT: APPROVE", then finalize and stop.
+
+ollama_url: http://localhost:11434
+timeout: 600
+
+steps:
+  - name: outline
+    backend: mneme
+    port: 8080
+    system_prompt: "You are the Outline step. Given a raw story brief, write a short chapter outline. Be concise."
+    read_dir: raw
+    write_dir: brain/outline
+    clear_dir: raw
+
+  - name: draft
+    backend: mneme
+    port: 8082
+    system_prompt: "You are the Draft step. Turn the outline into a prose story. Write ONLY prose — do not repeat the outline, its headings, or its bullet points. Open directly on the first scene and tell the story through to the end."
+    read_dir: brain/outline
+    write_dir: brain/draft
+
+  - name: review
+    backend: mneme
+    port: 8084
+    system_prompt: "You are the Review step. Judge the DRAFT itself — the story, not your critique of it.\n\nAPPROVE only if the draft is complete and genuinely good: a coherent story with a real beginning, middle and end, no plot holes, no unfinished threads. You may list minor polish suggestions and still APPROVE.\n\nREVISE if the draft has a real problem that needs a rewrite: it is incomplete or cut off, incoherent or contradictory, or reads badly enough that a reader would notice. If it needs actual rewriting, say REVISE even if you can describe how to fix it.\n\nWrite a short critique, then end with exactly one line and nothing after it:\nVERDICT: APPROVE\nor\nVERDICT: REVISE"
+    read_dir: brain/draft
+    write_dir: brain/review
+    if:
+      condition: matches
+      value: '(?i)VERDICT\s*:\s*APPROVE'
+      then: finalize
+      else: revise
+
+  - name: revise
+    backend: mneme
+    port: 8083
+    system_prompt: "You are the Revise step. Rewrite the draft using the reviewer's notes."
+    read_dir: brain/review
+    write_dir: brain/draft
+    goto: review
+
+  - name: finalize
+    backend: mneme
+    port: 8085
+    system_prompt: "You are the Finalize step. Produce the final story. Output the complete story and nothing else: a title, then the full narrative in clean flowing prose from beginning to end. Do not repeat the outline, chapter headings, or bullet points — prose only. Give the story a real, resolved ending: the protagonist makes the choice and we see the outcome. No preamble, commentary, or 'here is the story'."
+    read_dir: brain/draft
+    write_dir: Speak
