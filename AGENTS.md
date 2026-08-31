@@ -207,10 +207,11 @@ response is standard OpenAI shape; extract the text at:
 response.json()["choices"][0]["message"]["content"]
 ```
 
-Per-request generation overrides (OpenAI-standard) may be added and they win over the
-proxy's own config for that call only: `temperature`, `top_p`, `top_k` (Ollama only), and
-`max_tokens` (mapped to `num_predict` on Ollama). This is how a per-step `options:` in the
-swarm config tunes a single model call without touching the proxy's global sampling.
+Per-request generation overrides are opt-in via a nested `options` object (sent by the
+swarm orchestrator). They win over the proxy's own config for that call only:
+`temperature`, `top_p`, `top_k` (Ollama only), and `max_tokens` (mapped to `num_predict` on
+Ollama). Bare top-level `temperature`/`max_tokens` fields from a generic client are
+IGNORED — the proxy does not silently override its own config.
 
 ### 4.2 Full endpoint table
 

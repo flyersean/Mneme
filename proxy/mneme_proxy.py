@@ -5366,10 +5366,14 @@ if FLASK_OK:
         data = request.get_json(force=True)
         stream = data.get("stream", False)
         _cancel_event.clear()  # fresh turn — clear any stale stop request
-        # Per-request generation overrides (OpenAI-standard): temperature/top_p/top_k
-        # win over config + per-model overrides; max_tokens maps to num_predict/max_tokens.
-        _gen_opts = {k: data[k] for k in ("temperature", "top_p", "top_k") if data.get(k) is not None} or None
-        _max_tokens = data.get("max_tokens")
+        # Per-request generation overrides are OPT-IN via a nested `options` object
+        # (sent by the swarm orchestrator). Read from `options`, NOT bare top-level
+        # fields — a generic OpenAI client's own temperature/max_tokens must NOT
+        # silently override this proxy's config (that truncated reasoning-model
+        # tool calls when a client sent max_tokens).
+        _overrides = data.get("options") or {}
+        _gen_opts = {k: _overrides[k] for k in ("temperature", "top_p", "top_k") if k in _overrides} or None
+        _max_tokens = _overrides.get("max_tokens")
 
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])

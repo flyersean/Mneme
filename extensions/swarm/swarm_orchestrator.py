@@ -164,7 +164,7 @@ class Orchestrator:
         messages.append({"role": "user", "content": context})
         payload = {"model": "default", "messages": messages}
         if step.get("options"):
-            payload.update(step["options"])
+            payload["options"] = step["options"]   # nested, opt-in (proxy ignores bare fields)
         timeout = step.get("timeout") or self.timeout
         try:
             r = requests.post(url, json=payload, timeout=timeout)
