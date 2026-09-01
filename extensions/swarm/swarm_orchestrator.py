@@ -25,6 +25,11 @@ CONFIG (swarm_config.yaml)
     write_dir     directory to write the model output to (as output.txt)
     clear_dir     directory to wipe. NOT allowed together with goto/if — clearing
                   on a jump erases context the next step needs to read.
+    swap_dir      directory to freeze for this tick (atomic inbox swap): rename it
+                  to <dir>.active and recreate a fresh empty <dir> for new writes.
+                  Readers point read_dir at <dir>.active; a later clear_dir on
+                  <dir>.active consumes the snapshot. Use on an action-only step
+                  (no write_dir/if) so you control WHEN the freeze happens.
     goto          label to jump to after this step. NOT allowed with clear_dir/if.
     if            branch on THIS step's model output:
         condition    contains | equals | startswith | endswith | matches (regex)
@@ -39,6 +44,7 @@ CONFIG (swarm_config.yaml)
 
 import os
 import re
+import shutil
 import sys
 
 import requests
@@ -153,6 +159,26 @@ class Orchestrator:
                 os.rmdir(os.path.join(root, n))
         print(f"  [clear] {dir_path}")
 
+    def swap_dir(self, dir_path):
+        """Freeze dir_path for the current tick (atomic inbox swap).
+
+        Renames dir_path -> dir_path + ".active" (the frozen snapshot readers use)
+        and recreates a fresh empty dir_path so new writes land in the inbox for
+        the NEXT tick. Any stale "<dir>.active" from a previous tick is removed
+        first. The rename is atomic on a single filesystem, so there is no window
+        where a reader sees a half-updated inbox.
+        """
+        if not dir_path:
+            return
+        active = dir_path + ".active"
+        if os.path.exists(active):
+            shutil.rmtree(active)  # stale snapshot from a previous tick
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        os.rename(dir_path, active)
+        os.makedirs(dir_path, exist_ok=True)
+        print(f"  [swap] {dir_path} -> {active}")
+
     # ---- backends ----
 
     def call_mneme(self, step, context):
@@ -263,6 +289,8 @@ class Orchestrator:
 
             if step.get("write_dir") and output is not None:
                 self.write_output(step["write_dir"], output)
+            if step.get("swap_dir"):
+                self.swap_dir(step["swap_dir"])
             if step.get("clear_dir"):
                 self.clear_dir(step["clear_dir"])
 

@@ -292,6 +292,7 @@ steps:
 | `read_dir` | no | dir to read all files from (recursive, dot-files skipped) → `"NO_INPUT"` if absent/empty |
 | `write_dir` | no | dir to write `output.txt` into |
 | `clear_dir` | no | dir to wipe. **Cannot be combined with `goto`/`if`.** |
+| `swap_dir` | no | atomic inbox swap: rename `<dir>` → `<dir>.active` and recreate `<dir>`. Readers read `<dir>.active`; a later `clear_dir` on `<dir>.active` consumes it. Use on an action-only step (no `write_dir`/`if`). |
 | `goto` | no | label to jump to next. **Cannot be combined with `clear_dir`/`if`.** |
 | `if` | no | branch on this step's output (see below) |
 | `timeout` | no | per-step request timeout override |
@@ -303,6 +304,24 @@ steps:
 - `goto` jumps unconditionally to a named step.
 - `END` stops the run. There is no iteration cap — the loop runs until it hits `END` or is
   interrupted.
+
+### 5.4 Inbox freeze/consume pattern
+
+For a loop fed by a stream of files (tool results, a feed), a shared `read_dir` that gets
+mutated mid-loop makes different readers see different bytes. Freeze it with `swap_dir` at
+the start of each tick and consume it with `clear_dir` at the end:
+
+```yaml
+- name: freeze      # rename raw -> raw.active, recreate raw (new writes land here)
+  swap_dir: raw
+- name: process     # models read the frozen snapshot — all see identical bytes
+  read_dir: raw.active
+  write_dir: out
+- name: consume     # wipe the snapshot; new writes already wait in raw
+  clear_dir: raw.active
+- name: loop
+  goto: freeze
+```
 
 ---
 
@@ -324,8 +343,10 @@ must satisfy all of these:
    result.
 
 4. **Folder IO is the state convention.** Read inputs from `read_dir`, write results to
-   `write_dir/output.txt`, wipe scratch with `clear_dir`. Paths are relative to the run
-   directory. Skip dot-files/dirs when reading (editor/tooling artifacts).
+   `write_dir/output.txt`, wipe scratch with `clear_dir`, and freeze a shared inbox with
+   `swap_dir` (rename `<dir>` → `<dir>.active` + recreate) so concurrent readers see a
+   stable snapshot. Paths are relative to the run directory. Skip dot-files/dirs when
+   reading (editor/tooling artifacts).
 
 5. **Control flow in config, not code.** Prefer `goto`/`if`/`END` in the YAML so the loop is
    editable without touching the driver. The driver only executes: read → call model →

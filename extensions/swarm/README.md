@@ -41,10 +41,10 @@ outline -> draft -> review -[REVISE]-> revise -[goto]-> review ...
        /path/to/mneme/extensions/swarm/swarm_config.yaml
    ```
 
-All `read_dir` / `write_dir` / `clear_dir` paths in the config are **relative to the
-directory you run from**, so the brief, intermediate boards, and final output live in
-that directory (e.g. `/workspace/swarm` on a pod). Pick a directory on persistent
-storage if you want to keep `Speak/output.txt`; the `brain/` boards are scratch.
+All `read_dir` / `write_dir` / `clear_dir` / `swap_dir` paths in the config are
+**relative to the directory you run from**, so the brief, intermediate boards, and final
+output live in that directory (e.g. `/workspace/swarm` on a pod). Pick a directory on
+persistent storage if you want to keep `Speak/output.txt`; the `brain/` boards are scratch.
 
 ## Adapt it
 
@@ -55,6 +55,11 @@ storage if you want to keep `Speak/output.txt`; the `brain/` boards are scratch.
 - Control flow: `goto:` jumps to a named step; `if:` branches on the step's output
   (`contains` / `equals` / `startswith` / `endswith` / `matches`), with `then:` / `else:`
   targets (or `END`). `clear_dir` cannot be combined with `goto`/`if`.
+- Inbox swap (for a loop fed by a stream of files — tool results, a feed): `swap_dir: raw`
+  atomically renames `raw` → `raw.active` and recreates a fresh `raw`, so readers read the
+  frozen `raw.active` snapshot (all see identical bytes) while new writes land in `raw`.
+  Consume the snapshot with `clear_dir: raw.active`. Use these on action-only steps (no
+  `read_dir`/`write_dir`/`if`) so you control exactly when the freeze and consume happen.
 - Per-step `timeout:` overrides the top-level `timeout:`.
 
 Dependencies: `requests`, `pyyaml` (`pip install requests pyyaml`).

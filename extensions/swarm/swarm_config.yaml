@@ -24,6 +24,26 @@
 #
 # Loop: outline -> draft -> review -(REVISE)-> revise -(goto)-> review ... until
 # review outputs "VERDICT: APPROVE", then finalize and stop.
+#
+# Inbox freeze/consume — for loops fed by a stream of files (tool results, a feed):
+#   swap_dir: raw          # atomically rename raw -> raw.active and recreate raw.
+#                          # New writes land in the FRESH raw; readers read the
+#                          # frozen raw.active snapshot (every reader sees the same
+#                          # bytes — no "model 2 sees more than model 1" drift).
+#   clear_dir: raw.active  # consume the snapshot: wipe its contents.
+# Put swap_dir on an action-only step at the START of a tick and clear_dir on an
+# action-only step at the END (both steps have no read_dir/write_dir/if, so no
+# model is called). Example tick:
+#   steps:
+#     - name: freeze        # freeze the inbox for this tick
+#       swap_dir: raw
+#     - name: process       # models read the stable snapshot
+#       read_dir: raw.active
+#       write_dir: out
+#     - name: consume       # wipe the snapshot; new writes already wait in raw
+#       clear_dir: raw.active
+#     - name: loop          # next tick
+#       goto: freeze
 
 ollama_url: http://localhost:11434
 timeout: 600
