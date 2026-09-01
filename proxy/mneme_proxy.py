@@ -4630,11 +4630,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # A thinking model narrates its next step ("let me check the date") in
         # `content` while ALSO emitting the tool_calls for that step. Only treat
         # content as the final answer when the model actually finished (stop) AND
-        # there is real text. Some models (e.g. Qwen3.6-35B "Uncensored-Aggressive")
-        # report done_reason="stop" even while emitting a pending tool call with
-        # EMPTY content — breaking here would drop the tool call and lose the
-        # answer, so only break on "stop" when there's actual narration.
-        if result.get("done_reason") == "stop" and (result.get("content") or "").strip():
+        # there is real text AND there are no pending tool calls left to execute.
+        # Some models (e.g. Qwen3.6-35B "Uncensored-Aggressive") report
+        # done_reason="stop" even while emitting a tool call — with EITHER empty or
+        # narrated content — so breaking on "stop" alone would drop the tool call
+        # and lose the answer. Break only when there is nothing left to run.
+        if (result.get("done_reason") == "stop" and (result.get("content") or "").strip()
+                and not result.get("tool_calls")):
             break
 
         # Native bash/write. `write` is bounded by BUILD_MAX_ITERATIONS (the build
