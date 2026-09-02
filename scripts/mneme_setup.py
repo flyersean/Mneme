@@ -42,7 +42,7 @@ OR_DEFAULT_LABEL = "meta-llama/llama-3.2-3b-instruct"  # non-thinking
 
 # Ollama defaults (local)
 OL_DEFAULT_EMBED = "snowflake-arctic-embed2"   # 1024-dim
-OL_DEFAULT_LABEL = "qwen2.5:0.5b"              # tiny non-thinking labeler
+OL_DEFAULT_LABEL = "qwen2.5:1.5b"              # small non-thinking labeler (better labels than 0.5b)
 
 
 def run(cmd, timeout=None):
@@ -604,7 +604,7 @@ def start_proxy(backend, models, port, instance_dir):
     else:
         # Ollama models are read from env vars (not the config), so the choices
         # the user just made MUST be exported here — otherwise the proxy falls
-        # back to its code defaults (e.g. label=qwen2.5:0.5b) and silently uses
+        # back to its code defaults (e.g. label=qwen2.5:1.5b) and silently uses
         # models the user never picked. This was the "labeler 404" bug.
         env["MNEME_BACKEND"] = "ollama"
         env["MNEME_MODEL"] = models.get("model", "")

@@ -2025,14 +2025,14 @@ def _clean_content(text: str) -> str:
     return text
 
 
-LABEL_MODEL = os.environ.get("LABEL_MODEL", "qwen2.5:0.5b")
+LABEL_MODEL = os.environ.get("LABEL_MODEL", "qwen2.5:1.5b")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
 )
 
 def _llm_topic_label(text: str) -> str:
-    """Call qwen2.5:0.5b via Ollama to generate a semantic topic label.
+    """Call qwen2.5:1.5b via Ollama to generate a semantic topic label.
     
     Falls back to _generate_topic_label on any error.
     """
@@ -2082,7 +2082,7 @@ def _llm_topic_label(text: str) -> str:
 
 
 def _llm_topic_labels_batch(texts: List[str], max_workers: int = 6) -> List[str]:
-    """Concurrent batch labeling via qwen2.5:0.5b. Falls back per-item on error."""
+    """Concurrent batch labeling via qwen2.5:1.5b. Falls back per-item on error."""
     results: List[Optional[str]] = [None] * len(texts)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_llm_topic_label, t): i for i, t in enumerate(texts)}
