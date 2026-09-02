@@ -82,6 +82,7 @@ storage:
   memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
   staging_turns: 1           # flush cadence — swarm default: every turn (general Mneme: 6)
   staging_idle: 120          # seconds of inactivity before flush
+  context_recent_extra: 1    # extra USER TURNS of recent context kept in the tool loop beyond staging_turns
   belief_evolution: false    # gated off by default — floods the backend
 
 retrieval:
@@ -182,6 +183,7 @@ OpenAI-compatible provider ignores them):
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
 | staging_turns | 1 | [const] `STAGING_TURNS` |
 | staging_idle | 120 | [const] `STAGING_IDLE` |
+| context_recent_extra | 1 | [const] `CONTEXT_RECENT_EXTRA` — recent-convo window = staging_turns + this |
 | belief_evolution | false | [env] `MNEME_BELIEF_EVOLUTION` (just added) |
 
 ### retrieval

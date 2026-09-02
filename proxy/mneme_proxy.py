@@ -129,6 +129,7 @@ _CONFIG_ENV_MAP = {
     "storage.memory_only": "MNEME_MEMORY_ONLY",
     "storage.staging_turns": "MNEME_STAGING_TURNS",
     "storage.staging_idle": "MNEME_STAGING_IDLE",
+    "storage.context_recent_extra": "MNEME_CONTEXT_RECENT_EXTRA",
     "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
     "retrieval.max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
     "retrieval.route_threshold": "MNEME_ROUTE_THRESHOLD",
@@ -420,6 +421,14 @@ COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # ma
 # Staging: archive after N user turns or idle seconds
 STAGING_TURNS  = int(os.environ.get("MNEME_STAGING_TURNS", "1"))  # swarm default: flush every turn
 STAGING_IDLE   = int(os.environ.get("MNEME_STAGING_IDLE", "120"))
+
+# Recent-context window: the tool loop keeps the last (staging_turns + this many)
+# USER TURNS of the conversation instead of re-injecting the full transcript. The
+# staging buffer holds up to staging_turns turns that aren't yet persisted to the DB,
+# so the window must be at least that deep to avoid a retrieval gap; the extra is a
+# tunable margin for continuity (raise it if staging_turns is 1-2 and the model needs
+# more immediate thread).
+CONTEXT_RECENT_EXTRA = int(os.environ.get("MNEME_CONTEXT_RECENT_EXTRA", "1"))
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = float(os.environ.get("MNEME_CLASSIFY_THRESHOLD", "0.78"))
@@ -4276,6 +4285,26 @@ def _is_near_empty(text):
 MAX_EMPTY_RETRY = 2
 
 
+def _recent_window(messages: list, recent_turns: int) -> list:
+    """Truncate a conversation to its most recent window.
+
+    Keeps every system message (client prompt + Mneme's injected block) plus the
+    last `recent_turns` user turns — each user message and everything after it up to
+    the next user message. Older turns are left out; they are covered by the injected
+    memory instead. Returns the original list unchanged when it is already small
+    enough or `recent_turns` is <= 0 (disabled).
+    """
+    if recent_turns <= 0:
+        return messages
+    sys_msgs = [m for m in messages if m.get("role") == "system"]
+    nonsys = [m for m in messages if m.get("role") != "system"]
+    user_idxs = [i for i, m in enumerate(nonsys) if m.get("role") == "user"]
+    if len(user_idxs) <= recent_turns:
+        return messages
+    start = user_idxs[-recent_turns]
+    return sys_msgs + nonsys[start:]
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None,
                  options: dict = None, max_tokens: int = None) -> dict:
     # Extract the retrieval query from ONLY the last user message. Scoping retrieval
@@ -4459,7 +4488,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 messages[i]["content"] = tail + "\n\n---\n" + _cur
                 print(f"  [INJECT-TAIL] {len(tail)} chars prepended to last user message", flush=True)
                 break
-    full_msgs = messages
+    # Truncate the conversation to a recent window (staging_turns + extra) instead of
+    # re-injecting the full transcript every round. Older turns are covered by the
+    # injected memory (build_context above); the recent window only carries the
+    # immediate thread for continuity.
+    _recent_turns = STAGING_TURNS + CONTEXT_RECENT_EXTRA
+    full_msgs = _recent_window(messages, _recent_turns)
     
     # Optional debug dump of the system messages (off by default; set
     # MNEME_DEBUG_DUMP=1 to enable). Was previously an unconditional write to
@@ -6000,7 +6034,7 @@ def _dump_config():
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
     print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','256000')}", flush=True)
     print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
-    print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
+    print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} recent_extra={CONTEXT_RECENT_EXTRA} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
 
 

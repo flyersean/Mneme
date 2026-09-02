@@ -89,6 +89,7 @@ storage:
   memory_only: false         # true = memory-only build: strategy/self-improving layer OFF (memory + grading + tools stay on). main branch defaults true, unified_mneme defaults false.
   staging_turns: 1           # flush the recent conversation into a memory chunk every N turns (swarm default: 1 = every turn)
   staging_idle: 120          # ...or after this many seconds of silence (whichever first)
+  context_recent_extra: 1    # recent-convo window = staging_turns + this many USER TURNS (kept in the tool loop instead of the full transcript)
   belief_evolution: false    # experimental — OFF (floods the backend)
 
 # Memory retrieval: what gets injected into the prompt each turn.
