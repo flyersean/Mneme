@@ -259,7 +259,7 @@ def test_stage_page_content_chunks_and_tags_source():
     orig_flush = mp.staging.should_flush
     orig_cs = mp.CHUNK_SIZE
     mp.CHUNK_SIZE = 1000
-    mp._stage_page_content._seen = set()
+    mp._stage_content._seen = set()
     mp.staging.add = lambda role, content, **kw: captured.append((role, content, kw.get("source")))
     mp.staging.should_flush = lambda: False
     try:
@@ -272,6 +272,28 @@ def test_stage_page_content_chunks_and_tags_source():
     assert all(c[0] == "assistant" for c in captured), captured
     assert all(c[2] == "page:en.wikipedia.org" for c in captured), captured
     assert "".join(c[1] for c in captured) == "A" * 5500, "chunks must reassemble the full page"
+
+
+@test
+def test_stage_content_prefix_and_shared_dedup():
+    """_stage_content must prepend the prefix and dedup identical raw content
+    across different sources (shared hash set)."""
+    captured = []
+    orig_add = mp.staging.add
+    orig_flush = mp.staging.should_flush
+    mp._stage_content._seen = set()
+    mp.staging.add = lambda role, content, **kw: captured.append((content, kw.get("source")))
+    mp.staging.should_flush = lambda: False
+    try:
+        body = "def foo():\n    return 42\n" * 40
+        n1 = mp._stage_content(body, "tool:bash", prefix="[bash] cat foo.py")
+        n2 = mp._stage_content(body, "page:example.com")  # same raw content -> deduped
+    finally:
+        mp.staging.add = orig_add
+        mp.staging.should_flush = orig_flush
+    assert n1 > 0, "first stage should produce chunks"
+    assert n2 == 0, "same raw content under a different source must dedup"
+    assert captured and captured[0][0].startswith("[bash] cat foo.py\n"), captured[0][0][:80]
 
 
 @test

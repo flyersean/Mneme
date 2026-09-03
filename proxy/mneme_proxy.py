@@ -3206,36 +3206,6 @@ def classify_tool_output(tool_output: str, tool_name: str = "tool") -> str:
         return "TEXT"
 
 
-def store_tool_chunk(tool_output: str, tool_name: str = "tool") -> str:
-    """Store raw tool output via unified staging → archive → chunks pipeline.
-
-    Returns a short reference string to replace the content in messages.
-    """
-    size = len(tool_output)
-
-    # Stage for unified ingestion — will be archived into chunks table
-    staging.add("assistant", tool_output, source=f"tool:{tool_name}")
-
-    reference = f"[Tool output staged as tool:{tool_name}: {size:,} chars — will be archived to memory]"
-    print(f"  [CHUNK] Staged {tool_name} output ({size:,} chars) for unified ingestion", flush=True)
-
-    return reference
-
-
-def get_tool_chunk(chunk_id: str) -> Optional[str]:
-    """Retrieve a stored chunk by ID from the unified chunks table.
-    
-    Repointed from tool_output_chunks to chunks table.
-    """
-    chunk = load_chunk(chunk_id)
-    if not chunk:
-        return None
-    parts = []
-    for m in chunk.get("messages", []):
-        parts.append(m.get("content", ""))
-    return "\n".join(parts) if parts else None
-
-
 def _paragraph_chunks(text: str, target: int) -> list:
     """Split text into chunks of ~`target` chars, breaking on paragraph (\n)
     boundaries so each chunk is a coherent, focused unit. A single over-long
@@ -3262,71 +3232,65 @@ def _paragraph_chunks(text: str, target: int) -> list:
     return chunks
 
 
+def _stage_content(content: str, source: str, prefix: str = None) -> int:
+    """Chunk and stage a large piece of content into memory — the single staging
+    path for pages, server-side tool results, and echoed tool outputs.
+
+    Gated by COMPRESS_THRESHOLD (small content is ephemeral and not worth a
+    chunk). Optionally prepends `prefix` (a compact context tag like
+    "[bash] cat file.py") so the chunk stays semantically matchable via
+    search_memory even after it leaves the working followup. Dedups across ALL
+    sources via one shared hash set — the same content fetched as a page and read
+    as a file is staged once. Chunks on paragraph boundaries (_paragraph_chunks).
+    Returns the number of chunks staged (0 if skipped/duplicate).
+    """
+    if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
+        return 0
+    body = f"{prefix}\n{content}" if prefix else content
+    import hashlib
+    # Dedup on the RAW content (not the prefixed body) so the same text staged
+    # under different sources/prefixes — e.g. a page fetched and the same text
+    # read via read_file — is stored only once.
+    h = hashlib.md5(content[:200].encode()).hexdigest()
+    seen = getattr(_stage_content, "_seen", set())
+    if h in seen:
+        return 0
+    seen.add(h)
+    _stage_content._seen = seen
+    n = 0
+    for piece in _paragraph_chunks(body, CHUNK_SIZE):
+        staging.add("assistant", piece, source=source)
+        n += 1
+    print(f"  [STAGE] {source} {len(content)} chars -> {n} chunks", flush=True)
+    if staging.should_flush():
+        _enqueue(archive_staging)
+    return n
+
+
 def _stage_page_content(content: str, url: str = "") -> int:
     """Chunk a fetched page and stage it as page:<domain> source chunks.
 
     The full page text goes into the staging buffer (archived to the chunks table
     on flush), while the model only ever sees a bounded head+tail window. So a huge
     page is fully retrievable via search_memory without flooding the context.
-    Split at paragraph boundaries so each chunk is a focused unit. Returns the
-    number of chunks staged (0 if already staged or too small).
     """
-    if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
-        return 0
     domain = "unknown"
     m = re.match(r"https?://(?:www\.)?([^/\s]+)", (url or ""))
     if m:
         domain = m.group(1)
-    source = f"page:{domain}"
-    import hashlib
-    h = hashlib.md5(content[:200].encode()).hexdigest()
-    seen = getattr(_stage_page_content, "_seen", set())
-    if h in seen:
-        return 0
-    seen.add(h)
-    _stage_page_content._seen = seen
-    n = 0
-    for piece in _paragraph_chunks(content, CHUNK_SIZE):
-        staging.add("assistant", piece, source=source)
-        n += 1
-    print(f"  [PAGE-STAGE] {len(content)} chars -> {n} chunks (source={source})", flush=True)
-    if staging.should_flush():
-        _enqueue(archive_staging)
-    return n
+    return _stage_content(content, f"page:{domain}")
 
 
 def _stage_tool_result(content: str, tool_name: str, args: dict = None) -> int:
-    """Stage a server-side tool result into memory so its full text survives
-    followup compaction.
-
-    Chunks the result under a tool:<name> source label with a compact context
-    prefix (command/path/query) so the chunk stays semantically matchable via
-    search_memory even after it is dropped from the working followup. Gated by
-    COMPRESS_THRESHOLD (small results are ephemeral and not worth a chunk).
-    Returns the number of chunks staged (0 if skipped/duplicate).
-    """
-    if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
-        return 0
+    """Stage a server-side tool result into memory (tool:<name> source) so its
+    full text survives followup compaction. A compact command/path/query context
+    prefix is prepended so the chunk stays matchable via search_memory."""
     ctx = ""
     if isinstance(args, dict):
         ctx = str(args.get("command") or args.get("path") or args.get("query")
                   or args.get("name") or args.get("url") or "").strip()
-    body = f"[{tool_name}] {ctx}\n{content}" if ctx else content
-    import hashlib
-    h = hashlib.md5(body[:200].encode()).hexdigest()
-    seen = getattr(_stage_tool_result, "_seen", set())
-    if h in seen:
-        return 0
-    seen.add(h)
-    _stage_tool_result._seen = seen
-    n = 0
-    for piece in _paragraph_chunks(body, CHUNK_SIZE):
-        staging.add("assistant", piece, source=f"tool:{tool_name}")
-        n += 1
-    print(f"  [TOOL-STAGE] {tool_name} {len(content)} chars -> {n} chunks", flush=True)
-    if staging.should_flush():
-        _enqueue(archive_staging)
-    return n
+    prefix = f"[{tool_name}] {ctx}" if ctx else None
+    return _stage_content(content, f"tool:{tool_name}", prefix=prefix)
 
 
 def compress_large_tool_results(messages: list) -> list:
@@ -3342,8 +3306,6 @@ def compress_large_tool_results(messages: list) -> list:
     Source auto-tagging: scans messages for last browser_navigate call,
     extracts domain from URL, tags staged content as page:{domain}.
     """
-    _staged_hashes = getattr(compress_large_tool_results, '_staged_hashes', set())
-    
     # Scan for last browser_navigate to determine page source
     page_source = None
     for msg in reversed(messages):
@@ -3355,7 +3317,6 @@ def compress_large_tool_results(messages: list) -> list:
                     page_source = f"page:{urls[0]}"
                 break
     
-    import hashlib
     for msg in messages:
         if msg.get("role") != "tool":
             continue
@@ -3363,32 +3324,16 @@ def compress_large_tool_results(messages: list) -> list:
         if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
             continue
         
-        # Dedup: don't stage the same content twice in same session
-        h = hashlib.md5(content[:200].encode()).hexdigest()
-        if h not in _staged_hashes:
-            _staged_hashes.add(h)
-            
-            # Determine source for this tool output
-            tool_source = page_source or "tool:unknown"
-            if not page_source:
-                # Try to identify tool from content
-                for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
-                    if tool in content[:200]:
-                        tool_source = f"tool:{tool}"
-                        break
-            
-            # Split into chunks and stage each with source metadata
-            for i in range(0, len(content), CHUNK_SIZE):
-                chunk = content[i:i+CHUNK_SIZE]
-                staging.add("assistant", chunk, source=tool_source)
-            
-            print(f"  [STAGE] {len(content)} chars split into {(len(content)-1)//CHUNK_SIZE+1} chunks (source={tool_source})", flush=True)
-            
-            # Trigger archive if buffer has substantial content
-            if staging.should_flush():
-                import threading
-                _enqueue(archive_staging)
-                print(f"  [STAGE] Auto-flushed staging buffer", flush=True)
+        # Determine source for this tool output, then stage via the shared path
+        # (_stage_content dedups across ALL sources and chunks on paragraph
+        # boundaries instead of the old hard-char split).
+        tool_source = page_source or "tool:unknown"
+        if not page_source:
+            for tool in ("browser_console", "browser_navigate", "terminal", "search", "web_search", "read_file", "write_file"):
+                if tool in content[:200]:
+                    tool_source = f"tool:{tool}"
+                    break
+        _stage_content(content, tool_source)
         
         # Bound what the model sees: head+tail window, full text retrievable via
         # search_memory (Hermes-style bounded output — no summarization).
@@ -3396,15 +3341,8 @@ def compress_large_tool_results(messages: list) -> list:
         # note adds length), so re-truncating would shift bytes every turn and
         # break the prefix cache. Skip anything already carrying the marker.
         if len(content) > MAX_TOOL_FORWARD and "[... content truncated:" not in content:
-            head_len = MAX_TOOL_FORWARD * 3 // 4
-            tail_len = MAX_TOOL_FORWARD - head_len
-            msg["content"] = (
-                content[:head_len]
-                + f"\n\n[... content truncated: {len(content)} chars total, showing first {head_len} + last {tail_len}. Full text stored to memory — use search_memory to retrieve the sections you need.]\n\n"
-                + content[-tail_len:]
-            )
+            msg["content"] = _truncate_tool_result(content)
     
-    compress_large_tool_results._staged_hashes = _staged_hashes
     return messages  # bounded tool outputs; full text staged to memory
 
 
