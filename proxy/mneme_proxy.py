@@ -3295,6 +3295,40 @@ def _stage_page_content(content: str, url: str = "") -> int:
     return n
 
 
+def _stage_tool_result(content: str, tool_name: str, args: dict = None) -> int:
+    """Stage a server-side tool result into memory so its full text survives
+    followup compaction.
+
+    Chunks the result under a tool:<name> source label with a compact context
+    prefix (command/path/query) so the chunk stays semantically matchable via
+    search_memory even after it is dropped from the working followup. Gated by
+    COMPRESS_THRESHOLD (small results are ephemeral and not worth a chunk).
+    Returns the number of chunks staged (0 if skipped/duplicate).
+    """
+    if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
+        return 0
+    ctx = ""
+    if isinstance(args, dict):
+        ctx = str(args.get("command") or args.get("path") or args.get("query")
+                  or args.get("name") or args.get("url") or "").strip()
+    body = f"[{tool_name}] {ctx}\n{content}" if ctx else content
+    import hashlib
+    h = hashlib.md5(body[:200].encode()).hexdigest()
+    seen = getattr(_stage_tool_result, "_seen", set())
+    if h in seen:
+        return 0
+    seen.add(h)
+    _stage_tool_result._seen = seen
+    n = 0
+    for piece in _paragraph_chunks(body, CHUNK_SIZE):
+        staging.add("assistant", piece, source=f"tool:{tool_name}")
+        n += 1
+    print(f"  [TOOL-STAGE] {tool_name} {len(content)} chars -> {n} chunks", flush=True)
+    if staging.should_flush():
+        _enqueue(archive_staging)
+    return n
+
+
 def compress_large_tool_results(messages: list) -> list:
     """Stage large tool outputs for archival AND bound what the model sees.
 
@@ -4733,6 +4767,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     _mark_call(nm, args)
                     _t0 = time.time()
                     res = mntools.execute_native_tool(nm, args)
+                    _stage_tool_result(res, nm, args)
                     _tool_trace.append(_trace(nm, args, res, _t0))
                     print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
                     followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": _truncate_tool_result(res)})
@@ -4759,11 +4794,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _t0 = time.time()
             _tool_rounds += 1
             res = mntools.execute_readonly_tool(nm, args)
-            # Stage fetched pages into memory (page:<domain> chunks) so the full
-            # text is retrievable via search_memory even though the model only
-            # sees the bounded head+tail window below.
+            # Stage tool results into memory so their full text survives followup
+            # compaction: fetched pages go in as page:<domain> chunks, everything
+            # else as tool:<name> chunks. The model only ever sees a bounded
+            # head+tail window below, so the full text must be retrievable.
             if nm == "fetch_url":
                 _stage_page_content(res, (args or {}).get("url", ""))
+            else:
+                _stage_tool_result(res, nm, args)
             _tool_trace.append(_trace(nm, args, res, _t0))
             _label = "WEB-SEARCH" if nm == "web_search" else "TOOL-REGISTRY"
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
