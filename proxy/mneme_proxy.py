@@ -416,7 +416,7 @@ CHUNK_SIZE   = int(os.environ.get("MNEME_CHUNK_SIZE", "3000"))  # chars per chun
 DB_MSG_CAP   = int(os.environ.get("MNEME_DB_MSG_CAP", "8000"))  # chars per message stored in SQLite (full content)
 COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get staged
 MAX_TOOL_FORWARD = int(os.environ.get("MNEME_MAX_TOOL_FORWARD", "12000"))  # chars — cap on a tool result forwarded to the model (head+tail window)
-TOOL_FOLLOWUP_BUDGET = int(os.environ.get("MNEME_TOOL_FOLLOWUP_BUDGET", "30000"))  # chars — cap on the accumulated tool-loop followup; older results are compacted away before re-query
+TOOL_FOLLOWUP_BUDGET = int(os.environ.get("MNEME_TOOL_FOLLOWUP_BUDGET", "50000"))  # chars — cap on the accumulated tool-loop followup; older results are compacted away before re-query
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
@@ -428,9 +428,9 @@ STAGING_IDLE   = int(os.environ.get("MNEME_STAGING_IDLE", "120"))
 # USER TURNS of the conversation instead of re-injecting the full transcript. The
 # staging buffer holds up to staging_turns turns that aren't yet persisted to the DB,
 # so the window must be at least that deep to avoid a retrieval gap; the extra is a
-# tunable margin for continuity (raise it if staging_turns is 1-2 and the model needs
-# more immediate thread).
-CONTEXT_RECENT_EXTRA = int(os.environ.get("MNEME_CONTEXT_RECENT_EXTRA", "1"))
+# tunable margin for continuity. Default 14 gives a 15-turn window with staging_turns
+# 1 (safe for a 32K context; raise for larger models, lower for <8K).
+CONTEXT_RECENT_EXTRA = int(os.environ.get("MNEME_CONTEXT_RECENT_EXTRA", "14"))
 
 # Routing thresholds (same as KV version)
 CLASSIFY_THRESHOLD = float(os.environ.get("MNEME_CLASSIFY_THRESHOLD", "0.78"))

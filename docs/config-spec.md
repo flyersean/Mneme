@@ -82,7 +82,7 @@ storage:
   memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
   staging_turns: 1           # flush cadence — swarm default: every turn (general Mneme: 6)
   staging_idle: 120          # seconds of inactivity before flush
-  context_recent_extra: 1    # extra USER TURNS of recent context kept in the tool loop beyond staging_turns
+  context_recent_extra: 14   # extra USER TURNS of recent context kept in the tool loop beyond staging_turns (default 14 -> 15-turn window)
   belief_evolution: false    # gated off by default — floods the backend
 
 retrieval:
@@ -105,7 +105,7 @@ caps:                        # rarely-tuned char/truncation limits
   compress_threshold: 500
   compress_max_tok: 2048
   max_tool_forward: 12000
-  tool_followup_budget: 30000
+  tool_followup_budget: 50000
   chunk_size: 4000
 
 models:                      # P8 per-model overrides, keyed by model name
@@ -186,7 +186,7 @@ OpenAI-compatible provider ignores them):
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
 | staging_turns | 1 | [const] `STAGING_TURNS` |
 | staging_idle | 120 | [const] `STAGING_IDLE` |
-| context_recent_extra | 1 | [const] `CONTEXT_RECENT_EXTRA` — recent-convo window = staging_turns + this |
+| context_recent_extra | 14 | [const] `CONTEXT_RECENT_EXTRA` — recent-convo window = staging_turns + this |
 | belief_evolution | false | [env] `MNEME_BELIEF_EVOLUTION` (just added) |
 
 ### retrieval
@@ -211,7 +211,7 @@ OpenAI-compatible provider ignores them):
 | compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
 | compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
 | max_tool_forward | 12000 | [const] `MAX_TOOL_FORWARD` |
-| tool_followup_budget | 30000 | [const] `TOOL_FOLLOWUP_BUDGET` — cap on the accumulated tool-loop followup; older results compacted away before re-query |
+| tool_followup_budget | 50000 | [const] `TOOL_FOLLOWUP_BUDGET` — cap on the accumulated tool-loop followup; older results compacted away before re-query |
 | chunk_size | 4000 | [const] `CHUNK_SIZE` |
 
 ### tools (native bootstrap + built-tool registry)

@@ -89,7 +89,7 @@ storage:
   memory_only: false         # true = memory-only build: strategy/self-improving layer OFF (memory + grading + tools stay on). main branch defaults true, unified_mneme defaults false.
   staging_turns: 1           # flush the recent conversation into a memory chunk every N turns (swarm default: 1 = every turn)
   staging_idle: 120          # ...or after this many seconds of silence (whichever first)
-  context_recent_extra: 1    # recent-convo window = staging_turns + this many USER TURNS (kept in the tool loop instead of the full transcript)
+  context_recent_extra: 14   # recent-convo window = staging_turns + this many USER TURNS (kept in the tool loop instead of the full transcript)
   belief_evolution: false    # experimental — OFF (floods the backend)
 
 # Memory retrieval: what gets injected into the prompt each turn.
@@ -128,7 +128,7 @@ caps:
   compress_threshold: 500    # tool results longer than this (chars) get staged/compressed
   compress_max_tok: 2048     # max tokens for the compression summarizer
   max_tool_forward: 12000    # cap on a tool result forwarded to the model (head+tail window)
-  tool_followup_budget: 30000  # cap on the accumulated tool-loop followup; older results compacted away before re-query
+  tool_followup_budget: 50000  # cap on the accumulated tool-loop followup; older results compacted away before re-query
   chunk_size: 4000           # chars per staged memory chunk
 
 # Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.
