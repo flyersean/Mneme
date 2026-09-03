@@ -128,6 +128,7 @@ caps:
   compress_threshold: 500    # tool results longer than this (chars) get staged/compressed
   compress_max_tok: 2048     # max tokens for the compression summarizer
   max_tool_forward: 12000    # cap on a tool result forwarded to the model (head+tail window)
+  tool_followup_budget: 30000  # cap on the accumulated tool-loop followup; older results compacted away before re-query
   chunk_size: 4000           # chars per staged memory chunk
 
 # Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.

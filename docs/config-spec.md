@@ -104,6 +104,9 @@ caps:                        # rarely-tuned char/truncation limits
   db_msg_cap: 8000
   compress_threshold: 500
   compress_max_tok: 2048
+  max_tool_forward: 12000
+  tool_followup_budget: 30000
+  chunk_size: 4000
 
 models:                      # P8 per-model overrides, keyed by model name
   deepseek/deepseek-v4-flash:
@@ -207,6 +210,9 @@ OpenAI-compatible provider ignores them):
 | db_msg_cap | 8000 | [const] `DB_MSG_CAP` |
 | compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
 | compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
+| max_tool_forward | 12000 | [const] `MAX_TOOL_FORWARD` |
+| tool_followup_budget | 30000 | [const] `TOOL_FOLLOWUP_BUDGET` — cap on the accumulated tool-loop followup; older results compacted away before re-query |
+| chunk_size | 4000 | [const] `CHUNK_SIZE` |
 
 ### tools (native bootstrap + built-tool registry)
 | key | default | today |

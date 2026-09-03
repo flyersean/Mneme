@@ -155,6 +155,7 @@ caps:
   compress_threshold: 500
   compress_max_tok: 2048
   max_tool_forward: 12000
+  tool_followup_budget: 30000
   chunk_size: 4000
 
 models:                              # per-model overrides; keyed by EXACT model name
@@ -174,7 +175,7 @@ models:                              # per-model overrides; keyed by EXACT model
 | `timeouts` | `chat_timeout` 120, `ollama_chat_timeout` 120, `first_token_timeout` 30, `novelty_timeout` 600, `embed_timeout` 60, `label_timeout` 30, `edge_failures` 2, `edge_ratio` 0.5 |
 | `storage` | `chunk_dir` ~/mneme/chunks, `db_path` <chunk_dir>/mneme.db, `port` 8080, `inject_system` true, `memory_only` false, `staging_turns` 1, `staging_idle` 120, `context_recent_extra` 1, `belief_evolution` false |
 | `retrieval` | `max_injected_tokens` 6000, `inject_min_similarity` 0.45, `strategy_min_similarity` 0.40, `keyword_fallback` false, `age_decay_days` 7, `max_siblings` 3, `max_chunk_words` 500, `max_chunk_size` 10000 |
-| `caps` | `max_history_messages` 32, `db_msg_cap` 8000, `compress_threshold` 500, `compress_max_tok` 2048, `max_tool_forward` 12000, `chunk_size` 4000 |
+| `caps` | `max_history_messages` 32, `db_msg_cap` 8000, `compress_threshold` 500, `compress_max_tok` 2048, `max_tool_forward` 12000, `tool_followup_budget` 30000, `chunk_size` 4000 |
 | `models.<name>` | `temperature`, `top_p`, `top_k`, `num_ctx`, `max_tokens`, `reasoning_field`, `quirks` [] |
 
 **Critical rules:**

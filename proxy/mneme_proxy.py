@@ -148,6 +148,7 @@ _CONFIG_ENV_MAP = {
     "caps.compress_threshold": "MNEME_COMPRESS_THRESHOLD",
     "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
     "caps.max_tool_forward": "MNEME_MAX_TOOL_FORWARD",
+    "caps.tool_followup_budget": "MNEME_TOOL_FOLLOWUP_BUDGET",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
     "tools.native": "MNEME_NATIVE_TOOLS",
     "tools.dir": "MNEME_TOOLS_DIR",
@@ -415,6 +416,7 @@ CHUNK_SIZE   = int(os.environ.get("MNEME_CHUNK_SIZE", "3000"))  # chars per chun
 DB_MSG_CAP   = int(os.environ.get("MNEME_DB_MSG_CAP", "8000"))  # chars per message stored in SQLite (full content)
 COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get staged
 MAX_TOOL_FORWARD = int(os.environ.get("MNEME_MAX_TOOL_FORWARD", "12000"))  # chars — cap on a tool result forwarded to the model (head+tail window)
+TOOL_FOLLOWUP_BUDGET = int(os.environ.get("MNEME_TOOL_FOLLOWUP_BUDGET", "30000"))  # chars — cap on the accumulated tool-loop followup; older results are compacted away before re-query
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
@@ -4305,6 +4307,42 @@ def _recent_window(messages: list, recent_turns: int) -> list:
     return sys_msgs + nonsys[start:]
 
 
+def _compact_followup(followup: list, budget: int) -> list:
+    """Bound the tool-loop followup to `budget` chars.
+
+    Keeps the conversation prefix (system messages + recent turns) and the most
+    recent tool-loop entries; drops the OLDEST tool results so the total fits
+    under `budget`. Dropped results are recoverable — their full text is staged
+    in memory (search_memory) or re-fetchable — so this is truncation, not
+    summarization. Orphaned tool-result messages (whose assistant tool call was
+    dropped) are also removed so the model never sees a result with no call.
+    """
+    if budget <= 0:
+        return followup
+    start = 0
+    for i, m in enumerate(followup):
+        if m.get("role") == "tool" or (m.get("role") == "assistant" and m.get("tool_calls")):
+            start = i
+            break
+    else:
+        return followup  # no tool loop yet — nothing to compact
+    head = followup[:start]
+    tool = followup[start:]
+    head_chars = sum(len(str(m.get("content", ""))) for m in head)
+    kept = []
+    chars = head_chars
+    for m in reversed(tool):
+        mc = len(str(m.get("content", "")))
+        if chars + mc > budget and kept:
+            break
+        kept.insert(0, m)
+        chars += mc
+    # Drop orphaned tool-result messages left at the front of the kept tail.
+    while kept and kept[0].get("role") == "tool":
+        kept = kept[1:]
+    return head + kept
+
+
 def process_chat(messages: list, session_id: str = "default", tools: list = None,
                  options: dict = None, max_tokens: int = None) -> dict:
     # Extract the retrieval query from ONLY the last user message. Scoping retrieval
@@ -4627,18 +4665,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # User hit "Stop" between rounds — end the turn immediately.
             result["done_reason"] = "cancelled"
             break
-        # Context-size guard: if the followup has bloated (many file reads via
-        # bash), force a final synthesis NOW instead of growing the payload until
-        # OpenRouter times out on re-query. This is a hard backstop; legitimate
-        # multi-source exploration should stay well under it.
-        _ctx_chars = sum(len(str(m.get("content", ""))) for m in followup)
-        if _ctx_chars > 50000:
-            print(f"  [TOOL-HARD-STOP] followup {_ctx_chars} chars — forcing synthesis", flush=True)
-            followup.append({"role": "user", "content":
-                "You have gathered a lot of context. Synthesize your findings into a "
-                "final answer now — do not run any more tools."})
-            result = _query_retry_timeout(followup, tools=msg_tools)
-            break
+        # (The old context-size hard-stop that forced synthesis at 50K chars is
+        # gone: the followup is now compacted to TOOL_FOLLOWUP_BUDGET before every
+        # re-query below, so it never bloats past the budget in the first place.
+        # MAX_SERVER_ROUNDS remains the tool-work ceiling.)
         tcs = result.get("tool_calls") or []
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool", "read_file", "fetch_url", "web_search")]
@@ -4751,6 +4781,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _state = _recent_attempts_summary(_tool_trace)
         if _state:
             followup.append({"role": "user", "content": _state})
+
+        # Compact the followup BEFORE re-querying so it never exceeds the budget.
+        # Bounded working set: drop the oldest tool results, keep the recent ones
+        # (full text is in memory / re-fetchable). This is what lets a weeks-long
+        # conversation keep tooling without overflowing the context window.
+        _ctx_chars = sum(len(str(m.get("content", ""))) for m in followup)
+        if _ctx_chars > TOOL_FOLLOWUP_BUDGET:
+            followup = _compact_followup(followup, TOOL_FOLLOWUP_BUDGET)
+            _new_chars = sum(len(str(m.get("content", ""))) for m in followup)
+            print(f"  [COMPACT] followup {_ctx_chars} -> {_new_chars} chars", flush=True)
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)
