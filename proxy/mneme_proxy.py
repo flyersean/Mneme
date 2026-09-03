@@ -4341,27 +4341,22 @@ def _recent_window(messages: list, recent_turns: int) -> list:
     return sys_msgs + nonsys[start:]
 
 
-def _compact_followup(followup: list, budget: int) -> list:
+def _compact_followup(followup: list, budget: int, head_len: int) -> list:
     """Bound the tool-loop followup to `budget` chars.
 
-    Keeps the conversation prefix (system messages + recent turns) and the most
-    recent tool-loop entries; drops the OLDEST tool results so the total fits
-    under `budget`. Dropped results are recoverable — their full text is staged
-    in memory (search_memory) or re-fetchable — so this is truncation, not
-    summarization. Orphaned tool-result messages (whose assistant tool call was
-    dropped) are also removed so the model never sees a result with no call.
+    `head_len` is the number of leading messages that form the conversation
+    prefix (system + recent turns); everything after is the current turn's
+    tool-loop entries (native/registry/search results appended each round).
+    Keeps the prefix + the most recent tool entries, dropping the oldest so the
+    total fits under `budget`. Dropped results are recoverable — their full text
+    is staged in memory (search_memory) or re-fetchable — so this is truncation,
+    not summarization. Orphaned tool-result messages (whose assistant tool call
+    was dropped) are also removed so the model never sees a result with no call.
     """
-    if budget <= 0:
+    if budget <= 0 or len(followup) <= head_len:
         return followup
-    start = 0
-    for i, m in enumerate(followup):
-        if m.get("role") == "tool" or (m.get("role") == "assistant" and m.get("tool_calls")):
-            start = i
-            break
-    else:
-        return followup  # no tool loop yet — nothing to compact
-    head = followup[:start]
-    tool = followup[start:]
+    head = followup[:head_len]
+    tool = followup[head_len:]
     head_chars = sum(len(str(m.get("content", ""))) for m in head)
     kept = []
     chars = head_chars
@@ -4692,6 +4687,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # round). If each round only shows the model the latest tool result, it
     # forgets what it already gathered and re-fetches — the grinding we see.
     followup = list(full_msgs)
+    _followup_head_len = len(followup)  # conversation prefix boundary — tool-loop entries append after this
     _continue_attempts = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
@@ -4826,7 +4822,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # conversation keep tooling without overflowing the context window.
         _ctx_chars = sum(len(str(m.get("content", ""))) for m in followup)
         if _ctx_chars > TOOL_FOLLOWUP_BUDGET:
-            followup = _compact_followup(followup, TOOL_FOLLOWUP_BUDGET)
+            followup = _compact_followup(followup, TOOL_FOLLOWUP_BUDGET, _followup_head_len)
             _new_chars = sum(len(str(m.get("content", ""))) for m in followup)
             print(f"  [COMPACT] followup {_ctx_chars} -> {_new_chars} chars", flush=True)
 
