@@ -4645,6 +4645,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     passthrough_calls = []
     _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
     _MAX_SERVER_ROUNDS = MAX_SERVER_ROUNDS  # absolute round ceiling (high backstop)
+    _REDUNDANCY_LIMIT = 4  # identical tool-call signature this many rounds in a row = stuck loop
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
     _server_names = _readonly_names | _native_names
@@ -4712,6 +4713,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     followup = list(full_msgs)
     _followup_head_len = len(followup)  # conversation prefix boundary — tool-loop entries append after this
     _continue_attempts = 0
+    _last_round_sig = None  # redundancy-stop state: (name,args) signature of the last round's tool calls
+    _repeat_streak = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
         if _cancel_event.is_set():
@@ -4728,6 +4731,36 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
+
+        # Redundancy stop: if the model repeats the IDENTICAL tool call(s) — same
+        # names + same arguments — REDUNDANCY_LIMIT rounds in a row, it is stuck in
+        # a loop (e.g. re-running `bash echo done` and never answering). Break out
+        # and force a text answer instead of grinding to MAX_SERVER_ROUNDS and
+        # returning an empty response. The _recent_attempts_summary below already
+        # SHOWS the model its own history; this is the hard backstop for models
+        # that ignore that summary and keep re-issuing the same call.
+        _server_tcs = search_calls + registry_calls + native_calls
+        if _server_tcs:
+            _sig = tuple(sorted(
+                (tc.get("function", {}).get("name", ""),
+                 json.dumps(tc.get("function", {}).get("arguments", {}) or {}, sort_keys=True))
+                for tc in _server_tcs
+            ))
+            if _sig == _last_round_sig:
+                _repeat_streak += 1
+            else:
+                _repeat_streak = 1
+                _last_round_sig = _sig
+            if _repeat_streak >= _REDUNDANCY_LIMIT:
+                print(f"  [REDUNDANCY] identical tool call {_repeat_streak}x in a row — stopping loop", flush=True)
+                followup.append({"role": "user", "content":
+                    "You have repeated the same tool call several times in a row. Stop calling "
+                    "tools and give your final answer now, based on what you already have."})
+                result = _query_retry_timeout(followup, tools=[])
+                break
+        else:
+            _repeat_streak = 0
+            _last_round_sig = None
 
         if not (search_calls or registry_calls or native_calls):
             # No server tool calls. If the model gave up (blank/shrug answer),
