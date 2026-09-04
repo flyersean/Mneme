@@ -131,6 +131,7 @@ _CONFIG_ENV_MAP = {
     "storage.staging_idle": "MNEME_STAGING_IDLE",
     "storage.context_recent_extra": "MNEME_CONTEXT_RECENT_EXTRA",
     "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
+    "storage.memory_enabled": "MNEME_MEMORY_ENABLED",
     "retrieval.max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
     "retrieval.route_threshold": "MNEME_ROUTE_THRESHOLD",
     "retrieval.classify_threshold": "MNEME_CLASSIFY_THRESHOLD",
@@ -363,6 +364,7 @@ def _or_headers() -> dict:
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
+MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 _db_path   = os.environ.get("MNEME_DB_PATH")
 DB_PATH    = os.path.expanduser(_db_path) if _db_path else os.path.join(CHUNK_DIR, "mneme.db")
@@ -2572,6 +2574,8 @@ def _meta_principles_block() -> str:
 
 
 def build_context(query: str) -> Tuple[str, str]:
+    if not MEMORY_ENABLED:
+        return "", "other"  # memory disabled — no retrieval/injection
     if not query or not query.strip():
         return "", "other"  # empty query — skip injection
     """Build injected memory context with hard token cap.
@@ -2746,6 +2750,8 @@ class StagingBuffer:
         self.lock = threading.Lock()
     
     def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C"):
+        if not MEMORY_ENABLED:
+            return  # memory disabled — skip staging/archiving
         with self.lock:
             # Filter Hermes system-prompt artifacts from memory
             if role == "assistant":
@@ -3250,6 +3256,8 @@ def _stage_content(content: str, source: str, prefix: str = None) -> int:
     as a file is staged once. Chunks on paragraph boundaries (_paragraph_chunks).
     Returns the number of chunks staged (0 if skipped/duplicate).
     """
+    if not MEMORY_ENABLED:
+        return 0  # memory disabled — no staging
     if not isinstance(content, str) or len(content) <= COMPRESS_THRESHOLD:
         return 0
     body = f"{prefix}\n{content}" if prefix else content
@@ -6056,6 +6064,7 @@ def _dump_config():
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} recent_extra={CONTEXT_RECENT_EXTRA} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
     print(f"  [TOOLS] enabled={sorted(mntools.enabled_readonly_names() | mntools.native_exec_names(None))}", flush=True)
+    print(f"  [MEMORY] enabled={'yes' if MEMORY_ENABLED else 'no'}", flush=True)
 
 
 _embedding_health_check()

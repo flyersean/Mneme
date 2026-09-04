@@ -1084,6 +1084,30 @@ def test_per_tool_disable_flag():
 
 
 @test
+def test_memory_disabled_master_switch():
+    mp.MEMORY_ENABLED = False
+    orig_env = os.environ.get("MNEME_MEMORY_ENABLED")
+    os.environ["MNEME_MEMORY_ENABLED"] = "0"
+    try:
+        # retrieval/injection skipped
+        assert mp.build_context("test query") == ("", "other")
+        # tool/page staging skipped
+        assert mp._stage_content("x" * 600, "tool:bash") == 0
+        # search_memory auto-removed from the tool list
+        assert "search_memory" not in mp.mntools.enabled_readonly_names()
+        # conversation staging is a no-op
+        before = len(mp.staging.messages)
+        mp.staging.add("user", "hello", source="user")
+        assert len(mp.staging.messages) == before
+    finally:
+        mp.MEMORY_ENABLED = True
+        if orig_env is None:
+            os.environ.pop("MNEME_MEMORY_ENABLED", None)
+        else:
+            os.environ["MNEME_MEMORY_ENABLED"] = orig_env
+
+
+@test
 def test_save_tool_registry():
     mt = mp.mntools
     tmp = tempfile.mkdtemp(prefix="mneme_tools_")

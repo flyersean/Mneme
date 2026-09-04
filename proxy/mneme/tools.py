@@ -198,6 +198,8 @@ READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, RE
 
 def _tool_enabled(name: str) -> bool:
     """Whether a read-only server tool is enabled (default on)."""
+    if name == "search_memory" and os.environ.get("MNEME_MEMORY_ENABLED", "1") == "0":
+        return False  # memory disabled — search_memory has nothing to search
     return os.environ.get(f"MNEME_TOOL_{name.upper()}", "1") == "1"
 
 

@@ -80,6 +80,7 @@ storage:
   port: 8080
   inject_system: true
   memory_only: false          # true = memory-only build: strategy/self-improving layer off (memory + grading + tools stay on)
+  memory_enabled: true        # master switch: false = NO memory — no retrieval/injection, no staging/archiving, search_memory off (run with tools only)
   staging_turns: 1           # flush cadence — swarm default: every turn (general Mneme: 6)
   staging_idle: 120          # seconds of inactivity before flush
   context_recent_extra: 14   # extra USER TURNS of recent context kept in the tool loop beyond staging_turns (default 14 -> 15-turn window)
@@ -184,6 +185,7 @@ OpenAI-compatible provider ignores them):
 | db_path | `<chunk_dir>/mneme.db` | [env] `MNEME_DB_PATH` — the memory DB file; the FAISS index lives beside it. Defaults to `<chunk_dir>/mneme.db` when unset (back-compat). |
 | port | 8080 | [env] `MNEME_PORT` |
 | inject_system | true | [env] `MNEME_INJECT_SYSTEM` |
+| memory_enabled | true | [const] `MEMORY_ENABLED` — master switch: false = NO memory (no retrieval/injection/staging, search_memory auto-off) |
 | staging_turns | 1 | [const] `STAGING_TURNS` |
 | staging_idle | 120 | [const] `STAGING_IDLE` |
 | context_recent_extra | 14 | [const] `CONTEXT_RECENT_EXTRA` — recent-convo window = staging_turns + this |
