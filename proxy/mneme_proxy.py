@@ -149,7 +149,7 @@ _CONFIG_ENV_MAP = {
     "caps.compress_threshold": "MNEME_COMPRESS_THRESHOLD",
     "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
     "caps.max_tool_forward": "MNEME_MAX_TOOL_FORWARD",
-    "caps.tool_followup_budget": "MNEME_TOOL_FOLLOWUP_BUDGET",
+    "caps.tool_followup_tokens": "MNEME_TOOL_FOLLOWUP_TOKENS",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
     "tools.native": "MNEME_NATIVE_TOOLS",
     "tools.dir": "MNEME_TOOLS_DIR",
@@ -424,7 +424,7 @@ CHUNK_SIZE   = int(os.environ.get("MNEME_CHUNK_SIZE", "3000"))  # chars per chun
 DB_MSG_CAP   = int(os.environ.get("MNEME_DB_MSG_CAP", "8000"))  # chars per message stored in SQLite (full content)
 COMPRESS_THRESHOLD = int(os.environ.get("MNEME_COMPRESS_THRESHOLD", "500"))  # chars — tool results larger than this get staged
 MAX_TOOL_FORWARD = int(os.environ.get("MNEME_MAX_TOOL_FORWARD", "12000"))  # chars — cap on a tool result forwarded to the model (head+tail window)
-TOOL_FOLLOWUP_BUDGET = int(os.environ.get("MNEME_TOOL_FOLLOWUP_BUDGET", "50000"))  # chars — cap on the accumulated tool-loop followup; older results are compacted away before re-query
+TOOL_FOLLOWUP_TOKENS = int(os.environ.get("MNEME_TOOL_FOLLOWUP_TOKENS", "10000"))  # tokens — cap on the accumulated tool-loop followup; older results compacted away before re-query
 COMPRESS_MODEL     = MODEL   # use same model for compression
 COMPRESS_MAX_TOK   = int(os.environ.get("MNEME_COMPRESS_MAX_TOK", "2048"))  # max tokens for compression response
 
@@ -1094,7 +1094,7 @@ def _finalize_context(ctx: str) -> str:
     conversation prefix) instead of the head."""
     # Context budget line (model suggestion #1): tell the model how much window
     # is left so it can decide search-more vs synthesize instead of guessing.
-    _total = int(os.environ.get("MNEME_CTX_TOKENS", "256000"))
+    _total = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
     _reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
     _used = _estimate_tokens(ctx)
     _remaining = max(0, _total - _reserve - _used)
@@ -1680,7 +1680,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # Without num_predict, Ollama uses its own version-dependent default, which
     # for a reasoning model can mean unbounded thinking even on a trivial ask.
     _num_predict = max_tokens if (max_tokens and max_tokens > 0) else int(os.environ.get("MNEME_MAX_TOKENS", "65536"))
-    _num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "262000"))
+    _num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
     opts = {
         "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),
@@ -2506,6 +2506,50 @@ MAX_CHUNK_WORDS     = int(os.environ.get("MNEME_MAX_CHUNK_WORDS", "500"))    # s
 def _estimate_tokens(text: str) -> int:
     """Rough token count: ~1.3 tokens per word for English text."""
     return max(1, int(len(text.split()) * 1.3))
+
+
+def _msg_tokens(m: dict) -> int:
+    """Robust per-message token estimate (chars/4 vs words*1.3, plus tool_calls)."""
+    text = _extract_text(m.get("content", ""))
+    est = max(len(text) // 4, int(len(text.split()) * 1.3))
+    if m.get("tool_calls"):
+        try:
+            est += len(json.dumps(m["tool_calls"])) // 4
+        except Exception:
+            pass
+    return est
+
+
+def _context_input_budget() -> int:
+    """Tokens for the FULL input (system + injection + window + tool results),
+    leaving COMPLETION_RESERVE free for the model's own reply."""
+    num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
+    reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
+    return max(1024, num_ctx - reserve)
+
+
+def _window_token_budget() -> int:
+    """Tokens for the recent-context window (system + injection + turns), leaving
+    room for TOOL_FOLLOWUP_TOKENS of tool results inside the input budget."""
+    return max(512, _context_input_budget() - TOOL_FOLLOWUP_TOKENS)
+
+
+def _trim_messages_to_tokens(messages: list, max_tokens: int) -> list:
+    """Drop the OLDEST non-system messages until the total fits in max_tokens.
+    System messages and the newest message are always kept."""
+    if max_tokens <= 0:
+        return messages
+    sys_msgs = [m for m in messages if m.get("role") == "system"]
+    nonsys = [m for m in messages if m.get("role") != "system"]
+    remaining = max_tokens - sum(_msg_tokens(m) for m in sys_msgs)
+    keep = []
+    for m in reversed(nonsys):
+        mt = _msg_tokens(m)
+        if remaining - mt < 0 and keep:
+            break  # no room for this (and older) message — keep the newest
+        keep.insert(0, m)
+        remaining -= mt
+    return sys_msgs + keep
 
 def _trim_chunks(ordered_ids: List[str], max_tokens: int) -> List[str]:
     """Grade-aware trim: keep highest-grade chunks that fit in token budget.
@@ -4273,51 +4317,64 @@ def _is_near_empty(text):
 MAX_EMPTY_RETRY = 2
 
 
-def _recent_window(messages: list, recent_turns: int) -> list:
+def _recent_window(messages: list, recent_turns: int, max_tokens: int = None) -> list:
     """Truncate a conversation to its most recent window.
 
     Keeps every system message (client prompt + Mneme's injected block) plus the
     last `recent_turns` user turns — each user message and everything after it up to
     the next user message. Older turns are left out; they are covered by the injected
-    memory instead. Returns the original list unchanged when it is already small
+    memory instead. If `max_tokens` is set, further trims the oldest non-system
+    messages so the window also fits a token budget (large turns are evicted, not
+    just old ones). Returns the original list unchanged when it is already small
     enough or `recent_turns` is <= 0 (disabled).
     """
     if recent_turns <= 0:
-        return messages
-    sys_msgs = [m for m in messages if m.get("role") == "system"]
-    nonsys = [m for m in messages if m.get("role") != "system"]
-    user_idxs = [i for i, m in enumerate(nonsys) if m.get("role") == "user"]
-    if len(user_idxs) <= recent_turns:
-        return messages
-    start = user_idxs[-recent_turns]
-    return sys_msgs + nonsys[start:]
+        window = messages
+    else:
+        sys_msgs = [m for m in messages if m.get("role") == "system"]
+        nonsys = [m for m in messages if m.get("role") != "system"]
+        user_idxs = [i for i, m in enumerate(nonsys) if m.get("role") == "user"]
+        if len(user_idxs) <= recent_turns:
+            window = messages
+        else:
+            start = user_idxs[-recent_turns]
+            window = sys_msgs + nonsys[start:]
+    if max_tokens and max_tokens > 0:
+        window = _trim_messages_to_tokens(window, max_tokens)
+    return window
 
 
-def _compact_followup(followup: list, budget: int, head_len: int) -> list:
-    """Bound the tool-loop followup to `budget` chars.
+def _compact_followup(followup: list, max_tokens: int, head_len: int) -> list:
+    """Bound the tool-loop followup to `max_tokens` (estimated).
 
     `head_len` is the number of leading messages that form the conversation
     prefix (system + recent turns); everything after is the current turn's
     tool-loop entries (native/registry/search results appended each round).
     Keeps the prefix + the most recent tool entries, dropping the oldest so the
-    total fits under `budget`. Dropped results are recoverable — their full text
-    is staged in memory (search_memory) or re-fetchable — so this is truncation,
-    not summarization. Orphaned tool-result messages (whose assistant tool call
-    was dropped) are also removed so the model never sees a result with no call.
+    total fits under `max_tokens`. If the prefix alone exceeds the budget, the
+    prefix's oldest turns are trimmed too. Dropped results are recoverable — their
+    full text is staged in memory (search_memory) or re-fetchable — so this is
+    truncation, not summarization. Orphaned tool-result messages (whose assistant
+    tool call was dropped) are also removed so the model never sees a result with
+    no call.
     """
-    if budget <= 0 or len(followup) <= head_len:
+    if max_tokens <= 0:
         return followup
     head = followup[:head_len]
     tool = followup[head_len:]
-    head_chars = sum(len(str(m.get("content", ""))) for m in head)
+    head_tokens = sum(_msg_tokens(m) for m in head)
+    if head_tokens > max_tokens:
+        # Prefix alone over budget (rare now the window is token-bounded): trim
+        # the prefix's oldest turns and drop all tool entries.
+        return _trim_messages_to_tokens(head, max_tokens)
     kept = []
-    chars = head_chars
+    tokens = head_tokens
     for m in reversed(tool):
-        mc = len(str(m.get("content", "")))
-        if chars + mc > budget and kept:
+        mt = _msg_tokens(m)
+        if tokens + mt > max_tokens and kept:
             break
         kept.insert(0, m)
-        chars += mc
+        tokens += mt
     # Drop orphaned tool-result messages left at the front of the kept tail.
     while kept and kept[0].get("role") == "tool":
         kept = kept[1:]
@@ -4512,7 +4569,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # injected memory (build_context above); the recent window only carries the
     # immediate thread for continuity.
     _recent_turns = STAGING_TURNS + CONTEXT_RECENT_EXTRA
-    full_msgs = _recent_window(messages, _recent_turns)
+    full_msgs = _recent_window(messages, _recent_turns, max_tokens=_window_token_budget())
     
     # Optional debug dump of the system messages (off by default; set
     # MNEME_DEBUG_DUMP=1 to enable). Was previously an unconditional write to
@@ -4649,9 +4706,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             result["done_reason"] = "cancelled"
             break
         # (The old context-size hard-stop that forced synthesis at 50K chars is
-        # gone: the followup is now compacted to TOOL_FOLLOWUP_BUDGET before every
-        # re-query below, so it never bloats past the budget in the first place.
-        # MAX_SERVER_ROUNDS remains the tool-work ceiling.)
+        # gone: the followup is now compacted to the token input budget
+        # (_context_input_budget) before every re-query below, so it never bloats
+        # past num_ctx - reserve. MAX_SERVER_ROUNDS remains the tool-work ceiling.)
         tcs = result.get("tool_calls") or []
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory" and "search_memory" in _readonly_names]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory"})]
@@ -4773,11 +4830,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # Bounded working set: drop the oldest tool results, keep the recent ones
         # (full text is in memory / re-fetchable). This is what lets a weeks-long
         # conversation keep tooling without overflowing the context window.
-        _ctx_chars = sum(len(str(m.get("content", ""))) for m in followup)
-        if _ctx_chars > TOOL_FOLLOWUP_BUDGET:
-            followup = _compact_followup(followup, TOOL_FOLLOWUP_BUDGET, _followup_head_len)
-            _new_chars = sum(len(str(m.get("content", ""))) for m in followup)
-            print(f"  [COMPACT] followup {_ctx_chars} -> {_new_chars} chars", flush=True)
+        _budget = _context_input_budget()
+        _ctx_tokens = sum(_msg_tokens(m) for m in followup)
+        if _ctx_tokens > _budget:
+            followup = _compact_followup(followup, _budget, _followup_head_len)
+            _new_tokens = sum(_msg_tokens(m) for m in followup)
+            print(f"  [COMPACT] followup {_ctx_tokens} -> {_new_tokens} tokens (budget {_budget})", flush=True)
 
         print(f"  [SYNTHESIS] re-querying model "
               f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)
@@ -6059,7 +6117,7 @@ def _dump_config():
     if _backend_is_openai():
         print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
-    print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','256000')}", flush=True)
+    print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','65536')}", flush=True)
     print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} recent_extra={CONTEXT_RECENT_EXTRA} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)

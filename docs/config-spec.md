@@ -62,7 +62,7 @@ sampling:                    # defaults; per-model overrides live under `models:
   temperature: 0.3
   top_p: 0.95
   top_k: 64                  # ollama-only (ignored by openai path)
-  ctx_tokens: 256000
+  ctx_tokens: 65536             # MUST match the model's num_ctx
   completion_reserve: 8192
   max_tokens: 2048           # output cap — currently unset for chat
 
@@ -106,7 +106,7 @@ caps:                        # rarely-tuned char/truncation limits
   compress_threshold: 500
   compress_max_tok: 2048
   max_tool_forward: 12000
-  tool_followup_budget: 50000
+  tool_followup_tokens: 10000
   chunk_size: 4000
 
 models:                      # P8 per-model overrides, keyed by model name
@@ -162,8 +162,8 @@ OpenAI-compatible provider ignores them):
 | temperature | 0.3 | [env] `MNEME_TEMPERATURE` (note: global default is currently 0.3 = `OLLAMA_TEMP`; P8 flags that Muse's 1.0 leaked globally) |
 | top_p | 0.95 | [env] `MNEME_TOP_P` |
 | top_k | 64 | [env] `MNEME_TOP_K` (ollama only) |
-| ctx_tokens | 256000 | [env] `MNEME_CTX_TOKENS` (sent to Ollama as `num_ctx`) |
-| completion_reserve | 8192 | [env] `MNEME_COMPLETION_RESERVE` |
+| ctx_tokens | 65536 | [env] `MNEME_CTX_TOKENS` (sent to Ollama as `num_ctx`) — set to the model's actual context |
+| completion_reserve | 8192 | [env] `MNEME_COMPLETION_RESERVE` — tokens kept free for the model's reply |
 | max_tokens | 65536 | [env] `MNEME_MAX_TOKENS` (sent to Ollama as `num_predict`; matches Hermes `default_max_tokens`) |
 | reasoning_enabled | 0 (off) | [env] `MNEME_REASONING_ENABLED`. Thinking is OFF by default — a reasoning model (Qwen3.6 etc.) can runaway-think on a trivial ask. Set `1` to opt in. |
 | reasoning_effort | — | [env] `MNEME_REASONING_EFFORT` (low/high/max) for effort-level models (deepseek); implies reasoning on. |
@@ -213,7 +213,7 @@ OpenAI-compatible provider ignores them):
 | compress_threshold | 500 | [const] `COMPRESS_THRESHOLD` |
 | compress_max_tok | 2048 | [const] `COMPRESS_MAX_TOK` |
 | max_tool_forward | 12000 | [const] `MAX_TOOL_FORWARD` |
-| tool_followup_budget | 50000 | [const] `TOOL_FOLLOWUP_BUDGET` — cap on the accumulated tool-loop followup; older results compacted away before re-query |
+| tool_followup_tokens | 10000 | [const] `TOOL_FOLLOWUP_TOKENS` — tokens reserved for tool results in the input; window = ctx_tokens - completion_reserve - this |
 | chunk_size | 4000 | [const] `CHUNK_SIZE` |
 
 ### tools (native bootstrap + built-tool registry)

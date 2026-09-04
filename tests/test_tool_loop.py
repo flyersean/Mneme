@@ -1108,6 +1108,34 @@ def test_memory_disabled_master_switch():
 
 
 @test
+def test_context_budget_and_token_window():
+    inb = mp._context_input_budget()
+    wb = mp._window_token_budget()
+    assert inb > 0 and wb > 0 and wb <= inb, (inb, wb)
+
+    big = "word " * 100
+    msgs = [{"role": "system", "content": "sys prompt " + big}]
+    for i in range(20):
+        msgs.append({"role": "user", "content": f"turn {i} " + big})
+        msgs.append({"role": "assistant", "content": big})
+
+    trimmed = mp._recent_window(msgs, 20, max_tokens=1000)
+    assert trimmed[0]["role"] == "system"
+    assert len(trimmed) < len(msgs)
+    assert any("turn 19" in m.get("content", "") for m in trimmed if m.get("role") == "user")
+
+    tool = [
+        {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "bash", "arguments": {}}}]},
+        {"role": "tool", "content": big},
+        {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "bash", "arguments": {}}}]},
+        {"role": "tool", "content": big},
+    ]
+    head = [{"role": "system", "content": "sys " + big}, {"role": "user", "content": "q " + big}]
+    compacted = mp._compact_followup(head + tool, 400, head_len=2)
+    assert len(compacted) < len(head + tool)
+
+
+@test
 def test_save_tool_registry():
     mt = mp.mntools
     tmp = tempfile.mkdtemp(prefix="mneme_tools_")

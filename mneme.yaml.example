@@ -65,7 +65,7 @@ sampling:
   temperature: 0.2      # randomness; 0.2 = fairly deterministic (less repetition)
   top_p: 0.9            # nucleus sampling — cut off the improbable tail
   top_k: 64             # ollama only (ignored by the openai path)
-  ctx_tokens: 256000    # context window size handed to the model
+  ctx_tokens: 65536     # context window size handed to the model — MUST match the model's num_ctx
   completion_reserve: 8192  # tokens reserved for the model's reply, out of ctx_tokens
   # max_tokens: leave unset — a global output cap truncates long summaries
 
@@ -129,7 +129,7 @@ caps:
   compress_threshold: 500    # tool results longer than this (chars) get staged/compressed
   compress_max_tok: 2048     # max tokens for the compression summarizer
   max_tool_forward: 12000    # cap on a tool result forwarded to the model (head+tail window)
-  tool_followup_budget: 50000  # cap on the accumulated tool-loop followup; older results compacted away before re-query
+  tool_followup_tokens: 10000  # tokens reserved for tool results in the input; recent-window = ctx_tokens - completion_reserve - this
   chunk_size: 4000           # chars per staged memory chunk
 
 # Inbuilt tools — enable/disable each one. `native` (auto|on|off) controls the
