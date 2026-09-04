@@ -94,10 +94,16 @@ class Orchestrator:
             backend = (s.get("backend") or "mneme").lower()
             if backend not in ("mneme", "ollama"):
                 raise SystemExit(f"step {nm}: unknown backend '{s.get('backend')}'")
-            if backend == "mneme" and not s.get("port"):
-                raise SystemExit(f"step {nm}: backend=mneme requires 'port'")
-            if backend == "ollama" and not s.get("model"):
-                raise SystemExit(f"step {nm}: backend=ollama requires 'model'")
+            # A model is only called when the step writes output OR branches on it
+            # (write_dir / if) — action-only steps (swap_dir / clear_dir / goto /
+            # read-only) never touch a backend, so requiring port/model there is
+            # wrong and rejects otherwise-valid action-only configs.
+            needs_output = bool(s.get("write_dir")) or bool(s.get("if"))
+            if needs_output:
+                if backend == "mneme" and not s.get("port"):
+                    raise SystemExit(f"step {nm}: backend=mneme requires 'port'")
+                if backend == "ollama" and not s.get("model"):
+                    raise SystemExit(f"step {nm}: backend=ollama requires 'model'")
             if has_goto and s.get("goto") not in targets:
                 raise SystemExit(f"step {nm}: goto target '{s.get('goto')}' not found")
             ifc = s.get("if")
