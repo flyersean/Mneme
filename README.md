@@ -26,7 +26,7 @@ Everything lives under one directory, `~/mneme/`:
 ~/mneme/
   repo/      this repository (git clone)
   env        your OpenRouter API key (chmod 600; only for the hosted backend)
-  chunks/    memory DB (mneme.db), config (mneme.yaml), log, and editable prompts
+  chunks/    memory DB (mneme.db), per-instance config (instances/<port>/mneme.yaml), and editable prompts
 ```
 
 ## Features
@@ -39,6 +39,14 @@ Everything lives under one directory, `~/mneme/`:
 - Source tracking (user, model, tool:*, page:*, document:*).
 - Full-page chunking: `fetch_url` stages the ENTIRE fetched page as fine-grained `page:<domain>` chunks (paragraph-aligned, capped below `max_chunk_size`), so a huge wiki article is fully retrievable later via `search_memory` even though the model only ever sees a bounded head+tail window.
 - Embedding reliability: startup health check probes the embedder and fails loud on a dim mismatch; a failed embed is stored `pending_embed` and re-embedded on next startup (no silent dead vectors).
+
+### Full control
+
+Every proxy instance is a set of independent toggles, so you can set one up exactly how you want:
+
+- **Memory** — `storage.memory_enabled: false` turns off all memory (no retrieval, no injection, no staging; `search_memory` auto-hides) while keeping the proxy and tools running.
+- **Tools** — each built-in tool (`search_memory`, `list_tools`, `read_tool`, `read_file`, `fetch_url`, `web_search`, plus `bash`/`write` via `tools.native`) has an on/off flag.
+- **Backend** — `backend.type` + `providers:` (Ollama or any OpenAI-compatible provider); in a swarm, `backend: ollama` runs a raw model with no memory at all.
 
 ### Provenance grading
 
@@ -90,17 +98,17 @@ curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/mai
 The wizard walks through four steps:
 
 1. **Backend** — OpenRouter (hosted; needs an API key) or Ollama (local/private).
-2. **Models** — chat / embedder / labeler (per backend; Ollama pulls them for you).
+2. **Models** — chat / embedder / labeler, plus the chat model's **context window** (32K / 64K / 128K / 200K / 1M, or a custom token count). The window you pick drives the context budget written into the config.
 3. **Pi** — optional terminal assistant. Saying **no** still leaves the built-in chat page and any OpenAI-compatible client working.
 4. **Port** + whether to inject Mneme's system instructions.
 
-It writes one config (`~/mneme/chunks/mneme.yaml`) and a start script (`~/mneme/chunks/start_proxy.sh`), then launches the proxy and health-checks it.
+It writes one config (`~/mneme/chunks/instances/<port>/mneme.yaml`) and a start script (`~/mneme/chunks/instances/<port>/start_proxy.sh`), then launches the proxy and health-checks it.
 
 ## Usage and connecting clients
 
 ### Run the proxy
 
-- **Start / restart the proxy:** `~/mneme/chunks/start_proxy.sh` (written by setup).
+- **Start / restart the proxy:** `~/mneme/chunks/instances/<port>/start_proxy.sh` (written by setup).
 - **Logs:** `tail -f /tmp/mneme.log`.
 
 ### Web interfaces and service URLs
@@ -185,7 +193,7 @@ Memory is **portable** across machines and even across 1024-dim embedders. On st
 
 ## Configuration
 
-Everything is in one file — `$MNEME_CHUNK_DIR/mneme.yaml` (default `~/mneme/chunks/mneme.yaml`) — plus a few env vars.
+Everything is in one file — `$MNEME_CHUNK_DIR/mneme.yaml` (default `~/mneme/chunks/instances/<port>/mneme.yaml`) — plus a few env vars.
 
 Settings are resolved in this order:
 
@@ -205,8 +213,24 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 | `retrieval.inject_min_similarity` | `0.45` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall. **Embedder-dependent** — see the note below. |
 | `retrieval.strategy_min_similarity` | `0.40` | second, lower floor — chunks in `[strategy_min, inject_min)` don't inject as memory, but their **linked strategies** still do (a learned approach generalizes to same-concept queries just under the memory floor). Must stay below `inject_min_similarity`; embedder-dependent too. |
 | `retrieval.max_injected_tokens` | `8000` | token budget for memory stuffed into the prompt |
+| `sampling.ctx_tokens` | `65536` | the model's context window (`num_ctx`) — must match the model's actual capability |
+| `sampling.completion_reserve` | `8192` (setup writes `ctx/8`) | tokens held back for the model's reply — never touched by input |
+| `caps.tool_followup_tokens` | `10000` (setup writes `ctx/6`) | tokens reserved for tool results inside the loop |
+| `storage.memory_enabled` | `true` | master switch — `false` disables ALL memory (no retrieval/injection/staging, `search_memory` off) while keeping tools |
+| `tools.search_memory` / `tools.list_tools` / `tools.read_tool` / `tools.read_file` / `tools.fetch_url` / `tools.web_search` | `true` each | per-tool on/off — set any to `false` to hide it from the model |
 
 Full reference: [`docs/config-spec.md`](docs/config-spec.md).
+
+### Context budget — no more overruns
+
+The proxy bounds its input against the model's context window with a single derived budget, so the three input consumers can never sum past the window:
+
+- `sampling.ctx_tokens` is the whole window.
+- `sampling.completion_reserve` is held back for the reply.
+- `caps.tool_followup_tokens` is reserved for tool results in the loop.
+- The **recent-context window** (conversation turns) gets the remainder: `ctx_tokens - completion_reserve - tool_followup_tokens`.
+
+Each consumer — injected memory, the recent window, and tool results — is bounded, and they sum below the window, so the model always has room to answer. The window is **token-bounded** (large turns are evicted, not just old ones). When the tool loop needs more room it drops oldest tool results first, then oldest turns; the completion reserve is never touched. The setup wizard derives `completion_reserve` and `tool_followup_tokens` from the context window you pick, so the generated config is already coherent.
 
 ### Tune `inject_min_similarity` per embedder
 
@@ -291,8 +315,10 @@ They cover:
   - tool-trace URL extraction
   - fabricated-citation fails
 - The two-floor retrieval helpers.
+- The token-based context budget (recent-window eviction, followup compaction).
+- Per-tool disable flags and the `memory_enabled` master switch.
 
-64 tests.
+68 tests.
 
 ## Architecture
 
