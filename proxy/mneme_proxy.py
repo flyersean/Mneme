@@ -4545,25 +4545,38 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             insert_at = i + 1
             break
     messages.insert(insert_at, {"role": "system", "content": mneme_system})
-    # Inject the VARIABLE memory context + advisory directives at the TAIL: prepend
-    # to the last user message. This keeps the [system prompt + conversation]
-    # prefix stable and cacheable (KV prefix cache), instead of re-processing the
-    # whole conversation every turn when the memory chunks reshuffle at the head.
+    # Inject the VARIABLE memory context + advisory directives as a SEPARATE
+    # system message, placed immediately before the last user message. This keeps
+    # the [system prompt + conversation] prefix stable and cacheable (the variable
+    # memory still sits after the fixed system prompt), while giving the model a
+    # hard role boundary: the injected system message is reference/context, the
+    # user message is the actual question. (The old approach prepended the memory
+    # INTO the user message, separated only by a "---" line, which blurred "current
+    # message" vs "injected past context" and made the model echo the embedded
+    # user:/assistant: dialogue under load.)
     _tail_parts = [p for p in (context, dynamic_tail) if (p or "").strip()]
     tail = "\n\n".join(_tail_parts)
     if tail.strip():
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                _cur = messages[i].get("content") or ""
-                # Guard against double-injection: if a client echoes the mutated
-                # message back on a later call, the memory disclaimer is already at
-                # the head — don't prepend again (else context doubles each round).
-                if context.strip() and "--- MEMORY:" in _cur:
-                    print("  [INJECT-TAIL] already injected — skipping", flush=True)
+        # Guard against double-injection: if a system message already carries the
+        # memory disclaimer or the budget line, don't insert a second one (context
+        # would double each round of the tool loop / echoed-back client message).
+        _already = any(
+            m.get("role") == "system"
+            and ("--- MEMORY:" in (m.get("content") or "")
+                 or "[context budget:" in (m.get("content") or ""))
+            for m in messages
+        )
+        if _already:
+            print("  [INJECT-TAIL] already injected — skipping", flush=True)
+        else:
+            _last_user_idx = None
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user":
+                    _last_user_idx = i
                     break
-                messages[i]["content"] = tail + "\n\n---\n" + _cur
-                print(f"  [INJECT-TAIL] {len(tail)} chars prepended to last user message", flush=True)
-                break
+            if _last_user_idx is not None:
+                messages.insert(_last_user_idx, {"role": "system", "content": tail})
+                print(f"  [INJECT-TAIL] {len(tail)} chars injected as system message before last user message", flush=True)
     # Truncate the conversation to a recent window (staging_turns + extra) instead of
     # re-injecting the full transcript every round. Older turns are covered by the
     # injected memory (build_context above); the recent window only carries the

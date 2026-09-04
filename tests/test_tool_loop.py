@@ -1385,6 +1385,42 @@ def test_context_budget_line_injected():
 
 
 @test
+def test_injected_memory_is_separate_system_message():
+    """The injected memory must be a SEPARATE system message placed immediately
+    before the last user message — never prepended into the user message itself.
+    Regression: prepending it (with only a '---' separator) blurred "current
+    message" vs "injected past context" and made the model echo the embedded
+    user:/assistant: dialogue instead of answering."""
+    model = ScriptedModel()
+    model.queue = [_answer("ok [guess]")]
+    mp.query_model = model
+    mp.route_query = lambda q, top_k=3, with_scores=False, q_vec=None: ["mem_1787262481137988"]
+
+    seed_chunk()
+    mp.process_chat([{"role": "user", "content": "What's the weather?"}],
+                    session_id="test", tools=[])
+
+    assert model.seen, "query_model was never called"
+    msgs = model.seen[0]
+    roles = [m.get("role") for m in msgs]
+
+    # The user message must be clean — memory must NOT be prepended into it.
+    user_idx = [i for i, r in enumerate(roles) if r == "user"]
+    assert user_idx, "no user message in the sent prompt"
+    u = msgs[user_idx[-1]].get("content") or ""
+    assert "--- MEMORY:" not in u, f"memory leaked into user message: {u[:160]!r}"
+
+    # The message immediately before the last user message must be a system
+    # message carrying the injected memory (disclaimer or budget line).
+    assert user_idx[-1] > 0, "expected an injected system message before the user message"
+    prev = msgs[user_idx[-1] - 1]
+    assert prev.get("role") == "system", f"preceding message is {prev.get('role')!r}, not system"
+    pc = prev.get("content") or ""
+    assert "--- MEMORY:" in pc or "[context budget:" in pc, \
+        f"injected system message missing marker: {pc[:160]!r}"
+
+
+@test
 def test_recent_attempts_summary():
     tr = [
         {"tool": "web_search", "args": {"query": "jamos pizza"},
