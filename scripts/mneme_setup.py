@@ -271,7 +271,17 @@ def ensure_ollama():
         return False
     if run("curl -s --max-time 2 http://localhost:11434 >/dev/null", timeout=5).returncode != 0:
         print("  Starting ollama serve...")
-        subprocess.Popen(["ollama", "serve"], stdout=open("/tmp/ollama.log", "ab"),
+        # Mirror the install.sh systemd drop-in here: this fallback runs when Ollama
+        # is NOT under systemd (e.g. RunPod images), so without this the serve
+        # process inherits none of the OLLAMA_* settings. keep_alive=-1 keeps models
+        # resident; flash_attention=0 avoids a CUDA crash on some vision-patched
+        # models; sched_spread=1 spreads models across ALL GPUs instead of packing
+        # them onto GPU 0 (the second A40 would otherwise sit idle at 0%).
+        _env = os.environ.copy()
+        _env["OLLAMA_KEEP_ALIVE"] = "-1"
+        _env["OLLAMA_FLASH_ATTENTION"] = "0"
+        _env["OLLAMA_SCHED_SPREAD"] = "1"
+        subprocess.Popen(["ollama", "serve"], env=_env, stdout=open("/tmp/ollama.log", "ab"),
                          stderr=subprocess.STDOUT, start_new_session=True)
         for _ in range(20):
             if run("curl -s --max-time 2 http://localhost:11434 >/dev/null", timeout=5).returncode == 0:
