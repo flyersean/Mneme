@@ -78,6 +78,11 @@ export OLLAMA_FLASH_ATTENTION=0
 # idle gap then pays a 30-60s reload of the 27GB model, which can exceed the
 # proxy's first-token timeout. -1 = stay loaded until the pod shuts down.
 export OLLAMA_KEEP_ALIVE=-1
+# Spread models across all available GPUs instead of packing them onto the first
+# one. On a multi-GPU pod (e.g. 2×A40), the default scheduler fits every model on
+# GPU 0 as long as they collectively fit, leaving the other GPU idle at 0%.
+# =1 balances the swarm across GPUs.
+export OLLAMA_SCHED_SPREAD=1
 
 if command -v ollama >/dev/null 2>&1; then
   _VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -100,6 +105,7 @@ if systemctl cat ollama.service >/dev/null 2>&1; then
 [Service]
 Environment=OLLAMA_KEEP_ALIVE=-1
 Environment=OLLAMA_FLASH_ATTENTION=0
+Environment=OLLAMA_SCHED_SPREAD=1
 EOF
   systemctl daemon-reload
   systemctl restart ollama 2>/dev/null || systemctl start ollama 2>/dev/null || true
