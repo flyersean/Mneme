@@ -131,6 +131,18 @@ caps:
   tool_followup_budget: 50000  # cap on the accumulated tool-loop followup; older results compacted away before re-query
   chunk_size: 4000           # chars per staged memory chunk
 
+# Inbuilt tools — enable/disable each one. `native` (auto|on|off) controls the
+# bash/write bootstrap; the rest are the read-only server tools. Set any to false
+# to hide it from the model (handy for a restricted or memory-less proxy).
+tools:
+  native: auto               # bash/write bootstrap: auto | on | off
+  search_memory: true        # memory search tool
+  list_tools: true           # list the tools you've built
+  read_tool: true            # read a built tool's source
+  read_file: true            # read host files by path
+  fetch_url: true            # fetch + clean a web page
+  web_search: true           # web search
+
 # Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.
 models:
   deepseek/deepseek-v4-flash:

@@ -191,6 +191,26 @@ NATIVE_WRITE_TOOL = {
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
 
 
+# ─── Per-tool enable flags ─────────────────────────────────────────────
+# Each read-only server tool can be disabled individually via config
+# (tools.<name>: false -> MNEME_TOOL_<NAME>=0). bash/write are gated separately
+# by NATIVE_TOOLS_MODE. Default: all enabled.
+
+def _tool_enabled(name: str) -> bool:
+    """Whether a read-only server tool is enabled (default on)."""
+    return os.environ.get(f"MNEME_TOOL_{name.upper()}", "1") == "1"
+
+
+def enabled_readonly_tools():
+    """The read-only server tools currently enabled (per-tool flags applied)."""
+    return [t for t in READONLY_SERVER_TOOLS if _tool_enabled(_tool_name(t))]
+
+
+def enabled_readonly_names():
+    """Names of the read-only server tools currently enabled."""
+    return {_tool_name(t) for t in enabled_readonly_tools()}
+
+
 # ─── Tool assembly ───────────────────────────────────────────────────────
 
 def _tool_name(t):
@@ -232,7 +252,7 @@ def assemble_tools(client_tools):
             tools.append(t)
             seen.add(n)
 
-    for t in READONLY_SERVER_TOOLS:
+    for t in enabled_readonly_tools():
         add(t)
     for n in ("bash", "write"):
         if n in native_exec_names(client_tools):

@@ -1062,6 +1062,28 @@ def test_assemble_tools_dedup():
 
 
 @test
+def test_per_tool_disable_flag():
+    mt = mp.mntools
+    saved = {k: os.environ.get(k) for k in ("MNEME_TOOL_WEB_SEARCH", "MNEME_TOOL_FETCH_URL")}
+    try:
+        os.environ["MNEME_TOOL_WEB_SEARCH"] = "0"
+        os.environ["MNEME_TOOL_FETCH_URL"] = "0"
+        names = [t["function"]["name"] for t in mt.assemble_tools([])]
+        assert "web_search" not in names, names
+        assert "fetch_url" not in names, names
+        assert "search_memory" in names and "read_file" in names, names
+        ro = mt.enabled_readonly_names()
+        assert "web_search" not in ro and "fetch_url" not in ro, ro
+        assert "search_memory" in ro and "list_tools" in ro, ro
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+@test
 def test_save_tool_registry():
     mt = mp.mntools
     tmp = tempfile.mkdtemp(prefix="mneme_tools_")

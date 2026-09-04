@@ -223,6 +223,12 @@ OpenAI-compatible provider ignores them):
 | inject_min_similarity | 0.75 | `TOOL_INJECT_MIN_SIM` — stricter than retrieval; a built tool is auto-injected only above this |
 | inject_max | 3 | `TOOL_INJECT_MAX` — max built tools auto-injected per turn |
 | inject_tokens | 600 | `TOOL_INJECT_TOKENS` — token budget for injected tool descriptions |
+| search_memory | true | `MNEME_TOOL_SEARCH_MEMORY` (1/0) — expose the search_memory tool |
+| list_tools | true | `MNEME_TOOL_LIST_TOOLS` (1/0) — expose the list_tools tool |
+| read_tool | true | `MNEME_TOOL_READ_TOOL` (1/0) — expose the read_tool tool |
+| read_file | true | `MNEME_TOOL_READ_FILE` (1/0) — expose the read_file tool |
+| fetch_url | true | `MNEME_TOOL_FETCH_URL` (1/0) — expose the fetch_url tool |
+| web_search | true | `MNEME_TOOL_WEB_SEARCH` (1/0) — expose the web_search tool |
 
 ## Known gotchas to fix during the sweep
 

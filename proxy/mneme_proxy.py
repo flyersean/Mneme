@@ -156,6 +156,12 @@ _CONFIG_ENV_MAP = {
     "tools.inject_min_similarity": "MNEME_TOOL_INJECT_MIN_SIMILARITY",
     "tools.inject_max": "MNEME_TOOL_INJECT_MAX",
     "tools.inject_tokens": "MNEME_TOOL_INJECT_TOKENS",
+    "tools.search_memory": "MNEME_TOOL_SEARCH_MEMORY",
+    "tools.list_tools": "MNEME_TOOL_LIST_TOOLS",
+    "tools.read_tool": "MNEME_TOOL_READ_TOOL",
+    "tools.read_file": "MNEME_TOOL_READ_FILE",
+    "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
+    "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
     "embed_model": "EMBED_MODEL",
@@ -4562,7 +4568,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
     _MAX_SERVER_ROUNDS = MAX_SERVER_ROUNDS  # absolute round ceiling (high backstop)
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
-    _server_names = {"search_memory", "list_tools", "read_tool", "read_file", "fetch_url", "web_search"} | _native_names
+    _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
+    _server_names = _readonly_names | _native_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
@@ -4638,8 +4645,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # re-query below, so it never bloats past the budget in the first place.
         # MAX_SERVER_ROUNDS remains the tool-work ceiling.)
         tcs = result.get("tool_calls") or []
-        search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory"]
-        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("list_tools", "read_tool", "read_file", "fetch_url", "web_search")]
+        search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory" and "search_memory" in _readonly_names]
+        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory"})]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
@@ -6048,6 +6055,7 @@ def _dump_config():
     print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} recent_extra={CONTEXT_RECENT_EXTRA} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
+    print(f"  [TOOLS] enabled={sorted(mntools.enabled_readonly_names() | mntools.native_exec_names(None))}", flush=True)
 
 
 _embedding_health_check()

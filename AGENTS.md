@@ -158,6 +158,15 @@ caps:
   tool_followup_budget: 50000
   chunk_size: 4000
 
+tools:                               # inbuilt tools — set any to false to hide it
+  native: auto                       # bash/write bootstrap: auto | on | off
+  search_memory: true
+  list_tools: true
+  read_tool: true
+  read_file: true
+  fetch_url: true
+  web_search: true
+
 models:                              # per-model overrides; keyed by EXACT model name
   deepseek/deepseek-v4-flash:
     temperature: 0.2
@@ -176,6 +185,7 @@ models:                              # per-model overrides; keyed by EXACT model
 | `storage` | `chunk_dir` ~/mneme/chunks, `db_path` <chunk_dir>/mneme.db, `port` 8080, `inject_system` true, `memory_only` false, `staging_turns` 1, `staging_idle` 120, `context_recent_extra` 14, `belief_evolution` false |
 | `retrieval` | `max_injected_tokens` 6000, `inject_min_similarity` 0.45, `strategy_min_similarity` 0.40, `keyword_fallback` false, `age_decay_days` 7, `max_siblings` 3, `max_chunk_words` 500, `max_chunk_size` 10000 |
 | `caps` | `max_history_messages` 32, `db_msg_cap` 8000, `compress_threshold` 500, `compress_max_tok` 2048, `max_tool_forward` 12000, `tool_followup_budget` 50000, `chunk_size` 4000 |
+| `tools` | `native` auto, `search_memory` true, `list_tools` true, `read_tool` true, `read_file` true, `fetch_url` true, `web_search` true — per-tool on/off (false hides the tool from the model) |
 | `models.<name>` | `temperature`, `top_p`, `top_k`, `num_ctx`, `max_tokens`, `reasoning_field`, `quirks` [] |
 
 **Critical rules:**
