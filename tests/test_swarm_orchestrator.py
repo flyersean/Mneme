@@ -62,6 +62,22 @@ class TestFolderIO(unittest.TestCase):
     def test_clear_missing_dir_is_noop(self):
         self.o.clear_dir(os.path.join(self.tmp, "nope"))  # must not raise
 
+    def test_reader_sees_frozen_snapshot_not_late_writes(self):
+        # Full freeze/consume/re-freeze cycle from a READER's point of view:
+        # a reader of the frozen snapshot must NOT see files that land in the
+        # fresh inbox during the tick, and only sees them after consume+re-freeze.
+        self._write("a.txt", "ORIGINAL")
+        self.o.swap_dir(self.raw)                     # freeze raw -> raw.active
+        self._write("b.txt", "NEW")                   # lands during the tick (in raw)
+        frozen = self.o.get_context(self.raw + ".active")
+        self.assertIn("ORIGINAL", frozen)
+        self.assertNotIn("NEW", frozen)               # reader must NOT see late write
+        self.o.clear_dir(self.raw + ".active")        # consume the snapshot
+        self.o.swap_dir(self.raw)                     # next tick re-freezes raw
+        refrozen = self.o.get_context(self.raw + ".active")
+        self.assertIn("NEW", refrozen)                # late write now visible
+        self.assertNotIn("ORIGINAL", refrozen)        # consumed snapshot gone
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
