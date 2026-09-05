@@ -89,8 +89,25 @@ if command -v ollama >/dev/null 2>&1; then
   echo "  ✓ ollama found (${_VER:-unknown})"
 else
   echo "  installing Ollama..."
-  apt-get update -qq 2>/dev/null || true
-  apt-get install -y -qq zstd curl 2>/dev/null || true
+  # Ollama's installer now serves a zstd-compressed tarball and refuses to run
+  # without `zstd`. apt-get can fail silently (stale package lists / no network),
+  # so install zstd first and VERIFY it landed — otherwise the user gets Ollama's
+  # confusing "requires zstd" error instead of a clear one.
+  if ! command -v zstd >/dev/null 2>&1; then
+    echo "  installing zstd (required by Ollama's installer)..."
+    for _ in 1 2 3; do
+      apt-get update -qq 2>/dev/null && break
+      sleep 2
+    done
+    apt-get install -y -qq zstd curl 2>/dev/null || true
+  fi
+  if ! command -v zstd >/dev/null 2>&1; then
+    echo "  ✗ zstd is missing and could not be installed — Ollama's installer needs it to extract its tarball." >&2
+    echo "    Install it manually, then re-run this installer:" >&2
+    echo "      apt-get update && apt-get install -y zstd" >&2
+    exit 1
+  fi
+  echo "  ✓ zstd ready"
   curl -fsSL https://ollama.com/install.sh | sh
   command -v ollama >/dev/null 2>&1 && echo "  ✓ ollama installed" || echo "  ⚠ install failed — run: curl -fsSL https://ollama.com/install.sh | sh"
 fi
