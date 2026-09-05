@@ -279,7 +279,6 @@ Anthropic (`x-api-key` + `anthropic-version`), Google Gemini, AWS Bedrock
 
 ## Branch note
 
-`unified_mneme` is forked from `openrouter-backend` (which already carries
-both backends behind `MNEME_BACKEND` plus the Aug 18 hardening fixes). The
-branch merge is therefore a strategy-layer reconciliation (port the
-`novelty-thinking` fixes/features onto this tree), not a backend rewrite.
+Two branches: `main` (memory-only default — the release) and `unified_mneme`
+(full build with the experimental strategy/self-improving layer enabled, where
+that layer is developed and tested). See the README "Branches" section.

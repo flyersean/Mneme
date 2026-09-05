@@ -86,7 +86,9 @@ storage:
   db_path: ~/mneme/chunks/mneme.db  # the memory DB file; FAISS index lives beside it (portable/shared). Defaults to <chunk_dir>/mneme.db.
   port: 8080                 # HTTP port the proxy listens on
   inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
-  memory_only: false         # true = memory-only build: strategy/self-improving layer OFF (memory + grading + tools stay on). main branch defaults true, unified_mneme defaults false.
+  memory_only: false         # true = memory-only build: the EXPERIMENTAL strategy/self-improving layer is OFF by
+                             # default (memory + grading + tools stay on). Not dead — it's developed and tested on
+                             # the unified_mneme branch and merged back into main. main defaults true, unified false.
   memory_enabled: true       # master switch: false = NO memory — no retrieval/injection, no staging/archiving, search_memory off (run through the proxy with tools only)
   staging_turns: 1           # flush the recent conversation into a memory chunk every N turns (swarm default: 1 = every turn)
   staging_idle: 120          # ...or after this many seconds of silence (whichever first)

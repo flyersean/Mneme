@@ -2,7 +2,7 @@
 
 Mneme is a proxy that sits between an AI agent and its model backend, archives every conversation into searchable memory, and injects relevant past context on each turn. It grades its own epistemic honesty through provenance, not answer-correctness.
 
-**This branch (`main`) is the memory-only build.** The full toolset is available and the model is told it has it — memory search, `bash`, `write`, web search, `fetch_url`, file access — but the strategy / self-improving layer (strategy learning, capability-edge → overcome, novel-procedure save, belief evolution, learning + thinking modes) is **disabled by default**. Set `MNEME_MEMORY_ONLY=0` to re-enable it; the `unified_mneme` branch runs with it on.
+**Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — that's the one knob `MNEME_MEMORY_ONLY=1` controls. It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `MNEME_MEMORY_ONLY=0` to turn them on here (see "Experimental features" below).
 
 **Backend-agnostic.** One config file chooses the backend — local [Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter, OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads are required when running against a hosted provider.
 
@@ -56,26 +56,16 @@ Every proxy instance is a set of independent toggles, so you can set one up exac
 - Honest-terminal detection: correct-but-uncitable answers — `undefined`, `market price`, "I don't know", "no such X", a false-premise correction, a clarification — are graded "pass", not fail. The judge misreads them as failures, so they're short-circuited before the judge.
 - Trace cross-check: any cited `[source: mem_XXX]` or URL is verified against what the model actually had this turn (injected chunks + search results + the server-side tool trace), with host normalization so `shaws-wharf.com` matches `https://www.shaws-wharf.com/menu`. A fabricated citation fails.
 
-### Strategy / self-improving layer
+### Experimental features (off by default)
 
-*Disabled on this branch — set `MNEME_MEMORY_ONLY=0` to enable.*
+*These exist and are under active development, but they're **off by default** on this
+branch (`MNEME_MEMORY_ONLY=1`). They are not dead code — they're developed and tested
+on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
+`MNEME_MEMORY_ONLY=0` to enable them here.*
 
-- Source-chunk linkage: every strategy is linked to the chunk that produced it, and retrieval keys on that linkage (see "How memory works") — no problem-type taxonomy to maintain.
-- Novel-procedure detection: a working new technique is detected from the tool trace, graded "great", and saved as a strategy.
-- Failure extraction: a D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers, so a false-positive fail can't teach the model to avoid a correct approach. SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success), not every pass.
-
-### Capability-edge tracking and overcoming
-
-*Disabled on this branch.*
-
-Records a competence edge per problem type; three consecutive tool failures flag it, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared.
-
-### Thinking and learning modes
-
-*Disabled on this branch.*
-
-- `/mode/think` — novelty: generate a baseline, forbid its modal features, diverge, and grade novelty objectively via embedding distance + pairwise judge — not self-report.
-- `/mode/learn` — parameter cycling + strategy extraction.
+- **Strategy / self-improving layer** — strategy learning from tool traces, novel-procedure detection, failure extraction, and belief evolution. Strategies are linked to the source chunk that produced them, and retrieval keys on that linkage (no hand-maintained problem-type taxonomy). A D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers; SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success).
+- **Capability-edge tracking & overcome** — records a competence edge per problem type; three consecutive tool failures flag it, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared.
+- **Thinking & learning modes** — `/mode/think` (novelty: generate a baseline, forbid its modal features, diverge, and grade novelty objectively via embedding distance + pairwise judge — not self-report) and `/mode/learn` (parameter cycling + strategy extraction).
 
 ## Quick start
 
@@ -185,9 +175,7 @@ The retrieval gate is an **absolute similarity floor**, not a relative one. If n
 
 A substring keyword fallback exists but is **off by default** (`keyword_fallback: false`) because it has no semantic score and pollutes context, such as "tool" matching an unrelated "Paramotor Tool" memory.
 
-Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor.
-
-Strategies are retrieved by their **source chunk** — the chunk that produced them — not by a hand-maintained taxonomy, so a strategy goes wherever its source chunk is relevant. The strategy floor is part of the self-improving layer, so it's off in this memory-only build unless `MNEME_MEMORY_ONLY=0`.
+Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the experimental self-improving layer, so the second floor is inactive in the default memory-only build unless `MNEME_MEMORY_ONLY=0`.
 
 Memory is **portable** across machines and even across 1024-dim embedders. On startup, the proxy re-embeds any chunk whose stored `embed_model` doesn't match the current one, so you can `scp` the `.db` from a pod to a laptop and it self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
@@ -247,9 +235,9 @@ Reference scales:
 
 ### Memory-only mode
 
-`MNEME_MEMORY_ONLY=1` (the default on this branch) turns off the whole strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset.
+`MNEME_MEMORY_ONLY=1` (the default on this branch) turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset. It is a *default on/off switch*, not a removal — the code stays present and tested.
 
-`MNEME_MEMORY_ONLY=0` re-enables the learning layer; the `unified_mneme` branch ships that way.
+`MNEME_MEMORY_ONLY=0` enables the experimental layer; the `unified_mneme` branch ships that way.
 
 ### Legacy thresholds
 
@@ -284,9 +272,9 @@ Two hard rules apply:
 | GET | `/` / `/chat` | Built-in chat UI |
 | GET | `/instructions` | Prompt reference + editor (the injected prompts) |
 | GET | `/list` | List all chunks with metadata |
-| GET/POST | `/capabilities` | List capability-edge records / flag or clear |
-| POST | `/mode/think` | Novelty thinking mode (escape mode collapse) |
-| POST | `/mode/learn` | Learning mode (parameter cycling + strategy extraction) |
+| GET/POST | `/capabilities` | *(experimental)* List capability-edge records / flag or clear |
+| POST | `/mode/think` | *(experimental)* Novelty thinking mode (escape mode collapse) |
+| POST | `/mode/learn` | *(experimental)* Learning mode (parameter cycling + strategy extraction) |
 | GET/POST | `/preferences` | Read / set user preferences |
 
 ## Testing
@@ -318,7 +306,9 @@ They cover:
 - The token-based context budget (recent-window eviction, followup compaction).
 - Per-tool disable flags and the `memory_enabled` master switch.
 
-68 tests.
+69 tests.
+
+The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
 
 ## Architecture
 
@@ -344,15 +334,13 @@ not part of the proxy stack:
 
 - `extensions/pi` — Pi coding-agent tools that let Pi call Mneme's memory/web tools.
 - `extensions/swarm` — a config-driven orchestrator that drives several Mneme proxies
-  (and/or raw Ollama models) through a loop (the example is an
-  outline→draft→review→finalize story loop with `goto`/`if` control flow). It talks to
-  proxies only over HTTP, so it can be swapped for any other driver without touching proxy
-  code. See `extensions/swarm/README.md`.
+  (and/or raw Ollama models) through a loop defined in a YAML config. It's a worked example
+  of how to build a consumer of the proxy: it talks to proxies only over HTTP, with control
+  flow (`goto`/`if`), folder primitives (`swap_dir`/`copy_dir`/`move_dir`/`clear_dir`,
+  multi-directory reads, `append_dir`), pacing, retry, and both backends. See
+  `extensions/swarm/README.md`.
 
 ## Branches
 
-- `main` — **memory-only build** (this branch). The latest code with the strategy/self-improving layer disabled by default (`MNEME_MEMORY_ONLY=1`). Memory retrieval, provenance grading, and the full toolset stay on. Start here if you only want memory; set `MNEME_MEMORY_ONLY=0` to re-enable the learning layer.
-- `unified_mneme` — **current development branch**. Same code with the learning layer enabled by default (and the capability harness + tests). This README describes it with learning on.
-- `novelty-thinking` — experimental learning/strategy layer (Ollama, Muse 30B).
-- `openrouter-backend` — earlier hosted-OpenRouter branch (superseded by `unified_mneme`'s provider registry).
-- `build-roadmap`, `dev-chunks`, `dev-v2` — legacy / restore points.
+- `main` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`MNEME_MEMORY_ONLY=1`). Start here.
+- `unified_mneme` — **the full build**. Same code with the experimental layer enabled by default (`MNEME_MEMORY_ONLY=0`), plus the live-model capability benchmark harness. This is where the experimental features are developed and tested before being merged back into `main`.
