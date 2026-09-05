@@ -10,11 +10,15 @@ orchestrator, a parallel fan-out, or any other driver without touching proxy cod
 
 ## What it does
 
-The example config runs a creative-writing loop through 5 roles:
+The example config runs a creative-writing loop that exercises **every** orchestrator
+function — inbox freeze, snapshot, single and multi-source reads, named-file writes,
+append, copy, move, single and list clears, string and folder-state branching, pacing,
+retry, and both backends (`mneme` + `ollama`):
 
 ```
-outline -> draft -> review -[REVISE]-> revise -[goto]-> review ...
-   ... until review outputs "VERDICT: APPROVE", then finalize -> Speak/output.txt
+freeze -> snapshot -> critics -> consume -> gate -> synthesize -> decide
+  gate:   pass1 has >=2 files -> synthesize | otherwise -> finalize
+  decide: APPROVE -> finalize -> promote | otherwise -> revise -> log -> cleanup -> loop
 ```
 
 ## Files
@@ -29,8 +33,8 @@ outline -> draft -> review -[REVISE]-> revise -[goto]-> review ...
 2. Make a working directory for the run's state and put your brief in it:
 
    ```
-   mkdir -p /workspace/swarm/raw
-   printf 'A generation ship on a thousand-year voyage...\n' > /workspace/swarm/raw/brief.txt
+   mkdir -p /workspace/swarm/input
+   printf 'A generation ship on a thousand-year voyage...\n' > /workspace/swarm/input/story.txt
    ```
 
 3. Run the orchestrator **from that working directory**:
@@ -41,25 +45,100 @@ outline -> draft -> review -[REVISE]-> revise -[goto]-> review ...
        /path/to/mneme/extensions/swarm/swarm_config.yaml
    ```
 
-All `read_dir` / `write_dir` / `clear_dir` / `swap_dir` paths in the config are
-**relative to the directory you run from**, so the brief, intermediate boards, and final
-output live in that directory (e.g. `/workspace/swarm` on a pod). Pick a directory on
-persistent storage if you want to keep `Speak/output.txt`; the `brain/` boards are scratch.
+All folder paths in the config are **relative to the directory you run from**, so the
+inbox, boards, buffer, log and final output live in that directory (e.g. `/workspace/swarm`).
+Pick a directory on persistent storage if you want to keep `output/` and `published/`;
+the `buffer/` and `pass*/` boards are scratch.
+
+## Config
+
+Top level:
+
+| key | meaning |
+| --- | --- |
+| `ollama_url` | base URL for `backend: ollama` steps (default `http://localhost:11434`) |
+| `timeout` | default per-call timeout in seconds (default 600) |
+| `max_steps` | safety cap on total step executions before stopping (default 0 = no limit) |
+
+Step fields:
+
+| field | meaning |
+| --- | --- |
+| `name` | optional label — a jump target and a log tag |
+| `backend` | `mneme` (default) or `ollama` |
+| `port` | Mneme proxy port (required for `backend: mneme`) |
+| `model` | Ollama model name (required for `backend: ollama`) |
+| `options` | per-step generation override (mneme: `temperature/top_p/top_k/max_tokens`; ollama: `temperature/top_p/top_k/num_predict`) |
+| `system_prompt` | optional extra system message (for mneme, prepended to the proxy's own prompt) |
+| `retry` | re-issue the call up to N extra times on a transient failure (timeout / HTTP 5xx) |
+| `delay` | pause N seconds before the step runs (rate-limiting) |
+| `read_dir` | directory, OR a **list** of directories, to read context from |
+| `write_dir` | write output (OVERWRITE) — a path with an extension is a file, otherwise a directory (`output.txt` inside) |
+| `append_dir` | like `write_dir`, but APPEND to the target (a running log / growing story) |
+| `copy_dir` | source file/dir to copy; pair with `copy_to` |
+| `copy_to` | destination folder for `copy_dir` |
+| `move_dir` | source file/dir to move (rename); pair with `move_to` |
+| `move_to` | destination folder for `move_dir` |
+| `clear_dir` | directory, OR a **list** of directories, to wipe |
+| `swap_dir` | directory to freeze (atomic rename to `<dir>.active` + recreate) |
+| `goto` | label to jump to after this step |
+| `if` | branch (see below) |
+| `timeout` | per-step request timeout override |
+
+Key semantics:
+
+- A model is called only when the step has `write_dir`, `append_dir`, or a STRING `if`.
+  Action-only steps (`swap_dir` / `copy_dir` / `move_dir` / `clear_dir` / `goto` / a
+  folder-state `if`) never call a model.
+- `read_dir: [a, b]` concatenates both directories into one context blob; each file is
+  headed `--- <dir>/<relpath> ---` so the model can tell which source it came from.
+  A single `read_dir: a` keeps the plain `--- path ---` header.
+- `copy_dir: X` + `copy_to: Y` copies a snapshot of `X` outside the freeze/consume loop
+  (e.g. copy `input.active` into `buffer/` before consuming it). A directory source copies
+  its contents into `Y` (merging); a file source copies into `Y` under its own name.
+- `move_dir: X` + `move_to: Y` atomically renames `X` into `Y` (promote draft -> final).
+- `clear_dir` cannot be combined with `goto`/`if` — split the clear and the jump into
+  separate steps (see `cleanup` + `loop` in the example).
+
+### `if` — two forms
+
+A) Branch on the model's output (needs a model call):
+
+```yaml
+if:
+  condition: contains | equals | startswith | endswith | matches   # matches = regex
+  value: "the string or pattern to match"
+  then: label-or-END
+  else: label-or-END        # optional
+```
+
+B) Branch on filesystem state (no model call):
+
+```yaml
+if:
+  condition: count_ge | count_lt | empty | exists
+  dir: directory-or-path
+  value: 2                 # required for count_ge / count_lt
+  then: label-or-END
+  else: label-or-END       # optional
+```
+
+- `count_ge` / `count_lt`: number of files under `dir` vs `value`.
+- `empty`: `dir` has no files (or does not exist).
+- `exists`: the path `dir` exists.
 
 ## Adapt it
 
 - Change each step's `port` to point at your proxies (one model per proxy; two roles may
   share a model via two ports).
-- Add raw-Ollama steps with `backend: ollama` + `model:` + optional `options:`
-  (temperature / num_predict / top_p / top_k). Backend `mneme` needs only `port`.
+- Add raw-Ollama steps with `backend: ollama` + `model:` + optional `options:`.
+  Backend `mneme` needs only `port`.
 - Control flow: `goto:` jumps to a named step; `if:` branches on the step's output
-  (`contains` / `equals` / `startswith` / `endswith` / `matches`), with `then:` / `else:`
-  targets (or `END`). `clear_dir` cannot be combined with `goto`/`if`.
-- Inbox swap (for a loop fed by a stream of files — tool results, a feed): `swap_dir: raw`
-  atomically renames `raw` → `raw.active` and recreates a fresh `raw`, so readers read the
-  frozen `raw.active` snapshot (all see identical bytes) while new writes land in `raw`.
-  Consume the snapshot with `clear_dir: raw.active`. Use these on action-only steps (no
-  `read_dir`/`write_dir`/`if`) so you control exactly when the freeze and consume happen.
-- Per-step `timeout:` overrides the top-level `timeout:`.
+  (string conditions) or on filesystem state (folder conditions), with `then:` / `else:`
+  targets (or `END`).
+- Inbox swap: `swap_dir: raw` renames `raw` → `raw.active` and recreates `raw`, so readers
+  read the frozen `raw.active` snapshot while new writes land in `raw`. Consume it with
+  `clear_dir: raw.active`. Use these on action-only steps so you control when the freeze
+  and consume happen.
 
 Dependencies: `requests`, `pyyaml` (`pip install requests pyyaml`).

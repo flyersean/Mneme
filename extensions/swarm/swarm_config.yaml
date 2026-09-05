@@ -1,93 +1,198 @@
-# Swarm example config — a creative-writing loop driving 5 Mneme proxies (3 models).
+# =============================================================================
+# Swarm — example config for the Mneme swarm orchestrator.
+# =============================================================================
 #
-# This is an EXAMPLE consumer of the Mneme proxy stack. The orchestrator only talks
-# to proxies over HTTP (localhost:<port>/v1/chat/completions), so it has no path or
-# code dependency on the Mneme repo — it just needs the proxies running.
+# This file is a WORKED EXAMPLE that exercises every function the orchestrator
+# supports. It is a consumer of the Mneme proxy stack, NOT part of it: the
+# orchestrator talks to proxies only over HTTP (localhost:<port>/v1/chat/completions),
+# so this config has no code dependency on the Mneme repo — it just needs the
+# proxies running. See extensions/swarm/README.md and the top of
+# swarm_orchestrator.py for the full field reference.
 #
-# Ports below are the EXAMPLE layout (one model per proxy; two roles may share a
-# model via two ports). On RunPod, avoid 8081 — nginx reserves it.
-#   8080 = outline  (e.g. gemma4:12b)
-#   8082 = draft    (e.g. qwen2.5:14b)
-#   8084 = review   (e.g. gemma4:12b)
-#   8083 = revise   (e.g. llama3.1:8b)
-#   8085 = finalize (e.g. qwen2.5:14b)
-# Point each port at whatever model you run behind that proxy.
+# Ports below are the EXAMPLE layout (one model per proxy). Point each port at
+# whatever model you run behind that proxy. On RunPod, avoid 8081 — nginx
+# reserves it.
+#   8080 = a critic + finalizer   (e.g. gemma4:12b)
+#   8082 = a critic + synthesizer (e.g. qwen2.5:14b)
 #
-# read_dir / write_dir / clear_dir are RELATIVE to the directory you run the
-# orchestrator from, so the brief, intermediate boards, and final output all live in
-# that directory (see extensions/swarm/README.md).
+# read_dir / write_dir / append_dir / clear_dir / swap_dir / copy_dir / copy_to /
+# move_dir / move_to paths are RELATIVE to the directory you run the orchestrator
+# from. So the inbox, boards, buffer, log and final output all live in that directory.
+#
+# ---------------------------------------------------------------------------
+# THE LOOP (what the steps below do)
+# ---------------------------------------------------------------------------
+#   freeze       swap_dir: input         -> freeze the inbox (input -> input.active)
+#   snapshot     copy_dir: input.active  -> copy the frozen story into buffer/ so it
+#                copy_to: buffer            survives the tick's consume step
+#   critic_*     read input.active, write named files into pass1/   (2 critics)
+#   consume      clear_dir: input.active -> wipe the snapshot (single clear)
+#   gate         if count_ge pass1 >= 2  -> folder-state branch (no model call)
+#   synthesize   read [buffer, pass1]    -> multi-source read, write pass2/
+#   decide       read pass2, write a verdict, branch on it (string if)
+#   revise       read [buffer, pass2],   -> write the next input, goto log
+#   log          append_dir: log/verdicts.txt -> append a one-line verdict to a log
+#   cleanup      clear_dir: [buffer, pass1, pass2] -> reset all boards (list clear)
+#   loop         delay: 2, goto: freeze  -> pause, then next tick
+#   finalize     read [buffer, pass2],   -> write the finished story to output/
+#   promote      move_dir: output/story.txt -> atomically move it to published/
+#                move_to: published
+#
+# Flow: freeze -> snapshot -> critics -> consume -> gate
+#       gate: pass1 has >=2 files -> synthesize -> decide
+#             otherwise          -> finalize
+#       decide: APPROVE -> finalize | otherwise -> revise -> log -> cleanup -> loop
+# ---------------------------------------------------------------------------
 #
 # Any step may set `options:` to override generation settings for THAT step's call
 # only (without touching the proxy's global config):
 #   backend=mneme:  OpenAI-style — { temperature, top_p, top_k, max_tokens }
 #   backend=ollama: Ollama options — { temperature, top_p, top_k, num_predict }
 #
-# Loop: outline -> draft -> review -(REVISE)-> revise -(goto)-> review ... until
-# review outputs "VERDICT: APPROVE", then finalize and stop.
-#
-# Inbox freeze/consume — for loops fed by a stream of files (tool results, a feed):
-#   swap_dir: raw          # atomically rename raw -> raw.active and recreate raw.
-#                          # New writes land in the FRESH raw; readers read the
-#                          # frozen raw.active snapshot (every reader sees the same
-#                          # bytes — no "model 2 sees more than model 1" drift).
-#   clear_dir: raw.active  # consume the snapshot: wipe its contents.
-# Put swap_dir on an action-only step at the START of a tick and clear_dir on an
-# action-only step at the END (both steps have no read_dir/write_dir/if, so no
-# model is called). Example tick:
-#   steps:
-#     - name: freeze        # freeze the inbox for this tick
-#       swap_dir: raw
-#     - name: process       # models read the stable snapshot
-#       read_dir: raw.active
-#       write_dir: out
-#     - name: consume       # wipe the snapshot; new writes already wait in raw
-#       clear_dir: raw.active
-#     - name: loop          # next tick
-#       goto: freeze
+# Per-step `retry:` re-issues a call on a transient failure; per-step `delay:`
+# pauses before the step runs; per-step `timeout:` overrides the top-level timeout.
 
 ollama_url: http://localhost:11434
 timeout: 600
+max_steps: 100   # safety cap: stop after 100 step executions (0 = no limit)
 
 steps:
-  - name: outline
+  # --- TICK START: freeze the inbox (atomic swap) --------------------------
+  # swap_dir renames `input` -> `input.active` (a stable snapshot every reader
+  # sees identically) and recreates a fresh, empty `input` for the NEXT tick's
+  # writes. Action-only step: no read_dir/write_dir/if, so no model is called.
+  - name: freeze
+    swap_dir: input
+
+  # --- SNAPSHOT: copy the frozen story OUT of the freeze/consume loop -------
+  # copy_dir copies `input.active` into `buffer/`. Once `input.active` is
+  # consumed (cleared) below, the story still lives in `buffer/` so later steps
+  # (synthesize, revise, finalize) can read the original text even though the
+  # inbox snapshot is gone. (copy_dir + copy_to must always appear together.)
+  - name: snapshot
+    copy_dir: input.active
+    copy_to: buffer
+
+  # --- CRITIC A: single-directory read, named-file write, retry ------------
+  # read_dir reads ONE directory. write_dir ends in a file extension, so the
+  # output is written to that exact file (pass1/structure.txt). `retry: 2`
+  # re-issues the call up to 2 extra times if the proxy hiccups (timeout / 5xx).
+  - name: critic_structure
     backend: mneme
     port: 8080
-    # options: { temperature: 0.7 }   # per-step override — wins over the proxy config for this call only
-    system_prompt: "You are the Outline step. Given a raw story brief, write a short chapter outline. Be concise."
-    read_dir: raw
-    write_dir: brain/outline
-    clear_dir: raw
+    retry: 2
+    read_dir: input.active
+    write_dir: pass1/structure.txt
+    system_prompt: "You are a structure critic. Read the story below and write commentary on its narrative structure and flow. Output only the commentary."
 
-  - name: draft
+  # --- CRITIC B: backend=ollama + per-step options --------------------------
+  # This step drives a RAW Ollama model instead of a Mneme proxy, and shows a
+  # per-step `options` override (only affects this call). Note backend=ollama
+  # needs `model:`; backend=mneme needs `port:` instead.
+  - name: critic_prose
+    backend: ollama
+    model: qwen2.5:14b
+    options: { temperature: 0.7, num_predict: 400 }
+    read_dir: input.active
+    write_dir: pass1/prose.txt
+    system_prompt: "You are a prose critic. Read the story below and write commentary on its language and style. Output only the commentary."
+
+  # --- CONSUME: wipe the frozen snapshot (single clear) ---------------------
+  # clear_dir on `input.active` deletes the frozen snapshot's contents. New
+  # writes for the next tick are already waiting in the fresh `input`. Note
+  # clear_dir CANNOT be combined with goto/if (see cleanup + loop below).
+  - name: consume
+    clear_dir: input.active
+
+  # --- GATE: branch on FILESYSTEM state (no model call) --------------------
+  # A folder-state `if` needs no model: it inspects a directory and jumps based
+  # on what it finds. Here: only synthesize if both critics produced a file
+  # (pass1 has >= 2 files); otherwise skip straight to finalize. Conditions:
+  # count_ge / count_lt / empty / exists.
+  - name: gate
+    if:
+      condition: count_ge
+      dir: pass1
+      value: 2
+      then: synthesize
+      else: finalize
+
+  # --- SYNTHESIZE: multi-source read ---------------------------------------
+  # read_dir is a LIST of two directories. Their contents are concatenated into
+  # one blob, each file headed by `--- <dir>/<relpath> ---` so the model can
+  # tell which came from where: it sees BOTH the original story (from buffer/)
+  # and the two critiques (from pass1/) in a single call.
+  - name: synthesize
     backend: mneme
     port: 8082
-    system_prompt: "You are the Draft step. Turn the outline into a prose story. Write ONLY prose — do not repeat the outline, its headings, or its bullet points. Open directly on the first scene and tell the story through to the end."
-    read_dir: brain/outline
-    write_dir: brain/draft
+    read_dir: [buffer, pass1]
+    write_dir: pass2/synthesis.txt
+    system_prompt: "You are a synthesizer. Read the original story (from buffer/) and the critiques (from pass1/), then write a synthesis of what most needs improving. Output only the synthesis."
 
-  - name: review
+  # --- DECIDE: branch on the step's own output (string if) ------------------
+  # The model writes a verdict, and `if` branches on it: APPROVE -> finalize,
+  # anything else -> revise. `matches` is a regex; other string conditions are
+  # contains / equals / startswith / endswith.
+  - name: decide
     backend: mneme
-    port: 8084
-    system_prompt: "You are the Review step. Judge the DRAFT itself — the story, not your critique of it.\n\nAPPROVE only if the draft is complete and genuinely good: a coherent story with a real beginning, middle and end, no plot holes, no unfinished threads. You may list minor polish suggestions and still APPROVE.\n\nREVISE if the draft has a real problem that needs a rewrite: it is incomplete or cut off, incoherent or contradictory, or reads badly enough that a reader would notice. If it needs actual rewriting, say REVISE even if you can describe how to fix it.\n\nWrite a short critique, then end with exactly one line and nothing after it:\nVERDICT: APPROVE\nor\nVERDICT: REVISE"
-    read_dir: brain/draft
-    write_dir: brain/review
+    port: 8080
+    read_dir: pass2
+    write_dir: pass2/verdict.txt
+    system_prompt: "Review the synthesis below. If it needs no further work, reply with the single word APPROVE. Otherwise reply with REVISE."
     if:
       condition: matches
-      value: '(?i)VERDICT\s*:\s*APPROVE'
+      value: '(?i)APPROVE'
       then: finalize
       else: revise
 
+  # --- REVISE: write the next tick's input, then jump (goto) ----------------
+  # Reads the original story AND the synthesis (multi-source read again), writes
+  # an improved version into the inbox `input/` (so the NEXT tick's freeze picks
+  # it up), then jumps to log via goto.
   - name: revise
     backend: mneme
-    port: 8083
-    system_prompt: "You are the Revise step. Rewrite the draft using the reviewer's notes."
-    read_dir: brain/review
-    write_dir: brain/draft
-    goto: review
+    port: 8082
+    read_dir: [buffer, pass2]
+    write_dir: input/summary.txt
+    system_prompt: "Read the original story (buffer/) and the synthesis (pass2/), then write a revised story. Output only the revised story."
+    goto: log
 
+  # --- LOG: append a one-line verdict to a running log (append_dir) ---------
+  # append_dir is like write_dir but APPENDS instead of overwriting, so the log
+  # grows across ticks instead of being clobbered each time.
+  - name: log
+    backend: mneme
+    port: 8080
+    read_dir: pass2
+    append_dir: log/verdicts.txt
+    system_prompt: "Write a single short line summarizing the state of the work for a running log."
+
+  # --- CLEANUP: reset all boards (list clear) -------------------------------
+  # clear_dir accepts a LIST, so one step wipes buffer/, pass1/ and pass2/ at
+  # once. Because clear_dir cannot be combined with goto, the jump back to
+  # freeze lives on the NEXT step.
+  - name: cleanup
+    clear_dir: [buffer, pass1, pass2]
+
+  # --- LOOP: pause, then next tick (delay + goto) ---------------------------
+  # delay pauses this many seconds before the step runs — put it on the loop
+  # step to throttle the tick rate (rate-limit a busy proxy).
+  - name: loop
+    delay: 2
+    goto: freeze
+
+  # --- FINALIZE: write the finished story -----------------------------------
   - name: finalize
     backend: mneme
-    port: 8085
-    system_prompt: "You are the Finalize step. Produce the final story. Output the complete story and nothing else: a title, then the full narrative in clean flowing prose from beginning to end. Do not repeat the outline, chapter headings, or bullet points — prose only. Give the story a real, resolved ending: the protagonist makes the choice and we see the outcome. No preamble, commentary, or 'here is the story'."
-    read_dir: brain/draft
-    write_dir: Speak
+    port: 8080
+    read_dir: [buffer, pass2]
+    write_dir: output/story.txt
+    system_prompt: "Read the original story (buffer/) and the synthesis (pass2/), then write the final, polished story. Output the complete story and nothing else."
+
+  # --- PROMOTE: atomically move the finished story (move_dir) ---------------
+  # move_dir renames `output/story.txt` into `published/` (atomic on the same
+  # filesystem) — the "publish the draft" primitive. Falls through to the end
+  # of the steps, which stops the run.
+  - name: promote
+    move_dir: output/story.txt
+    move_to: published
