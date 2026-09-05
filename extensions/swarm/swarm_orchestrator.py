@@ -128,7 +128,21 @@ _FOLDER_CONDITIONS = {"count_ge", "count_lt", "empty", "exists"}
 
 class Orchestrator:
     def __init__(self, config_path="swarm_config.yaml"):
-        with open(config_path, "r", encoding="utf-8") as f:
+        self._config_path = config_path
+        self._config_mtime = self._file_mtime()
+        self._load_config()
+
+    def _file_mtime(self):
+        try:
+            return os.path.getmtime(self._config_path)
+        except OSError:
+            return 0.0
+
+    def _load_config(self):
+        """Read the config file and (re)build the flow state. Fails loud on an
+        invalid flow at startup; _maybe_reload() wraps this to keep the last good
+        flow when a mid-run edit is still broken."""
+        with open(self._config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f) or {}
         self.steps = self.config.get("steps") or []
         self.ollama_url = self.config.get("ollama_url", "http://localhost:11434")
@@ -137,6 +151,35 @@ class Orchestrator:
         self.name_to_index = {}
         self._resolve_labels()
         self._validate_flow()
+
+    def _maybe_reload(self, idx):
+        """Hot-reload: if the config file changed on disk, rebuild the flow and
+        re-anchor the current position by step name, so an edit takes effect on the
+        NEXT step with no restart. A broken/partial edit keeps the last good flow."""
+        if not self._config_path:
+            return idx
+        try:
+            mtime = os.path.getmtime(self._config_path)
+        except OSError:
+            return idx
+        if mtime == self._config_mtime:
+            return idx
+        self._config_mtime = mtime
+        anchor = self.steps[idx].get("name") if 0 <= idx < len(self.steps) else None
+        snap = (self.config, self.steps, self.name_to_index,
+                self.ollama_url, self.timeout, self.max_steps)
+        try:
+            self._load_config()
+        except (SystemExit, yaml.YAMLError, ValueError, TypeError) as e:
+            (self.config, self.steps, self.name_to_index,
+             self.ollama_url, self.timeout, self.max_steps) = snap
+            print(f"  [reload] config reload failed ({e}) — keeping current flow", flush=True)
+            return idx
+        if anchor is not None and anchor in self.name_to_index:
+            print(f"  [reload] config reloaded ({len(self.steps)} steps)", flush=True)
+            return self.name_to_index[anchor]
+        print(f"  [reload] config reloaded — step '{anchor}' gone, restarting flow", flush=True)
+        return 0
 
     # ---- startup validation (fail loud, before any model is called) ----
 
@@ -529,6 +572,11 @@ class Orchestrator:
                 print(f"\n[max_steps] reached {self.max_steps} step executions — stopping.")
                 return
             steps_run += 1
+            # Hot-reload: pick up edits to the config file without a restart.
+            idx = self._maybe_reload(idx)
+            if idx == END or idx >= len(self.steps):
+                print("\n[reload] flow has no more steps — stopping.")
+                return
             step = self.steps[idx]
             name = step.get("name") or f"#{idx}"
             print(f"\n{'=' * 40}\nSTEP {name}")

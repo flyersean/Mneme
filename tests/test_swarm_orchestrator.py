@@ -263,5 +263,50 @@ class TestFolderIO(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(workdir, "published", "story.txt")))
 
 
+    def test_hot_reload_picks_up_config_edits(self):
+        # Editing swarm_config.yaml on disk must reload the flow on the next step.
+        cfg = os.path.join(self.tmp, "c.yaml")
+        with open(cfg, "w") as f:
+            f.write("steps:\n  - name: a\n    goto: b\n  - name: b\n    goto: a\n")
+        os.utime(cfg, (1000000000, 1000000000))  # pin an old mtime
+        o = Orchestrator(cfg)
+        self.assertEqual(len(o.steps), 2)
+        # Add a third step with a newer mtime so the reload is detected.
+        with open(cfg, "w") as f:
+            f.write("steps:\n  - name: a\n    goto: b\n  - name: b\n    goto: a\n  - name: c\n    goto: a\n")
+        os.utime(cfg, (2000000000, 2000000000))
+        idx = o._maybe_reload(0)
+        self.assertEqual(len(o.steps), 3)
+        self.assertIn("c", o.name_to_index)
+        self.assertEqual(idx, 0)  # step 'a' still anchored at index 0
+
+    def test_hot_reload_keeps_old_config_on_broken_edit(self):
+        # A broken edit must NOT crash the flow — keep the last good config.
+        cfg = os.path.join(self.tmp, "c.yaml")
+        with open(cfg, "w") as f:
+            f.write("steps:\n  - name: a\n    goto: b\n  - name: b\n    goto: a\n")
+        os.utime(cfg, (1000000000, 1000000000))
+        o = Orchestrator(cfg)
+        with open(cfg, "w") as f:
+            f.write("steps: [unclosed\n")  # malformed YAML
+        os.utime(cfg, (2000000000, 2000000000))
+        idx = o._maybe_reload(0)
+        self.assertEqual(len(o.steps), 2)  # old flow preserved
+        self.assertEqual(idx, 0)  # position unchanged
+
+    def test_hot_reload_reanchors_by_name(self):
+        # Reordering steps re-anchors the position by NAME, not index.
+        cfg = os.path.join(self.tmp, "c.yaml")
+        with open(cfg, "w") as f:
+            f.write("steps:\n  - name: a\n    goto: b\n  - name: b\n    goto: a\n")
+        os.utime(cfg, (1000000000, 1000000000))
+        o = Orchestrator(cfg)
+        with open(cfg, "w") as f:
+            f.write("steps:\n  - name: b\n    goto: a\n  - name: a\n    goto: b\n")  # swapped
+        os.utime(cfg, (2000000000, 2000000000))
+        idx = o._maybe_reload(0)  # was at index 0 = step 'a'
+        self.assertEqual(idx, 1)  # 'a' now lives at index 1
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

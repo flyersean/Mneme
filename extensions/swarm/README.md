@@ -50,6 +50,11 @@ inbox, boards, buffer, log and final output live in that directory (e.g. `/works
 Pick a directory on persistent storage if you want to keep `output/` and `published/`;
 the `buffer/` and `pass*/` boards are scratch.
 
+**Live edits.** The config file is re-read whenever it changes on disk — edit a step's
+`system_prompt`, `options`, `delay`, `retry`, or add/remove steps and the change applies on
+the next step, no restart. A broken/partial edit keeps the last good flow. Input folders
+(`read_dir`) are also re-read fresh every step.
+
 ## Config
 
 Top level:

@@ -52,10 +52,9 @@ Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenA
 - **Generation settings** (`sampling.*` / `models.*`) are re-read when `mneme.yaml` changes,
   so you can tune temperature/top_p/max_tokens on a running proxy. Structural settings
   (backend, port, db path) still need a restart.
-- **Swarm** reads its input folders fresh every step, and because it drives Mneme proxies
-  over HTTP, those proxies' prompts and settings hot-reload the same way. (The swarm's own
-  step list in `swarm_config.yaml` is read at launch — restart the orchestrator to change
-  the flow.)
+- **Swarm** reads its input folders fresh every step, re-reads `swarm_config.yaml` whenever
+  it changes (so edits to steps, prompts, and options apply on the next step), and drives
+  Mneme proxies over HTTP — whose prompts and settings hot-reload the same way.
 
 ---
 
