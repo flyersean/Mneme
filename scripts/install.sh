@@ -90,9 +90,10 @@ if command -v ollama >/dev/null 2>&1; then
 else
   echo "  installing Ollama..."
   # Ollama's installer now serves a zstd-compressed tarball and refuses to run
-  # without `zstd`. apt-get can fail silently (stale package lists / no network),
-  # so install zstd first and VERIFY it landed — otherwise the user gets Ollama's
-  # confusing "requires zstd" error instead of a clear one.
+  # without a `zstd` binary. apt-get can fail silently (stale package lists, or
+  # apt repos blocked on some pods), so install zstd first and VERIFY it landed.
+  # If apt can't provide it, fall back to a Python `zstandard`-based zstd shim —
+  # that needs only pip (prebuilt wheel, no compiler) and no package manager.
   if ! command -v zstd >/dev/null 2>&1; then
     echo "  installing zstd (required by Ollama's installer)..."
     for _ in 1 2 3; do
@@ -100,6 +101,21 @@ else
       sleep 2
     done
     apt-get install -y -qq zstd curl 2>/dev/null || true
+  fi
+  if ! command -v zstd >/dev/null 2>&1; then
+    echo "  apt has no zstd — installing a Python zstandard shim instead..."
+    python3 -m pip install --break-system-packages --quiet zstandard 2>/dev/null \
+      || python3 -m pip install --quiet zstandard 2>/dev/null || true
+    if python3 -c "import zstandard" 2>/dev/null; then
+      cat > /usr/local/bin/zstd <<'EOF'
+#!/usr/bin/env python3
+# Minimal zstd shim (decompress stdin -> stdout), enough for Ollama's installer.
+import sys
+import zstandard
+zstandard.ZstdDecompressor().copy_stream(sys.stdin.buffer, sys.stdout.buffer)
+EOF
+      chmod +x /usr/local/bin/zstd
+    fi
   fi
   if ! command -v zstd >/dev/null 2>&1; then
     echo "  ✗ zstd is missing and could not be installed — Ollama's installer needs it to extract its tarball." >&2
