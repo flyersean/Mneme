@@ -36,6 +36,27 @@ curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/M
 
 Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.
 
+### What you get
+
+- **Chat UI** — open `http://localhost:8080/` in a browser. It's a simple light-theme web
+  client over the same `/v1/chat/completions` API. Type a message and the proxy runs the
+  full tool loop behind it (memory search, `bash`/`write`, web search, file access).
+- **Prompt editor** — open `http://localhost:8080/instructions` to see every prompt Mneme
+  injects, in the order it fires. Edit any of them inline (Save writes straight back to the
+  file), or click "open file" for the raw text. Edits apply to the next message.
+
+### Live edits (no restart)
+
+- **Prompts** are re-read every turn — edit one (or use the `/instructions` editor) and the
+  change applies to the next message.
+- **Generation settings** (`sampling.*` / `models.*`) are re-read when `mneme.yaml` changes,
+  so you can tune temperature/top_p/max_tokens on a running proxy. Structural settings
+  (backend, port, db path) still need a restart.
+- **Swarm** reads its input folders fresh every step, and because it drives Mneme proxies
+  over HTTP, those proxies' prompts and settings hot-reload the same way. (The swarm's own
+  step list in `swarm_config.yaml` is read at launch — restart the orchestrator to change
+  the flow.)
+
 ---
 
 Mneme is a proxy that sits between an AI agent and its model backend, archives every conversation into searchable memory, and injects relevant past context on each turn. It grades its own epistemic honesty through provenance, not answer-correctness.
@@ -66,6 +87,32 @@ Everything lives under one directory, `~/mneme/`:
   env        your OpenRouter API key (chmod 600; only for the hosted backend)
   chunks/    memory DB (mneme.db), per-instance config (instances/<port>/mneme.yaml), and editable prompts
 ```
+
+## Model selection
+
+Mneme runs three models — chat, embedder, labeler — and each has one hard requirement:
+
+- **Chat model** — answers you. Any OpenAI-compatible model works; pick it for capability.
+- **Embedder** — must be **1024-dim**. It also fixes the similarity scale, so `inject_min_similarity` is embedder-dependent (see "Tune `inject_min_similarity` per embedder" below).
+- **Labeler** — a small, fast model that tags topics on *every* turn. It must be **non-thinking** (a thinking labeler stalls the pipeline).
+
+### Thinking models
+
+Recent models (Gemma 3/4 and similar) are "thinking" models that emit a long hidden
+reasoning phase before answering — slower, and if misconfigured they can run away and time
+out. Mneme handles them for you:
+
+- **Thinking is off by default** — the proxy sends `think: false`, so the model answers
+  directly instead of grinding through a hidden reasoning chain.
+- The **labeler must be non-thinking** — it runs on every single turn.
+- If a thinking model is slow or times out, **suspect the proxy's config before the model.**
+  A partial or mis-loaded config can silently leave reasoning on (the exact failure that once
+  made a Gemma proxy hang). Mneme guards against it with an atomic config write and a
+  retry-on-partial-load at startup.
+- To opt back into reasoning, set `MNEME_REASONING_ENABLED=1`.
+
+In short: if a model seems "broken" or hangs, check the proxy's settings and generation
+parameters first — it's almost always a settings issue, not the model.
 
 ## Features
 
