@@ -91,7 +91,7 @@ import mneme.tools as mntools
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
 # constants below so config values flow into them via env-var defaults.
 # Precedence: environment variable > config file > built-in default.
-# See docs/config-spec.md for the full schema.
+# See mneme.yaml.example for the full schema.
 
 CONFIG_PATH: Optional[str] = None
 CONFIG_DATA: Dict = {}           # raw sections for runtime lookup (providers, models)
@@ -237,7 +237,7 @@ def _apply_config(data: Dict, path: str):
             env = _CONFIG_ENV_MAP.get(flat)
             if env is None:
                 raise SystemExit(
-                    f"[CONFIG] {path}: unknown key '{flat}' (typo?) — see docs/config-spec.md"
+                    f"[CONFIG] {path}: unknown key '{flat}' (typo?) — see mneme.yaml.example"
                 )
             if os.environ.get(env) is None and v is not None:
                 os.environ[env] = _config_scalar(v)

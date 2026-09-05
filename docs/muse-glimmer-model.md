@@ -127,7 +127,7 @@ def setup_muse():
     return MUSE_MODEL_NAME
 ```
 
-Other per-model knobs to apply (from the config-spec example):
+Other per-model knobs to apply (from the config example):
 
 ```yaml
 muse-glimmer:30b:

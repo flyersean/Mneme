@@ -1,5 +1,43 @@
 # Mneme — conversational memory proxy
 
+> ⚠️ **Work in progress — vibe-coded and under active development.** This works,
+> but it may have bugs and it changes as it's developed. Expect rough edges and
+> occasional breakage. Feedback and bug reports welcome.
+
+## Quick start
+
+Three scripts take you from a fresh machine to a running proxy. Run the first two
+on the machine that **hosts** the proxy (a laptop or a GPU pod); run the third on
+your **laptop** to reach a remote proxy.
+
+| Script | Where it runs | What it does |
+|---|---|---|
+| `install.sh` | the host | Installs Python dependencies + Ollama and clones the repo into `~/mneme/repo`. Idempotent — safe to re-run. |
+| `mneme_setup.py` | the host | Interactive setup wizard: pick the backend (OpenRouter or Ollama), the chat/embed/label models, the context window, optional Pi, and the port. Writes the config + start script, launches the proxy, and health-checks it. |
+| `mneme_connect.py` | your laptop | (Only for a remote pod.) Opens a stay-alive SSH tunnel and prints the local URLs to open in your browser. |
+
+### 1. Install (on the host)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
+```
+
+### 2. Configure (on the host)
+
+```bash
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
+```
+
+### 3. Connect (on your laptop — only for a remote pod)
+
+```bash
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+```
+
+Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.
+
+---
+
 Mneme is a proxy that sits between an AI agent and its model backend, archives every conversation into searchable memory, and injects relevant past context on each turn. It grades its own epistemic honesty through provenance, not answer-correctness.
 
 **Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — that's the one knob `MNEME_MEMORY_ONLY=1` controls. It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `MNEME_MEMORY_ONLY=0` to turn them on here (see "Experimental features" below).
@@ -67,33 +105,6 @@ on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
 - **Capability-edge tracking & overcome** — records a competence edge per problem type; three consecutive tool failures flag it, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared.
 - **Thinking & learning modes** — `/mode/think` (novelty: generate a baseline, forbid its modal features, diverge, and grade novelty objectively via embedding distance + pairwise judge — not self-report) and `/mode/learn` (parameter cycling + strategy extraction).
 
-## Quick start
-
-The unified setup uses the same two commands on a laptop or a pod. The installer prepares the machine; the setup wizard asks how you want to run it.
-
-### 1. Install dependencies, Ollama, and proxy code
-
-```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
-```
-
-This installs the Python dependencies, Ollama (idempotent — harmless even for a hosted backend), and clones the proxy into `~/mneme/repo`. It is safe to re-run; it only fills in what's missing.
-
-### 2. Configure the backend, models, and Pi
-
-```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
-```
-
-The wizard walks through four steps:
-
-1. **Backend** — OpenRouter (hosted; needs an API key) or Ollama (local/private).
-2. **Models** — chat / embedder / labeler, plus the chat model's **context window** (32K / 64K / 128K / 200K / 1M, or a custom token count). The window you pick drives the context budget written into the config.
-3. **Pi** — optional terminal assistant. Saying **no** still leaves the built-in chat page and any OpenAI-compatible client working.
-4. **Port** + whether to inject Mneme's system instructions.
-
-It writes one config (`~/mneme/chunks/instances/<port>/mneme.yaml`) and a start script (`~/mneme/chunks/instances/<port>/start_proxy.sh`), then launches the proxy and health-checks it.
-
 ## Usage and connecting clients
 
 ### Run the proxy
@@ -146,16 +157,6 @@ Pi is offered during setup. To install or run it by hand:
      --extension ~/mneme/repo/extensions/pi/mneme-web-tools.ts
    ```
 
-### Connect to a remote pod
-
-If Mneme runs on a pod (RunPod, etc.), run the standalone connect app on your laptop to open a stay-alive SSH tunnel and get the local URLs:
-
-```bash
-curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
-```
-
-It prompts for the pod address + SSH port, opens the tunnel (with keep-alive), then prints the OpenAI API base URL, the chat URL, and the prompt-editor URL to open in your browser.
-
 ### Connect any other OpenAI client
 
 Anything OpenAI-compatible (Hermes, Open WebUI, etc.) just needs the base URL:
@@ -207,7 +208,7 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 | `storage.memory_enabled` | `true` | master switch — `false` disables ALL memory (no retrieval/injection/staging, `search_memory` off) while keeping tools |
 | `tools.search_memory` / `tools.list_tools` / `tools.read_tool` / `tools.read_file` / `tools.fetch_url` / `tools.web_search` | `true` each | per-tool on/off — set any to `false` to hide it from the model |
 
-Full reference: [`docs/config-spec.md`](docs/config-spec.md).
+Full reference: [`mneme.yaml.example`](mneme.yaml.example).
 
 ### Context budget — no more overruns
 

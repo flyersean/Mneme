@@ -17,7 +17,7 @@
 #    Edit, then RESTART the proxy. Nothing here is hot-reloaded.
 #
 #  FULL REFERENCE
-#    docs/config-spec.md in the repo is the complete schema reference.
+#    This file IS the reference — every setting below is commented.
 #
 #  TUNING CHEAT-SHEET
 #    * retrieval.inject_min_similarity  — the "how similar before I inject a

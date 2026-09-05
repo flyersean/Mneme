@@ -5,8 +5,8 @@ agents, etc.) that need to (1) stand up a Mneme proxy instance and (2) build an
 **extension** (an orchestrator or any other driver) that consumes Mneme proxies.
 
 It is self-contained: every config key and the full HTTP contract are specified below.
-The two other reference docs are `docs/config-spec.md` (exhaustive env-var mapping) and
-`mneme.yaml.example` (a tuned, copy-able proxy config).
+The other reference doc is `mneme.yaml.example` (a tuned, copy-able proxy config
+with every key commented).
 
 ---
 
