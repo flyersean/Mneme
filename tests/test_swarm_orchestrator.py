@@ -78,6 +78,22 @@ class TestFolderIO(unittest.TestCase):
         self.assertIn("NEW", refrozen)                # late write now visible
         self.assertNotIn("ORIGINAL", refrozen)        # consumed snapshot gone
 
+    def test_write_output_named_file(self):
+        # write_dir with an extension is a full file path.
+        self.o.write_output(os.path.join(self.tmp, "pass1", "a2_synthesis.txt"), "hello")
+        p = os.path.join(self.tmp, "pass1", "a2_synthesis.txt")
+        self.assertTrue(os.path.isfile(p))
+        with open(p) as f:
+            self.assertEqual(f.read(), "hello")
+
+    def test_write_output_defaults_to_output_txt(self):
+        # write_dir without an extension is a directory -> output.txt inside.
+        self.o.write_output(os.path.join(self.tmp, "pass1"), "hello")
+        p = os.path.join(self.tmp, "pass1", "output.txt")
+        self.assertTrue(os.path.isfile(p))
+        with open(p) as f:
+            self.assertEqual(f.read(), "hello")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

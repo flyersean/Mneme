@@ -22,7 +22,11 @@ CONFIG (swarm_config.yaml)
                   system_prompt.md, so leave it unset there unless you want an
                   extra instruction prepended.
     read_dir      directory to read context from
-    write_dir     directory to write the model output to (as output.txt)
+    write_dir     directory to write the model output to. If the path ends in a
+                  file extension (e.g. "pass1/a2_synthesis.txt") it is treated as
+                  a full file path and the output is written to that exact file;
+                  otherwise it is treated as a directory and output.txt is written
+                  inside it.
     clear_dir     directory to wipe. NOT allowed together with goto/if — clearing
                   on a jump erases context the next step needs to read.
     swap_dir      directory to freeze for this tick (atomic inbox swap): rename it
@@ -148,8 +152,15 @@ class Orchestrator:
     def write_output(self, dir_path, content):
         if not dir_path:
             return
-        os.makedirs(dir_path, exist_ok=True)
-        out = os.path.join(dir_path, "output.txt")
+        # If the path carries a file extension (e.g. "pass1/a2_synthesis.txt"),
+        # treat it as a FULL file path and write the output to that exact file.
+        # Otherwise treat it as a directory and default to output.txt inside it.
+        if os.path.splitext(dir_path)[1]:
+            out = dir_path
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+        else:
+            os.makedirs(dir_path, exist_ok=True)
+            out = os.path.join(dir_path, "output.txt")
         with open(out, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"  [write] {out}")
