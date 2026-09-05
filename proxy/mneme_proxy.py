@@ -281,21 +281,41 @@ def _resolve_provider():
     _OR_STREAM = bool(prov.get("stream", True))
 
 
+CONFIG_LOAD_ATTEMPTS = 6
+CONFIG_LOAD_RETRY_DELAY = 0.5  # seconds — tolerate a setup script still writing the file
+
+
 def load_config():
     global CONFIG_PATH
-    path = _find_config_path()
-    if not path:
+    # The setup wizard writes mneme.yaml and launches the proxy back-to-back, so
+    # at import time the file can be absent or half-written. Retry briefly so a
+    # racing setup can't leave the proxy running on stale/partial config (which
+    # silently flips reasoning on and makes thinking models runaway-timeout).
+    last_err = None
+    for _ in range(CONFIG_LOAD_ATTEMPTS):
+        path = _find_config_path()
+        if not path:
+            time.sleep(CONFIG_LOAD_RETRY_DELAY)
+            continue
+        try:
+            data = _parse_config_file(path)
+        except Exception as e:
+            # Partial write: the YAML/JSON is still streaming to disk.
+            last_err = e
+            time.sleep(CONFIG_LOAD_RETRY_DELAY)
+            continue
+        CONFIG_PATH = path
+        _apply_config(data, path)
+        _resolve_provider()
+        # Expand ~ in the chunk dir (config files are the natural place to fix the
+        # pod-path default /workspace/mneme_chunks on a laptop).
+        cd = os.environ.get("MNEME_CHUNK_DIR")
+        if cd and cd.startswith("~"):
+            os.environ["MNEME_CHUNK_DIR"] = os.path.expanduser(cd)
+        print(f"  [CONFIG] loaded {path}", flush=True)
         return
-    CONFIG_PATH = path
-    data = _parse_config_file(path)
-    _apply_config(data, path)
-    _resolve_provider()
-    # Expand ~ in the chunk dir (config files are the natural place to fix the
-    # pod-path default /workspace/mneme_chunks on a laptop).
-    cd = os.environ.get("MNEME_CHUNK_DIR")
-    if cd and cd.startswith("~"):
-        os.environ["MNEME_CHUNK_DIR"] = os.path.expanduser(cd)
-    print(f"  [CONFIG] loaded {path}", flush=True)
+    if last_err is not None:
+        print(f"  [CONFIG] gave up loading config after {CONFIG_LOAD_ATTEMPTS} attempts ({last_err}) — running on defaults", flush=True)
 
 
 # ─── Config ────────────────────────────────────────────────────

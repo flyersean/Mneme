@@ -557,8 +557,15 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
             .replace("@@EMBED@@", models.get("embed_model", ""))
             .replace("@@LABEL@@", models.get("label_model", "")))
     path = os.path.join(instance_dir, "mneme.yaml")
-    with open(path, "w") as f:
+    # Write atomically (temp + fsync + rename) so a proxy launched right after
+    # this can never read a half-written config. A partial config load silently
+    # left reasoning ON and made thinking models runaway-timeout (the 12B hang).
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         f.write(yaml)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
     return path
 
 
