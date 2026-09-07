@@ -60,7 +60,7 @@ Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenA
 
 Mneme is a proxy that sits between an AI agent and its model backend, archives every conversation into searchable memory, and injects relevant past context on each turn. It grades its own epistemic honesty through provenance, not answer-correctness.
 
-**Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — that's the one knob `MNEME_MEMORY_ONLY=1` controls. It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `MNEME_MEMORY_ONLY=0` to turn them on here (see "Experimental features" below).
+**Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `memory_only: false` (or `MNEME_MEMORY_ONLY=0`) to turn them on here — the config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
 
 **Backend-agnostic.** One config file chooses the backend — local [Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter, OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads are required when running against a hosted provider.
 
@@ -143,9 +143,9 @@ Every proxy instance is a set of independent toggles, so you can set one up exac
 ### Experimental features (off by default)
 
 *These exist and are under active development, but they're **off by default** on this
-branch (`MNEME_MEMORY_ONLY=1`). They are not dead code — they're developed and tested
+branch (`memory_only: true`). They are not dead code — they're developed and tested
 on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
-`MNEME_MEMORY_ONLY=0` to enable them here.*
+`memory_only: false` to enable them here.*
 
 - **Strategy / self-improving layer** — strategy learning from tool traces, novel-procedure detection, failure extraction, and belief evolution. Strategies are linked to the source chunk that produced them, and retrieval keys on that linkage (no hand-maintained problem-type taxonomy). A D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers; SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success).
 - **Capability-edge tracking & overcome** — records a competence edge per problem type; three consecutive tool failures flag it, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared.
@@ -222,7 +222,7 @@ The retrieval gate is an **absolute similarity floor**, not a relative one. If n
 
 A substring keyword fallback exists but is **off by default** (`keyword_fallback: false`) because it has no semantic score and pollutes context, such as "tool" matching an unrelated "Paramotor Tool" memory.
 
-Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the experimental self-improving layer, so the second floor is inactive in the default memory-only build unless `MNEME_MEMORY_ONLY=0`.
+Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the experimental self-improving layer, so the second floor is inactive in the default memory-only build unless `memory_only: false`.
 
 Memory is **portable** across machines and even across 1024-dim embedders. On startup, the proxy re-embeds any chunk whose stored `embed_model` doesn't match the current one, so you can `scp` the `.db` from a pod to a laptop and it self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
@@ -282,9 +282,9 @@ Reference scales:
 
 ### Memory-only mode
 
-`MNEME_MEMORY_ONLY=1` (the default on this branch) turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset. It is a *default on/off switch*, not a removal — the code stays present and tested.
+`storage.memory_only: true` (the default on this branch) turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset. It is a *default on/off switch*, not a removal — the code stays present and tested.
 
-`MNEME_MEMORY_ONLY=0` enables the experimental layer; the `unified_mneme` branch ships that way.
+`storage.memory_only: false` enables the experimental layer; the `unified_mneme` branch ships that way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
 
 ### Legacy thresholds
 
@@ -389,5 +389,5 @@ not part of the proxy stack:
 
 ## Branches
 
-- `main` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`MNEME_MEMORY_ONLY=1`). Start here.
-- `unified_mneme` — **the full build**. Same code with the experimental layer enabled by default (`MNEME_MEMORY_ONLY=0`), plus the live-model capability benchmark harness. This is where the experimental features are developed and tested before being merged back into `main`.
+- `main` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`memory_only: true`). Start here.
+- `unified_mneme` — **the full build**. Same code with the experimental layer enabled by default (`memory_only: false`), plus the live-model capability benchmark harness. This is where the experimental features are developed and tested before being merged back into `main`.

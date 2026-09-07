@@ -863,7 +863,6 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
     lines += [
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
         f'export MNEME_PORT="{port}"',
-        f'export MNEME_MEMORY_ONLY="{"1" if memory_only else "0"}"',
         f'export MNEME_INJECT_SYSTEM="{inject}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
@@ -892,7 +891,6 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
         env["MNEME_EMBED_BACKEND"] = embed_backend
     if label_backend and label_backend != chat_backend:
         env["MNEME_LABEL_BACKEND"] = label_backend
-    env["MNEME_MEMORY_ONLY"] = "1" if memory_only else "0"
     env["MNEME_INJECT_SYSTEM"] = inject
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if chat_backend == "openrouter":

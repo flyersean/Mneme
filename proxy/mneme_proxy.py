@@ -335,6 +335,14 @@ _SAMPLING_ENV_MAP = {
 # Env vars the user exported BEFORE the config file loaded stay pinned: hot-reload
 # will never override them (preserves the documented env > file precedence).
 _USER_PINNED_ENV = {env for env in _SAMPLING_ENV_MAP.values() if env in os.environ}
+# Storage feature-gates (memory_only / memory_enabled) join the live-reload path:
+# hot-reload re-reads them from the config unless the user exported them manually
+# before startup (preserves the documented env > file precedence).
+_STORAGE_ENV_MAP = {
+    "memory_only": "MNEME_MEMORY_ONLY",
+    "memory_enabled": "MNEME_MEMORY_ENABLED",
+}
+_USER_PINNED_STORAGE_ENV = {env for env in _STORAGE_ENV_MAP.values() if env in os.environ}
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
 
@@ -393,17 +401,18 @@ DB_DIR     = os.path.dirname(DB_PATH) or "."
 # Sampling defaults (per-model overrides live in config `models:`)
 OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
 
-# ─── Live sampling hot-reload ─────────────────────────────────
+# ─── Live config hot-reload ───────────────────────────────────
 # The full config is read once at startup, but generation knobs (temperature /
-# top_p / top_k / max_tokens / num_predict) are re-read from the SAME per-instance
-# mneme.yaml whenever its mtime changes, so a running swarm can tune them without
-# a restart. Only the `sampling` + `models` sections are refreshed; provider/model
-# identity is still restart-only (swapping the model mid-flight is not supported).
+# top_p / top_k / max_tokens / num_predict) and the storage feature-gates
+# (memory_only / memory_enabled) are re-read from the SAME per-instance mneme.yaml
+# whenever its mtime changes, so a running swarm can tune them without a restart.
+# `sampling` + `models` + `storage.memory_*` are refreshed; provider/model identity
+# and structural settings (backend/port/db path) are still restart-only.
 _CONFIG_MTIME = 0.0
 
 
 def _reload_sampling_if_changed():
-    global _CONFIG_MTIME, OLLAMA_TEMP
+    global _CONFIG_MTIME, OLLAMA_TEMP, MEMORY_ONLY, MEMORY_ENABLED
     path = CONFIG_PATH
     if not path or not os.path.exists(path):
         return
@@ -435,7 +444,19 @@ def _reload_sampling_if_changed():
     if "temperature" in sampling and sampling["temperature"] is not None \
             and "MNEME_TEMPERATURE" not in _USER_PINNED_ENV:
         OLLAMA_TEMP = float(sampling["temperature"])
-    print(f"  [CONFIG] hot-reloaded sampling + models ({', '.join(changed) or 'models-only'})", flush=True)
+    # Storage feature-gates (memory_only / memory_enabled) — re-read live so the
+    # strategy/learning layer can be toggled from the config without a restart.
+    storage = data.get("storage") or {}
+    for cfg_key, env in _STORAGE_ENV_MAP.items():
+        if env in _USER_PINNED_STORAGE_ENV:
+            continue
+        if cfg_key in storage and storage[cfg_key] is not None:
+            os.environ[env] = _config_scalar(storage[cfg_key])
+            changed.append(f"storage.{cfg_key}")
+    # Re-read the flags (the loop above may have just updated their env vars).
+    MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"
+    MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"
+    print(f"  [CONFIG] hot-reloaded sampling/models/storage ({', '.join(changed) or 'models-only'})", flush=True)
 
 
 # ─── Multi-pass compression config ───

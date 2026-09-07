@@ -1459,6 +1459,44 @@ def test_memory_only_uses_light_prompt():
         mp.MEMORY_ONLY = orig
 
 
+@test
+def test_memory_only_hot_reloads_from_config():
+    # Editing storage.memory_only in the config must flip MEMORY_ONLY live (no
+    # restart), driven by the config file. The harness pins MNEME_MEMORY_ONLY=0
+    # at import, so un-pin it here to exercise the config-driven path.
+    orig = (mp.CONFIG_PATH, mp._CONFIG_MTIME, mp.MEMORY_ONLY, set(mp._USER_PINNED_STORAGE_ENV))
+    orig_env = os.environ.get("MNEME_MEMORY_ONLY")
+    tmp = tempfile.mkdtemp(prefix="mneme_hotreload_")
+    cfg = os.path.join(tmp, "mneme.yaml")
+    tick = [0]
+    try:
+        mp.CONFIG_PATH = cfg
+        mp._CONFIG_MTIME = 0.0
+        mp._USER_PINNED_STORAGE_ENV = set()  # user did NOT export the env var
+        def write(v):
+            with open(cfg, "w") as f:
+                f.write("storage:\n  memory_only: %s\n" % ("true" if v else "false"))
+            tick[0] += 100
+            os.utime(cfg, (1700000000 + tick[0], 1700000000 + tick[0]))
+        write(True)
+        mp._reload_sampling_if_changed()
+        assert mp.MEMORY_ONLY is True, "config memory_only:true should set MEMORY_ONLY"
+        write(False)
+        mp._reload_sampling_if_changed()
+        assert mp.MEMORY_ONLY is False, "config memory_only:false should clear MEMORY_ONLY live"
+        write(True)
+        mp._reload_sampling_if_changed()
+        assert mp.MEMORY_ONLY is True, "flip back to true should re-enable MEMORY_ONLY"
+    finally:
+        mp.CONFIG_PATH, mp._CONFIG_MTIME, mp.MEMORY_ONLY = orig[0], orig[1], orig[2]
+        mp._USER_PINNED_STORAGE_ENV = orig[3]
+        if orig_env is None:
+            os.environ.pop("MNEME_MEMORY_ONLY", None)
+        else:
+            os.environ["MNEME_MEMORY_ONLY"] = orig_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ── 5. Runner ───────────────────────────────────────────────────────────────
 def main():
     seed_chunk()
