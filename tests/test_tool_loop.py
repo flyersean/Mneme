@@ -44,6 +44,8 @@ os.environ["EMBED_MODEL"] = "test-embed"
 os.environ["LABEL_MODEL"] = "test-label"
 os.environ["MNEME_ASK_REUSABLE"] = "0"  # "just ask" is live-only; ScriptedModel has no answer
 os.environ["MNEME_MEMORY_ONLY"] = "0"  # tests exercise the full learning layer, not memory-only mode
+os.environ["MNEME_TOPIC_SWITCH_GRACE"] = "0"  # keep injection deterministic for existing tests; switch tests enable it explicitly
+os.environ["MNEME_MAX_PER_TOPIC"] = "0"       # per-topic cap off for existing tests
 
 _PROXY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "proxy")
 sys.path.insert(0, _PROXY_DIR)
@@ -1495,6 +1497,41 @@ def test_memory_only_hot_reloads_from_config():
         else:
             os.environ["MNEME_MEMORY_ONLY"] = orig_env
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@test
+def test_topic_switch_detection_and_grace():
+    # A turn that diverges from the recent topic must trigger a switch and harden
+    # injection for exactly TOPIC_SWITCH_GRACE turns, then return to normal.
+    orig = (mp.TOPIC_SWITCH_SIM, mp.TOPIC_SWITCH_GRACE, list(mp._recent_query_vecs), mp._grace_remaining)
+    try:
+        mp.TOPIC_SWITCH_SIM = 0.5
+        mp.TOPIC_SWITCH_GRACE = 2
+        mp._recent_query_vecs = []
+        mp._grace_remaining = 0
+        a = np.array([1.0, 0.0, 0.0, 0.0])
+        b = np.array([0.0, 0.0, 1.0, 0.0])  # orthogonal → cosine 0
+        for _ in range(3):
+            assert mp._update_topic_state(a) is False, "establishing topic A should not switch"
+        assert mp._update_topic_state(b) is True, "jump to B should switch + harden"
+        assert mp._update_topic_state(b) is True, "grace turn 1 of 2 still hardened"
+        assert mp._update_topic_state(b) is False, "grace expired — back to normal"
+        assert mp._update_topic_state(b) is False, "staying on B stays normal"
+    finally:
+        (mp.TOPIC_SWITCH_SIM, mp.TOPIC_SWITCH_GRACE, mp._recent_query_vecs, mp._grace_remaining) = orig
+
+
+@test
+def test_per_topic_cap():
+    # _cap_per_topic must keep at most `cap` chunks per topic_label, in order.
+    cache = {
+        "a1": {"topic_label": "t1"}, "a2": {"topic_label": "t1"}, "a3": {"topic_label": "t1"},
+        "b1": {"topic_label": "t2"}, "b2": {"topic_label": "t2"},
+    }
+    ordered = ["a1", "b1", "a2", "b2", "a3"]
+    assert mp._cap_per_topic(ordered, cache, 2) == ["a1", "b1", "a2", "b2"]
+    assert mp._cap_per_topic(ordered, cache, 3) == ["a1", "b1", "a2", "b2", "a3"]
+    assert mp._cap_per_topic(ordered, cache, 0) == ordered  # 0 = disabled
 
 
 # ── 5. Runner ───────────────────────────────────────────────────────────────

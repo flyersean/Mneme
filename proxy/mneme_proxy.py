@@ -141,6 +141,10 @@ _CONFIG_ENV_MAP = {
     "retrieval.keyword_fallback": "MNEME_KEYWORD_FALLBACK",
     "retrieval.age_decay_days": "MNEME_AGE_DECAY_DAYS",
     "retrieval.max_siblings": "MNEME_MAX_SIBLINGS",
+    "retrieval.topic_switch_sim": "MNEME_TOPIC_SWITCH_SIM",
+    "retrieval.topic_switch_grace": "MNEME_TOPIC_SWITCH_GRACE",
+    "retrieval.novel_inject_floor": "MNEME_NOVEL_INJECT_FLOOR",
+    "retrieval.max_per_topic": "MNEME_MAX_PER_TOPIC",
     "retrieval.max_chunk_words": "MNEME_MAX_CHUNK_WORDS",
     "retrieval.max_chunk_size": "MNEME_MAX_CHUNK_SIZE",
     "retrieval.page_max_chunk_size": "MNEME_PAGE_MAX_CHUNK_SIZE",
@@ -502,6 +506,16 @@ INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.4
 # INJECT_MIN_SIMILARITY, and is just as embedder-dependent (same-concept band
 # differs per model: voyage-4-lite ~0.43-0.62; snowflake-arctic-embed2 ~0.33-0.45).
 STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.40"))
+# ─── Topic-switch handling ───────────────────────────────────
+# When a large DB is dominated by one topic (e.g. a story that ran for hours),
+# starting a NEW topic is hard: the old topic's chunks score "moderately similar"
+# (both are prose) and keep injecting, steering the model back. These knobs detect
+# a topic switch (current turn far from recent turns) and harden injection for a
+# short grace window so the new topic can establish itself. Set any to 0 to disable.
+TOPIC_SWITCH_SIM   = float(os.environ.get("MNEME_TOPIC_SWITCH_SIM", "0.45"))   # cosine vs recent turns: below this = a switch
+TOPIC_SWITCH_GRACE = int(os.environ.get("MNEME_TOPIC_SWITCH_GRACE", "2"))      # turns to harden injection after a switch
+NOVEL_INJECT_FLOOR = float(os.environ.get("MNEME_NOVEL_INJECT_FLOOR", "0.60")) # raised injection floor during the grace window
+MAX_PER_TOPIC      = int(os.environ.get("MNEME_MAX_PER_TOPIC", "3"))           # cap on injected chunks per topic_label
 # Keyword fallback: when FAISS returns fewer than top_k hits, pad the result list
 # with SQLite LIKE-substring matches. OFF by default — substring hits carry no
 # semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").
@@ -2243,7 +2257,7 @@ def _embed_query(query):
     return q_vec
 
 
-def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=None) -> List:
+def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=None, floor=None) -> List:
     """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
     Dynamic K: adjusts retrieval count based on score spread above noise floor.
     Pass q_vec to reuse a pre-computed query vector (single-embed turn)."""
@@ -2259,7 +2273,8 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=Non
     # Injection gate: absolute similarity floor. A chunk below INJECT_MIN_SIMILARITY
     # is never injected — this is the on/off knob (tunable in config). If nothing
     # clears it, `scored` is empty and we inject nothing.
-    scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s >= INJECT_MIN_SIMILARITY]
+    _floor = INJECT_MIN_SIMILARITY if floor is None else floor
+    scored = [(s - BASELINE_NOISE, cid) for s, cid in scored_raw if s >= _floor]
     
     # Dynamic K: adjust retrieval count based on signal strength
     if scored:
@@ -2658,6 +2673,64 @@ def _meta_principles_block() -> str:
         return ""
 
 
+# ─── Topic-switch detection ───────────────────────────────────
+# A rolling buffer of recent query embeddings lets us detect when the turn has
+# jumped to a NEW topic (far from all recent turns), so a dominant stale topic in
+# a large DB can't keep injecting and steering the model back. On a switch we
+# harden injection for TOPIC_SWITCH_GRACE turns. State is per-process.
+_recent_query_vecs = []      # recent query embeddings, most recent last
+_RECENT_QUERY_MAX = 5        # how many recent turns to remember
+_grace_remaining = 0         # remaining turns of hardened injection
+
+
+def _cosine(a, b):
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+
+def _update_topic_state(q_vec):
+    """Return True if THIS turn should use hardened (novel-topic) injection.
+
+    Detects a topic switch when the current query is below TOPIC_SWITCH_SIM to
+    every one of the last few queries, then keeps hardened mode on for
+    TOPIC_SWITCH_GRACE turns. Also advances the rolling recent-query buffer.
+    """
+    global _grace_remaining
+    prior = list(_recent_query_vecs)
+    if q_vec is not None and len(prior) >= 2 and TOPIC_SWITCH_SIM > 0:
+        best = max(_cosine(q_vec, rv) for rv in prior)
+        if best < TOPIC_SWITCH_SIM:
+            _grace_remaining = TOPIC_SWITCH_GRACE
+            print(f"  [TOPIC-SWITCH] novel topic detected (max sim {best:.3f} < "
+                  f"{TOPIC_SWITCH_SIM}) — hardening injection for "
+                  f"{TOPIC_SWITCH_GRACE} turns", flush=True)
+    if q_vec is not None:
+        _recent_query_vecs.append(q_vec)
+        while len(_recent_query_vecs) > _RECENT_QUERY_MAX:
+            _recent_query_vecs.pop(0)
+    suppress = _grace_remaining > 0
+    if _grace_remaining > 0:
+        _grace_remaining -= 1
+    return suppress
+
+
+def _cap_per_topic(ordered_ids, chunk_cache, cap):
+    """Drop chunks so no single topic_label exceeds `cap` in the injected set.
+
+    `ordered_ids` is already grade-sorted, so the highest-grade chunks win the
+    kept slots. Returns the capped list (unchanged when cap <= 0 or empty input).
+    """
+    if cap <= 0 or not ordered_ids:
+        return ordered_ids
+    count = {}
+    out = []
+    for cid in ordered_ids:
+        t = (chunk_cache.get(cid) or {}).get("topic_label", "")
+        if count.get(t, 0) < cap:
+            out.append(cid)
+            count[t] = count.get(t, 0) + 1
+    return out
+
+
 def build_context(query: str) -> Tuple[str, str]:
     if not MEMORY_ENABLED:
         return "", "other"  # memory disabled — no retrieval/injection
@@ -2672,16 +2745,21 @@ def build_context(query: str) -> Tuple[str, str]:
     """
     q_ptype = _classify_problem_type(query)
     _qvec = _embed_query(query)  # embed once; shared by memory + strategy retrieval
-    chunk_ids = route_query(query, top_k=3, q_vec=_qvec)
+    suppress = _update_topic_state(_qvec)  # topic-switch grace window?
+    if suppress:
+        chunk_ids = route_query(query, top_k=3, q_vec=_qvec, floor=NOVEL_INJECT_FLOOR)
+    else:
+        chunk_ids = route_query(query, top_k=3, q_vec=_qvec)
     
-    # Expand to siblings with cap — batch query instead of per-chunk
-    all_ids = set()
-    siblings_map = get_siblings_batch(chunk_ids)
-    for cid in chunk_ids:
-        all_ids.add(cid)
-        siblings = siblings_map.get(cid, [])
-        for sib in siblings[:MAX_SIBLINGS]:
-            all_ids.add(sib)
+    # Expand to siblings with cap — batch query instead of per-chunk. During a
+    # topic-switch grace window we skip expansion: the siblings are the OLD topic
+    # by construction, and we want to give the NEW topic room to establish itself.
+    all_ids = set(chunk_ids)
+    if not suppress:
+        siblings_map = get_siblings_batch(chunk_ids)
+        for cid in chunk_ids:
+            for sib in siblings_map.get(cid, [])[:MAX_SIBLINGS]:
+                all_ids.add(sib)
 
     # Strategy-floor chunks: below the memory floor but at/above the strategy
     # floor — they do NOT inject as memory, but their linked strategies do
@@ -2721,6 +2799,9 @@ def build_context(query: str) -> Tuple[str, str]:
                 "consensus": row[6], "outcome": row[7],
                 "problem_type": row[8],
             }
+    
+    # Per-topic cap: no single topic may dominate the injected set (see _cap_per_topic).
+    ordered = _cap_per_topic(ordered, _chunk_cache, MAX_PER_TOPIC)
     
     # Trim to token budget — preserves high-grade, drops low-grade
     trimmed = _trim_chunks_cached(ordered, MAX_INJECTED_TOKENS, _chunk_cache)

@@ -121,6 +121,14 @@ retrieval:
   baseline_noise: 0.20       # fallback only — auto-calibrated at startup (_calibrate_noise()).
   age_decay_days: 7          # recency half-life (days) — newer memories rank higher
   max_siblings: 3            # max sibling chunks pulled in per topic when a hit is expanded
+  topic_switch_sim: 0.45     # topic-switch detection: a turn whose cosine vs the last few turns
+                             # is below this is treated as a NEW topic (same embedder dependency
+                             # as inject_min_similarity; 0 = disable detection).
+  topic_switch_grace: 2      # turns to harden injection after a topic switch (0 = off)
+  novel_inject_floor: 0.60   # raised injection floor during the switch grace window — keeps the
+                             # old dominant topic from re-injecting while the new topic settles
+  max_per_topic: 3           # cap on injected chunks per topic_label (0 = off). Stops one topic
+                             # with hundreds of chunks from crowding out everything else.
   max_chunk_words: 500       # split user messages longer than this many words
   max_chunk_size: 10000      # chars per chunk for embedding; overflow becomes sibling chunks
 

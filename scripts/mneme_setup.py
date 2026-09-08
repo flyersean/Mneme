@@ -528,6 +528,10 @@ retrieval:
   baseline_noise: 0.20
   age_decay_days: 7
   max_siblings: 3
+  topic_switch_sim: 0.45
+  topic_switch_grace: 2
+  novel_inject_floor: 0.60
+  max_per_topic: 3
   max_chunk_words: 500
   max_chunk_size: 10000
 

@@ -224,6 +224,8 @@ A substring keyword fallback exists but is **off by default** (`keyword_fallback
 
 Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the experimental self-improving layer, so the second floor is inactive in the default memory-only build unless `memory_only: false`.
 
+Retrieval is **topic-switch aware**. When the current turn diverges from the last few turns (a topic switch), injection is hardened for a short grace window — a raised `novel_inject_floor` and no sibling expansion — so a dominant stale topic in a large DB can't steer the model back. `max_per_topic` further caps how many chunks any single `topic_label` may contribute. These four knobs live under `retrieval:` in `mneme.yaml.example` and default to sensible values (set any to `0` to disable).
+
 Memory is **portable** across machines and even across 1024-dim embedders. On startup, the proxy re-embeds any chunk whose stored `embed_model` doesn't match the current one, so you can `scp` the `.db` from a pod to a laptop and it self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
 ## Configuration
