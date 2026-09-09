@@ -301,14 +301,120 @@ def get_pulled_models():
     return models
 
 
+def _ollama_base():
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    if not host.startswith(("http://", "https://")):
+        host = "http://" + host
+    return host.rstrip("/")
+
+
+def _fmt_bytes(n):
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def _pull_model_stream(name):
+    """Pull `name` via Ollama's /api/pull stream, rendering a live progress bar
+    (current layer) with cumulative bytes downloaded and speed. Raises on failure
+    so the caller can fall back to the CLI."""
+    url = f"{_ollama_base()}/api/pull"
+    req = urllib.request.Request(
+        url, data=json.dumps({"name": name}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    resp = urllib.request.urlopen(req, timeout=900)
+
+    tty = sys.stdout.isatty()
+    layer_done = {}        # digest -> completed bytes (cumulative across layers)
+    cur_total = cur_done = 0   # current layer's total / completed
+    layers = 0
+    speed = 0.0
+    last_done = 0
+    last_t = time.time()
+    last_pct = -1.0
+    status = ""
+
+    def downloaded():
+        return sum(layer_done.values())
+
+    def render():
+        nonlocal last_pct
+        dl = downloaded()
+        if cur_total > 0:
+            frac = min(1.0, cur_done / cur_total)
+            pct = frac * 100
+            if tty:
+                filled = int(frac * 30)
+                bar = "█" * filled + "░" * (30 - filled)
+                spd = _fmt_bytes(speed) + "/s" if speed > 0 else "         "
+                sys.stdout.write(
+                    f"\r  {name}: [{bar}] {pct:5.1f}%  layer {layers}  "
+                    f"{_fmt_bytes(dl)} downloaded  {spd}   "
+                )
+                sys.stdout.flush()
+            elif abs(pct - last_pct) >= 10:
+                print(f"  {name}: {pct:5.1f}%  layer {layers}  "
+                      f"{_fmt_bytes(dl)} downloaded  {_fmt_bytes(speed)}/s")
+                last_pct = pct
+        elif status and tty:
+            sys.stdout.write(f"\r  {name}: {status}...                    ")
+            sys.stdout.flush()
+
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        status = ev.get("status", "") or status
+        digest = ev.get("digest", "")
+        total = ev.get("total") or 0
+        completed = ev.get("completed") or 0
+        if digest and total:
+            if digest not in layer_done:
+                layers += 1
+            cur_total, cur_done = total, completed
+            layer_done[digest] = completed
+            now = time.time()
+            dt = now - last_t
+            if dt >= 0.1:
+                dl = downloaded()
+                speed = (dl - last_done) / dt
+                last_done, last_t = dl, now
+        render()
+        if status == "success":
+            break
+
+    if tty:
+        sys.stdout.write("\r" + " " * 80 + "\r")
+        sys.stdout.flush()
+    if status == "success":
+        print(f"  ✓ {name} pulled ({_fmt_bytes(downloaded())}).")
+    else:
+        raise RuntimeError(f"pull ended with status: {status or 'unknown'}")
+
+
 def pull_model(name):
     if name in get_pulled_models():
         print(f"  {name} already pulled — skipping.")
         return
     print(f"  Pulling {name}...")
-    r = run(f"ollama pull {name}", timeout=900)
-    if r.returncode != 0:
-        print(f"  ⚠ could not pull {name} (may be a typo or network) — continuing")
+    try:
+        _pull_model_stream(name)
+    except Exception as e:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        print(f"    (streaming progress unavailable: {e} — falling back to `ollama pull`)")
+        r = run(f"ollama pull {name}", timeout=900)
+        if r.returncode != 0:
+            print(f"  ⚠ could not pull {name} (may be a typo or network) — continuing")
+        else:
+            print(f"  ✓ {name} pulled.")
 
 
 def _menu(prompt, entries):
