@@ -89,12 +89,13 @@ Step fields:
 | `goto` | label to jump to after this step |
 | `if` | branch (see below) |
 | `timeout` | per-step request timeout override |
+| `exec` | run a shell command (string) or argv (list) as an action-only step — stdout is logged, non-zero exit aborts |
 
 Key semantics:
 
 - A model is called only when the step has `write_dir`, `append_dir`, or a STRING `if`.
-  Action-only steps (`swap_dir` / `copy_dir` / `move_dir` / `clear_dir` / `goto` / a
-  folder-state `if`) never call a model.
+  Action-only steps (`swap_dir` / `copy_dir` / `move_dir` / `clear_dir` / `exec` /
+  `goto` / a folder-state `if`) never call a model.
 - `read_dir: [a, b]` concatenates both directories into one context blob; each file is
   headed `--- <dir>/<relpath> ---` so the model can tell which source it came from.
   A single `read_dir: a` keeps the plain `--- path ---` header.
@@ -131,6 +132,25 @@ if:
 - `count_ge` / `count_lt`: number of files under `dir` vs `value`.
 - `empty`: `dir` has no files (or does not exist).
 - `exists`: the path `dir` exists.
+
+### Timestamp utility (`scripts/now.py`)
+
+Models have different training cutoffs, and small models often assume current
+events are made up. Stamp a real timestamp each tick so every step shares one
+consistent "now":
+
+```yaml
+  - name: stamp
+    exec: "python3 scripts/now.py board/timestamp.txt"   # -u for UTC
+  - name: critic
+    read_dir: [board, input.active]
+    # ...the critic now sees the timestamp in its context
+```
+
+`exec` runs the command as an action-only step (no model call); `now.py` writes
+`YYYY-MM-DD HH:MM:SS TZ (+offset)` to the file you name. Use the string form for
+shell commands (`python3 scripts/now.py ...`) or a list to skip the shell
+(`[python3, scripts/now.py, board/timestamp.txt]`).
 
 ## Adapt it
 

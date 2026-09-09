@@ -79,6 +79,11 @@ CONFIG (swarm_config.yaml)
     if            branch — either on THIS step's model output, or on filesystem
                   state (see below). Both forms have `then` / `else` labels.
     timeout       optional per-step request timeout override
+    exec          run a shell command (string) or argv (list) as an action-only
+                  step — no model call. stdout is logged; a non-zero exit stops
+                  the run. Use for utilities like `scripts/now.py <file>` to stamp
+                  a timestamp the models can read. Runs from the orchestrator's
+                  working directory.
 
   `if` has two forms:
 
@@ -112,6 +117,7 @@ CONFIG (swarm_config.yaml)
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -195,6 +201,22 @@ class Orchestrator:
                     f"duplicate step name '{nm}' (steps {self.name_to_index[nm]} and {i})"
                 )
             self.name_to_index[nm] = i
+
+    def run_exec(self, command):
+        """Run a shell command (string) or argv (list) as an action-only step.
+        stdout is logged; a non-zero exit aborts the run with a clear message."""
+        if isinstance(command, list):
+            argv = [str(a) for a in command]
+            print(f"  [exec] {' '.join(argv)}")
+            r = subprocess.run(argv, capture_output=True, text=True)
+        else:
+            print(f"  [exec] {command}")
+            r = subprocess.run(command, shell=True, capture_output=True, text=True)
+        if r.stdout and r.stdout.strip():
+            print("    " + r.stdout.strip().replace("\n", "\n    "))
+        if r.returncode != 0:
+            detail = (r.stderr or "").strip() or f"exit code {r.returncode}"
+            raise SystemExit(f"[exec] failed ({r.returncode}): {detail}")
 
     def _step_needs_model(self, step):
         """True if this step calls a model: it writes/append output, or branches
@@ -585,6 +607,10 @@ class Orchestrator:
             if step.get("delay"):
                 print(f"  [delay] {float(step['delay'])}s")
                 time.sleep(float(step["delay"]))
+
+            # 1.5 Run a user command (exec) — action-only, no model call.
+            if step.get("exec"):
+                self.run_exec(step["exec"])
 
             # 1. Read input context (single dir or a list of dirs).
             context = self.get_context(step.get("read_dir"))

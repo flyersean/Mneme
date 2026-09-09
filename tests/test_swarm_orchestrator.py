@@ -55,6 +55,30 @@ class TestFolderIO(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.raw + ".active")), ["b.txt"])
         self.assertEqual(os.listdir(self.raw), [])
 
+    def test_exec_argv_writes_file_and_aborts_on_failure(self):
+        out = os.path.join(self.tmp, "stamp.txt")
+        self.o.run_exec([sys.executable, "-c", f"open({out!r}, 'w').write('now')"])
+        with open(out) as f:
+            self.assertEqual(f.read(), "now")
+        with self.assertRaises(SystemExit):
+            self.o.run_exec([sys.executable, "-c", "import sys; sys.exit(3)"])
+
+    def test_exec_shell_form(self):
+        out = os.path.join(self.tmp, "stamp2.txt")
+        self.o.run_exec(f"echo hello > {out}")
+        with open(out) as f:
+            self.assertEqual(f.read().strip(), "hello")
+
+    def test_now_script_stamps_a_file(self):
+        out = os.path.join(self.tmp, "timestamp.txt")
+        script = os.path.join(os.path.dirname(__file__), "..", "extensions",
+                              "swarm", "scripts", "now.py")
+        self.o.run_exec([sys.executable, script, out])
+        with open(out) as f:
+            content = f.read().strip()
+        # e.g. "2026-09-08 14:23:45 EDT (-0400)"
+        self.assertRegex(content, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+
     def test_swap_missing_dir(self):
         self.o.swap_dir(self.raw)                       # raw does not exist yet
         self.assertTrue(os.path.isdir(self.raw))
