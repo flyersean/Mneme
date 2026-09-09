@@ -141,16 +141,18 @@ consistent "now":
 
 ```yaml
   - name: stamp
-    exec: "python3 scripts/now.py board/timestamp.txt"   # -u for UTC
+    exec: "python3 scripts/now.py board"   # writes board/timestamp.txt (or -u for UTC)
   - name: critic
     read_dir: [board, input.active]
     # ...the critic now sees the timestamp in its context
 ```
 
 `exec` runs the command as an action-only step (no model call); `now.py` writes
-`YYYY-MM-DD HH:MM:SS TZ (+offset)` to the file you name. Use the string form for
-shell commands (`python3 scripts/now.py ...`) or a list to skip the shell
-(`[python3, scripts/now.py, board/timestamp.txt]`).
+`YYYY-MM-DD HH:MM:SS TZ (+offset)`. Its target follows the same rule as
+`write_dir`: a path WITH an extension is written to exactly, a path WITHOUT one
+is a directory and gets `timestamp.txt` inside it. Use the string form for shell
+commands (`python3 scripts/now.py board`) or a list to skip the shell
+(`[python3, scripts/now.py, board]`).
 
 ## Adapt it
 

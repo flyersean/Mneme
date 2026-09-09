@@ -79,6 +79,15 @@ class TestFolderIO(unittest.TestCase):
         # e.g. "2026-09-08 14:23:45 EDT (-0400)"
         self.assertRegex(content, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
 
+    def test_now_script_stamps_a_directory(self):
+        d = os.path.join(self.tmp, "board")
+        script = os.path.join(os.path.dirname(__file__), "..", "extensions",
+                              "swarm", "scripts", "now.py")
+        self.o.run_exec([sys.executable, script, d])     # no extension -> directory
+        with open(os.path.join(d, "timestamp.txt")) as f:
+            content = f.read().strip()
+        self.assertRegex(content, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+
     def test_swap_missing_dir(self):
         self.o.swap_dir(self.raw)                       # raw does not exist yet
         self.assertTrue(os.path.isdir(self.raw))

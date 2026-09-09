@@ -7,12 +7,29 @@ have different training cutoffs, and small models otherwise assume current
 events are made up — giving them a real timestamp in their context fixes that.
 Point `read_dir` at the file this writes to make it part of a step's input.
 
+The target follows the SAME rule as the orchestrator's `write_dir`:
+  - a path WITH a file extension is written to exactly (e.g. "board/now.txt");
+  - a path WITHOUT one is treated as a directory, and the timestamp is written
+    to "timestamp.txt" inside it (e.g. "board" -> "board/timestamp.txt").
+
 Usage:
-    now.py [OUTPUT_FILE]        # default: timestamp.txt (system local time)
-    now.py -u [OUTPUT_FILE]     # UTC instead of local time
+    now.py [OUTPUT]           # file (with extension) or directory (timestamp.txt)
+    now.py -u [OUTPUT]        # UTC instead of local time
 """
+import os
 import sys
 import datetime
+
+
+def resolve(out):
+    """Return the concrete file path, mirroring write_dir's extension rule."""
+    if os.path.splitext(out)[1]:
+        parent = os.path.dirname(out)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return out
+    os.makedirs(out, exist_ok=True)
+    return os.path.join(out, "timestamp.txt")
 
 
 def main():
@@ -21,7 +38,7 @@ def main():
     if args and args[0] == "-u":
         utc = True
         args = args[1:]
-    out = args[0] if args else "timestamp.txt"
+    out = resolve(args[0]) if args else "timestamp.txt"
 
     if utc:
         now = datetime.datetime.now(datetime.timezone.utc)
