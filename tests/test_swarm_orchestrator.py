@@ -88,6 +88,16 @@ class TestFolderIO(unittest.TestCase):
             content = f.read().strip()
         self.assertRegex(content, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
 
+    def test_now_script_existing_dir_with_dot(self):
+        d = os.path.join(self.tmp, "raw.active")
+        os.makedirs(d, exist_ok=True)                    # pre-existing dotted dir
+        script = os.path.join(os.path.dirname(__file__), "..", "extensions",
+                              "swarm", "scripts", "now.py")
+        self.o.run_exec([sys.executable, script, d])
+        with open(os.path.join(d, "timestamp.txt")) as f:
+            content = f.read().strip()
+        self.assertRegex(content, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+
     def test_swap_missing_dir(self):
         self.o.swap_dir(self.raw)                       # raw does not exist yet
         self.assertTrue(os.path.isdir(self.raw))

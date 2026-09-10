@@ -7,10 +7,12 @@ have different training cutoffs, and small models otherwise assume current
 events are made up — giving them a real timestamp in their context fixes that.
 Point `read_dir` at the file this writes to make it part of a step's input.
 
-The target follows the SAME rule as the orchestrator's `write_dir`:
-  - a path WITH a file extension is written to exactly (e.g. "board/now.txt");
-  - a path WITHOUT one is treated as a directory, and the timestamp is written
-    to "timestamp.txt" inside it (e.g. "board" -> "board/timestamp.txt").
+The target follows the SAME rule as the orchestrator's `write_dir`, with one
+improvement: an EXISTING directory is always treated as a directory.
+  - an existing directory -> "timestamp.txt" inside it (even a dotted name like
+    "raw.active");
+  - a path WITH a file extension -> written to exactly (e.g. "board/now.txt");
+  - a path WITHOUT one -> a new directory, "timestamp.txt" inside it (e.g. "board").
 
 Usage:
     now.py [OUTPUT]           # file (with extension) or directory (timestamp.txt)
@@ -22,7 +24,12 @@ import datetime
 
 
 def resolve(out):
-    """Return the concrete file path, mirroring write_dir's extension rule."""
+    """Return the concrete file path. An EXISTING directory is always treated as
+    a directory (so a dotted name like `raw.active` still gets timestamp.txt
+    inside it); otherwise the extension rule applies (extension = file, none =
+    directory)."""
+    if os.path.isdir(out):
+        return os.path.join(out, "timestamp.txt")
     if os.path.splitext(out)[1]:
         parent = os.path.dirname(out)
         if parent:
