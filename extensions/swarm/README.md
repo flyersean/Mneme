@@ -27,6 +27,7 @@ freeze -> snapshot -> critics -> consume -> gate -> synthesize -> decide
 - `swarm_p_orchestrator.py` — the parallel driver: adds a `parallel:` block that fans out independent steps concurrently (see "Parallel")
 - `swarm_config.yaml` — the loop definition (steps, ports, prompts, directories)
 - `scripts/now.py` — timestamp utility for the `exec` step
+- `SWARM_REFERENCE.md` — complete config reference (every field, primitive, and flow)
 
 ## Run it
 
