@@ -595,6 +595,35 @@ _pending_links_lock = threading.Lock()
 # (save_chunk, _save_strategy, _archive_single_chunk) in this lock.
 _db_lock = threading.RLock()
 
+
+def _db_write_retry(fn, retries=3, backoff=0.5):
+    """Run fn() (which performs DB writes) under _db_lock, then commit, retrying
+    on SQLite 'locked'/'busy' so a transient cross-process collision can't drop a
+    write. Shared-DB deployments (one DB, many proxies) hit genuine cross-process
+    write contention; the connect-level busy timeout handles most of it, and this
+    retry catches the rest. Returns fn's result."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            with _db_lock:
+                result = fn()
+                db.commit()
+            return result
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "locked" in msg or "busy" in msg:
+                last = e
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                print(f"  [DB] write locked — attempt {attempt + 1}/{retries + 1}", flush=True)
+                time.sleep(backoff * (attempt + 1))
+                continue
+            raise
+    raise last
+
+
 def _seed_chunk_seq():
     global _chunk_seq
     try:
@@ -704,7 +733,7 @@ def _enqueue(fn, *args, **kwargs):
 
 # ─── Database ──────────────────────────────────────────────────
 
-db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
 db.execute("PRAGMA journal_mode=WAL")
 db.execute("PRAGMA synchronous=NORMAL")
 capability.db = db  # bind the extracted capability module's db handle
@@ -2032,7 +2061,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
     )
 
-    with _db_lock:
+    def _insert_chunk():
         db.execute("""
             INSERT OR REPLACE INTO chunks
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -2041,7 +2070,8 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
               source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
               1 if is_indexable else 0, "",
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0))
-        db.commit()
+
+    _db_write_retry(_insert_chunk)
     
     # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:
@@ -5394,11 +5424,12 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
-    with _db_lock:
+    def _insert_strategy():
         db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
              new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
-        db.commit()
+
+    _db_write_retry(_insert_strategy)
     # Linkage backfill: when a strategy is saved with no source_chunk (the turn's
     # chunk is archived async AFTER the save), queue it so _archive_single_chunk
     # links it to the chunk that gets created for this turn.
