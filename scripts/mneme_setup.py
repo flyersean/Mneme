@@ -46,7 +46,28 @@ OL_DEFAULT_LABEL = "qwen2.5:1.5b"              # small non-thinking labeler (bet
 
 
 def run(cmd, timeout=None):
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    """Run a shell command. Never raises on timeout — returns a CompletedProcess
+    with returncode 124 (the `timeout` convention) and a stderr note instead, so
+    callers that check returncode see a clean failure and this never crashes the
+    wizard with a raw traceback."""
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"timed out after {timeout}s")
+
+
+def _retry_run(cmd, timeout, retries=3, label=None):
+    """Run cmd, retrying on failure/timeout with exponential backoff. Returns the
+    final result (returncode 0 means it succeeded on some attempt)."""
+    last = None
+    for attempt in range(retries):
+        last = run(cmd, timeout=timeout)
+        if last.returncode == 0:
+            return last
+        if attempt < retries - 1:
+            print(f"    ⚠ {label or cmd} failed (rc={last.returncode}) — retrying ({attempt + 1}/{retries - 1})")
+            time.sleep(2 ** attempt)
+    return last
 
 
 def ask(prompt, default=None):
@@ -265,7 +286,8 @@ def ensure_ollama():
     """Make sure ollama is installed and serving. Returns True on success."""
     if not shutil.which("ollama"):
         print("  Ollama not found — installing...")
-        run("curl -fsSL https://ollama.com/install.sh | sh", timeout=300)
+        _retry_run("curl -fsSL https://ollama.com/install.sh | sh", timeout=300,
+                   retries=2, label="Ollama install")
     if not shutil.which("ollama"):
         print("  ✗ Ollama install failed. Run: curl -fsSL https://ollama.com/install.sh | sh")
         return False
@@ -530,17 +552,70 @@ def create_context_modelfile(base_model, ctx_size, name=None):
 
 
 # ── Pi (optional terminal assistant) ────────────────────────────
+def _log_node_version():
+    v = run("node --version", timeout=10).stdout.strip()
+    print(f"    ✓ Node.js {v}" if v else "    ✓ Node.js installed")
+
+
+def _install_node_tarball(version="22.14.0"):
+    """Fallback install: download the official Node binary tarball and extract it
+    to /usr/local. No apt or distro dependency — the most portable path, used when
+    the NodeSource/apt route fails."""
+    machine = os.uname().machine if hasattr(os, "uname") else ""
+    arch = "arm64" if machine == "aarch64" else "x64"  # x86_64/amd64/anything -> x64
+    url = f"https://nodejs.org/dist/v{version}/node-v{version}-linux-{arch}.tar.xz"
+    tarball = "/tmp/node.tar.xz"
+    print(f"    downloading {url} ...")
+    if run(f"curl -fsSL {url} -o {tarball}", timeout=300).returncode != 0:
+        print("    ✗ failed to download the Node tarball")
+        return False
+    if run(f"tar -xJf {tarball} -C /usr/local --strip-components=1", timeout=120).returncode != 0:
+        print("    ✗ failed to extract the Node tarball")
+        return False
+    return shutil.which("node") is not None
+
+
+def _ensure_node():
+    """Install Node.js 22 if missing. Returns True if node is available afterward."""
+    if shutil.which("node"):
+        return True
+    print("  Node.js not found — installing Node 22...")
+
+    # 1. Fresh apt lists + the tools the NodeSource script needs (best-effort).
+    run("apt-get update -y", timeout=300)
+    run("apt-get install -y ca-certificates curl gnupg", timeout=300)
+
+    # 2. NodeSource repo (retry — its internal apt-get update is slow on a fresh pod).
+    if _retry_run("curl -fsSL https://deb.nodesource.com/setup_22.x | bash -",
+                  timeout=240, retries=3, label="NodeSource setup").returncode == 0:
+        run("apt-get install -y nodejs", timeout=300)
+        if shutil.which("node"):
+            _log_node_version()
+            return True
+
+    # 3. Fallback: official tarball (survives NodeSource/apt breakage).
+    print("    ⚠ NodeSource/apt path failed — falling back to the official Node tarball")
+    if _install_node_tarball():
+        _log_node_version()
+        return True
+
+    print("    ✗ Node.js could not be installed.")
+    return False
+
+
 def setup_pi(ctx_size, branch="unified_mneme"):
     """Install Pi + write its provider config pointing at this proxy. Returns True on success."""
-    if not shutil.which("node"):
-        print("  Node.js not found — installing Node 22...")
-        run("curl -fsSL https://deb.nodesource.com/setup_22.x | bash -", timeout=60)
-        run("apt-get install -y nodejs", timeout=120)
+    if not _ensure_node():
+        print("  ⚠ Pi install skipped — Node.js unavailable.")
+        return False
     if not shutil.which("npm"):
         print("  ✗ npm not found — Pi install skipped.")
         return False
     print("  Installing Pi (terminal AI coding assistant)...")
-    run("npm install -g @earendil-works/pi-coding-agent", timeout=180)
+    if _retry_run("npm install -g @earendil-works/pi-coding-agent", timeout=300,
+                  retries=2, label="npm install pi").returncode != 0:
+        print("  ⚠ Pi install failed — skipping. Re-run the setup wizard to retry.")
+        return False
 
     pi_config = {
         "providers": {
@@ -1221,7 +1296,10 @@ def main():
     print(f"  Start/stop:  {start_script}")
 
     if install_pi:
-        setup_pi(models.get("ctx_size"), branch)
+        try:
+            setup_pi(models.get("ctx_size"), branch)
+        except Exception as e:
+            print(f"  ⚠ Pi setup failed ({type(e).__name__}: {e}) — continuing without Pi.")
 
     # Reconfigure: stop the old instance on its saved port before starting the
     # new one (a restart, not a second instance).
@@ -1256,3 +1334,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n  Cancelled.")
         sys.exit(130)
+    except Exception as e:
+        print(f"\n  ✗ Setup failed: {type(e).__name__}: {e}")
+        sys.exit(1)
