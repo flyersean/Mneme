@@ -928,7 +928,17 @@ def save_shared_config(memory_dir, models, backend, port=None, inject=None, memo
 
 
 def db_exists(memory_dir):
-    return os.path.exists(os.path.join(memory_dir, "mneme.db"))
+    """True if a prior install exists here. Checks more than mneme.db: a setup
+    that crashed AFTER writing config/start files but BEFORE the proxy ever
+    started (e.g. the Node/Pi install timeout) leaves setup_config.json and the
+    per-instance config but no DB file. Those still count as an existing install
+    so the wizard offers add/reconfigure/wipe instead of silently overwriting."""
+    if os.path.exists(os.path.join(memory_dir, "mneme.db")):
+        return True
+    if os.path.exists(_scfg_path(memory_dir)):
+        return True
+    inst = os.path.join(memory_dir, "instances")
+    return os.path.isdir(inst) and bool(os.listdir(inst))
 
 
 def wipe_db(memory_dir):
@@ -1221,7 +1231,10 @@ def main():
     reconf_port = None
     if db_exists(MEMORY_DIR):
         shared = load_shared_config(MEMORY_DIR)
-        print(f"\n  Existing memory DB found at {MEMORY_DIR} ({_count_chunks(MEMORY_DIR)} chunks).")
+        if os.path.exists(os.path.join(MEMORY_DIR, "mneme.db")):
+            print(f"\n  Existing memory DB found at {MEMORY_DIR} ({_count_chunks(MEMORY_DIR)} chunks).")
+        else:
+            print(f"\n  Existing install found at {MEMORY_DIR} (config present, but no memory DB yet — a previous setup didn't finish).")
         idx = choose("What would you like to do?", [
             "Add another proxy instance (new chat model + port, sharing this DB)",
             "Reconfigure this install (re-pick backend / models / port — keeps the DB)",
