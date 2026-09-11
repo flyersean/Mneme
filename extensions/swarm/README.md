@@ -23,8 +23,10 @@ freeze -> snapshot -> critics -> consume -> gate -> synthesize -> decide
 
 ## Files
 
-- `swarm_orchestrator.py` — the driver (control flow `goto`/`if`, folder IO, mneme + ollama backends)
+- `swarm_orchestrator.py` — the serial driver (control flow `goto`/`if`, folder IO, mneme + ollama backends)
+- `swarm_p_orchestrator.py` — the parallel driver: adds a `parallel:` block that fans out independent steps concurrently (see "Parallel")
 - `swarm_config.yaml` — the loop definition (steps, ports, prompts, directories)
+- `scripts/now.py` — timestamp utility for the `exec` step
 
 ## Run it
 
@@ -153,6 +155,40 @@ consistent "now":
 is a directory and gets `timestamp.txt` inside it. Use the string form for shell
 commands (`python3 scripts/now.py board`) or a list to skip the shell
 (`[python3, scripts/now.py, board]`).
+
+## Parallel (`swarm_p_orchestrator.py`)
+
+The serial driver runs one step at a time. The parallel driver adds one new step
+form — a `parallel:` block that runs a list of independent sub-steps concurrently:
+
+```yaml
+steps:
+  - name: freeze
+    swap_dir: input
+  - parallel:
+      - name: critic_structure
+        backend: mneme
+        port: 8080
+        read_dir: input.active
+        write_dir: pass1/structure.txt
+      - name: critic_prose
+        backend: mneme
+        port: 8080
+        read_dir: input.active
+        write_dir: pass1/prose.txt
+  - name: consume
+    clear_dir: input.active
+```
+
+Run it exactly like the serial one: `python3 swarm_p_orchestrator.py swarm_config.yaml`.
+Sub-steps are leaf steps (no `goto`/`if` inside a block); each reads the shared
+input and writes a distinct output file.
+
+Parallel only helps when Ollama can serve the requests at once: sub-steps that
+hit the **same model** batch/parallelize (up to `OLLAMA_NUM_PARALLEL`), while
+sub-steps on **different models** that don't both fit in VRAM get serialized by
+Ollama (model swap) — no speedup, just swap latency. Fan out steps that share a
+model.
 
 ## Adapt it
 

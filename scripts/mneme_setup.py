@@ -274,12 +274,13 @@ def ensure_ollama():
         # Mirror the install.sh systemd drop-in here: this fallback runs when Ollama
         # is NOT under systemd (e.g. RunPod images), so without this the serve
         # process inherits none of the OLLAMA_* settings. keep_alive=-1 keeps models
-        # resident; flash_attention=0 avoids a CUDA crash on some vision-patched
-        # models; sched_spread=1 spreads models across ALL GPUs instead of packing
-        # them onto GPU 0 (the second A40 would otherwise sit idle at 0%).
+        # resident; flash_attention=1 is faster + lower memory (some vision-patched
+        # GGUF models crash with it — set 0 if you hit a CUDA illegal-memory-access
+        # on long prompts); sched_spread=1 spreads models across ALL GPUs instead of
+        # packing them onto GPU 0 (the second A40 would otherwise sit idle at 0%).
         _env = os.environ.copy()
         _env["OLLAMA_KEEP_ALIVE"] = "-1"
-        _env["OLLAMA_FLASH_ATTENTION"] = "0"
+        _env["OLLAMA_FLASH_ATTENTION"] = "1"
         _env["OLLAMA_SCHED_SPREAD"] = "1"
         subprocess.Popen(["ollama", "serve"], env=_env, stdout=open("/tmp/ollama.log", "ab"),
                          stderr=subprocess.STDOUT, start_new_session=True)
