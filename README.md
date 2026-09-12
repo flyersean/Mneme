@@ -288,6 +288,24 @@ Reference scales:
 
 `storage.memory_only: false` enables the experimental layer; the `unified_mneme` branch ships that way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
 
+### Memory modes — the flags + the floor
+
+Three flags and one floor decide what memory does each turn. From most to least drastic:
+
+| Setting | Off / raised | What still works |
+|---|---|---|
+| `storage.memory_enabled` (master) | `false` = nothing: no injection, no saving, `search_memory` + `/search` off | system prompt + tool loop only |
+| `storage.inject_enabled` | `false` = **save-only**: no memory injected, but turns archived AND `search_memory` + `/search` still work | saving, search, tools |
+| `storage.memory_only` | `true` = strategy/learning layer off | memory retrieval, grading, tools |
+| `retrieval.inject_min_similarity` | raised = fewer memories injected | saving, `/search` (but **also gates `search_memory`**) |
+
+`inject_enabled` vs a high `inject_min_similarity` — the difference matters:
+
+- `inject_enabled: false` is a **hard off for auto-injection only**. Search keeps working, saving keeps working, and no embed + FAISS work is wasted each turn. This is the "swarm" mode: models aren't bombarded with context, but their work is persisted and pullable on demand.
+- A high `inject_min_similarity` is a **soft off** (nothing clears the floor), but it *also* silences the `search_memory` tool — because both auto-injection and `search_memory` share the same `route_query` floor — and the proxy still embeds + searches every turn before discarding the results.
+
+So for "don't bombard the models, but keep saving and let them search on demand", use `storage.inject_enabled: false`. All three flags are live-reloadable from `mneme.yaml` (env equivalents `MNEME_MEMORY_ENABLED`, `MNEME_INJECT_ENABLED`, `MNEME_MEMORY_ONLY` take precedence if exported).
+
 ### Legacy thresholds
 
 `route_threshold` and `classify_threshold` in the config are legacy:

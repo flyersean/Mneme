@@ -694,6 +694,7 @@ storage:
   port: {port}
   inject_system: {inject}
   memory_only: {memory_only}
+  inject_enabled: true   # false = save-only (no injection, but still archive + search)
   staging_turns: 1   # swarm default: flush to memory after every turn
   staging_idle: 120
   belief_evolution: false

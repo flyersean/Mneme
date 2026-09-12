@@ -132,6 +132,7 @@ _CONFIG_ENV_MAP = {
     "storage.context_recent_extra": "MNEME_CONTEXT_RECENT_EXTRA",
     "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
     "storage.memory_enabled": "MNEME_MEMORY_ENABLED",
+    "storage.inject_enabled": "MNEME_INJECT_ENABLED",
     "retrieval.max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
     "retrieval.route_threshold": "MNEME_ROUTE_THRESHOLD",
     "retrieval.classify_threshold": "MNEME_CLASSIFY_THRESHOLD",
@@ -345,6 +346,7 @@ _USER_PINNED_ENV = {env for env in _SAMPLING_ENV_MAP.values() if env in os.envir
 _STORAGE_ENV_MAP = {
     "memory_only": "MNEME_MEMORY_ONLY",
     "memory_enabled": "MNEME_MEMORY_ENABLED",
+    "inject_enabled": "MNEME_INJECT_ENABLED",
 }
 _USER_PINNED_STORAGE_ENV = {env for env in _STORAGE_ENV_MAP.values() if env in os.environ}
 load_config()
@@ -397,6 +399,7 @@ CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
+INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
 PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 _db_path   = os.environ.get("MNEME_DB_PATH")
 DB_PATH    = os.path.expanduser(_db_path) if _db_path else os.path.join(CHUNK_DIR, "mneme.db")
@@ -416,7 +419,7 @@ _CONFIG_MTIME = 0.0
 
 
 def _reload_sampling_if_changed():
-    global _CONFIG_MTIME, OLLAMA_TEMP, MEMORY_ONLY, MEMORY_ENABLED
+    global _CONFIG_MTIME, OLLAMA_TEMP, MEMORY_ONLY, MEMORY_ENABLED, INJECT_ENABLED
     path = CONFIG_PATH
     if not path or not os.path.exists(path):
         return
@@ -460,6 +463,7 @@ def _reload_sampling_if_changed():
     # Re-read the flags (the loop above may have just updated their env vars).
     MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"
     MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"
+    INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"
     print(f"  [CONFIG] hot-reloaded sampling/models/storage ({', '.join(changed) or 'models-only'})", flush=True)
 
 
@@ -2774,6 +2778,8 @@ def build_context(query: str) -> Tuple[str, str]:
     4. Append strategies for the detected problem type
     """
     q_ptype = _classify_problem_type(query)
+    if not INJECT_ENABLED:
+        return "", q_ptype  # injection off (save-only) — skip retrieval, keep classification
     _qvec = _embed_query(query)  # embed once; shared by memory + strategy retrieval
     suppress = _update_topic_state(_qvec)  # topic-switch grace window?
     if suppress:
