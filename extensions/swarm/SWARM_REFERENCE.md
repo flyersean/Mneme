@@ -114,7 +114,9 @@ the branch and is not written anywhere.
 | `retry`        | number          | model steps           | Extra re-issues on transient failure (see §8). |
 | `timeout`      | number          | model steps           | Per-step request timeout override. |
 | `delay`        | number          | all                   | Pause this many seconds BEFORE the step runs. |
+| `every`        | number          | all                   | Run only once every N visits (cycle throttle); 0 = every visit (see §12). |
 | `read_dir`     | string or list  | model steps           | Directory(ies) to read context from (see §9). |
+| `skip_if_empty`| boolean         | model steps           | Skip the model call when `read_dir` is empty (see §9). |
 | `write_dir`    | string          | model steps           | Write output (OVERWRITE) (see §10). |
 | `append_dir`   | string          | model steps           | Append output (see §10). |
 | `copy_dir`     | string          | action-only           | Source to copy (see §11). Pair with `copy_to`. |
@@ -201,6 +203,12 @@ Details:
 
 `read_dir` contents become the `user` message to the backend. For Mneme, this is
 also the text the proxy embeds as its memory-retrieval query.
+
+`skip_if_empty: true` on the step suppresses the model call (and the `write_dir`/
+`append_dir` that depend on it) when `read_dir` yields `NO_INPUT` — i.e. the
+directory is empty, holds only hidden files, or does not exist. Folder actions
+and flow (`goto`/`if`) still run. It is the single-step form of the two-step
+`if: empty` gate (see §12) for "read this, but send nothing if it's empty".
 
 ---
 
@@ -326,6 +334,32 @@ the step falls through to the next index.
 Jumping to `END` (via `goto` or `if.then`/`if.else`) stops the run. The loop
 otherwise runs until it hits `END`, the step list ends, `max_steps` trips, or you
 Ctrl-C. You may not name a step `END`.
+
+### `every` — cycle throttle (run every Nth visit)
+
+`every: N` (default `0`) makes a step run only once every N visits. The
+orchestrator keeps a per-step visit counter; on each of the N-1 intervening
+visits the step is skipped **entirely** (no `delay`/`exec`/`read_dir`/model call/
+folder actions) and the flow falls through to the next step. When the counter
+reaches N the step runs normally and the counter resets to 0.
+
+```yaml
+steps:
+  - name: loop-top
+    read_dir: inbox
+    write_dir: buffer.txt
+    goto: summarize
+
+  - name: summarize       # only every 3rd cycle
+    every: 3
+    read_dir: buffer.txt
+    write_dir: output.txt
+
+  - name: loop-back
+    goto: loop-top
+```
+
+`0` (the default) = run every visit, so existing configs are unaffected.
 
 ---
 

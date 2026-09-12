@@ -37,6 +37,11 @@ CONFIG (swarm_config.yaml)
                   response) still stop the run immediately. Default 0 (no retry).
     delay         pause this many seconds BEFORE the step runs (rate-limit a busy
                   proxy, or throttle the loop by putting it on the loop step).
+    every         run this step only once every N visits (a per-step cycle
+                  counter). On the N-1 intervening visits the step is skipped
+                  entirely (no delay/exec/read/model/actions) and the flow falls
+                  through to the next step. 0 (default) = run every visit. Use it
+                  to make a loop body act only on every Nth cycle.
 
     read_dir      directory (or a LIST of directories) to read context from. When
                   a list is given, the contents of every directory are read and
@@ -44,6 +49,10 @@ CONFIG (swarm_config.yaml)
                   `--- <dir>/<relpath> ---` so the model can tell which source it
                   came from. (Single-directory reads keep the plain `--- path ---`
                   header for backward compatibility.)
+    skip_if_empty if true, and read_dir yields no input (empty or missing dir),
+                  skip the model call for this step entirely — nothing is sent to
+                  any model, and no write/append happens. Folder actions and flow
+                  (goto/if) still run. Default false.
     write_dir     where to write the model output (OVERWRITE). If the path ends in
                   a file extension (e.g. "pass1/a2_synthesis.txt") it is treated as
                   a full file path and the output is written to that exact file;
@@ -137,6 +146,7 @@ class Orchestrator:
         self._config_path = config_path
         self._config_mtime = self._file_mtime()
         self._load_config()
+        self._step_visits = {}   # per-step cycle counters (the `every` throttle)
 
     def _file_mtime(self):
         try:
@@ -601,6 +611,21 @@ class Orchestrator:
                 return
             step = self.steps[idx]
             name = step.get("name") or f"#{idx}"
+            # Cycle throttle (`every`): run this step only once every N visits.
+            # A skipped visit does nothing (no delay/exec/read/model/actions) and
+            # falls through to the next step. 0 (default) = run every visit.
+            every = int(step.get("every") or 0)
+            if every > 0:
+                key = step.get("name") or idx
+                visits = self._step_visits.get(key, 0) + 1
+                if visits < every:
+                    self._step_visits[key] = visits
+                    print(f"  [throttle] {name} visit {visits}/{every} — skipping")
+                    # Skip the work but honor the step's flow (goto/if) so a
+                    # throttled step in a loop doesn't break the loop.
+                    idx = self._next_index(step, None, idx)
+                    continue
+                self._step_visits[key] = 0  # threshold reached — reset for the next cycle
             print(f"\n{'=' * 40}\nSTEP {name}")
 
             # Optional pacing delay before the step runs.
@@ -620,8 +645,14 @@ class Orchestrator:
                 print(f"  [read] {', '.join(srcs)} ({len(context)} chars)")
 
             # 2. Call a model only when we write/append output OR branch on output.
+            # `skip_if_empty` suppresses the call (and the write/append that follow,
+            # since output stays None) when read_dir yielded no input — so an empty
+            # directory sends nothing to any model.
             output = None
-            if self._step_needs_model(step):
+            _empty_skip = bool(step.get("skip_if_empty")) and context == "NO_INPUT"
+            if _empty_skip:
+                print("  [skip] read_dir empty — skipping model call")
+            if self._step_needs_model(step) and not _empty_skip:
                 backend = (step.get("backend") or "mneme").lower()
                 retries = int(step.get("retry") or 0)
                 if backend == "ollama":

@@ -66,7 +66,10 @@ class ParallelOrchestrator(Orchestrator):
             srcs = src if isinstance(src, list) else [src]
             print(f"  [read] {', '.join(srcs)} ({len(context)} chars)")
         output = None
-        if self._step_needs_model(step):
+        _empty_skip = bool(step.get("skip_if_empty")) and context == "NO_INPUT"
+        if _empty_skip:
+            print("  [skip] read_dir empty — skipping model call")
+        if self._step_needs_model(step) and not _empty_skip:
             backend = (step.get("backend") or "mneme").lower()
             retries = int(step.get("retry") or 0)
             if backend == "ollama":
@@ -116,6 +119,18 @@ class ParallelOrchestrator(Orchestrator):
                 print("\n[reload] flow has no more steps — stopping.")
                 return
             step = self.steps[idx]
+
+            # Cycle throttle (`every`) — mirror of the serial orchestrator.
+            every = int(step.get("every") or 0)
+            if every > 0:
+                key = step.get("name") or idx
+                visits = self._step_visits.get(key, 0) + 1
+                if visits < every:
+                    self._step_visits[key] = visits
+                    print(f"  [throttle] {step.get('name') or f'#{idx}'} visit {visits}/{every} — skipping")
+                    idx = self._next_index(step, None, idx)
+                    continue
+                self._step_visits[key] = 0  # threshold reached — reset for the next cycle
 
             # A `parallel:` block fans out its sub-steps concurrently.
             if "parallel" in step:
