@@ -148,8 +148,16 @@ caps:
 # Inbuilt tools — enable/disable each one. `native` (auto|on|off) controls the
 # bash/write bootstrap; the rest are the read-only server tools. Set any to false
 # to hide it from the model (handy for a restricted or memory-less proxy).
+# `inject_min_similarity` / `inject_max` / `inject_tokens` auto-inject relevant
+# built-tool descriptions into context (retrieval-gated) so the model knows a
+# tool exists; the model can always `list_tools` / `read_tool` manually regardless.
 tools:
-  native: auto               # bash/write bootstrap: auto | on | off
+  native: auto               # bash/write bootstrap: auto | on | off  (NOT a boolean — "off" to disable)
+  dir: ~/mneme/chunks/tools  # where the model's built tools live (defaults to <chunk_dir>/tools)
+  bash_timeout: 30           # seconds before a bash command is killed
+  inject_min_similarity: 0.75  # auto-inject a built tool's description only if the query scores >= this
+  inject_max: 3              # max built tools auto-injected into context per turn
+  inject_tokens: 600         # token budget for the injected tool descriptions
   search_memory: true        # memory search tool
   list_tools: true           # list the tools you've built
   read_tool: true            # read a built tool's source

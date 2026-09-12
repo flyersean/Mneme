@@ -746,8 +746,15 @@ caps:
   chunk_size: 4000
 
 # Inbuilt tools — set any to false to hide it from the model.
+# `inject_*` auto-inject relevant built-tool descriptions into context so the
+# model knows a tool exists; it can always list_tools / read_tool manually.
 tools:
-  native: auto            # bash/write bootstrap: auto | on | off
+  native: auto            # bash/write bootstrap: auto | on | off (NOT a boolean — "off" to disable)
+  dir: {instance_dir}/tools   # where the model's built tools live (default <chunk_dir>/tools)
+  bash_timeout: 30        # seconds before a bash command is killed
+  inject_min_similarity: 0.75  # auto-inject a built tool's description if the query scores >= this
+  inject_max: 3           # max built tools auto-injected per turn
+  inject_tokens: 600      # token budget for injected tool descriptions
   search_memory: true     # memory search tool
   list_tools: true        # list the tools you've built
   read_tool: true         # read a built tool's source
