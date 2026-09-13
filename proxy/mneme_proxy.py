@@ -27,7 +27,7 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 import requests
 
-from mneme.util import _extract_text, _log_error
+from mneme.util import _extract_text, _log_error, _split_content, _image_bytes_from_block, _image_token_estimate, _to_ollama_messages, _sniff_mime, _mime_to_ext
 from mneme.logfile import setup_logging
 from mneme.tool_trail import (
     _TOOL_TAG_RE,
@@ -1763,8 +1763,12 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     if system:
         msgs.append({"role": "system", "content": system})
     for m in trimmed:
-            mc = _extract_text(m.get("content", ""))
-            new_m = {"role": m["role"], "content": mc}
+            # Preserve the RAW content (str OR OpenAI multimodal array). Flattening
+            # via _extract_text here is what silently turned images into "[IMAGE: url]"
+            # text — the vision model never saw the image. _extract_text is still used
+            # everywhere that only needs TEXT (retrieval/staging/labeling); only the
+            # backend-facing message keeps the original content.
+            new_m = {"role": m["role"], "content": m.get("content", "")}
             # Preserve tool_calls on assistant messages so the model can associate
             # a follow-up tool result with its call (critical for multi-turn tool
             # use in Pi). Dropping this is what broke tool calls → "None".
@@ -1840,6 +1844,11 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
                 est += len(json.dumps(m["tool_calls"])) // 4
             except Exception:
                 pass
+        # Images cost real tokens (~85 low-res to ~1440 high-res). Charge them so
+        # the context budget doesn't under-count a multimodal turn.
+        _, imgs = _split_content(m.get("content", ""))
+        for b in imgs:
+            est += _image_token_estimate(b)
         return est
 
     sys_msgs = [m for m in msgs if m.get("role") == "system"]
@@ -1864,6 +1873,9 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     
     if use_openai:
         return _query_openrouter(msgs, opts, tools, format_schema, max_tokens, timeout, _model, no_reasoning)
+    # Convert to Ollama's native format before sending: text `content` + a separate
+    # `images` list of base64. (OpenAI got the raw array above; Ollama needs the split.)
+    payload["messages"] = _to_ollama_messages(msgs)
     # Stream the Ollama response so a slow cold-start or long reasoning pass is
     # NOT subject to a total-generation wall. The timeout tuple is
     # (connect, read-between-bytes): the read timeout is the Ollama budget, so a
@@ -2099,6 +2111,45 @@ def _looks_like_read_dir(text: str) -> bool:
     return bool(text) and bool(_READDIR_HEADER_RE.search(text or ""))
 
 
+def _ingest_images(content) -> list:
+    """Persist any images embedded in `content` to the content-addressed store.
+
+    Each distinct image (keyed by the sha256 of its bytes) is written ONCE to
+    `CHUNK_DIR/images/<sha256>.<ext>`; an identical image already on disk is
+    re-used, never re-saved — so a model re-opening a saved image and reprocessing
+    it does not create another copy. Returns a list of references
+    [{hash, path, mime, bytes}] (empty if there were no images or none resolved)."""
+    if isinstance(content, str):
+        return []
+    _, imgs = _split_content(content)
+    if not imgs:
+        return []
+    import hashlib
+    refs = []
+    for b in imgs:
+        try:
+            data, mime = _image_bytes_from_block(b)
+        except Exception:
+            data = None
+        if not data:
+            continue
+        h = hashlib.sha256(data).hexdigest()
+        smime = _sniff_mime(data) or mime
+        ext = _mime_to_ext(smime)
+        img_dir = os.path.join(CHUNK_DIR, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        path = os.path.join(img_dir, f"{h}.{ext}")
+        if not os.path.exists(path):
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+            except Exception as e:
+                _log_error("ingest_images:write", e)
+                continue
+        refs.append({"hash": h, "path": path, "mime": smime, "bytes": len(data)})
+    return refs
+
+
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
@@ -2120,7 +2171,9 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     pending = 1 if vector is None else 0
     blob = _vec_to_blob(vector) if vector is not None else None
     msgs_json = json.dumps(
-        [{"role": m["role"], "content": m["content"][:DB_MSG_CAP]} for m in messages]
+        [{"role": m["role"], "content": m["content"][:DB_MSG_CAP],
+          **({"images": m["images"]} if m.get("images") else {})}
+         for m in messages]
     )
 
     def _insert_chunk():
@@ -2927,10 +2980,14 @@ def build_context(query: str) -> Tuple[str, str]:
         _trusttag = "" if _trust == "verified" else "[UNVERIFIED]"
         msg_text = f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag} [src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n"
         # If next sequential chunk exists, hint it
-        msg_text += "\n".join(
-            f"{m['role']}: {m['content']}"
-            for m in chunk.get("messages", [])
-        )
+        _lines = []
+        for m in chunk.get("messages", []):
+            _line = f"{m['role']}: {m['content']}"
+            for _img in m.get("images", []) or []:
+                _line += (f"\n[IMAGE: {_img.get('path', '')} ({_img.get('mime', '')}) "
+                          f"— read_image \"{_img.get('hash', '')}\" to view]")
+            _lines.append(_line)
+        msg_text += "\n".join(_lines)
         if chunk.get("strategy"):
             msg_text += f"\n[learned strategy: {chunk['strategy']}]"
         # Add next-chunk hint for sequential navigation
@@ -3018,7 +3075,7 @@ class StagingBuffer:
         self.last_activity = time.time()
         self.lock = threading.Lock()
     
-    def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C"):
+    def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C", images=None):
         if not MEMORY_ENABLED:
             return  # memory disabled — skip staging/archiving
         with self.lock:
@@ -3027,7 +3084,10 @@ class StagingBuffer:
                 noise = ["update the skill library", "Be ACTIVE", "Signals to look for", "Review the conversation above", "missed learning opportunity"]
                 if any(p in content for p in noise):
                     content = "[filtered: system instruction artifact]"
-            self.messages.append({"role": role, "content": content, "source": source, "session": session, "grade": grade})
+            entry = {"role": role, "content": content, "source": source, "session": session, "grade": grade}
+            if images:
+                entry["images"] = images
+            self.messages.append(entry)
             self.last_activity = time.time()
     
     def should_flush(self) -> bool:
@@ -4626,6 +4686,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if m.get("role") == "user":
             full_user_msg = _extract_text(m.get("content", ""))
             break
+
+    # Raw (unflattened) last user message content — carries any images the user
+    # attached, which _extract_text would otherwise collapse to a "[IMAGE: url]"
+    # placeholder. Persisted to the content-addressed image store on archive.
+    _raw_last_user = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            _raw_last_user = m.get("content", "")
+            break
     
     # ── Detail: load full chunk if DETAIL tag found ──
     # Scan last message regardless of role (model may output DETAIL in response)
@@ -5068,7 +5137,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
             followup.append({"role": "user", "content": "search_memory results:\n" + _truncate_tool_result(tool_result)})
 
-        # Registry tools (list_tools/read_tool): user-message feedback.
+        # Registry tools (list_tools/read_tool/read_image): user-message feedback.
         for tc in registry_calls:
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
@@ -5076,6 +5145,21 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _t0 = time.time()
             _tool_rounds += 1
             res = mntools.execute_readonly_tool(nm, args)
+            if nm == "read_image":
+                # Image re-view: the result is a data URL. Attach it as a REAL image
+                # block (not text) so a vision model actually sees it; stage a short
+                # note (the base64 itself is not worth indexing into memory).
+                _stage_tool_result("[read_image: image viewed]", nm, args)
+                _tool_trace.append(_trace(nm, args, "[read_image: image viewed]", _t0))
+                if res.startswith("data:"):
+                    followup.append({"role": "user", "content": [
+                        {"type": "text", "text": "read_image result (the stored image):"},
+                        {"type": "image_url", "image_url": {"url": res}},
+                    ]})
+                else:
+                    followup.append({"role": "user", "content": f"read_image result:\n{res}"})
+                print(f"  [IMAGE-TOOL] read_image -> {res[:60]}...", flush=True)
+                continue
             # Stage tool results into memory so their full text survives followup
             # compaction: fetched pages go in as page:<domain> chunks, everything
             # else as tool:<name> chunks. The model only ever sees a bounded
@@ -5313,7 +5397,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _enqueue(archive_staging)
 
     _user_src = "input" if _looks_like_read_dir(user_msg) else "user"
-    staging.add("user", user_msg, source=_user_src, session=session_id)
+    _img_refs = _ingest_images(_raw_last_user)
+    staging.add("user", user_msg, source=_user_src, session=session_id, images=_img_refs)
+    if _img_refs:
+        print(f"  [IMG] stored {len(_img_refs)} image(s) for this turn", flush=True)
     if result["content"]:
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
 

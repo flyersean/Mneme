@@ -14,6 +14,7 @@ Dependencies on the orchestrator (``mneme_proxy``) are bound after import:
 the module import-cycle-free and unit-testable against a temp DB + a fake embed.
 """
 
+import base64
 import os
 import json
 import subprocess
@@ -23,7 +24,7 @@ from html import unescape as _unescape
 import requests
 import numpy as np
 
-from mneme.util import _extract_text
+from mneme.util import _extract_text, _sniff_mime
 from mneme.mcp_client import get_manager
 
 # ─── Config (env-set by mneme_proxy's config loader before first use) ────
@@ -110,6 +111,21 @@ READ_TOOL_TOOL = {
     },
 }
 
+READ_IMAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_image",
+        "description": "View an image that was previously stored in memory, by its hash (or full path). Returns the actual image so you can look at it again. Use when a memory note shows an [IMAGE: ...] attachment and you need to see it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The image hash or full path, exactly as shown in the [IMAGE: ...] memory note"},
+            },
+            "required": ["ref"],
+        },
+    },
+}
+
 READ_FILE_TOOL = {
     "type": "function",
     "function": {
@@ -189,7 +205,7 @@ NATIVE_WRITE_TOOL = {
 }
 
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
 
 
 # ─── Per-tool enable flags ─────────────────────────────────────────────
@@ -512,12 +528,45 @@ def _exec_fetch_url(url):
         return f"[fetch_url error: {type(e).__name__}: {e}]"
 
 
+def _exec_read_image(ref):
+    """Read a stored image and return it as a data URL (so a vision model can see
+    it again). `ref` is a hash or a path. Returns a data URL string, or an error."""
+    ref = (ref or "").strip()
+    if not ref:
+        return "[read_image: no image reference]"
+    img_dir = os.path.join(
+        os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks"), "images")
+    candidate = None
+    if ref.startswith("/"):
+        candidate = os.path.expanduser(ref)
+    elif "/" in ref:
+        candidate = os.path.expanduser(ref)
+    else:
+        # bare hash — find images/<hash>.*
+        if os.path.isdir(img_dir):
+            for fn in sorted(os.listdir(img_dir)):
+                if fn.startswith(ref + "."):
+                    candidate = os.path.join(img_dir, fn)
+                    break
+    if not candidate or not os.path.isfile(candidate):
+        return f"[read_image: image not found: {ref}]"
+    try:
+        with open(candidate, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        return f"[read_image error: {type(e).__name__}: {e}]"
+    mime = _sniff_mime(data) or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def execute_readonly_tool(name, args):
-    """Dispatch a read-only registry tool (list_tools/read_tool/read_file/fetch_url) or web_search."""
+    """Dispatch a read-only registry tool (list_tools/read_tool/read_image/read_file/fetch_url) or web_search."""
     if name == "list_tools":
         return _exec_list_tools((args or {}).get("query") or None, (args or {}).get("problem_type") or None)
     if name == "read_tool":
         return _exec_read_tool((args or {}).get("name", ""))
+    if name == "read_image":
+        return _exec_read_image((args or {}).get("ref", ""))
     if name == "read_file":
         return _exec_read_file((args or {}).get("path", ""), (args or {}).get("start"), (args or {}).get("end"))
     if name == "fetch_url":

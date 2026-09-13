@@ -163,6 +163,15 @@ mcp_servers:
 - **A broken server degrades gracefully:** it's logged and skipped, never crashes the proxy, and its tools just don't appear.
 - The setup wizard prompts to add MCP servers during install.
 
+### Images (vision)
+
+A vision-capable backend sees images through the proxy, and images are remembered like articles are.
+
+- **Passthrough:** an image in a message reaches the model in each backend's native form — OpenAI/OpenRouter gets the `image_url` array untouched, Ollama gets a separate `images: [base64]` field. (Before this, the proxy flattened content to text and the model saw only `[IMAGE: url]`.)
+- **Remembered, not lost:** on archive, an image is saved once to `chunk_dir/images/<sha256>.<ext>` (content-addressed — the same bytes are never saved twice, so re-processing a saved image adds a memory record, not another copy). The chunk stores the path + MIME beside the turn's text; the model's written analysis of the image is the searchable index, as with any other turn.
+- **Recall:** an injected chunk that has an image shows a `[IMAGE: <path> — read_image "<hash>" to view]` note, and the `read_image` tool returns the actual image so the model can look at it again.
+- **Token accounting:** images are charged their real cost (~85 low-res to ~1440 high-res) in the context budget instead of ~12 placeholder characters.
+
 ### Provenance grading
 
 *On — this is memory quality, not learning.*
