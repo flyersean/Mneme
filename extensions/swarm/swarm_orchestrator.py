@@ -171,7 +171,10 @@ class Orchestrator:
     def _maybe_reload(self, idx):
         """Hot-reload: if the config file changed on disk, rebuild the flow and
         re-anchor the current position by step name, so an edit takes effect on the
-        NEXT step with no restart. A broken/partial edit keeps the last good flow."""
+        NEXT step with no restart. A broken/partial edit keeps the last good flow.
+        Skipped entirely when MNEME_HOT_RELOAD=0 (locked — restart to apply)."""
+        if os.environ.get("MNEME_HOT_RELOAD", "1") != "1":
+            return idx
         if not self._config_path:
             return idx
         try:

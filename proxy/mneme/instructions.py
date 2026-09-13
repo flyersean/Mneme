@@ -372,8 +372,26 @@ def _load_instruction(name, default=None, vars=None):
     return _substitute(text, vars or {})
 
 
+_PROMPT_CACHE = {}
+
+
 def _read_override(name):
-    """Return the override body for `name`, or None if none exists/parses."""
+    """Return the override body for `name`, or None if none exists/parses.
+
+    When MNEME_HOT_RELOAD=0 (locked), the resolved text is frozen at first read —
+    later file edits don't take effect until restart, so a coding/studying agent
+    that edits its own prompt files can't change its live behavior on the fly.
+    """
+    if os.environ.get("MNEME_HOT_RELOAD", "1") != "1":
+        if name in _PROMPT_CACHE:
+            return _PROMPT_CACHE[name]
+        text = _read_override_uncached(name)
+        _PROMPT_CACHE[name] = text
+        return text
+    return _read_override_uncached(name)
+
+
+def _read_override_uncached(name):
     for subdir in _override_subdirs():
         path = os.path.join(_instructions_dir(), subdir, name + ".txt")
         if not os.path.isfile(path):

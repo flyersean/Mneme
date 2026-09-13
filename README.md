@@ -131,6 +131,7 @@ Every proxy instance is a set of independent toggles, so you can set one up exac
 - **Memory** — `storage.memory_enabled: false` turns off all memory (no retrieval, no injection, no staging; `search_memory` auto-hides) while keeping the proxy and tools running.
 - **Tools** — each built-in tool (`search_memory`, `list_tools`, `read_tool`, `read_file`, `fetch_url`, `web_search`, plus `bash`/`write` via `tools.native`) has an on/off flag.
 - **Backend** — `backend.type` + `providers:` (Ollama or any OpenAI-compatible provider); in a swarm, `backend: ollama` runs a raw model with no memory at all.
+- **Live-edit lock** — `runtime.hot_reload: false` freezes config + prompts + `swarm_config.yaml`: any change takes effect only after a restart. It's read once at startup and never re-read (setup-time only), so a coding/studying agent that edits its own files can't re-enable live edits on a running proxy.
 
 ### MCP tools (install any tool)
 

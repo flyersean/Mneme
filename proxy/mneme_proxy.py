@@ -168,6 +168,7 @@ _CONFIG_ENV_MAP = {
     "tools.read_file": "MNEME_TOOL_READ_FILE",
     "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
+    "runtime.hot_reload": "MNEME_HOT_RELOAD",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
     "embed_model": "EMBED_MODEL",
@@ -362,6 +363,12 @@ if _mcp_cfgs:
 OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 
+# Hot-reload master switch. Read ONCE at startup (never re-read on config mtime):
+# when false, config + prompts + swarm_config are frozen and any change requires a
+# restart. This is setup-only — the proxy cannot toggle it on the fly, so a
+# coding/studying agent that edits its own files can't re-enable live edits.
+HOT_RELOAD = os.environ.get("MNEME_HOT_RELOAD", "1") == "1"
+
 # Backend: "ollama" (native API) | "openai"/"openrouter" (OpenAI-compatible, hosted).
 # "openrouter" is an alias for "openai" — OpenRouter is just an OpenAI-compatible
 # aggregator. Provider connection details come from the config `providers:` block
@@ -427,6 +434,8 @@ _CONFIG_MTIME = 0.0
 
 def _reload_sampling_if_changed():
     global _CONFIG_MTIME, OLLAMA_TEMP, MEMORY_ONLY, MEMORY_ENABLED, INJECT_ENABLED
+    if not HOT_RELOAD:
+        return  # locked — config changes take effect only after a restart
     path = CONFIG_PATH
     if not path or not os.path.exists(path):
         return

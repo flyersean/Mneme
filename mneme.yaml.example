@@ -196,3 +196,14 @@ mcp_servers:
   #   args: [-y, "@modelcontextprotocol/server-filesystem", /workspace]
   # - name: my-tool
   #   url: http://localhost:9001/mcp
+
+# Runtime behavior.
+runtime:
+  # Hot-reload master switch. true (default) = config + prompts + swarm_config are
+  # live-edited and changes apply immediately (no restart). false = LOCKED — any
+  # change to config/prompts/swarm_config takes effect only after a restart.
+  #
+  # Read ONCE at startup and never re-read, so this is a setup-time decision: a
+  # coding/studying agent that edits its own files can't re-enable live edits.
+  # Choose "lock" when you're running an agent that might edit Mneme itself.
+  hot_reload: true
