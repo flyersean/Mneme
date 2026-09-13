@@ -55,6 +55,12 @@ Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenA
 - **Swarm** reads its input folders fresh every step, re-reads `swarm_config.yaml` whenever
   it changes (so edits to steps, prompts, and options apply on the next step), and drives
   Mneme proxies over HTTP — whose prompts and settings hot-reload the same way.
+- **MCP tools** are reconciled from the `mcp_servers:` block whenever `mneme.yaml` changes —
+  and via `POST` / `DELETE /mcp/servers` at runtime — so you can add or remove a tool
+  server with no restart.
+- **Lock everything** — set `runtime.hot_reload: false` (a setup-time flag) to freeze
+  config, prompts, and `swarm_config.yaml`: changes then require a restart. See
+  "Full control" below.
 
 ---
 
@@ -276,6 +282,9 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 | `caps.tool_followup_tokens` | `10000` (setup writes `ctx/6`) | tokens reserved for tool results inside the loop |
 | `storage.memory_enabled` | `true` | master switch — `false` disables ALL memory (no retrieval/injection/staging, `search_memory` off) while keeping tools |
 | `tools.search_memory` / `tools.list_tools` / `tools.read_tool` / `tools.read_file` / `tools.fetch_url` / `tools.web_search` | `true` each | per-tool on/off — set any to `false` to hide it from the model |
+| `storage.inject_enabled` | `true` | `false` = **save-only**: stop injecting memory, but keep saving + `search_memory` + `/search` (see "Memory modes") |
+| `runtime.hot_reload` | `true` | `false` = **lock** config/prompts/swarm_config — changes take effect only after a restart (setup-time only) |
+| `mcp_servers` | `[]` | MCP servers to connect (stdio `command`+`args` or HTTP `url`) — see "MCP tools" |
 
 Full reference: [`mneme.yaml.example`](mneme.yaml.example).
 
@@ -364,6 +373,9 @@ Two hard rules apply:
 | POST | `/mode/think` | *(experimental)* Novelty thinking mode (escape mode collapse) |
 | POST | `/mode/learn` | *(experimental)* Learning mode (parameter cycling + strategy extraction) |
 | GET/POST | `/preferences` | Read / set user preferences |
+| GET | `/mcp/servers` | List connected MCP servers + their tools and status |
+| POST | `/mcp/servers` | Add (or replace) an MCP server at runtime — `{"name", "command"?, "args"?, "env"?, "url"?}` |
+| DELETE | `/mcp/servers/<name>` | Remove an MCP server at runtime |
 
 ## Testing
 
@@ -394,7 +406,13 @@ They cover:
 - The token-based context budget (recent-window eviction, followup compaction).
 - Per-tool disable flags and the `memory_enabled` master switch.
 
-69 tests.
+72 tests.
+
+Additional test files cover the pieces beyond the tool loop: `tests/test_mcp_client.py` +
+`tests/test_mcp_endpoints.py` (MCP connect/list/call/remove against a real stdio MCP
+server, and the hot-add endpoints), `tests/test_hot_reload_lock.py` (the config/prompt
+lock), `tests/test_generated_config.py` (every wizard-emitted config key is valid), and
+`tests/test_swarm_skip_throttle.py` (swarm `skip_if_empty` / `every` step fields).
 
 The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
 
