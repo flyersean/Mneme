@@ -2088,6 +2088,17 @@ def _compute_trust(source: str, messages: list) -> str:
     return "verified"
 
 
+_READDIR_HEADER_RE = re.compile(r"^---\s+\S.+\s+---\s*$", re.MULTILINE)
+
+
+def _looks_like_read_dir(text: str) -> bool:
+    """True if `text` is swarm read_dir content — files handed to the proxy as the
+    user message, each headed by a `--- <path> ---` line. That content is INPUT,
+    not the user's own words, so it is staged as source='input' (unverified)
+    instead of 'user' (verified)."""
+    return bool(text) and bool(_READDIR_HEADER_RE.search(text or ""))
+
+
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
@@ -5301,7 +5312,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     if staging.should_flush():
         _enqueue(archive_staging)
 
-    staging.add("user", user_msg, source="user", session=session_id)
+    _user_src = "input" if _looks_like_read_dir(user_msg) else "user"
+    staging.add("user", user_msg, source=_user_src, session=session_id)
     if result["content"]:
         staging.add("assistant", result["content"], source="model", session=session_id, grade=grade)
 
