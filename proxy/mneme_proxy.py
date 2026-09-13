@@ -413,6 +413,13 @@ def _or_headers() -> dict:
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
 setup_logging(CHUNK_DIR)  # tee stdout/stderr into $CHUNK_DIR/proxy.log (append, size-capped)
+# Content-addressed image GC. The image store (CHUNK_DIR/images/<sha256>.<ext>)
+# is keyed by bytes; a file whose hash is referenced by NO chunk is junk (an
+# ingest whose chunk never archived). GRACE skips recently-written files so a
+# just-ingested image mid-archive is never deleted; INTERVAL is the periodic
+# sweep cadence (0 = startup sweep only).
+IMAGE_GC_GRACE    = int(os.environ.get("MNEME_IMAGE_GC_GRACE", "3600"))
+IMAGE_GC_INTERVAL = int(os.environ.get("MNEME_IMAGE_GC_INTERVAL", "1800"))
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
@@ -753,6 +760,23 @@ def _start_bg_workers():
             t = threading.Thread(target=_bg_worker, name=f"mneme-bg-{i}", daemon=True)
             t.start()
         _bg_started = True
+
+
+def _gc_loop():
+    """Periodic content-addressed image GC (interval + grace from env)."""
+    if IMAGE_GC_INTERVAL <= 0:
+        return
+    while True:
+        time.sleep(IMAGE_GC_INTERVAL)
+        try:
+            _gc_images()
+        except Exception as e:
+            _log_error("gc_images:loop", e)
+
+
+def _start_gc_loop():
+    t = threading.Thread(target=_gc_loop, name="mneme-gc", daemon=True)
+    t.start()
 
 def _enqueue(fn, *args, **kwargs):
     """Submit a background job. Workers are started lazily on first enqueue."""
@@ -2148,6 +2172,58 @@ def _ingest_images(content) -> list:
                 continue
         refs.append({"hash": h, "path": path, "mime": smime, "bytes": len(data)})
     return refs
+
+
+def _gc_images(grace_seconds=None) -> int:
+    """Delete image files no longer referenced by any chunk (content-addressed GC).
+
+    The image store is keyed by sha256; a chunk references an image via its `hash`
+    in the message `images` field. Any file whose hash is not referenced by any
+    chunk is junk (an ingest whose chunk never archived — e.g. a crashed turn).
+    A grace period (MNEME_IMAGE_GC_GRACE) skips recently-written files so a
+    just-ingested image mid-archive is never deleted. Returns files removed."""
+    img_dir = os.path.join(CHUNK_DIR, "images")
+    if not os.path.isdir(img_dir):
+        return 0
+    grace = grace_seconds if grace_seconds is not None else IMAGE_GC_GRACE
+    # Collect every image hash referenced by a chunk (hash + path-stem fallback).
+    referenced = set()
+    try:
+        rows = db.execute("SELECT messages FROM chunks").fetchall()
+    except Exception as e:
+        _log_error("gc_images:scan_db", e)
+        return 0
+    for (msgs_json,) in rows:
+        try:
+            for m in json.loads(msgs_json or "[]"):
+                for img in m.get("images", []) or []:
+                    if isinstance(img, dict):
+                        h = img.get("hash")
+                        if h:
+                            referenced.add(h)
+                        p = img.get("path")
+                        if isinstance(p, str) and os.path.sep in p:
+                            referenced.add(os.path.basename(p).split(".", 1)[0])
+        except Exception:
+            continue
+    removed = 0
+    now = time.time()
+    for fn in os.listdir(img_dir):
+        p = os.path.join(img_dir, fn)
+        try:
+            if not os.path.isfile(p):
+                continue
+            if fn.split(".", 1)[0] in referenced:
+                continue
+            if now - os.path.getmtime(p) < grace:
+                continue  # recently written — could be mid-archive
+            os.remove(p)
+            removed += 1
+        except Exception as e:
+            _log_error("gc_images:remove", e)
+    if removed:
+        print(f"  [GC-IMAGES] removed {removed} unreferenced image file(s)", flush=True)
+    return removed
 
 
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
@@ -6557,6 +6633,8 @@ print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
 
 if __name__ == "__main__":
     if FLASK_OK:
+        _enqueue(_gc_images)   # startup sweep (grace period still applies)
+        _start_gc_loop()       # periodic sweep
         app.run(host="0.0.0.0", port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",

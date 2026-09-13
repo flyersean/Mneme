@@ -169,6 +169,7 @@ A vision-capable backend sees images through the proxy, and images are remembere
 
 - **Passthrough:** an image in a message reaches the model in each backend's native form — OpenAI/OpenRouter gets the `image_url` array untouched, Ollama gets a separate `images: [base64]` field. (Before this, the proxy flattened content to text and the model saw only `[IMAGE: url]`.)
 - **Remembered, not lost:** on archive, an image is saved once to `chunk_dir/images/<sha256>.<ext>` (content-addressed — the same bytes are never saved twice, so re-processing a saved image adds a memory record, not another copy). The chunk stores the path + MIME beside the turn's text; the model's written analysis of the image is the searchable index, as with any other turn.
+- **Collected, not orphaned:** an image whose hash is referenced by no chunk (an ingest whose turn never archived, e.g. a crashed turn) is removed by a background sweep — on startup and periodically (`MNEME_IMAGE_GC_INTERVAL`, default 30 min) — with a grace period (`MNEME_IMAGE_GC_GRACE`, default 1 h) so a just-ingested image mid-archive is never deleted.
 - **Recall:** an injected chunk that has an image shows a `[IMAGE: <path> — read_image "<hash>" to view]` note, and the `read_image` tool returns the actual image so the model can look at it again.
 - **Token accounting:** images are charged their real cost (~85 low-res to ~1440 high-res) in the context budget instead of ~12 placeholder characters.
 
