@@ -425,18 +425,38 @@ class TestEditDir(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.o.apply_edit(os.path.join(self.tmp, "nope.txt"), "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>\n")
 
-    def test_no_blocks_aborts(self):
-        p = self._file("hello\n")
+    def test_no_blocks_treated_as_full_file_rewrite(self):
+        # No SEARCH/REPLACE markers -> the output is the full corrected file.
+        p = self._file("The sky is teh blue.\nGrass is teh green.\n")
+        fixed = "The sky is the blue.\nGrass is the green.\n"
+        self.o.apply_edit(p, fixed)
+        self.assertEqual(self._read(p), fixed)
+
+    def test_full_file_rewrite_large_change_aborts_and_leaves_file_unchanged(self):
+        p = self._file("line one\nline two\nline three\nline four\n")
         with self.assertRaises(SystemExit):
-            self.o.apply_edit(p, "I fixed it, no patch format here")
-        self.assertEqual(self._read(p), "hello\n")
+            self.o.apply_edit(p, "completely different content that shares almost nothing\n")
+        self.assertEqual(self._read(p), "line one\nline two\nline three\nline four\n")
+
+    def test_full_file_rewrite_min_similarity_threshold(self):
+        p = self._file("aaaa\nbbbb\ncccc\n")
+        # ~67% similarity: a strict threshold rejects it, the default (0.5) allows it.
+        with self.assertRaises(SystemExit):
+            self.o.apply_edit(p, "aaaa\nXXXX\ncccc\n", min_similarity=0.9)
+        self.o.apply_edit(p, "aaaa\nXXXX\ncccc\n")  # default 0.5
+        self.assertEqual(self._read(p), "aaaa\nXXXX\ncccc\n")
+
+    def test_is_patch_output_detects_patch_vs_full_file(self):
+        self.assertTrue(self.o._is_patch_output("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>\n"))
+        self.assertFalse(self.o._is_patch_output("full corrected file content here"))
+        self.assertFalse(self.o._is_patch_output(""))
 
     # ---- system prompt ----
 
     def test_effective_system_prompt_appends_instruction(self):
         sp = self.o._effective_system_prompt({"system_prompt": "Fix it", "edit_dir": "f.txt"})
         self.assertIn("Fix it", sp)
-        self.assertIn("SEARCH/REPLACE", sp)
+        self.assertIn("corrected", sp)
 
     def test_effective_system_prompt_no_edit_dir(self):
         sp = self.o._effective_system_prompt({"system_prompt": "Fix it"})
@@ -444,7 +464,7 @@ class TestEditDir(unittest.TestCase):
 
     def test_effective_system_prompt_edit_dir_no_prompt(self):
         sp = self.o._effective_system_prompt({"edit_dir": "f.txt"})
-        self.assertIn("SEARCH/REPLACE", sp)
+        self.assertIn("corrected", sp)
 
 
 if __name__ == "__main__":

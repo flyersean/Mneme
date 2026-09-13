@@ -83,7 +83,7 @@ Step fields:
 | `read_dir` | directory, OR a **list** of directories, to read context from |
 | `write_dir` | write output (OVERWRITE) — a path with an extension is a file, otherwise a directory (`output.txt` inside) |
 | `append_dir` | like `write_dir`, but APPEND to the target (a running log / growing story) |
-| `edit_dir` | edit a file IN PLACE — the model emits a SEARCH/REPLACE patch (see `SWARM_REFERENCE.md` §10.1) |
+| `edit_dir` | edit a file IN PLACE from a prompt — the model outputs the full corrected file, gated by a similarity diff (see `SWARM_REFERENCE.md` §10.1) |
 | `copy_dir` | source file/dir to copy; pair with `copy_to` |
 | `copy_to` | destination folder for `copy_dir` |
 | `move_dir` | source file/dir to move (rename); pair with `move_to` |

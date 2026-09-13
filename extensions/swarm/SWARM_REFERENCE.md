@@ -121,7 +121,8 @@ the branch and is not written anywhere.
 | `skip_if_empty`| boolean         | model steps           | Skip the model call when `read_dir` is empty (see §9). |
 | `write_dir`    | string          | model steps           | Write output (OVERWRITE) (see §10). |
 | `append_dir`   | string          | model steps           | Append output (see §10). |
-| `edit_dir`     | string          | model steps           | Edit a file in place via a SEARCH/REPLACE patch (see §10.1). |
+| `edit_dir`     | string          | model steps           | Edit a file in place from a prompt (see §10.1). |
+| `min_similarity` | number        | edit steps            | Diff-gate threshold (0..1, default 0.5) — see §10.1. |
 | `copy_dir`     | string          | action-only           | Source to copy (see §11). Pair with `copy_to`. |
 | `copy_to`      | string          | action-only           | Destination folder for `copy_dir`. |
 | `move_dir`     | string          | action-only           | Source to move (see §11). Pair with `move_to`. |
@@ -236,40 +237,38 @@ one model call.
 
 ## 10.1 `edit_dir` — edit a file in place (non-destructive)
 
-`edit_dir` targets **one file** and edits it surgically instead of overwriting it.
-The model's entire output is a SEARCH/REPLACE patch — one block per change:
+`edit_dir` targets **one file** and edits it from a prompt. The model reads the
+file and outputs the **complete corrected content** — changing only what the
+instruction asks, keeping everything else verbatim.
 
-    <<<<<<< SEARCH
-    <the exact old text, copied verbatim from the input>
-    =======
-    <the replacement text>
-    >>>>>>>
+Before committing, the orchestrator diffs the model's output against the current
+file and applies a **safety gate**:
 
-Rules:
+- If the change is *minimal* (a few fixes — high similarity) → commit.
+- If the change is *too large* (below `min_similarity`, default `0.5`) → the run
+  **aborts** with the file untouched, on the assumption the model dropped or
+  rewrote content it shouldn't have.
 
-- Each FIND must match the file **exactly once**. Zero matches or more than one
-  match **aborts the whole run** (fail loud — no silent no-op, no guessing).
-- Only the matched text changes; every other byte of the file is untouched.
-- The patch applies **atomically**: all blocks are applied in memory first, and
-  the file is written back only if every block succeeds. A failed patch leaves
-  the file byte-for-byte unchanged.
-- The patch-format instruction is **auto-appended** to the step's `system_prompt`
-  (you write the *task*; the orchestrator supplies the format).
-- `edit_dir` cannot be combined with `write_dir`/`append_dir` (one output target
-  per step). To read the file first, pair it with `read_dir` pointing at the same
-  file (or its directory).
+So a "find the typos and fix them" prompt works naturally — the model emits the
+full fixed file, and the gate only catches the "it rewrote half the file"
+failure mode. A SEARCH/REPLACE patch (one `<<<<<<< SEARCH` block per change) is
+also accepted and applied surgically (each FIND must match exactly once).
 
 ```yaml
-- name: fix_typo
+- name: fix_typos
   read_dir: draft
   edit_dir: draft/story.txt
   backend: mneme
   port: 8080
-  system_prompt: "Fix the typo 'teh' in the story. Make only that change."
+  system_prompt: "Find and fix the typos in the story."
+  min_similarity: 0.8   # optional — tighten for pure typo-fix tasks
 ```
 
-An empty replacement deletes the matched text. To insert, match a unique anchor
-and put the new text in the replacement.
+- `edit_dir` cannot be combined with `write_dir`/`append_dir` (one output target
+  per step). Pair it with `read_dir` so the model sees the file first.
+- `min_similarity` (optional, default `0.5`): the minimum similarity the corrected
+  output must retain vs the original. Lower allows bigger edits; raise it to be
+  stricter.
 
 ---
 

@@ -61,21 +61,19 @@ CONFIG (swarm_config.yaml)
     append_dir    like write_dir, but APPENDS to the target instead of overwriting
                   — for a running log or a story that grows across ticks.
 
-    edit_dir      a file path to edit IN PLACE (non-destructive). The model's
-                  output is a SEARCH/REPLACE patch — each change a block:
+    edit_dir      a file path to edit IN PLACE (non-destructive). The model
+                  reads the file and outputs the COMPLETE corrected content —
+                  changing only what the instruction asks. The orchestrator diffs
+                  the result against the original and only commits if the change
+                  is minimal (below `min_similarity` it aborts with the file
+                  untouched), so a model that dropped or rewrote content fails
+                  loudly instead of destroying the file. A SEARCH/REPLACE patch
+                  is also accepted (surgical). Pair with `read_dir` so the model
+                  sees the file first.
 
-                      <<<<<<< SEARCH
-                      <exact old text, verbatim>
-                      =======
-                      <replacement text>
-                      >>>>>>>
-
-                  Each FIND must match the file EXACTLY once (0 matches or >1
-                  matches abort the run); only the matched text changes, the rest
-                  of the file is untouched, and a failed patch leaves the file
-                  byte-for-byte unchanged. The patch-format instruction is
-                  auto-appended to the step's system_prompt. To read the file
-                  first, pair with `read_dir` pointing at the same file.
+    min_similarity  (with edit_dir) minimum similarity (0..1, default 0.5) the
+                  corrected output must retain vs the original — below it the run
+                  aborts (model changed too much). Lower = allow bigger edits.
 
     copy_dir      source file or directory to COPY elsewhere. Pair with `copy_to`.
                   Copies the source OUTSIDE the freeze/consume loop — e.g. snapshot
@@ -139,6 +137,7 @@ CONFIG (swarm_config.yaml)
   until it hits END, the step list ends, the max_steps cap trips, or you Ctrl-C.
 """
 
+import difflib
 import os
 import re
 import shutil
@@ -164,14 +163,10 @@ _SEP_MARK = re.compile(r"^=======\s*$")
 _END_MARK = re.compile(r"^>>>>>>>\s*$")
 
 _EDIT_INSTRUCTION = (
-    "Your ENTIRE reply must be a SEARCH/REPLACE patch — nothing else. "
-    "For each change emit exactly one block:\n"
-    "<<<<<<< SEARCH\n<the exact old text to find, copied verbatim from the input>\n"
-    "=======\n<the replacement text>\n"
-    ">>>>>>>\n"
-    "Copy the old text EXACTLY (same characters, same line breaks). Do not touch "
-    "text you are not changing. Use multiple blocks for multiple changes. To "
-    "delete something, use an empty replacement."
+    "Edit the file as instructed. Your ENTIRE reply must be the COMPLETE corrected "
+    "file content — nothing else. Change only what the instruction asks; keep every "
+    "other character, line, and section exactly as it is. Do not add commentary, "
+    "summaries, or code fences."
 )
 
 
@@ -324,6 +319,14 @@ class Orchestrator:
                         float(v)
                     except (TypeError, ValueError):
                         raise SystemExit(f"step {nm}: {num_key} must be a number")
+            _ms = s.get("min_similarity")
+            if _ms is not None:
+                try:
+                    _msf = float(_ms)
+                    if not (0.0 <= _msf <= 1.0):
+                        raise SystemExit(f"step {nm}: min_similarity must be between 0 and 1")
+                except (TypeError, ValueError):
+                    raise SystemExit(f"step {nm}: min_similarity must be a number between 0 and 1")
             if has_goto and s.get("goto") not in targets:
                 raise SystemExit(f"step {nm}: goto target '{s.get('goto')}' not found")
             ifc = s.get("if")
@@ -458,37 +461,62 @@ class Orchestrator:
                 i += 1
         return blocks
 
-    def apply_edit(self, file_path, patch_text):
-        """Apply a SEARCH/REPLACE patch to `file_path` surgically and atomically.
+    def _is_patch_output(self, output):
+        """True if the model's output is a SEARCH/REPLACE patch (its first
+        non-empty line is a SEARCH marker) rather than a complete corrected file."""
+        for line in (output or "").split("\n"):
+            if line.strip():
+                return bool(_SEARCH_MARK.match(line))
+        return False
 
-        Reads the file, applies every block (each FIND must match exactly once),
-        and writes back ONLY if every block succeeds — so a failed patch leaves
-        the file byte-for-byte unchanged. This is the non-destructive edit
-        primitive: only the matched text changes; everything else is preserved."""
+    def apply_edit(self, file_path, output, min_similarity=0.5):
+        """Edit `file_path` from the model's output — prompt-driven.
+
+        Two accepted shapes:
+
+          - SEARCH/REPLACE patch (the model emits `<<<<<<< SEARCH` blocks): applied
+            surgically — each FIND must match exactly once; a failed block aborts
+            and leaves the file unchanged.
+          - the COMPLETE corrected file (the default, natural for "find and fix"):
+            applied whole, but gated by a similarity diff. If the model changed too
+            much (below `min_similarity`), it likely destroyed content and the run
+            aborts with the file untouched.
+
+        Both paths write only after validation, so a bad edit never corrupts the file."""
         if not os.path.exists(file_path):
             raise SystemExit(f"edit_dir: file not found: {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:
             original = f.read()
-        blocks = self._parse_patch(patch_text)
-        if not blocks:
-            raise SystemExit("edit_dir: the model output contained no SEARCH/REPLACE blocks")
-        new = original
-        for find, repl in blocks:
-            if not find:
-                raise SystemExit("edit_dir: empty SEARCH block (nothing to find)")
-            count = new.count(find)
-            if count == 0:
-                raise SystemExit(f"edit_dir: FIND not found in {file_path}: {find[:80]!r}")
-            if count > 1:
-                raise SystemExit(f"edit_dir: FIND matches {count} places in {file_path} (ambiguous) — make it more specific")
-            new = new.replace(find, repl, 1)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(new)
-        print(f"  [edit] {file_path} ({len(blocks)} change(s))")
+
+        if self._is_patch_output(output):
+            blocks = self._parse_patch(output)
+            new = original
+            for find, repl in blocks:
+                if not find:
+                    raise SystemExit("edit_dir: empty SEARCH block (nothing to find)")
+                count = new.count(find)
+                if count == 0:
+                    raise SystemExit(f"edit_dir: FIND not found in {file_path}: {find[:80]!r}")
+                if count > 1:
+                    raise SystemExit(f"edit_dir: FIND matches {count} places in {file_path} (ambiguous) — make it more specific")
+                new = new.replace(find, repl, 1)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new)
+            print(f"  [edit] {file_path} ({len(blocks)} patch change(s))")
+        else:
+            ratio = difflib.SequenceMatcher(None, original, output).ratio()
+            if ratio < min_similarity:
+                raise SystemExit(
+                    f"edit_dir: model changed too much ({ratio:.0%} similarity, "
+                    f"threshold {min_similarity:.0%}) — file left unchanged"
+                )
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"  [edit] {file_path} (rewrite, {ratio:.0%} similarity)")
 
     def _effective_system_prompt(self, step):
-        """The step's system prompt, with the patch-format instruction appended
-        when the step is an edit_dir step (so the model emits a parseable patch)."""
+        """The step's system prompt, with the edit instruction appended when the
+        step is an edit_dir step (so the model outputs the full corrected file)."""
         sp = step.get("system_prompt") or ""
         if step.get("edit_dir"):
             sp = (sp + "\n\n" + _EDIT_INSTRUCTION) if sp else _EDIT_INSTRUCTION
@@ -789,7 +817,7 @@ class Orchestrator:
             if step.get("append_dir") and output is not None:
                 self.append_output(step["append_dir"], output)
             if step.get("edit_dir") and output is not None:
-                self.apply_edit(step["edit_dir"], output)
+                self.apply_edit(step["edit_dir"], output, float(step.get("min_similarity") or 0.5))
             if step.get("copy_dir"):
                 self.copy_dir(step["copy_dir"], step.get("copy_to"))
             if step.get("move_dir"):
