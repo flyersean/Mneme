@@ -1199,6 +1199,47 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
     return False
 
 
+def _ask_mcp_servers():
+    """Interactive MCP-server step — shared by fresh setup AND add-instance.
+
+    Returns a list of {name, command+args | url} dicts (empty = no servers).
+    Servers can also be added later via POST /mcp/servers on the running proxy,
+    or by editing the mcp_servers block in this instance's mneme.yaml."""
+    mcp_servers = []
+    print("\n\033[1mMCP tools (optional)\033[0m")
+    print("  Add an MCP server to give the model extra tools. Edit mneme.yaml's")
+    print("  mcp_servers: block, or POST/DELETE /mcp/servers, to change them later")
+    print("  on a running proxy (no restart).")
+    while True:
+        idx = choose("Add an MCP server?", ["No — done", "Yes — add one"])
+        if idx != 1:
+            break
+        name = ask("Server name", "")
+        if not name.strip():
+            print("  ⚠ name required — skipping.")
+            continue
+        entry = {"name": name.strip()}
+        transport = choose("Transport?", ["stdio (command + args)", "HTTP (url)"])
+        if transport == 0:
+            cmd = ask("Command (e.g. npx, uvx, python3)", "")
+            if not cmd.strip():
+                print("  ⚠ command required — skipping.")
+                continue
+            entry["command"] = cmd.strip()
+            args = ask("Args (space-separated, optional)", "")
+            if args.strip():
+                entry["args"] = args.split()
+        else:
+            url = ask("URL (streamable-HTTP endpoint)", "")
+            if not url.strip():
+                print("  ⚠ url required — skipping.")
+                continue
+            entry["url"] = url.strip()
+        mcp_servers.append(entry)
+        print(f"  ✓ added MCP server '{entry['name']}'")
+    return mcp_servers
+
+
 def _add_instance(memory_dir, shared, memory_only):
     """Add a new proxy instance to an existing shared DB."""
     print("\n\033[1mAdd a proxy instance to the existing DB\033[0m")
@@ -1230,6 +1271,10 @@ def _add_instance(memory_dir, shared, memory_only):
     ])
     inject = "1" if idx == 0 else "0"
 
+    # MCP servers (optional) — same step as a fresh setup, so a new proxy can
+    # register web/filesystem tools without hand-editing its config afterward.
+    mcp_servers = _ask_mcp_servers()
+
     # Per-instance config: this instance's own settings + the shared DB path.
     instance_models = {
         "model": chat_model,
@@ -1238,7 +1283,7 @@ def _add_instance(memory_dir, shared, memory_only):
         "ctx_size": ctx_size,
     }
     cfg = write_config(chat_backend, instance_models, port, inject, memory_only,
-                       instance_dir, db_path)
+                       instance_dir, db_path, mcp_servers)
     script = write_instance_start_script(instance_dir, memory_dir, port, chat_backend, chat_model,
                                          embed_model, embed_backend, label_model, label_backend,
                                          inject, memory_only)
@@ -1397,38 +1442,7 @@ def main():
     hot_reload = (idx == 0)
 
     # MCP servers (optional) — add tools from any MCP server (web, filesystem, ...).
-    mcp_servers = []
-    print("\n\033[1mMCP tools (optional)\033[0m")
-    print("  Add an MCP server to give the model extra tools. Edit mneme.yaml's")
-    print("  mcp_servers: block, or POST/DELETE /mcp/servers, to change them later")
-    print("  on a running proxy (no restart).")
-    while True:
-        idx = choose("Add an MCP server?", ["No — done", "Yes — add one"])
-        if idx != 1:
-            break
-        name = ask("Server name", "")
-        if not name.strip():
-            print("  ⚠ name required — skipping.")
-            continue
-        entry = {"name": name.strip()}
-        transport = choose("Transport?", ["stdio (command + args)", "HTTP (url)"])
-        if transport == 0:
-            cmd = ask("Command (e.g. npx, uvx, python3)", "")
-            if not cmd.strip():
-                print("  ⚠ command required — skipping.")
-                continue
-            entry["command"] = cmd.strip()
-            args = ask("Args (space-separated, optional)", "")
-            if args.strip():
-                entry["args"] = args.split()
-        else:
-            url = ask("URL (streamable-HTTP endpoint)", "")
-            if not url.strip():
-                print("  ⚠ url required — skipping.")
-                continue
-            entry["url"] = url.strip()
-        mcp_servers.append(entry)
-        print(f"  ✓ added MCP server '{entry['name']}'")
+    mcp_servers = _ask_mcp_servers()
 
     # Per-instance config dir + shared DB path.
     instance_dir = _instance_dir(MEMORY_DIR, port)
