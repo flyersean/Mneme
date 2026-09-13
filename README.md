@@ -436,15 +436,74 @@ Two deliberate runtime details are worth knowing:
 ## Extensions
 
 Non-core consumers of Mneme live in `extensions/` — they use the proxy over HTTP but are
-not part of the proxy stack:
+not part of the proxy stack. Each one is self-contained and talks to proxies only over
+`/v1/chat/completions`, which is the integration contract Mneme exposes: you could write a
+serial driver, a parallel fan-out, a cron job, or a full UI against the same endpoints
+without touching proxy code.
 
-- `extensions/pi` — Pi coding-agent tools that let Pi call Mneme's memory/web tools.
-- `extensions/swarm` — a config-driven orchestrator that drives several Mneme proxies
-  (and/or raw Ollama models) through a loop defined in a YAML config. It's a worked example
-  of how to build a consumer of the proxy: it talks to proxies only over HTTP, with control
-  flow (`goto`/`if`), folder primitives (`swap_dir`/`copy_dir`/`move_dir`/`clear_dir`,
-  multi-directory reads, `append_dir`), pacing, retry, and both backends. See
-  `extensions/swarm/README.md`.
+### Pi (`extensions/pi`)
+
+Pi coding-agent tools that let Pi call Mneme's memory and web tools. The setup wizard can
+install Pi and point it at Mneme as a provider (see "Pi terminal assistant" above).
+
+### Swarm (`extensions/swarm`)
+
+The swarm is a config-driven orchestrator — one of the more powerful parts of the system.
+It drives several Mneme proxies (and/or raw Ollama models) through a loop defined entirely
+in `swarm_config.yaml`, so you can coordinate multiple models with no driver code.
+
+**Two orchestrators.**
+
+- `swarm_orchestrator.py` — the **serial** driver. Runs one step at a time through the flow:
+  control flow (`goto` / `if`), folder primitives, pacing (`delay`), retry, and both
+  backends (`mneme` and `ollama`).
+- `swarm_p_orchestrator.py` — the **parallel** driver. Extends the serial one with a single
+  new step form, a `parallel:` block that runs a list of independent sub-steps concurrently
+  (a thread pool). Everything else is inherited unchanged, so a config written for the
+  serial driver also runs here. Parallel only helps when the sub-steps share one model —
+  Ollama batches same-model requests, but different models that don't both fit in VRAM get
+  serialized by model-swap (no speedup, just swap latency).
+
+**How the config works.**
+
+`swarm_config.yaml` has three top-level keys plus the step list:
+
+| key | meaning |
+|---|---|
+| `ollama_url` | base URL for `backend: ollama` steps (default `http://localhost:11434`) |
+| `timeout` | default per-call timeout in seconds (default 600) |
+| `max_steps` | safety cap on total step executions — catches an infinite `goto`/`if` loop (default 0 = no limit) |
+| `steps` | the ordered list of steps |
+
+A step calls a model **only** when it has `write_dir`, `append_dir`, or a *string* `if`
+(which branches on output). Action-only steps — folder actions, `goto`, a *filesystem-state*
+`if`, or `exec` — never call a model, so you can sequence the loop without burning a
+generation.
+
+Key step fields:
+
+- `name` — optional label; a jump target and a log tag.
+- `backend` — `mneme` (default; needs `port`) or `ollama` (needs `model`).
+- `read_dir` — a directory (or a **list** of directories, concatenated into one context
+  blob) to read context from. `write_dir` / `append_dir` — where output goes; a path with an
+  extension is a full file path, otherwise it's a directory (`output.txt` inside it).
+- Folder primitives: `swap_dir` (atomic freeze — rename to `<dir>.active` and recreate),
+  `copy_dir` + `copy_to`, `move_dir` + `move_to` (atomic promote), `clear_dir` (wipe; a
+  list wipes several at once).
+- Control flow: `goto` jumps to a named step; `if` branches on the step's model output
+  (`contains` / `equals` / `startswith` / `endswith` / `matches`) or on filesystem state
+  (`count_ge` / `count_lt` / `empty` / `exists`), with `then` / `else` targets.
+- `delay` (pause N seconds first), `retry` (re-issue on a transient failure), `timeout`
+  (per-step override), `options` (per-call generation override), `exec` (run a shell
+  command, no model call — e.g. `scripts/now.py` to stamp a shared timestamp).
+- `every: N` — run only once every N visits (a per-step cycle throttle); `skip_if_empty:
+  true` — skip the model call when `read_dir` yields nothing.
+
+The reserved label `END` stops the run. The config is hot-reloaded on change (edit a step's
+prompt or options and it applies to the next step), exactly like the proxy's own config.
+
+See `extensions/swarm/README.md` for a worked example that exercises every primitive, and
+`extensions/swarm/SWARM_REFERENCE.md` for the complete field reference.
 
 ## Branches
 
