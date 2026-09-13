@@ -668,9 +668,10 @@ def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, m
 # Precedence: environment variable > this file > built-in default.
 # Full reference (every option + comment): mneme.yaml.example in the repo.
 #
-# Live-reload on save: sampling.*, models.*, and storage.memory_only /
-# storage.memory_enabled / storage.inject_enabled. Backend/provider/model identity
-# and backend/port/db path are restart-only.
+# Live-reload on save (no restart): sampling.*, models.*, storage.memory_only /
+# storage.memory_enabled / storage.inject_enabled, mcp_servers, and the prompts.
+# Backend/provider/model identity and backend/port/db path are restart-only.
+# Set runtime.hot_reload: false to lock all of the above (restart to change).
 
 backend:
   type: @@BTYPE@@          # "ollama" | "openai" (openai = any OpenAI-compatible provider)
@@ -694,7 +695,7 @@ sampling:
   top_p: 0.9                # nucleus sampling — cut off the improbable tail
   top_k: 64                 # ollama only (ignored by the openai path)
   ctx_tokens: {ctx_tokens}
-  max_tokens: 65536         # output cap (== ctx_tokens here, so effectively uncapped)
+  # max_tokens: leave unset — a global output cap truncates long summaries.
   completion_reserve: {reserve}   # reply reserve — scales with ctx (ctx/8)
   # Reasoning/thinking is OFF by default (a reasoning model can runaway-think on
   # a trivial ask). Set reasoning_enabled: 1 to opt back in; reasoning_effort
@@ -705,7 +706,7 @@ sampling:
 timeouts:
   chat_timeout: 300
   ollama_chat_timeout: 300
-  first_token_timeout: 120
+  first_token_timeout: 180
   novelty_timeout: 600
   embed_timeout: 60
   label_timeout: 30

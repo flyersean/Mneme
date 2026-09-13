@@ -4,7 +4,8 @@
 #
 #  WHAT THIS FILE IS
 #    The single place to tune how the Mneme memory proxy behaves. Copy it next
-#    to the database as mneme.yaml; the proxy reads it ONCE at startup.
+#    to the database as mneme.yaml; the proxy reads it at startup, then
+#    hot-reloads most settings whenever the file changes (see runtime.hot_reload).
 #
 #  HOW A SETTING IS RESOLVED (highest wins)
 #    1. Environment variable (MNEME_*)
@@ -14,7 +15,12 @@
 #    [CONFIG] lines to see the FINAL resolved value of every setting.
 #
 #  HOW TO APPLY A CHANGE
-#    Edit, then RESTART the proxy. Nothing here is hot-reloaded.
+#    Most settings hot-reload on save — edit the file and the change applies to
+#    the next request (no restart): sampling.*, models.*, storage.memory_only /
+#    storage.memory_enabled / storage.inject_enabled, mcp_servers, and the
+#    injected prompts. Structural settings (backend, providers, port, db_path)
+#    still need a restart. Set runtime.hot_reload: false to lock everything
+#    (changes then require a restart).
 #
 #  FULL REFERENCE
 #    This file IS the reference — every setting below is commented.
@@ -67,13 +73,17 @@ sampling:
   top_k: 64             # ollama only (ignored by the openai path)
   ctx_tokens: 65536     # context window size handed to the model — MUST match the model's num_ctx
   completion_reserve: 8192  # tokens reserved for the model's reply, out of ctx_tokens
+  # Reasoning/thinking is OFF by default (a reasoning model can runaway-think on
+  # a trivial ask). Set reasoning_enabled: 1 to opt back in; reasoning_effort
+  # (low/high/max) is for effort-level models (deepseek etc.).
+  reasoning_enabled: 0
   # max_tokens: leave unset — a global output cap truncates long summaries
 
 # Anti-hang guardrails, not tuning knobs — leave unless a provider is flaky.
 timeouts:
-  chat_timeout: 60        # seconds to wait for a chat reply (OpenAI-style backends)
-  ollama_chat_timeout: 120  # Ollama — cold-start model loading delays the first token
-  first_token_timeout: 30   # abort if no first token arrives (hung provider)
+  chat_timeout: 300       # seconds to wait for a chat reply (OpenAI-style backends)
+  ollama_chat_timeout: 300  # Ollama — cold-start model loading delays the first token
+  first_token_timeout: 180  # abort if no first token arrives (hung provider)
   novelty_timeout: 600    # timeout for the slower multi-step novelty/strategy calls
   embed_timeout: 60       # embedding request timeout
   label_timeout: 30       # topic-labeling request timeout
