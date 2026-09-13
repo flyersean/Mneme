@@ -24,6 +24,7 @@ import requests
 import numpy as np
 
 from mneme.util import _extract_text
+from mneme.mcp_client import get_manager
 
 # ─── Config (env-set by mneme_proxy's config loader before first use) ────
 NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")   # auto | on | off
@@ -261,7 +262,22 @@ def assemble_tools(client_tools):
             add(NATIVE_BASH_TOOL if n == "bash" else NATIVE_WRITE_TOOL)
     for t in (client_tools or []):
         add(t)
+    # MCP tools (dynamic — added/removed at runtime via the MCP manager). Added
+    # LAST so a name collision with a proxy or client tool is resolved in their
+    # favour.
+    for t in get_manager().tools():
+        add(t)
     return tools
+
+
+def mcp_tool_names():
+    """Names of tools currently exposed by connected MCP servers."""
+    return get_manager().tool_names()
+
+
+def call_mcp_tool(name, args):
+    """Execute an MCP tool call; returns a result string."""
+    return get_manager().call_tool(name, args)
 
 
 def is_native_exec_name(name, client_tools):

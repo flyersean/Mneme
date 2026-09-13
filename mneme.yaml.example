@@ -174,3 +174,25 @@ models:
     temperature: 1.0
     top_k: 64
     num_ctx: 32768
+
+# Model Context Protocol (MCP) servers — the "install any tool and it just works"
+# layer. Each server's tools are surfaced to the model like built-in tools, and
+# run through the MCP server (which can be Python/Node/Go/anything — MCP is
+# language-agnostic JSON-RPC).
+#
+# Two transports:
+#   * stdio  — the proxy spawns `command args` as a subprocess and owns its
+#              lifecycle. The common local case (npx/uvx/local scripts).
+#   * HTTP   — connect to an already-running streamable-HTTP MCP server via `url`.
+#
+# Hot-reloadable: editing this block (add/remove/change a server) takes effect on
+# the running proxy with no restart. You can also POST/DELETE /mcp/servers at
+# runtime for instant add/remove (those are in-memory only — write here to persist).
+#
+# A tool name that collides with a built-in tool is shadowed by the built-in.
+mcp_servers:
+  # - name: filesystem
+  #   command: npx
+  #   args: [-y, "@modelcontextprotocol/server-filesystem", /workspace]
+  # - name: my-tool
+  #   url: http://localhost:9001/mcp

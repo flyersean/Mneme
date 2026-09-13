@@ -177,7 +177,7 @@ _CONFIG_ENV_MAP = {
     "openrouter_base_url": "OPENROUTER_BASE_URL",
 }
 
-_STRUCTURAL_SECTIONS = {"providers", "models"}
+_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers"}
 
 
 def _config_scalar(v) -> str:
@@ -352,6 +352,13 @@ _USER_PINNED_STORAGE_ENV = {env for env in _STORAGE_ENV_MAP.values() if env in o
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
 
+# Connect to configured MCP servers (non-blocking; they finish connecting in the
+# background and their tools appear in assemble_tools on the next request).
+_mcp_cfgs = CONFIG_DATA.get("mcp_servers") or []
+if _mcp_cfgs:
+    mntools.get_manager().reconcile(_mcp_cfgs)
+    print(f"  [MCP] configured {len(_mcp_cfgs)} server(s): {[c.get('name') for c in _mcp_cfgs]}", flush=True)
+
 OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
 MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
 
@@ -464,6 +471,11 @@ def _reload_sampling_if_changed():
     MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"
     MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"
     INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"
+    # MCP servers — reconcile the running set with the config (hot add/remove).
+    if "mcp_servers" in data:
+        CONFIG_DATA["mcp_servers"] = data["mcp_servers"] or []
+        mntools.get_manager().reconcile(CONFIG_DATA["mcp_servers"])
+        changed.append("mcp_servers")
     print(f"  [CONFIG] hot-reloaded sampling/models/storage ({', '.join(changed) or 'models-only'})", flush=True)
 
 
@@ -4806,7 +4818,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _REDUNDANCY_LIMIT = 4  # identical tool-call signature this many rounds in a row = stuck loop
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
-    _server_names = _readonly_names | _native_names
+    _mcp_names = mntools.mcp_tool_names() - _readonly_names - _native_names  # MCP tools (shadowed on name collision)
+    _server_names = _readonly_names | _native_names | _mcp_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
@@ -4887,6 +4900,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory" and "search_memory" in _readonly_names]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory"})]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
+        mcp_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _mcp_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
 
@@ -4897,7 +4911,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # returning an empty response. The _recent_attempts_summary below already
         # SHOWS the model its own history; this is the hard backstop for models
         # that ignore that summary and keep re-issuing the same call.
-        _server_tcs = search_calls + registry_calls + native_calls
+        _server_tcs = search_calls + registry_calls + native_calls + mcp_calls
         if _server_tcs:
             _sig = tuple(sorted(
                 (tc.get("function", {}).get("name", ""),
@@ -4920,7 +4934,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _repeat_streak = 0
             _last_round_sig = None
 
-        if not (search_calls or registry_calls or native_calls):
+        if not (search_calls or registry_calls or native_calls or mcp_calls):
             # No server tool calls. If the model gave up (blank/shrug answer),
             # prompt it to CONTINUE instead of ending the turn — bounded retries.
             # (Infra timeouts/errors land in the fallback below, not here.)
@@ -5017,6 +5031,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
             followup.append({"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"})
 
+        # MCP tools (dynamic servers) — same user-message feedback as registry tools.
+        if mcp_calls:
+            for tc in mcp_calls:
+                nm = tc["function"]["name"]
+                args = tc["function"].get("arguments", {}) or {}
+                _mark_call(nm, args)
+                _t0 = time.time()
+                _tool_rounds += 1
+                res = mntools.call_mcp_tool(nm, args)
+                _stage_tool_result(res, nm, args)
+                _tool_trace.append(_trace(nm, args, res, _t0))
+                print(f"  [MCP] {nm} -> {res[:90]!r}", flush=True)
+                followup.append({"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"})
+
         # (Mid-loop interruption machinery removed: write-script nudge, redundancy
         # hard-stop, step-back ladder, and wrap-up nudge. These injected coaching
         # messages interrupted the model's natural tool use and were misfiring. The
@@ -5042,7 +5070,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             print(f"  [COMPACT] followup {_ctx_tokens} -> {_new_tokens} tokens (budget {_budget})", flush=True)
 
         print(f"  [SYNTHESIS] re-querying model "
-              f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native)", flush=True)
+              f"({len(search_calls)} search, {len(registry_calls)} registry, {len(native_calls)} native, {len(mcp_calls)} mcp)", flush=True)
         result = _query_retry_timeout(followup, tools=msg_tools)
     else:
         # Ran out of server rounds (model kept calling server tools without
@@ -5673,6 +5701,29 @@ if FLASK_OK:
     def cancel_turn():
         _cancel_event.set()
         return _cors_response({"ok": True})
+
+    # ── MCP server management (hot add/remove — no restart) ──
+    @app.route("/mcp/servers", methods=["GET"])
+    def mcp_servers_list():
+        return _cors_response({"servers": mntools.get_manager().status()})
+
+    @app.route("/mcp/servers", methods=["POST"])
+    def mcp_servers_add():
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "missing 'name'"}, status=400)
+        cfg = {k: v for k, v in data.items() if k in ("command", "args", "env", "url")}
+        if not (cfg.get("command") or cfg.get("url")):
+            return _cors_response({"error": "need 'command' (stdio) or 'url' (HTTP)"}, status=400)
+        srv = mntools.get_manager().add(name, cfg)
+        srv.wait_ready(20)
+        return _cors_response({"ok": True, "server": mntools.get_manager().status().get(name)})
+
+    @app.route("/mcp/servers/<name>", methods=["DELETE"])
+    def mcp_servers_remove(name):
+        mntools.get_manager().remove(name)
+        return _cors_response({"ok": True, "servers": mntools.get_manager().names()})
 
     # ── OPTIONS preflight for all routes ──
     @app.route("/v1/chat/completions", methods=["OPTIONS"])

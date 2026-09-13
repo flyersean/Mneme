@@ -132,6 +132,26 @@ Every proxy instance is a set of independent toggles, so you can set one up exac
 - **Tools** — each built-in tool (`search_memory`, `list_tools`, `read_tool`, `read_file`, `fetch_url`, `web_search`, plus `bash`/`write` via `tools.native`) has an on/off flag.
 - **Backend** — `backend.type` + `providers:` (Ollama or any OpenAI-compatible provider); in a swarm, `backend: ollama` runs a raw model with no memory at all.
 
+### MCP tools (install any tool)
+
+The proxy is an **MCP client**, so "install a tool and it just works" holds for any language/runtime — MCP is language-agnostic JSON-RPC. Point the proxy at an MCP server (web, filesystem, database, GitHub, …) and its tools surface to the model like built-in tools.
+
+```yaml
+# stdio — the proxy spawns `command args` and owns its lifecycle
+mcp_servers:
+  - name: filesystem
+    command: npx
+    args: [-y, "@modelcontextprotocol/server-filesystem", /workspace]
+  # HTTP — connect to an already-running streamable-HTTP server
+  - name: my-tool
+    url: http://localhost:9001/mcp
+```
+
+- **Hot-add (no restart):** edit the `mcp_servers:` block — it's reconciled on `mneme.yaml` mtime, like the storage flags. Or `POST /mcp/servers` / `DELETE /mcp/servers/<name>` at runtime (in-memory; write to config to persist). `GET /mcp/servers` lists status.
+- **Name collisions:** an MCP tool whose name matches a built-in tool is shadowed by the built-in.
+- **A broken server degrades gracefully:** it's logged and skipped, never crashes the proxy, and its tools just don't appear.
+- The setup wizard prompts to add MCP servers during install.
+
 ### Provenance grading
 
 *On — this is memory quality, not learning.*
