@@ -3,7 +3,7 @@
 #  Mneme — unified installer (one command, every environment)
 # ============================================================================
 #  Installs the three things the proxy needs, idempotently and with no prompts:
-#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml)
+#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml / playwright)
 #    2. Ollama (installed + started — harmless even if you use a hosted backend)
 #    3. The proxy code (cloned into ~/mneme/repo, branch from MNEME_BRANCH)
 #
@@ -49,21 +49,36 @@ apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-
 
 # Install from pip. --break-system-packages handles PEP 668 (Ubuntu 22.04+).
 # --ignore-installed bypasses any lingering pinned system packages.
-if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp 2>/dev/null; then
+if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright 2>/dev/null; then
   echo "  ✓ pip install OK"
 else
   echo "  pip (--break-system-packages) failed — retrying plain install..."
-  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp
+  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright
 fi
 
 # Verify each package imports.
 MISSED=""
-for pkg in flask flask_cors faiss numpy requests yaml ddgs mcp; do
+for pkg in flask flask_cors faiss numpy requests yaml ddgs mcp playwright; do
   if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; MISSED="$MISSED $pkg"; fi
 done
 if [ -n "$MISSED" ]; then
   echo "  ⚠ Still missing:$MISSED"
-  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp"
+  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright"
+fi
+
+# Playwright browser binary + system deps (idempotent, best-effort). The Python
+# package alone can't launch a browser — web tools that render pages (e.g.
+# Hound's screenshot / anti-bot fetch) need the Chromium binary, which is a
+# separate ~150MB download. System deps are best-effort so a host that can't apt
+# still gets the browser; the browser install is skipped gracefully if playwright
+# itself didn't land.
+if python3 -c "import playwright" 2>/dev/null; then
+  echo "  installing Playwright Chromium (idempotent, ~150MB)..."
+  python3 -m playwright install chromium 2>/dev/null || true
+  python3 -m playwright install-deps chromium 2>/dev/null || true
+  echo "  ✓ playwright chromium ready"
+else
+  echo "  ⚠ playwright not importable — skipping browser install (install manually: pip install playwright && playwright install chromium)"
 fi
 
 # ── 2. Ollama ─────────────────────────────────────────────────────────
