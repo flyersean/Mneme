@@ -166,6 +166,8 @@ mcp_servers:
 - Provenance grading: the model tags its sources (`[source: X]` / `[guess]`) and is graded on *honesty*, not answer-correctness — "I don't know" beats fabrication.
 - Honest-terminal detection: correct-but-uncitable answers — `undefined`, `market price`, "I don't know", "no such X", a false-premise correction, a clarification — are graded "pass", not fail. The judge misreads them as failures, so they're short-circuited before the judge.
 - Trace cross-check: any cited `[source: mem_XXX]` or URL is verified against what the model actually had this turn (injected chunks + search results + the server-side tool trace), with host normalization so `shaws-wharf.com` matches `https://www.shaws-wharf.com/menu`. A fabricated citation fails.
+- `[source: input]` tag: facts read from the input file/context handed to the model this turn (e.g. a swarm `read_dir` file) are cited `[source: input]` or `[source: input:<filename>]`. Honest but *unverified* — the file was handed over unchecked, so "from the file" is not "confirmed true". The cross-check verifies a named file actually appears in the input.
+- Trust tier: every chunk is tagged `verified` (user/page/tool — observed) or `unverified` (model-generated — a claim, not an observation) at ingest. Unverified chunks are re-injected with an `[UNVERIFIED]` marker so the model doesn't re-assert its own past output as fact — this closes the self-reinforcement loop where a hallucination, once cited, kept coming back as "memory".
 
 ### Experimental features (off by default)
 

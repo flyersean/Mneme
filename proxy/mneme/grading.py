@@ -267,10 +267,18 @@ def _extract_urls_from_tool_trace(tool_trace) -> set:
     return urls
 
 
-def _has_fake_source(parsed: dict, trace_chunks: set, trace_urls: set) -> bool:
-    """True if any [source: X] cites a mem chunk or URL the model did not
-    actually have this turn (a fabricated citation)."""
+def _has_fake_source(parsed: dict, trace_chunks: set, trace_urls: set, input_text: str = "") -> bool:
+    """True if any [source: X] cites a mem chunk, URL, or input file the model did
+    not actually have this turn (a fabricated citation).
+
+    ``input_text`` is the current user message (which carries the read_dir file
+    contents when the caller is the swarm orchestrator). It backs the new
+    ``[source: input]`` / ``[source: input:<name>]`` citation type: a bare
+    ``[source: input]`` is honest only if some input was actually provided this
+    turn, and a named ``[source: input:<name>]`` is honest only if that name
+    appears in the input."""
     trace_domains = {_source_domain(u) for u in trace_urls}
+    _input = input_text or ""
     for src in parsed["sources"]:
         s = src.strip()
         for mt in _INLINE_MEM_RE.findall(s):
@@ -279,6 +287,13 @@ def _has_fake_source(parsed: dict, trace_chunks: set, trace_urls: set) -> bool:
         if s.startswith(("http://", "https://")):
             if _source_domain(s) not in trace_domains:
                 return True
+        if s.lower() == "input":
+            if not _input.strip():
+                return True  # cited "input" but no input was provided this turn
+        elif s.lower().startswith("input:"):
+            name = s.split(":", 1)[1].strip().strip("\"'")
+            if name and name not in _input:
+                return True  # cited a file name not present in the input
     return False
 
 
