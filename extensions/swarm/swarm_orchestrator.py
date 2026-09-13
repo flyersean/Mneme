@@ -61,6 +61,22 @@ CONFIG (swarm_config.yaml)
     append_dir    like write_dir, but APPENDS to the target instead of overwriting
                   — for a running log or a story that grows across ticks.
 
+    edit_dir      a file path to edit IN PLACE (non-destructive). The model's
+                  output is a SEARCH/REPLACE patch — each change a block:
+
+                      <<<<<<< SEARCH
+                      <exact old text, verbatim>
+                      =======
+                      <replacement text>
+                      >>>>>>>
+
+                  Each FIND must match the file EXACTLY once (0 matches or >1
+                  matches abort the run); only the matched text changes, the rest
+                  of the file is untouched, and a failed patch leaves the file
+                  byte-for-byte unchanged. The patch-format instruction is
+                  auto-appended to the step's system_prompt. To read the file
+                  first, pair with `read_dir` pointing at the same file.
+
     copy_dir      source file or directory to COPY elsewhere. Pair with `copy_to`.
                   Copies the source OUTSIDE the freeze/consume loop — e.g. snapshot
                   `input.active` into a persistent `buffer/` that survives the
@@ -139,6 +155,24 @@ END = -1  # sentinel index meaning "stop the run"
 # conditions (contains/equals/startswith/endswith/matches) that branch on the
 # step's model output.
 _FOLDER_CONDITIONS = {"count_ge", "count_lt", "empty", "exists"}
+
+# edit_dir patch markers — the model emits SEARCH/REPLACE blocks with these
+# delimiters on their own lines (7-char git-style markers; "SEARCH" disambiguates
+# the opening marker from a real conflict marker).
+_SEARCH_MARK = re.compile(r"^<<<<<<< SEARCH\s*$")
+_SEP_MARK = re.compile(r"^=======\s*$")
+_END_MARK = re.compile(r"^>>>>>>>\s*$")
+
+_EDIT_INSTRUCTION = (
+    "Your ENTIRE reply must be a SEARCH/REPLACE patch — nothing else. "
+    "For each change emit exactly one block:\n"
+    "<<<<<<< SEARCH\n<the exact old text to find, copied verbatim from the input>\n"
+    "=======\n<the replacement text>\n"
+    ">>>>>>>\n"
+    "Copy the old text EXACTLY (same characters, same line breaks). Do not touch "
+    "text you are not changing. Use multiple blocks for multiple changes. To "
+    "delete something, use an empty replacement."
+)
 
 
 class Orchestrator:
@@ -234,7 +268,7 @@ class Orchestrator:
     def _step_needs_model(self, step):
         """True if this step calls a model: it writes/append output, or branches
         on output (a STRING if-condition). Folder-state if-conditions don't."""
-        if step.get("write_dir") or step.get("append_dir"):
+        if step.get("write_dir") or step.get("append_dir") or step.get("edit_dir"):
             return True
         ifc = step.get("if")
         return bool(ifc) and ifc.get("condition") not in _FOLDER_CONDITIONS
@@ -257,6 +291,16 @@ class Orchestrator:
                     raise SystemExit(
                         f"step {nm}: {src_key} needs BOTH '{src_key}' (source) and "
                         f"'{dst_key}' (destination folder)"
+                    )
+            # edit_dir edits ONE file in place; it can't coexist with write_dir or
+            # append_dir (a step produces exactly one output).
+            if s.get("edit_dir"):
+                if not isinstance(s.get("edit_dir"), str):
+                    raise SystemExit(f"step {nm}: edit_dir must be a string (file path)")
+                if s.get("write_dir") or s.get("append_dir"):
+                    raise SystemExit(
+                        f"step {nm}: edit_dir cannot be combined with write_dir/append_dir — "
+                        "one output target per step"
                     )
             backend = (s.get("backend") or "mneme").lower()
             if backend not in ("mneme", "ollama"):
@@ -375,6 +419,80 @@ class Orchestrator:
         with open(out, "a", encoding="utf-8") as f:
             f.write(content)
         print(f"  [append] {out}")
+
+    def _parse_patch(self, patch_text):
+        """Parse a model's SEARCH/REPLACE patch into a list of (find, replace) pairs.
+
+        Each block is:
+
+            <<<<<<< SEARCH
+            <find text — verbatim>
+            =======
+            <replace text>
+            >>>>>>>
+
+        Returns [] if no blocks are present (the caller decides whether that is
+        an error)."""
+        blocks = []
+        lines = (patch_text or "").split("\n")
+        i, n = 0, len(lines)
+        while i < n:
+            if _SEARCH_MARK.match(lines[i]):
+                i += 1
+                find_lines = []
+                while i < n and not _SEP_MARK.match(lines[i]) and not _END_MARK.match(lines[i]):
+                    find_lines.append(lines[i])
+                    i += 1
+                if i >= n or not _SEP_MARK.match(lines[i]):
+                    raise SystemExit("edit_dir: SEARCH block is missing the '=======' separator")
+                i += 1
+                repl_lines = []
+                while i < n and not _END_MARK.match(lines[i]):
+                    repl_lines.append(lines[i])
+                    i += 1
+                if i >= n or not _END_MARK.match(lines[i]):
+                    raise SystemExit("edit_dir: SEARCH block is missing the '>>>>>>>' terminator")
+                i += 1
+                blocks.append(("\n".join(find_lines), "\n".join(repl_lines)))
+            else:
+                i += 1
+        return blocks
+
+    def apply_edit(self, file_path, patch_text):
+        """Apply a SEARCH/REPLACE patch to `file_path` surgically and atomically.
+
+        Reads the file, applies every block (each FIND must match exactly once),
+        and writes back ONLY if every block succeeds — so a failed patch leaves
+        the file byte-for-byte unchanged. This is the non-destructive edit
+        primitive: only the matched text changes; everything else is preserved."""
+        if not os.path.exists(file_path):
+            raise SystemExit(f"edit_dir: file not found: {file_path}")
+        with open(file_path, "r", encoding="utf-8") as f:
+            original = f.read()
+        blocks = self._parse_patch(patch_text)
+        if not blocks:
+            raise SystemExit("edit_dir: the model output contained no SEARCH/REPLACE blocks")
+        new = original
+        for find, repl in blocks:
+            if not find:
+                raise SystemExit("edit_dir: empty SEARCH block (nothing to find)")
+            count = new.count(find)
+            if count == 0:
+                raise SystemExit(f"edit_dir: FIND not found in {file_path}: {find[:80]!r}")
+            if count > 1:
+                raise SystemExit(f"edit_dir: FIND matches {count} places in {file_path} (ambiguous) — make it more specific")
+            new = new.replace(find, repl, 1)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(new)
+        print(f"  [edit] {file_path} ({len(blocks)} change(s))")
+
+    def _effective_system_prompt(self, step):
+        """The step's system prompt, with the patch-format instruction appended
+        when the step is an edit_dir step (so the model emits a parseable patch)."""
+        sp = step.get("system_prompt") or ""
+        if step.get("edit_dir"):
+            sp = (sp + "\n\n" + _EDIT_INSTRUCTION) if sp else _EDIT_INSTRUCTION
+        return sp
 
     def copy_dir(self, source, dest):
         """Copy a file or directory into a destination folder.
@@ -509,8 +627,9 @@ class Orchestrator:
         port = step["port"]
         url = f"http://localhost:{port}/v1/chat/completions"
         messages = []
-        if step.get("system_prompt"):
-            messages.append({"role": "system", "content": step["system_prompt"]})
+        _sp = self._effective_system_prompt(step)
+        if _sp:
+            messages.append({"role": "system", "content": _sp})
         messages.append({"role": "user", "content": context})
         payload = {"model": "default", "messages": messages}
         if step.get("options"):
@@ -526,8 +645,9 @@ class Orchestrator:
         """Call a raw Ollama model over its native /api/chat endpoint."""
         model = step["model"]
         messages = []
-        if step.get("system_prompt"):
-            messages.append({"role": "system", "content": step["system_prompt"]})
+        _sp = self._effective_system_prompt(step)
+        if _sp:
+            messages.append({"role": "system", "content": _sp})
         messages.append({"role": "user", "content": context})
         payload = {"model": model, "stream": False, "messages": messages}
         if step.get("options"):
@@ -668,6 +788,8 @@ class Orchestrator:
                 self.write_output(step["write_dir"], output)
             if step.get("append_dir") and output is not None:
                 self.append_output(step["append_dir"], output)
+            if step.get("edit_dir") and output is not None:
+                self.apply_edit(step["edit_dir"], output)
             if step.get("copy_dir"):
                 self.copy_dir(step["copy_dir"], step.get("copy_to"))
             if step.get("move_dir"):

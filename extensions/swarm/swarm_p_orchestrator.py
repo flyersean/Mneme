@@ -84,6 +84,8 @@ class ParallelOrchestrator(Orchestrator):
             self.write_output(step["write_dir"], output)
         if step.get("append_dir") and output is not None:
             self.append_output(step["append_dir"], output)
+        if step.get("edit_dir") and output is not None:
+            self.apply_edit(step["edit_dir"], output)
         if step.get("copy_dir"):
             self.copy_dir(step["copy_dir"], step.get("copy_to"))
         if step.get("move_dir"):

@@ -75,11 +75,12 @@ Each step executes in a **fixed order**:
 4. model call — only if the step *needs* a model (see below).
 5. `write_dir` — write output (overwrite), if set and output present.
 6. `append_dir` — append output, if set and output present.
-7. `copy_dir` → `copy_to` — copy, if set.
-8. `move_dir` → `move_to` — move, if set.
-9. `swap_dir` — freeze, if set.
-10. `clear_dir` — wipe, if set.
-11. advance index via `goto` / `if` / fall-through.
+7. `edit_dir` — apply the model's SEARCH/REPLACE patch to a file, if set.
+8. `copy_dir` → `copy_to` — copy, if set.
+9. `move_dir` → `move_to` — move, if set.
+10. `swap_dir` — freeze, if set.
+11. `clear_dir` — wipe, if set.
+12. advance index via `goto` / `if` / fall-through.
 
 ### When a model is called
 
@@ -87,6 +88,7 @@ A step calls a model **only when**:
 
 - it has `write_dir`, OR
 - it has `append_dir`, OR
+- it has `edit_dir`, OR
 - it has an `if` with a **string** condition (`contains`/`equals`/`startswith`/
   `endswith`/`matches`) — because that branches on the step's own output.
 
@@ -119,6 +121,7 @@ the branch and is not written anywhere.
 | `skip_if_empty`| boolean         | model steps           | Skip the model call when `read_dir` is empty (see §9). |
 | `write_dir`    | string          | model steps           | Write output (OVERWRITE) (see §10). |
 | `append_dir`   | string          | model steps           | Append output (see §10). |
+| `edit_dir`     | string          | model steps           | Edit a file in place via a SEARCH/REPLACE patch (see §10.1). |
 | `copy_dir`     | string          | action-only           | Source to copy (see §11). Pair with `copy_to`. |
 | `copy_to`      | string          | action-only           | Destination folder for `copy_dir`. |
 | `move_dir`     | string          | action-only           | Source to move (see §11). Pair with `move_to`. |
@@ -230,6 +233,43 @@ To write the *same* output to two overwrite-style locations, use `write_dir` plu
 `copy_dir`/`copy_to` in the same step (copy runs after write, picking up the fresh
 file). To produce two *different* outputs, use two steps — one step makes exactly
 one model call.
+
+## 10.1 `edit_dir` — edit a file in place (non-destructive)
+
+`edit_dir` targets **one file** and edits it surgically instead of overwriting it.
+The model's entire output is a SEARCH/REPLACE patch — one block per change:
+
+    <<<<<<< SEARCH
+    <the exact old text, copied verbatim from the input>
+    =======
+    <the replacement text>
+    >>>>>>>
+
+Rules:
+
+- Each FIND must match the file **exactly once**. Zero matches or more than one
+  match **aborts the whole run** (fail loud — no silent no-op, no guessing).
+- Only the matched text changes; every other byte of the file is untouched.
+- The patch applies **atomically**: all blocks are applied in memory first, and
+  the file is written back only if every block succeeds. A failed patch leaves
+  the file byte-for-byte unchanged.
+- The patch-format instruction is **auto-appended** to the step's `system_prompt`
+  (you write the *task*; the orchestrator supplies the format).
+- `edit_dir` cannot be combined with `write_dir`/`append_dir` (one output target
+  per step). To read the file first, pair it with `read_dir` pointing at the same
+  file (or its directory).
+
+```yaml
+- name: fix_typo
+  read_dir: draft
+  edit_dir: draft/story.txt
+  backend: mneme
+  port: 8080
+  system_prompt: "Fix the typo 'teh' in the story. Make only that change."
+```
+
+An empty replacement deletes the matched text. To insert, match a unique anchor
+and put the new text in the replacement.
 
 ---
 

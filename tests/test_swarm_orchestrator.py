@@ -351,5 +351,101 @@ class TestFolderIO(unittest.TestCase):
         self.assertEqual(idx, 1)  # 'a' now lives at index 1
 
 
+class TestEditDir(unittest.TestCase):
+    def setUp(self):
+        self.o = Orchestrator.__new__(Orchestrator)
+        self.tmp = tempfile.mkdtemp()
+
+    def _file(self, content, name="f.txt"):
+        p = os.path.join(self.tmp, name)
+        with open(p, "w") as f:
+            f.write(content)
+        return p
+
+    def _read(self, p):
+        with open(p) as f:
+            return f.read()
+
+    # ---- parser ----
+
+    def test_parse_single_block(self):
+        patch = "<<<<<<< SEARCH\nhello\n=======\ngoodbye\n>>>>>>>\n"
+        self.assertEqual(self.o._parse_patch(patch), [("hello", "goodbye")])
+
+    def test_parse_multiple_blocks(self):
+        patch = ("<<<<<<< SEARCH\na\n=======\n1\n>>>>>>>\n"
+                 "<<<<<<< SEARCH\nb\n=======\n2\n>>>>>>>\n")
+        self.assertEqual(self.o._parse_patch(patch), [("a", "1"), ("b", "2")])
+
+    def test_parse_no_blocks(self):
+        self.assertEqual(self.o._parse_patch("just prose, no patch here"), [])
+
+    def test_parse_missing_separator_aborts(self):
+        with self.assertRaises(SystemExit):
+            self.o._parse_patch("<<<<<<< SEARCH\nhello\n>>>>>>>\n")
+
+    # ---- apply ----
+
+    def test_apply_single_replace(self):
+        p = self._file("The sky is blue.\nGrass is green.\n")
+        self.o.apply_edit(p, "<<<<<<< SEARCH\nblue\n=======\npurple\n>>>>>>>\n")
+        self.assertEqual(self._read(p), "The sky is purple.\nGrass is green.\n")
+
+    def test_apply_multiple_blocks(self):
+        p = self._file("one two three\n")
+        self.o.apply_edit(p, ("<<<<<<< SEARCH\none\n=======\n1\n>>>>>>>\n"
+                              "<<<<<<< SEARCH\nthree\n=======\n3\n>>>>>>>\n"))
+        self.assertEqual(self._read(p), "1 two 3\n")
+
+    def test_apply_deletion(self):
+        p = self._file("keep this and remove me end\n")
+        self.o.apply_edit(p, "<<<<<<< SEARCH\n and remove me\n=======\n\n>>>>>>>\n")
+        self.assertEqual(self._read(p), "keep this end\n")
+
+    def test_apply_multiline_find(self):
+        p = self._file("line one\nline two\nline three\n")
+        self.o.apply_edit(p, "<<<<<<< SEARCH\nline one\nline two\n=======\nA\nB\n>>>>>>>\n")
+        self.assertEqual(self._read(p), "A\nB\nline three\n")
+
+    # ---- safety: fail loudly, leave the file unchanged ----
+
+    def test_find_not_found_aborts_and_leaves_file_unchanged(self):
+        p = self._file("hello world\n")
+        with self.assertRaises(SystemExit):
+            self.o.apply_edit(p, "<<<<<<< SEARCH\nnonexistent\n=======\nx\n>>>>>>>\n")
+        self.assertEqual(self._read(p), "hello world\n")
+
+    def test_ambiguous_find_aborts_and_leaves_file_unchanged(self):
+        p = self._file("a a a\n")
+        with self.assertRaises(SystemExit):
+            self.o.apply_edit(p, "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>\n")
+        self.assertEqual(self._read(p), "a a a\n")
+
+    def test_missing_file_aborts(self):
+        with self.assertRaises(SystemExit):
+            self.o.apply_edit(os.path.join(self.tmp, "nope.txt"), "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>\n")
+
+    def test_no_blocks_aborts(self):
+        p = self._file("hello\n")
+        with self.assertRaises(SystemExit):
+            self.o.apply_edit(p, "I fixed it, no patch format here")
+        self.assertEqual(self._read(p), "hello\n")
+
+    # ---- system prompt ----
+
+    def test_effective_system_prompt_appends_instruction(self):
+        sp = self.o._effective_system_prompt({"system_prompt": "Fix it", "edit_dir": "f.txt"})
+        self.assertIn("Fix it", sp)
+        self.assertIn("SEARCH/REPLACE", sp)
+
+    def test_effective_system_prompt_no_edit_dir(self):
+        sp = self.o._effective_system_prompt({"system_prompt": "Fix it"})
+        self.assertEqual(sp, "Fix it")
+
+    def test_effective_system_prompt_edit_dir_no_prompt(self):
+        sp = self.o._effective_system_prompt({"edit_dir": "f.txt"})
+        self.assertIn("SEARCH/REPLACE", sp)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
