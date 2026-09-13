@@ -460,9 +460,11 @@ in `swarm_config.yaml`, so you can coordinate multiple models with no driver cod
 - `swarm_p_orchestrator.py` — the **parallel** driver. Extends the serial one with a single
   new step form, a `parallel:` block that runs a list of independent sub-steps concurrently
   (a thread pool). Everything else is inherited unchanged, so a config written for the
-  serial driver also runs here. Parallel only helps when the sub-steps share one model —
-  Ollama batches same-model requests, but different models that don't both fit in VRAM get
-  serialized by model-swap (no speedup, just swap latency).
+  serial driver also runs here. Parallel shines against a **hosted** backend (OpenRouter or
+  any OpenAI-compatible provider) — there's no local GPU to thrash, so same-model *and*
+  different-model sub-steps all run concurrently. On a single-GPU Ollama box it only helps
+  for same-model fan-out (different models serialize by VRAM model-swap). See the swarm
+  README for the one hosted caveat (rate limits).
 
 **How the config works.**
 

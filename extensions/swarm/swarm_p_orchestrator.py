@@ -9,11 +9,15 @@ inherited unchanged, so a config written for swarm_orchestrator.py also runs
 here, plus it may add `parallel:` blocks.
 
 WHEN PARALLEL HELPS
-  Concurrent steps only speed things up when Ollama can actually serve them at
-  once: requests to the SAME model batch/parallelize (up to OLLAMA_NUM_PARALLEL),
-  while requests to DIFFERENT models that don't both fit in VRAM get serialized
-  by Ollama (load A, evict, load B) — no win there, just swap latency. So fan out
-  steps that share one model, e.g. several critics on the same port.
+  The fan-out is backend-agnostic (a thread pool of independent HTTP calls), so it
+  runs `mneme` and `ollama` sub-steps alike — but the speedup depends on the
+  backend. Against a HOSTED backend (OpenRouter or any OpenAI-compatible provider)
+  it genuinely parallelizes both same-model and different-model sub-steps (no local
+  GPU to thrash; wall-clock is the slowest sub-step, not the sum). Against a
+  single-GPU Ollama it only helps for SAME-model fan-out (batched, up to
+  OLLAMA_NUM_PARALLEL); different models that don't both fit in VRAM get serialized
+  by model-swap — no win, just swap latency. Hosted caveat: a large fan-out can hit
+  HTTP 429 (per-key rate limit), and 4xx is permanent (stops the run, no retry).
 
 CONFIG — a `parallel:` step is a list of leaf sub-steps (no goto/if inside):
 

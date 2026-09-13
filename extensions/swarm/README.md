@@ -185,11 +185,20 @@ Run it exactly like the serial one: `python3 swarm_p_orchestrator.py swarm_confi
 Sub-steps are leaf steps (no `goto`/`if` inside a block); each reads the shared
 input and writes a distinct output file.
 
-Parallel only helps when Ollama can serve the requests at once: sub-steps that
-hit the **same model** batch/parallelize (up to `OLLAMA_NUM_PARALLEL`), while
-sub-steps on **different models** that don't both fit in VRAM get serialized by
-Ollama (model swap) — no speedup, just swap latency. Fan out steps that share a
-model.
+Parallel is backend-agnostic — the fan-out is just a thread pool of independent HTTP calls,
+so it works with both `mneme` and `ollama` sub-steps. What it buys you depends on the backend:
+
+- **Hosted (OpenRouter / any OpenAI-compatible):** genuine speedup for both same-model and
+  different-model sub-steps — there's no local GPU to thrash, each request runs on the
+  provider's side, and wall-clock is the slowest sub-step, not the sum. This is where
+  parallel shines.
+- **Ollama (local, single GPU):** only sub-steps hitting the **same model**
+  batch/parallelize (up to `OLLAMA_NUM_PARALLEL`); different models that don't both fit in
+  VRAM get serialized by model-swap — no speedup, just swap latency.
+
+One hosted caveat: rate limits. A large fan-out can hit HTTP 429 on a hosted key, and 4xx is
+treated as permanent (stops the run immediately, no retry) — size the fan-out against your
+key's rate limit.
 
 ## Adapt it
 

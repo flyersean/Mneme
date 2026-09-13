@@ -464,11 +464,21 @@ steps:
 - A sub-step with a string `if` would still call the model (the `if` is ignored),
   so don't put `if` in a block.
 
-**When parallel helps:** sub-steps hitting the **same model** batch/parallelize on
-Ollama (up to `OLLAMA_NUM_PARALLEL`). Sub-steps on **different models** that don't
-both fit in VRAM get serialized by Ollama (model swap) — no speedup, just swap
-latency. Fan out steps that share a model. Everything else is inherited unchanged,
-so a config written for the serial driver also runs here.
+**When parallel helps:** the fan-out is backend-agnostic (a thread pool of independent
+HTTP calls), so it works for `mneme` and `ollama` sub-steps alike, but the speedup
+depends on the backend:
+
+- **Hosted (OpenRouter / any OpenAI-compatible):** genuine speedup for both
+  same-model and different-model sub-steps — no local GPU to thrash; each request
+  runs provider-side and wall-clock is the slowest sub-step, not the sum.
+- **Ollama (local, single GPU):** only sub-steps hitting the **same model**
+  batch/parallelize (up to `OLLAMA_NUM_PARALLEL`). Different models that don't both
+  fit in VRAM get serialized by Ollama (model swap) — no speedup, just swap latency.
+
+Caveat for hosted: a large fan-out can hit HTTP 429 (per-key rate limit), and 4xx
+is treated as permanent (stops the run, no retry) — size the block against your
+key's rate limit. Everything else is inherited unchanged, so a config written for
+the serial driver also runs here.
 
 ---
 
