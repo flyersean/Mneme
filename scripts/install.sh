@@ -3,7 +3,8 @@
 #  Mneme — unified installer (one command, every environment)
 # ============================================================================
 #  Installs the three things the proxy needs, idempotently and with no prompts:
-#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml / playwright / patchright)
+#    1. Python dependencies + browser engine + Hound MCP (flask / faiss / numpy /
+#       requests / pyyaml / playwright / patchright / hound-mcp[all])
 #    2. Ollama (installed + started — harmless even if you use a hosted backend)
 #    3. The proxy code (cloned into ~/mneme/repo, branch from MNEME_BRANCH)
 #
@@ -83,6 +84,23 @@ if python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 
   echo "  ✓ browser chromium ready (patchright + playwright)"
 else
   echo "  ⚠ patchright/playwright not importable — skipping browser install (install manually: pip install playwright patchright && patchright install chromium)"
+fi
+
+# ── 1c. Hound MCP (full) ─────────────────────────────────────────────
+# Hound — the local, keyless web stack (fetch/search/crawl/screenshot/PDF/OCR).
+# The [all] extra adds the browser stack (browserforge) + OCR/PDF (rapidocr,
+# onnxruntime, pdfplumber, pypdfium2, tokenizers) on top of the patchright/
+# playwright packages installed above. Its `hound` CLI lands in the same bin as
+# python3's pip, so a proxy MCP entry `command: hound` resolves with no extra
+# PATH setup. (Hardcoded for now — becomes an optional-dependency checkbox later.)
+echo; echo "[1c/3] Hound MCP (full web stack)"
+python3 -m pip install --break-system-packages "hound-mcp[all]" 2>/dev/null \
+  || python3 -m pip install "hound-mcp[all]"
+if command -v hound >/dev/null 2>&1; then
+  echo "  ✓ hound CLI ready ($(hound --version 2>/dev/null | head -1))"
+else
+  echo "  ⚠ hound CLI not on PATH — the proxy MCP entry \`command: hound\` needs it."
+  echo "    locate it: python3 -m pip show -f hound-mcp | grep -i hound"
 fi
 
 # ── 2. Ollama ─────────────────────────────────────────────────────────
