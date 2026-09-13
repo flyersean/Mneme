@@ -3,7 +3,7 @@
 #  Mneme — unified installer (one command, every environment)
 # ============================================================================
 #  Installs the three things the proxy needs, idempotently and with no prompts:
-#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml / playwright)
+#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml / playwright / patchright)
 #    2. Ollama (installed + started — harmless even if you use a hosted backend)
 #    3. The proxy code (cloned into ~/mneme/repo, branch from MNEME_BRANCH)
 #
@@ -49,36 +49,40 @@ apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-
 
 # Install from pip. --break-system-packages handles PEP 668 (Ubuntu 22.04+).
 # --ignore-installed bypasses any lingering pinned system packages.
-if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright 2>/dev/null; then
+if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright 2>/dev/null; then
   echo "  ✓ pip install OK"
 else
   echo "  pip (--break-system-packages) failed — retrying plain install..."
-  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright
+  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright
 fi
 
 # Verify each package imports.
 MISSED=""
-for pkg in flask flask_cors faiss numpy requests yaml ddgs mcp playwright; do
+for pkg in flask flask_cors faiss numpy requests yaml ddgs mcp playwright patchright; do
   if python3 -c "import $pkg" 2>/dev/null; then echo "  ✓ $pkg"; else echo "  ✗ $pkg missing"; MISSED="$MISSED $pkg"; fi
 done
 if [ -n "$MISSED" ]; then
   echo "  ⚠ Still missing:$MISSED"
-  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright"
+  echo "    Install manually: pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright"
 fi
 
-# Playwright browser binary + system deps (idempotent, best-effort). The Python
-# package alone can't launch a browser — web tools that render pages (e.g.
-# Hound's screenshot / anti-bot fetch) need the Chromium binary, which is a
-# separate ~150MB download. System deps are best-effort so a host that can't apt
-# still gets the browser; the browser install is skipped gracefully if playwright
-# itself didn't land.
-if python3 -c "import playwright" 2>/dev/null; then
-  echo "  installing Playwright Chromium (idempotent, ~150MB)..."
+# Browser engines for web tools. Hound (the bundled web MCP) launches its browser
+# through PATCHRIGHT — a Playwright fork with anti-detection patches — so its
+# Chromium comes from `patchright install chromium`, NOT plain playwright. We
+# install both pip packages (patchright is what Hound uses; playwright covers any
+# other tool) and download both Chromium binaries. A headless pod is missing the
+# shared libraries the browser needs, so refresh apt lists first, then install
+# the system deps (best-effort — a host that can't apt still gets the binaries).
+if python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 2>/dev/null; then
+  echo "  installing browser Chromium (idempotent, ~150MB each)..."
+  apt-get update -qq 2>/dev/null || true
+  python3 -m patchright install chromium 2>/dev/null || true
+  python3 -m patchright install-deps chromium 2>/dev/null || true
   python3 -m playwright install chromium 2>/dev/null || true
   python3 -m playwright install-deps chromium 2>/dev/null || true
-  echo "  ✓ playwright chromium ready"
+  echo "  ✓ browser chromium ready (patchright + playwright)"
 else
-  echo "  ⚠ playwright not importable — skipping browser install (install manually: pip install playwright && playwright install chromium)"
+  echo "  ⚠ patchright/playwright not importable — skipping browser install (install manually: pip install playwright patchright && patchright install chromium)"
 fi
 
 # ── 2. Ollama ─────────────────────────────────────────────────────────

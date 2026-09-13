@@ -204,7 +204,7 @@ mcp_servers:
   # ── stdio server (the proxy launches a local command and speaks MCP to it) ──
   # Hound — a free, LOCAL, keyless web stack for your agent (fetch + search +
   # crawl + screenshot + PDF/OCR). No API keys, no accounts, nothing leaves your
-  # machine. Install:  pip install hound-mcp[all] && playwright install chromium
+  # machine. Install:  pip install hound-mcp[all] && patchright install chromium
   # - name: hound
   #   command: hound            # no args, no env — just the command
   # - name: filesystem

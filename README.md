@@ -150,7 +150,7 @@ mcp_servers:
     command: npx
     args: [-y, "@modelcontextprotocol/server-filesystem", /workspace]
   # Hound — free, keyless, local web access (fetch/search/crawl/screenshot/PDF):
-  #   pip install hound-mcp[all] && playwright install chromium
+  #   pip install hound-mcp[all] && patchright install chromium
   - name: hound
     command: hound
   # HTTP — connect to an already-running streamable-HTTP server
