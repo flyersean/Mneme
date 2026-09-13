@@ -28,6 +28,7 @@ import numpy as np
 import requests
 
 from mneme.util import _extract_text, _log_error
+from mneme.logfile import setup_logging
 from mneme.tool_trail import (
     _TOOL_TAG_RE,
     _extract_tool_tags,
@@ -169,6 +170,7 @@ _CONFIG_ENV_MAP = {
     "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
+    "logging.max_entries": "MNEME_MAX_LOG_ENTRIES",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
     "embed_model": "EMBED_MODEL",
@@ -410,6 +412,7 @@ def _or_headers() -> dict:
 
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
+setup_logging(CHUNK_DIR)  # tee stdout/stderr into $CHUNK_DIR/proxy.log (append, size-capped)
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).

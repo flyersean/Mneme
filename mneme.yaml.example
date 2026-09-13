@@ -217,3 +217,8 @@ runtime:
   # coding/studying agent that edits its own files can't re-enable live edits.
   # Choose "lock" when you're running an agent that might edit Mneme itself.
   hot_reload: true
+
+# Logging — the proxy owns its own log at $MNEME_CHUNK_DIR/proxy.log (append mode,
+# so re-runs and restarts don't wipe it). To cap the size:
+#   logging:
+#     max_entries: 200    # unset/omit = no limit (default); 0 = logging off; N = keep newest N lines

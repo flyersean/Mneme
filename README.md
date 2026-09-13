@@ -183,7 +183,7 @@ on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
 ### Run the proxy
 
 - **Start / restart the proxy:** `~/mneme/chunks/instances/<port>/start_proxy.sh` (written by setup).
-- **Logs:** `tail -f /tmp/mneme.log`.
+- **Logs:** `tail -f ~/mneme/chunks/instances/<port>/proxy.log` (append mode — survives restarts and re-runs; cap it with `logging.max_entries`).
 
 ### Web interfaces and service URLs
 
@@ -284,6 +284,7 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 | `tools.search_memory` / `tools.list_tools` / `tools.read_tool` / `tools.read_file` / `tools.fetch_url` / `tools.web_search` | `true` each | per-tool on/off — set any to `false` to hide it from the model |
 | `storage.inject_enabled` | `true` | `false` = **save-only**: stop injecting memory, but keep saving + `search_memory` + `/search` (see "Memory modes") |
 | `runtime.hot_reload` | `true` | `false` = **lock** config/prompts/swarm_config — changes take effect only after a restart (setup-time only) |
+| `logging.max_entries` | unset | log size cap in entries/lines — `0` = logging off, `N` = keep the newest N lines, unset/omit = no limit |
 | `mcp_servers` | `[]` | MCP servers to connect (stdio `command`+`args` or HTTP `url`) — see "MCP tools" |
 
 Full reference: [`mneme.yaml.example`](mneme.yaml.example).
