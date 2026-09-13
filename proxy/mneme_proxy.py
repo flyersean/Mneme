@@ -1813,15 +1813,16 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     msgs = _chunk_large_messages(msgs)
     
     # Sampling defaults come from env/config, then per-model overrides from the
-    # config `models:` block (P8). Explicit per-call `options` still win.
-    _model_cfg = (CONFIG_DATA.get("models") or {}).get(MODEL) or {}
-    # Output + context knobs (match Hermes's custom/Ollama provider defaults):
-    #   num_predict = max_tokens (default 65536 — Hermes's default_max_tokens).
-    #   num_ctx     = MNEME_CTX_TOKENS (default 262000 — Hermes's context_length).
-    # Without num_predict, Ollama uses its own version-dependent default, which
-    # for a reasoning model can mean unbounded thinking even on a trivial ask.
+    # config `models:` block (keyed by the exact model name). Explicit per-call
+    # `options` still win.
+    _model_cfg = (CONFIG_DATA.get("models") or {}).get(_model) or {}
+    # Output + context knobs. num_predict caps the reply; num_ctx sets the KV
+    # window (a reasoning/vision model like Qwen3.8 advertises 256K but may only
+    # fit a fraction in the pod's VRAM, so cap it per-model with `num_ctx`).
     _num_predict = max_tokens if (max_tokens and max_tokens > 0) else int(os.environ.get("MNEME_MAX_TOKENS", "65536"))
     _num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
+    if _model_cfg.get("num_ctx") is not None:
+        _num_ctx = int(_model_cfg["num_ctx"])
     opts = {
         "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),
@@ -1829,7 +1830,10 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "num_predict": _num_predict,
         "num_ctx": _num_ctx,
     }
-    for _k in ("temperature", "top_p", "top_k"):
+    # Per-model sampling overrides. A reasoning model's non-thinking mode often
+    # wants a DIFFERENT recipe than the global default (Qwen3.8 non-thinking:
+    # temp 0.7 / top_p 0.8 / top_k 20 / presence_penalty 1.5).
+    for _k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"):
         if _model_cfg.get(_k) is not None:
             opts[_k] = float(_model_cfg[_k])
     if options:
@@ -1839,12 +1843,23 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "model": _model, "stream": True, "messages": msgs,
         "options": opts
     }
-    # Thinking is OFF by default — a reasoning model (e.g. Qwen3.6 abliterated)
-    # can runaway-think on a trivial ask, so tell Ollama not to think unless the
-    # user opted back in with MNEME_REASONING_ENABLED=1/true/on.
+    # Thinking control. Global default is OFF (think:false) so a reasoning model
+    # can't runaway-think on a trivial ask; MNEME_REASONING_ENABLED / the config
+    # `sampling.reasoning_enabled` key turns it on globally. A per-model
+    # `reasoning:` key (true/false) overrides both, and a per-model
+    # `reasoning_effort:` (low/medium/xhigh) is passed through to Ollama for
+    # models that support it natively (Qwen3.8) — setting it implies thinking on.
     _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
+    _reasoning = _model_cfg.get("reasoning")
+    if _reasoning is not None:
+        _reasoning_on = _reasoning if isinstance(_reasoning, bool) else str(_reasoning).strip().lower() in ("1", "true", "on", "yes", "enabled")
+    _effort = _model_cfg.get("reasoning_effort") or os.environ.get("MNEME_REASONING_EFFORT", "")
+    if _effort:
+        _reasoning_on = True
     if no_reasoning or not _reasoning_on:
         payload["think"] = False
+    if not no_reasoning and _effort:
+        payload["reasoning_effort"] = str(_effort)
     if tools:
         payload["tools"] = tools
     if format_schema:

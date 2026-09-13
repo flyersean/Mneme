@@ -74,8 +74,9 @@ sampling:
   ctx_tokens: 65536     # context window size handed to the model — MUST match the model's num_ctx
   completion_reserve: 8192  # tokens reserved for the model's reply, out of ctx_tokens
   # Reasoning/thinking is OFF by default (a reasoning model can runaway-think on
-  # a trivial ask). Set reasoning_enabled: 1 to opt back in; reasoning_effort
-  # (low/high/max) is for effort-level models (deepseek etc.).
+  # a trivial ask). Set reasoning_enabled: 1 to opt back in globally; reasoning_effort
+  # (low/high/max) is for effort-level models (deepseek etc.). A per-model
+  # `reasoning:` / `reasoning_effort:` under `models:` overrides this for one model.
   reasoning_enabled: 0
   # max_tokens: leave unset — a global output cap truncates long summaries
 
@@ -176,6 +177,9 @@ tools:
   web_search: true           # web search
 
 # Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.
+# Supported keys: temperature, top_p, top_k, min_p, presence_penalty,
+# repetition_penalty, num_ctx, reasoning (true/false), reasoning_effort
+# (low/medium/xhigh — passed to Ollama for models that support it, e.g. Qwen3.8).
 models:
   deepseek/deepseek-v4-flash:
     temperature: 0.2
@@ -184,6 +188,19 @@ models:
     temperature: 1.0
     top_k: 64
     num_ctx: 32768
+  # A reasoning/vision model. Mneme sends think:false by default, which some
+  # Qwen3.8 GGUFs can't handle (they emit NOTHING — the "empty response" bug).
+  # `reasoning: true` stops that (lets the model think); `reasoning_effort` keeps
+  # the thinking shallow if your Ollama passes it through. Match its recommended
+  # sampling and cap its 256K window to what fits in the pod's VRAM.
+  orcarouter/Qwen3.8-27B-Uncensored:
+    reasoning: true          # let this model think (breaks under think:false)
+    reasoning_effort: low    # optional: shallow thinking — low | medium | xhigh
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
+    num_ctx: 32768           # cap the 256K window to what fits in VRAM
 
 # Model Context Protocol (MCP) servers — the "install any tool and it just works"
 # layer. Each server's tools are surfaced to the model like built-in tools, and
