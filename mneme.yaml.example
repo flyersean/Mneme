@@ -201,9 +201,18 @@ models:
 #
 # A tool name that collides with a built-in tool is shadowed by the built-in.
 mcp_servers:
+  # ── stdio server (the proxy launches a local command and speaks MCP to it) ──
+  # Hound — a free, LOCAL, keyless web stack for your agent (fetch + search +
+  # crawl + screenshot + PDF/OCR). No API keys, no accounts, nothing leaves your
+  # machine. Install:  pip install hound-mcp[all] && playwright install chromium
+  # - name: hound
+  #   command: hound            # no args, no env — just the command
   # - name: filesystem
   #   command: npx
   #   args: [-y, "@modelcontextprotocol/server-filesystem", /workspace]
+  # ── HTTP server (points at an already-running server, e.g. hound --http) ──
+  # - name: hound-http
+  #   url: http://127.0.0.1:8765/mcp
   # - name: my-tool
   #   url: http://localhost:9001/mcp
 
