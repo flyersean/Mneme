@@ -1823,6 +1823,8 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     _num_ctx = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
     if _model_cfg.get("num_ctx") is not None:
         _num_ctx = int(_model_cfg["num_ctx"])
+    if _model_cfg.get("num_predict") is not None:
+        _num_predict = int(_model_cfg["num_predict"])
     opts = {
         "temperature": temperature if temperature is not None else float(os.environ.get("MNEME_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("MNEME_TOP_P", "0.95")),

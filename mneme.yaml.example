@@ -178,8 +178,8 @@ tools:
 
 # Per-model overrides (beat the `sampling:` defaults). Keyed by exact model name.
 # Supported keys: temperature, top_p, top_k, min_p, presence_penalty,
-# repetition_penalty, num_ctx, reasoning (true/false), reasoning_effort
-# (low/medium/xhigh — passed to Ollama for models that support it, e.g. Qwen3.8).
+# repetition_penalty, num_ctx, num_predict, reasoning (true/false),
+# reasoning_effort (low/medium/xhigh — passed to Ollama, e.g. Qwen3.8).
 models:
   deepseek/deepseek-v4-flash:
     temperature: 0.2
@@ -194,13 +194,9 @@ models:
   # the thinking shallow if your Ollama passes it through. Match its recommended
   # sampling and cap its 256K window to what fits in the pod's VRAM.
   orcarouter/Qwen3.8-27B-Uncensored:
-    reasoning: true          # let this model think (breaks under think:false)
-    reasoning_effort: low    # optional: shallow thinking — low | medium | xhigh
-    temperature: 0.7
-    top_p: 0.8
-    top_k: 20
-    presence_penalty: 1.5
+    reasoning: false         # disable thinking — it over-thinks and stalls
     num_ctx: 32768           # cap the 256K window to what fits in VRAM
+    num_predict: 2048        # cap the reply — this model otherwise writes ~3000 tokens per answer
 
 # Model Context Protocol (MCP) servers — the "install any tool and it just works"
 # layer. Each server's tools are surfaced to the model like built-in tools, and

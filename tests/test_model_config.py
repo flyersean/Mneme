@@ -100,6 +100,10 @@ class TestPerModelConfig(unittest.TestCase):
         p = self._call({"num_ctx": 32768})
         self.assertEqual(p["options"]["num_ctx"], 32768)
 
+    def test_num_predict_override(self):
+        p = self._call({"num_predict": 2048})
+        self.assertEqual(p["options"]["num_predict"], 2048)
+
     def test_string_reasoning_value(self):
         p = self._call({"reasoning": "false"})
         self.assertIs(p["think"], False)
