@@ -777,7 +777,10 @@ tools:
 
 # Per-model generation overrides (beat the `sampling:` defaults). Keyed by the
 # EXACT model name — the same string as the `model:` line above (for Ollama that
-# is the MNEME_MODEL export in start_proxy.sh). Uncomment + fill in per model:
+# is the MNEME_MODEL export in start_proxy.sh). NOTE: the wizard rewrites the
+# Ollama model name to a derived `mneme-chat-<base>-<ctx>k` name to pin the
+# context window — use THAT derived name as the key, not the name you typed.
+# Uncomment + fill in per model:
 #
 # models:
 #   "your-model-name":      # ← must match the chat model name exactly
