@@ -775,11 +775,22 @@ tools:
   fetch_url: true         # fetch + clean a web page
   web_search: true        # web search
 
-# Per-model generation overrides (beat the `sampling:` defaults). Keyed by exact
-# model name. Add a block per model you run — e.g.:
-#   "your-model-name":
-#     temperature: 0.4
-#     top_p: 0.9
+# Per-model generation overrides (beat the `sampling:` defaults). Keyed by the
+# EXACT model name — the same string as the `model:` line above (for Ollama that
+# is the MNEME_MODEL export in start_proxy.sh). Uncomment + fill in per model:
+#
+# models:
+#   "your-model-name":      # ← must match the chat model name exactly
+#     reasoning: false      # false = instruct mode (think:false); true = thinking
+#     reasoning_effort: low # thinking depth: low | medium | xhigh (thinking only)
+#     temperature: 0.7      # randomness — use the model card's recommended sampling
+#     top_p: 0.8            # nucleus sampling
+#     top_k: 20             # top-k (ollama only)
+#     min_p: 0.0            # min-p filtering (0.0 = off)
+#     presence_penalty: 1.5 # instruct ~1.5 / thinking ~0.0 (per model card)
+#     repetition_penalty: 1.0
+#     num_ctx: 32768        # cap the context window to what fits your VRAM
+#     num_predict: 0        # cap the reply length (0 = unlimited)
 models: {{}}
 
 # Model Context Protocol (MCP) servers — "install any tool and it just works".
