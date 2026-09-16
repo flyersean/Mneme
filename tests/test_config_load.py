@@ -116,5 +116,21 @@ class TestConfigLoadRetry(unittest.TestCase):
                     os.environ[k] = v
 
 
+    def test_chunk_large_messages_is_context_aware(self):
+        """Only a message that EXCEEDS the context input budget is chunked. A
+        message that fits passes through whole (regression for the "large input
+        gets chunked away and the model grinds search -> empty" bug)."""
+        small = {"role": "user", "content": "a small message"}
+        big = {"role": "user", "content": "x" * 8000}  # ~2000 tokens by chars/4
+        with mock.patch.object(mp, "_context_input_budget", return_value=100000):
+            out = mp._chunk_large_messages([small, big])
+        self.assertEqual(out[0]["content"], small["content"])
+        self.assertEqual(out[1]["content"], big["content"])
+        with mock.patch.object(mp, "_context_input_budget", return_value=100), \
+             mock.patch.object(mp, "save_chunk"):
+            out2 = mp._chunk_large_messages([{"role": "user", "content": "x" * 8000}])
+        self.assertIn("AUTO-CHUNKED", out2[0]["content"])
+
+
 if __name__ == "__main__":
     unittest.main()

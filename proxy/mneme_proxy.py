@@ -2767,11 +2767,18 @@ CHUNK_FRACTION = float(os.environ.get("MNEME_CHUNK_FRACTION", "0.25"))
 def _chunk_large_messages(msgs: list) -> list:
     """Scan for oversized messages, chunk into memory, replace with index.
     Returns modified message list with large content swapped for chunk references."""
-    threshold = int(MAX_PROMPT_CHARS * CHUNK_FRACTION)
+    # Chunk ONLY a message that genuinely cannot fit in the model's context window.
+    # Chunking a message that DOES fit strips it from the model's view and forces the
+    # model to search for its own content — and those chunks are stored unembedded
+    # (pending_embed), so search_memory returns nothing and the model grinds to an
+    # empty response (the "large input → 20 min of tool calls → empty" bug). The old
+    # fixed 50k-char threshold (MAX_PROMPT_CHARS × CHUNK_FRACTION) sat far below a
+    # 120k-token window, so ordinary 15–20k-token inputs were needlessly chunked.
+    threshold = _context_input_budget()  # tokens available for the full input (ctx − reserve)
     modified = []
     for m in msgs:
         content = _extract_text(m.get("content", ""))
-        if len(content) > threshold and m.get("role") in ("user", "tool", "assistant"):
+        if _msg_tokens(m) > threshold and m.get("role") in ("user", "tool", "assistant"):
             # Split into chunks and save to memory
             chunk_refs = []
             base_id = f"chunk_{int(time.time())}_{len(content)}"
@@ -4643,6 +4650,15 @@ def _execute_search_tool_calls(search_calls):
             print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
             continue
         hits = route_query(q, top_k=k)
+        if not hits:
+            # FAISS can't see chunks stored unembedded (pending_embed) — e.g. a
+            # just-chunked large input. Keyword search reads their text straight from
+            # SQLite, so fall back to it instead of "no results", which otherwise makes
+            # a diligent reasoning model grind search → empty.
+            kw = _keyword_search(q, k)
+            if kw:
+                hits = [cid for _, cid in kw]
+                print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
         trace.update(hits)
         if hits:
             lines = ["Search results from Mneme memory:"]
