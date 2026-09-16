@@ -65,5 +65,56 @@ class TestConfigLoadRetry(unittest.TestCase):
         self.assertEqual(os.environ.get("MNEME_REASONING_ENABLED"), "0")
 
 
+    def test_load_config_warns_on_port_mismatch(self):
+        """A wrong $MNEME_CHUNK_DIR (pointing at another instance's dir) must be
+        flagged loudly, not silently misdirect the log into that instance's
+        proxy.log (the "everything lands in 8080's log" symptom)."""
+        import io
+        from contextlib import redirect_stdout
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        saved = {k: os.environ.get(k) for k in ("MNEME_PORT", "MNEME_CHUNK_DIR")}
+        os.environ["MNEME_PORT"] = "8082"
+        os.environ["MNEME_CHUNK_DIR"] = "/workspace/mneme_chunks/instances/8080"
+        data = {"storage": {"port": 8080, "chunk_dir": "/workspace/mneme_chunks/instances/8080"}}
+        try:
+            buf = io.StringIO()
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data), \
+                 redirect_stdout(buf):
+                mp.load_config()
+            out = buf.getvalue()
+            self.assertIn("PORT MISMATCH", out)
+            self.assertIn("8082", out)
+            self.assertIn("8080", out)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_load_config_no_warning_when_consistent(self):
+        import io
+        from contextlib import redirect_stdout
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        saved = {k: os.environ.get(k) for k in ("MNEME_PORT", "MNEME_CHUNK_DIR")}
+        os.environ["MNEME_PORT"] = "8082"
+        os.environ["MNEME_CHUNK_DIR"] = "/workspace/mneme_chunks/instances/8082"
+        data = {"storage": {"port": 8082, "chunk_dir": "/workspace/mneme_chunks/instances/8082"}}
+        try:
+            buf = io.StringIO()
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data), \
+                 redirect_stdout(buf):
+                mp.load_config()
+            self.assertNotIn("MISMATCH", buf.getvalue())
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 if __name__ == "__main__":
     unittest.main()

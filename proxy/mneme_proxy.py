@@ -314,6 +314,32 @@ def load_config():
             continue
         CONFIG_PATH = path
         _apply_config(data, path)
+        # Guard against a wrong instance identity. The log path (and prompt/tool
+        # dirs) are keyed off $MNEME_CHUNK_DIR; if that env points at a DIFFERENT
+        # instance's dir while MNEME_PORT is this instance's port, the proxy
+        # silently loads the other instance's config and writes its log into that
+        # instance's proxy.log (the "everything lands in 8080's log" symptom).
+        # There is no independent source of truth to self-correct, so flag the
+        # mismatch loudly instead of failing silently.
+        _st = data.get("storage") or {}
+        _cfg_port = _st.get("port")
+        _env_port = os.environ.get("MNEME_PORT")
+        if _cfg_port is not None and _env_port and str(_cfg_port) != str(_env_port):
+            print(f"  [CONFIG] ⚠ PORT MISMATCH — env MNEME_PORT={_env_port} but this config "
+                  f"(storage.port={_cfg_port}) is for another instance. Logging may be going to "
+                  f"the wrong proxy.log ({_st.get('chunk_dir') or path}/proxy.log). Check MNEME_CHUNK_DIR.",
+                  flush=True)
+        _cfg_chunk = _st.get("chunk_dir")
+        _env_chunk = os.environ.get("MNEME_CHUNK_DIR")
+        if _cfg_chunk and _env_chunk:
+            try:
+                _chunk_mismatch = (os.path.abspath(os.path.expanduser(str(_cfg_chunk)))
+                                   != os.path.abspath(os.path.expanduser(str(_env_chunk))))
+            except Exception:
+                _chunk_mismatch = str(_cfg_chunk) != str(_env_chunk)
+            if _chunk_mismatch:
+                print(f"  [CONFIG] ⚠ CHUNK_DIR MISMATCH — env MNEME_CHUNK_DIR={_env_chunk} but config "
+                      f"storage.chunk_dir={_cfg_chunk}. The log follows $MNEME_CHUNK_DIR.", flush=True)
         _resolve_provider()
         # Expand ~ in the chunk dir (config files are the natural place to fix the
         # pod-path default /workspace/mneme_chunks on a laptop).
