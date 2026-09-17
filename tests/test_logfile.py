@@ -66,14 +66,14 @@ class TestLogFile(unittest.TestCase):
 
     def test_setup_logging_off_returns_none(self):
         os.environ["MNEME_MAX_LOG_ENTRIES"] = "0"
-        self.assertIsNone(setup_logging(tempfile.mkdtemp()))
+        self.assertIsNone(setup_logging(os.path.join(tempfile.mkdtemp(), "proxy.log")))
 
     def test_setup_logging_creates_file_and_tees(self):
         d = tempfile.mkdtemp()
         os.environ["MNEME_MAX_LOG_ENTRIES"] = "5"
         _out, _err = sys.stdout, sys.stderr
         try:
-            lf = setup_logging(d)
+            lf = setup_logging(os.path.join(d, "proxy.log"))
             self.assertIsNotNone(lf)
             self.assertTrue(os.path.exists(os.path.join(d, "proxy.log")))
             sys.stdout.write("tee_test\n")  # routed to the log via the tee

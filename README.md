@@ -199,7 +199,7 @@ on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
 ### Run the proxy
 
 - **Start / restart the proxy:** `~/mneme/chunks/instances/<port>/start_proxy.sh` (written by setup).
-- **Logs:** `tail -f ~/mneme/chunks/instances/<port>/proxy.log` (append mode — survives restarts and re-runs; cap it with `logging.max_entries`).
+- **Logs:** `tail -f ~/mneme/chunks/instances/<port>/proxy-<port>.log` (append mode — survives restarts and re-runs; cap it with `logging.max_entries`).
 
 ### Web interfaces and service URLs
 

@@ -807,7 +807,7 @@ runtime:
   hot_reload: {_hot_reload_s}   # true = config/prompts/swarm_config live-edit (changes apply immediately)
                                 # false = LOCKED — changes take effect only after a restart
 
-# Logging — the proxy owns its own log at {instance_dir}/proxy.log (append mode).
+# Logging — the proxy owns its own per-port log at {instance_dir}/proxy-<port>.log (append mode).
 # Optional cap (unset = no limit, the default):
 #   logging:
 #     max_entries: 200    # 0 = logging off; N = keep newest N lines
@@ -869,6 +869,7 @@ def write_start_script(backend, models, port, instance_dir):
     lines += [
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
         f'export MNEME_PORT="{port}"',
+        f'export MNEME_CONFIG="{os.path.join(instance_dir, "mneme.yaml")}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
         f'cd "{REPO_ROOT}"',
@@ -946,6 +947,7 @@ def start_proxy(backend, models, port, instance_dir):
     env = os.environ.copy()
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
+    env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if backend == "openrouter":
         env["OPENROUTER_API_KEY"] = load_saved_key()
@@ -959,7 +961,7 @@ def start_proxy(backend, models, port, instance_dir):
         env["MNEME_MODEL"] = models.get("model", "")
         env["EMBED_MODEL"] = models.get("embed_model", "")
         env["LABEL_MODEL"] = models.get("label_model", "")
-    log = None  # the proxy now owns its own log ($CHUNK_DIR/proxy.log)
+    log = None  # the proxy now owns its own per-port log ($CHUNK_DIR/proxy-<port>.log)
     subprocess.Popen([sys.executable, "-uB", "proxy/mneme_proxy.py"],
                      cwd=REPO_ROOT, env=env, start_new_session=True)
     print(f"  Starting proxy on port {port}...", end=" ", flush=True)
@@ -971,7 +973,7 @@ def start_proxy(backend, models, port, instance_dir):
             return True
         except Exception:
             continue
-    print(f"timeout — check {instance_dir}/proxy.log")
+    print(f"timeout — check {instance_dir}/proxy-{port}.log")
     return False
 
 
@@ -1163,6 +1165,7 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
     lines += [
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
         f'export MNEME_PORT="{port}"',
+        f'export MNEME_CONFIG="{os.path.join(instance_dir, "mneme.yaml")}"',
         f'export MNEME_INJECT_SYSTEM="{inject}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
@@ -1186,6 +1189,7 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
     env = os.environ.copy()
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
+    env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["MNEME_BACKEND"] = chat_backend
     env["MNEME_MODEL"] = chat_model
     env["EMBED_MODEL"] = embed_model
@@ -1209,7 +1213,7 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
             return True
         except Exception:
             continue
-    print(f"timeout — check {instance_dir}/proxy.log")
+    print(f"timeout — check {instance_dir}/proxy-{port}.log")
     return False
 
 
@@ -1311,7 +1315,7 @@ def _add_instance(memory_dir, shared, memory_only):
     print(f"  Port:        {port}")
     print(f"  Config:      {cfg}")
     print(f"  Start:       {script}")
-    print(f"  Log:         {instance_dir}/proxy.log")
+    print(f"  Log:         {instance_dir}/proxy-{port}.log")
     print(f"  Shared DB:   {memory_dir}")
     print(f"  Chat UI:     http://localhost:{port}/")
     return 0 if started else 1
@@ -1491,7 +1495,7 @@ def main():
     print(f"  Memory DB:  {MEMORY_DIR}")
     print(f"  Config:     {instance_dir}")
     print(f"  Start/stop: {start_script}")
-    print(f"  Log:       {instance_dir}/proxy.log")
+    print(f"  Log:       {instance_dir}/proxy-{port}.log")
     print("\n  Chat UI:        http://localhost:%d/" % port)
     print("  Prompt editor:  http://localhost:%d/instructions" % port)
     print("  OpenAI API:     http://localhost:%d/v1" % port)

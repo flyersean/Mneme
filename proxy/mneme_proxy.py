@@ -199,9 +199,6 @@ def _find_config_path():
             return a.split("=", 1)[1]
     if os.environ.get("MNEME_CONFIG"):
         return os.environ["MNEME_CONFIG"]
-    cd = os.environ.get("MNEME_CHUNK_DIR")
-    if cd and os.path.exists(os.path.join(cd, "mneme.yaml")):
-        return os.path.join(cd, "mneme.yaml")
     for name in ("mneme.yaml", "mneme.json"):
         p = os.path.join(os.path.expanduser("~/mneme/chunks"), name)
         if os.path.exists(p):
@@ -438,7 +435,11 @@ def _or_headers() -> dict:
 
 
 CHUNK_DIR   = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
-setup_logging(CHUNK_DIR)  # tee stdout/stderr into $CHUNK_DIR/proxy.log (append, size-capped)
+PORT        = int(os.environ.get("MNEME_PORT", "8080"))
+# Log is per-port (proxy-<port>.log) so two proxies that accidentally share a
+# chunk dir can't merge their logs into one file. Override with MNEME_LOG_PATH.
+_LOG_PATH   = os.environ.get("MNEME_LOG_PATH") or os.path.join(CHUNK_DIR, f"proxy-{PORT}.log")
+setup_logging(_LOG_PATH)  # tee stdout/stderr into the per-port log (append, size-capped)
 # Content-addressed image GC. The image store (CHUNK_DIR/images/<sha256>.<ext>)
 # is keyed by bytes; a file whose hash is referenced by NO chunk is junk (an
 # ingest whose chunk never archived). GRACE skips recently-written files so a
@@ -450,9 +451,16 @@ INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme 
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
-PORT        = int(os.environ.get("MNEME_PORT", "8080"))
 _db_path   = os.environ.get("MNEME_DB_PATH")
-DB_PATH    = os.path.expanduser(_db_path) if _db_path else os.path.join(CHUNK_DIR, "mneme.db")
+if _db_path:
+    DB_PATH = os.path.expanduser(_db_path)
+else:
+    # Legacy fallback for pre-storage.db_path installs. The DB dir is meant to be
+    # independent of the proxy's config/log dir (storage.db_path is the real
+    # switch; the setup wizard always sets it). Warn rather than silently co-locate.
+    DB_PATH = os.path.join(CHUNK_DIR, "mneme.db")
+    print(f"  [CONFIG] ⚠ storage.db_path not set — DB defaulting to {DB_PATH}. "
+          f"Set storage.db_path for a shared/external DB.", flush=True)
 DB_DIR     = os.path.dirname(DB_PATH) or "."
 
 # Sampling defaults (per-model overrides live in config `models:`)

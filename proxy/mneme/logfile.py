@@ -1,6 +1,6 @@
 """The proxy's own logging — an append-only, size-capped log file.
 
-The proxy tees its stdout/stderr into ``$MNEME_CHUNK_DIR/proxy.log`` so the log
+The proxy tees its stdout/stderr into a per-port log file so the log
 survives restarts and re-runs regardless of how the proxy was launched (setup
 wizard, start script, or by hand). The ``logging.max_entries`` config key bounds
 the file:
@@ -114,17 +114,17 @@ def read_max_entries():
         return None
 
 
-def setup_logging(chunk_dir):
-    """Tee stdout/stderr into ``chunk_dir/proxy.log`` (append, size-capped).
+def setup_logging(log_path):
+    """Tee stdout/stderr into ``log_path`` (append, size-capped).
 
     Returns the active LogFile, or None when logging is off or couldn't open.
     """
     max_entries = read_max_entries()
     if max_entries == 0:
         return None  # logging off
-    path = os.path.join(chunk_dir, "proxy.log")
+    path = log_path
     try:
-        os.makedirs(chunk_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         logfile = LogFile(path, max_entries)
         sys.stdout = Tee(sys.__stdout__, logfile)
         sys.stderr = Tee(sys.__stderr__, logfile)
