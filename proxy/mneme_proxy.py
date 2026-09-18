@@ -1386,30 +1386,110 @@ def _parse_gemma_tool_calls(content):
     return out, residual
 
 
+def _split_json_objects(text):
+    """Yield each top-level `{...}` JSON object found in `text`, brace-balanced.
+
+    Qwen 2.5 and similar non-native tool-callers emit SEVERAL objects inside one
+    fence:
+
+        ```json
+        {"name": "search_memory", "arguments": {...}}
+
+        {"name": "list_tools", "arguments": {}}
+        ```
+
+    A single json.loads() over that raises "Extra data", which is how such calls
+    were silently dropped. This walks the text with a depth counter (ignoring
+    braces inside quoted strings, including escaped quotes) so every object is
+    yielded independently. Objects that fail to decode are skipped, not fatal —
+    one malformed blob shouldn't discard the valid calls around it.
+    """
+    depth = 0
+    start = None
+    in_str = False
+    quote = ""
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                in_str = False
+            continue
+        if ch in ("\"", "'"):
+            in_str = True
+            quote = ch
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    blob = text[start:i + 1]
+                    try:
+                        yield json.loads(blob)
+                    except Exception:
+                        pass
+                    start = None
+
+
+def _obj_to_tool_call(obj):
+    """A dict carrying name+arguments/args -> an OpenAI-format tool_call, else None.
+
+    Requires an explicit `arguments`/`args` key. A bare {"name": ...} with no
+    arguments key is NOT a tool call — that shape appears in ordinary prose
+    (e.g. 'the field {"name": "data"}'), and treating it as a call would hijack
+    normal conversation into a tool loop.
+    """
+    if not isinstance(obj, dict):
+        return None
+    name = obj.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if "arguments" not in obj and "args" not in obj:
+        return None
+    arguments = obj.get("arguments")
+    if arguments is None:
+        arguments = obj.get("args")
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return {"id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": name, "arguments": arguments}}
+
+
 def _parse_json_tool_calls(content):
-    """A fenced ```json block whose object carries both "name" and "arguments"
-    is treated as a tool call. Returns (tool_calls, residual)."""
+    """A fenced ```json block carrying "name" + "arguments" is a tool call.
+
+    Tolerates MULTIPLE objects in one fence (Qwen 2.5's habit), a bare unfenced
+    object, and undecodable trailing text inside the fence. Returns
+    (tool_calls, residual)."""
     if not content:
         return [], content
     out = []
     spans = []
     for m in re.finditer(r'```(?:json)?\s*(.*?)\s*```', content, re.S):
-        text = m.group(1).strip()
-        try:
-            data = json.loads(text)
-        except Exception:
-            continue
-        items = data if isinstance(data, list) else [data]
-        for obj in items:
-            if not isinstance(obj, dict):
-                continue
-            name = obj.get("name")
-            arguments = obj.get("arguments") or obj.get("args") or {}
-            if isinstance(name, str) and name:
-                out.append({"id": f"call_{uuid.uuid4().hex[:24]}",
-                            "type": "function",
-                            "function": {"name": name, "arguments": arguments}})
-                spans.append(m.span())
+        found = False
+        for obj in _split_json_objects(m.group(1).strip()):
+            tc = _obj_to_tool_call(obj)
+            if tc:
+                out.append(tc)
+                found = True
+        if found:
+            spans.append(m.span())
+    if not out:
+        # No fenced block produced a call — the model may have emitted a bare
+        # object with no ```json fence at all (also common for Qwen 2.5).
+        if "```" not in content:
+            for obj in _split_json_objects(content):
+                tc = _obj_to_tool_call(obj)
+                if tc:
+                    out.append(tc)
     if not out:
         return [], content
     residual = content

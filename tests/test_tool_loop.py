@@ -909,6 +909,73 @@ def test_text_tool_calls_parsed():
 
 
 @test
+def test_multiple_json_tool_calls_in_one_fence():
+    """Qwen 2.5 emits SEVERAL tool calls inside a single ```json fence:
+
+        ```json
+        {"name": "search_memory", "arguments": {"query": "x", "top_k": 5}}
+
+        {"name": "list_tools", "arguments": {}}
+        ```
+
+    The old parser ran one json.loads() over the whole fence body, which raised
+    "Extra data" and was swallowed by a bare except — so every call in the block
+    was silently dropped and the raw JSON leaked into the reply as text
+    (observed as a swarm writing JSON tool calls to output.txt as "chat")."""
+    multi = (
+        '```json\n'
+        '{\n  "name": "search_memory",\n'
+        '  "arguments": {\n    "query": "persistent storage options",\n    "top_k": 5\n  }\n}\n'
+        '\n'
+        '{\n  "name": "list_tools",\n  "arguments": {}\n}\n'
+        '```'
+    )
+    tcs, res = mp._parse_text_tool_calls(multi)
+    assert len(tcs) == 2, f"both calls must be recovered, got {tcs}"
+    assert tcs[0]["function"]["name"] == "search_memory", tcs
+    assert tcs[0]["function"]["arguments"] == {"query": "persistent storage options", "top_k": 5}, tcs
+    assert tcs[1]["function"]["name"] == "list_tools", tcs
+    assert tcs[1]["function"]["arguments"] == {}, tcs
+    assert res.strip() == "", f"raw JSON must not survive as content: {res!r}"
+
+    # three objects, one fence
+    three = ('```json\n{"name": "bash", "arguments": {"cmd": "ls"}}\n'
+             '{"name": "write", "arguments": {"path": "a.txt", "content": "hi"}}\n'
+             '{"name": "read_tool", "arguments": {}}\n```')
+    tcs3, _ = mp._parse_text_tool_calls(three)
+    assert len(tcs3) == 3, tcs3
+    assert [t["function"]["name"] for t in tcs3] == ["bash", "write", "read_tool"], tcs3
+
+    # a bare object with no fence at all
+    bare = '{"name": "list_tools", "arguments": {}}'
+    tcs_b, _ = mp._parse_text_tool_calls(bare)
+    assert len(tcs_b) == 1 and tcs_b[0]["function"]["name"] == "list_tools", tcs_b
+
+    # braces inside an argument string must not unbalance the splitter
+    nested = '```json\n{"name": "search_memory", "arguments": {"query": "a {b} c", "top_k": 5}}\n```'
+    tcs_n, _ = mp._parse_text_tool_calls(nested)
+    assert len(tcs_n) == 1 and tcs_n[0]["function"]["arguments"]["query"] == "a {b} c", tcs_n
+
+    # valid call followed by undecodable junk: keep the good one
+    junk = '```json\n{"name": "search_memory", "arguments": {"q": 1}}\nthis is not json\n```'
+    tcs_j, _ = mp._parse_text_tool_calls(junk)
+    assert len(tcs_j) == 1 and tcs_j[0]["function"]["name"] == "search_memory", tcs_j
+
+    # non-tool JSON (no arguments key) is never mistaken for a call
+    notacall = '```json\n{"temperature": 0.7, "top_p": 0.9}\n```'
+    tcs_no, res_no = mp._parse_text_tool_calls(notacall)
+    assert not tcs_no, tcs_no
+    assert "temperature" in res_no, res_no
+
+    # prose surrounding a fenced call: call extracted, prose preserved
+    prose = ('I will look that up.\n\n```json\n'
+             '{"name": "search_memory", "arguments": {"query": "x"}}\n```\n\nLet me know.')
+    tcs_p, res_p = mp._parse_text_tool_calls(prose)
+    assert len(tcs_p) == 1, tcs_p
+    assert "Let me know." in res_p and "```" not in res_p, res_p
+
+
+@test
 def test_single_search_then_answer():
     """Regression guard: the pre-existing single-search -> answer path still works."""
     model = ScriptedModel()
