@@ -360,6 +360,7 @@ def _pull_model_stream(name):
     last_t = time.time()
     last_pct = -1.0
     status = ""
+    saw_success = False   # set only when Ollama emits the terminal "success" event
 
     def downloaded():
         return sum(layer_done.values())
@@ -396,6 +397,14 @@ def _pull_model_stream(name):
         except json.JSONDecodeError:
             continue
         status = ev.get("status", "") or status
+        # A real failure is an explicit error event — Ollama sends {"error": "..."},
+        # NOT the absence of a "success" event. Treating stream-end as failure is
+        # what broke hf.co/ pulls: HF manifest resolution stalls the event stream
+        # right after "pulling manifest", the for-loop below ends, and the old
+        # code raised a phantom error on a pull that was still running.
+        err = ev.get("error")
+        if err:
+            raise RuntimeError(f"ollama reported: {err}")
         digest = ev.get("digest", "")
         total = ev.get("total") or 0
         completed = ev.get("completed") or 0
@@ -412,15 +421,23 @@ def _pull_model_stream(name):
                 last_done, last_t = dl, now
         render()
         if status == "success":
+            saw_success = True
             break
 
     if tty:
         sys.stdout.write("\r" + " " * 80 + "\r")
         sys.stdout.flush()
-    if status == "success":
+    if saw_success:
         print(f"  ✓ {name} pulled ({_fmt_bytes(downloaded())}).")
     else:
-        raise RuntimeError(f"pull ended with status: {status or 'unknown'}")
+        # Stream ended without a success event and without an error event. The
+        # pull may still be running server-side, so don't claim failure — verify.
+        if name in get_pulled_models():
+            print(f"  ✓ {name} pulled.")
+        else:
+            raise RuntimeError(
+                f"stream ended before completion (last status: {status or 'unknown'})"
+            )
 
 
 def pull_model(name):
@@ -430,15 +447,28 @@ def pull_model(name):
     print(f"  Pulling {name}...")
     try:
         _pull_model_stream(name)
+        return
     except Exception as e:
         sys.stdout.write("\n")
         sys.stdout.flush()
         print(f"    (streaming progress unavailable: {e} — falling back to `ollama pull`)")
-        r = run(f"ollama pull {name}", timeout=900)
-        if r.returncode != 0:
-            print(f"  ⚠ could not pull {name} (may be a typo or network) — continuing")
+    # Fail loud: surface what Ollama actually said instead of guessing at a cause.
+    # `run()` captures output, so print it — a silent discard here is what turned
+    # a working hf.co/ pull into an unexplained "may be a typo or network" warning.
+    r = run(f"ollama pull {name}", timeout=900)
+    if r.returncode == 0:
+        print(f"  ✓ {name} pulled.")
+    elif name in get_pulled_models():
+        # The pull can complete server-side even when we couldn't read the stream.
+        print(f"  ✓ {name} pulled.")
+    else:
+        detail = (r.stderr or r.stdout or "").strip()
+        if detail:
+            print(f"  ⚠ could not pull {name}:")
+            for line in detail.splitlines()[-5:]:
+                print(f"      {line}")
         else:
-            print(f"  ✓ {name} pulled.")
+            print(f"  ⚠ could not pull {name} (exit {r.returncode}) — continuing")
 
 
 def _menu(prompt, entries):
