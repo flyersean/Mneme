@@ -136,6 +136,12 @@ storage:
   context_recent_extra: 14           # recent-convo window = staging_turns + this many turns
   belief_evolution: false
 
+curation:                          # fixing bad memory without wiping the DB
+  allow_model_retract: false       # model may retract directly (destructive — opt in)
+  allow_model_propose: true        # model may flag a chunk for user review (safe)
+  inject_retracted: true           # keep retracted chunks as labelled warnings (not silence)
+  recurrence_labeling: true        # label single-source / model-repeated / self-confirmed
+
 retrieval:
   max_injected_tokens: 6000          # token budget for memory injected each turn
   inject_min_similarity: 0.45        # THE main knob — absolute cosine floor; below it nothing injects.

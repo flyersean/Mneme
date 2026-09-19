@@ -109,6 +109,37 @@ storage:
   context_recent_extra: 14   # recent-convo window = staging_turns + this many USER TURNS (kept in the tool loop instead of the full transcript)
   belief_evolution: false    # experimental — OFF (floods the backend)
 
+# Memory curation: fixing bad memory WITHOUT wiping the database.
+#
+# The problem: if a hallucinated fact gets saved and re-injected, it becomes
+# self-reinforcing — and the only other way to remove it was /reset (delete
+# everything). Retraction marks ONE chunk as false and can be undone.
+#
+# Nothing here judges whether a claim is TRUE. It records provenance: who said
+# it, how many independent times, what it was derived from, and whether a human
+# disputed it. Provenance is checkable; truth usually is not.
+curation:
+  # May the MODEL retract a memory directly? This is destructive — a model that
+  # is confidently wrong would happily delete the correct facts contradicting it
+  # (exactly the hallucinated-validation failure). OFF by default.
+  allow_model_retract: false
+  # May the MODEL flag a memory for you to review? Safe, so ON by default:
+  # while a proposal is pending the chunk is still used normally, so a wrong
+  # model judgement can never silently hide correct information. Confirm or deny
+  # each one via /memory/proposals.
+  allow_model_propose: true
+  # Inject retracted chunks as a labelled warning [RETRACTED ... DO NOT TRUST]
+  # instead of dropping them. Default ON because absence is dangerous: with
+  # nothing to contradict it, the model can simply re-hallucinate the same fact.
+  # Set false to exclude retracted chunks from retrieval entirely.
+  inject_retracted: true
+  # Label chunks by how well-supported they are — [SINGLE-SOURCE CLAIM ...] when
+  # asserted once, [REPEATED BY MODEL ONLY ...] when only the model has repeated
+  # it (could be an echo of itself), and [SELF-CONFIRMED ...] when a chunk's
+  # support traces back to the model's own output. No label = corroborated by a
+  # non-model source (user, fetched page, or tool result).
+  recurrence_labeling: true
+
 # Memory retrieval: what gets injected into the prompt each turn.
 retrieval:
   max_injected_tokens: 8000  # token budget for memory stuffed into the prompt (~6-8 chunks)
