@@ -147,7 +147,22 @@ FETCH_URL_TOOL = {
     "type": "function",
     "function": {
         "name": "fetch_url",
-        "description": "Fetch a web page and return its CLEAN text (HTML/CSS/JS stripped). Use this instead of `bash curl` to read a menu, article, or any page you need to extract facts from. Returns up to 12000 chars of readable text.",
+        "description": (
+            "Fetch ONE web page and return its CLEAN text (HTML/CSS/JS stripped) — the actual "
+            "page content, not a snippet. USE THIS whenever you need a specific fact (a price, "
+            "address, phone number, menu item, version, date, quote) from a page you have a URL "
+            "for. This is the ONLY way to read real page content: web_search returns snippets, "
+            "which are leads, NOT answers. If your answer would rest on a snippet, you have not "
+            "finished — call fetch_url on the best URL first.\n"
+            "\n"
+            "Use it instead of `bash curl` (curl returns raw HTML with scripts and markup; this "
+            "returns readable text). Works on ordinary sites. If it returns empty text, a "
+            "login/bot wall, or a JS-only shell, the page needs a real browser — say so rather "
+            "than guessing at the contents.\n"
+            "\n"
+            "Mneme saves the FULL page text to memory as page:<domain> chunks; you see a bounded "
+            "head+tail window, and can retrieve any detail later with search_memory."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -162,7 +177,26 @@ WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for information, techniques, or tools. Use to research how to solve a problem you cannot solve from memory — find a library, a service, a known solution, or documentation. Returns the top results with titles, URLs, and snippets.",
+        "description": (
+            "Search the web and return the top results — each with a title, URL, and a SHORT "
+            "SNIPPET. Use this to DISCOVER which pages have an answer, or to find a library, "
+            "service, or documentation you don't know the URL of.\n"
+            "\n"
+            "IMPORTANT — snippets are leads, not answers. A snippet is a fragment the search "
+            "engine chose to show; it is frequently truncated, out of date, or missing the exact "
+            "number you need. Never answer a question about a specific fact (price, address, "
+            "phone, date, version) from a snippet, and never present a snippet as though you "
+            "read the page.\n"
+            "\n"
+            "The web workflow is TWO steps:\n"
+            "  1. web_search(\"query\")              -> find candidate URLs\n"
+            "  2. fetch_url(\"<best url>\")          -> read the actual page, THEN answer\n"
+            "Do step 2 in the SAME turn as step 1. Do not stop after searching and report back "
+            "what the snippets said — that is an incomplete answer. Pick the most authoritative "
+            "URL (the official site or primary source beats an aggregator or a forum summary) "
+            "and fetch it. If the first fetch doesn't contain the answer, fetch a second URL "
+            "from the results before giving up."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

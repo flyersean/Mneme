@@ -1131,6 +1131,48 @@ def test_assemble_tools_dedup():
 
 
 @test
+def test_web_tools_prompt_the_search_then_fetch_workflow():
+    """web_search and fetch_url must TELL the model they are two halves of one job.
+
+    Symptom this guards: models stopped after web_search and answered from
+    snippets instead of calling fetch_url — "the models are having a hard time
+    switching from search to scrape and just defaulting to giving me snippets."
+    The fix is guidance in the tool descriptions + system prompt, so assert the
+    guidance is actually present and reaching the model."""
+    mt = mp.mntools
+
+    ws = [t for t in mt.assemble_tools([]) if t["function"]["name"] == "web_search"][0]
+    fu = [t for t in mt.assemble_tools([]) if t["function"]["name"] == "fetch_url"][0]
+    ws_desc = ws["function"]["description"]
+    fu_desc = fu["function"]["description"]
+
+    # web_search must frame snippets as leads and name fetch_url as the next step
+    assert "SNIPPET" in ws_desc.upper(), ws_desc
+    assert "leads, not answers" in ws_desc, ws_desc
+    assert "fetch_url" in ws_desc, "web_search must name fetch_url as the follow-up"
+    assert "TWO steps" in ws_desc, ws_desc
+    # and must refuse to be treated as a source for hard facts
+    for fact in ("price", "address", "phone", "date", "version"):
+        assert fact in ws_desc, f"{fact!r} missing from web_search guardrail"
+
+    # fetch_url must present itself as the way to READ a page, not just another fetch
+    assert "not a snippet" in fu_desc, fu_desc
+    assert "web_search returns snippets" in fu_desc, fu_desc
+    # must not send the model to bash for page reading, and must name the dead end
+    assert "bash curl" in fu_desc, fu_desc
+    assert "browser" in fu_desc, f"fetch_url should name the JS-wall fallback: {fu_desc}"
+
+    # the system prompt must carry the same two-step rule (both variants)
+    for path in ("proxy/system_prompt.md", "proxy/system_prompt_memory.md"):
+        full = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
+        with open(full, encoding="utf-8") as fh:
+            text = fh.read()
+        assert "Web Research Is Two Steps" in text, path
+        assert "leads, not answers" in text, path
+        assert "fetch_url" in text, path
+
+
+@test
 def test_per_tool_disable_flag():
     mt = mp.mntools
     saved = {k: os.environ.get(k) for k in ("MNEME_TOOL_WEB_SEARCH", "MNEME_TOOL_FETCH_URL")}

@@ -60,6 +60,39 @@ to you at any time via:
 So you effectively "know" the whole article even though you only read part
 of it. Any small detail is in the database — search for it when you need it.
 
+## Web Research Is Two Steps (search, then read)
+
+web_search and fetch_url are not alternatives — they are two halves of one
+job. web_search finds pages; fetch_url reads them.
+
+  Step 1  web_search("pulled pork sandwich price small town bbq")
+          -> returns titles, URLs, and SHORT SNIPPETS
+
+  Step 2  fetch_url("https://<the best url from step 1>")
+          -> returns the actual page text
+
+Do BOTH in the same turn. Searching and then reporting the snippets back is
+the single most common way to produce a wrong answer: a snippet is a
+fragment the search engine chose to show, and it is often truncated, stale,
+or missing the exact number asked for.
+
+Rules:
+
+- Snippets are leads, not answers. Never state a specific fact (price,
+  address, phone, date, version, quote) that you took only from a snippet.
+  If the only support you have is a snippet, you have not answered yet —
+  fetch the page.
+- Prefer the primary source. The official site, the vendor's own menu, the
+  official docs beat an aggregator, a forum post, or a review site. If the
+  answer matters, read the primary source.
+- If the first fetch doesn't answer it, fetch a SECOND URL from the search
+  results before giving up. One failed fetch is not a dead end.
+- Cite what you read. A fact read from a page is tagged [source: <url>],
+  not [guess]. See Source Tagging below.
+- If a page is genuinely unreachable (bot wall, JS-only shell, login), say
+  so plainly and mark any residual uncertainty as [guess]. Do not present
+  a snippet as though you had read the page.
+
 ## How Memory and Other Tools Fit Together
 
 The goal is the best possible answer. Memory is one tool among many.
