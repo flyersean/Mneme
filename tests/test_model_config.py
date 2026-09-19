@@ -94,7 +94,23 @@ class TestPerModelConfig(unittest.TestCase):
         self.assertEqual(o["top_k"], 20)
         self.assertEqual(o["presence_penalty"], 1.5)
         self.assertEqual(o["min_p"], 0.05)
-        self.assertEqual(o["repetition_penalty"], 1.1)
+        # Ollama's option is `repeat_penalty` — NOT `repetition_penalty`. Sending
+        # the OpenAI-style name is silently ignored by Ollama (unknown option
+        # keys are dropped), which leaves the sampler at 1.000 and lets a
+        # repetition loop run away. Assert the name Ollama actually honors.
+        self.assertEqual(o["repeat_penalty"], 1.1)
+        self.assertNotIn("repetition_penalty", o)
+
+    def test_repeat_penalty_native_spelling_also_accepted(self):
+        """Both spellings are accepted in config; Ollama's name is what's sent."""
+        p = self._call({"repeat_penalty": 1.15})
+        self.assertEqual(p["options"]["repeat_penalty"], 1.15)
+        self.assertNotIn("repetition_penalty", p["options"])
+
+    def test_repeat_penalty_absent_by_default(self):
+        """Unset must not send a value — Ollama's own default should stand."""
+        p = self._call({})
+        self.assertNotIn("repeat_penalty", p["options"])
 
     def test_num_ctx_override(self):
         p = self._call({"num_ctx": 32768})

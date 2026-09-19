@@ -1949,9 +1949,20 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # Per-model sampling overrides. A reasoning model's non-thinking mode often
     # wants a DIFFERENT recipe than the global default (Qwen3.8 non-thinking:
     # temp 0.7 / top_p 0.8 / top_k 20 / presence_penalty 1.5).
-    for _k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty"):
+    #
+    # NOTE: Ollama's option is `repeat_penalty` (singular), NOT the OpenAI-style
+    # `repetition_penalty`. Forwarding the wrong name is silent — Ollama ignores
+    # unknown option keys, so the sampler keeps its 1.000 default and a
+    # repetition loop is never discouraged (observed: a model degenerating into
+    # "or way or way ..." for 65k tokens). Accept both spellings in config and
+    # always send the name Ollama actually honors.
+    for _k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty"):
         if _model_cfg.get(_k) is not None:
             opts[_k] = float(_model_cfg[_k])
+    for _alias in ("repeat_penalty", "repetition_penalty"):
+        if _model_cfg.get(_alias) is not None:
+            opts["repeat_penalty"] = float(_model_cfg[_alias])
+            break
     if options:
         opts.update(options)
     
