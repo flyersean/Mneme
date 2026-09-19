@@ -87,6 +87,7 @@ from mneme.grading import (
     _verify_and_regrade,
 )
 import mneme.tools as mntools
+import mneme.curation as curation
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -132,6 +133,16 @@ _CONFIG_ENV_MAP = {
     "storage.staging_idle": "MNEME_STAGING_IDLE",
     "storage.context_recent_extra": "MNEME_CONTEXT_RECENT_EXTRA",
     "storage.belief_evolution": "MNEME_BELIEF_EVOLUTION",
+    # Memory curation (retraction / recurrence / provenance).
+    #   curation.allow_model_retract      — model may retract directly (destructive)
+    #   curation.allow_model_propose      — model may queue a retraction for human review
+    #   curation.inject_retracted         — inject retracted chunks as labelled warnings
+    #                                       instead of dropping them (absence lets the
+    #                                       model re-hallucinate the same fact)
+    "curation.allow_model_retract": "MNEME_ALLOW_MODEL_RETRACT",
+    "curation.allow_model_propose": "MNEME_ALLOW_MODEL_PROPOSE",
+    "curation.inject_retracted": "MNEME_INJECT_RETRACTED",
+    "curation.recurrence_labeling": "MNEME_RECURRENCE_LABELING",
     "storage.memory_enabled": "MNEME_MEMORY_ENABLED",
     "storage.inject_enabled": "MNEME_INJECT_ENABLED",
     "retrieval.max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
@@ -451,6 +462,25 @@ INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme 
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. On this (main) branch it defaults ON — set MNEME_MEMORY_ONLY=0 to re-enable the strategy/learning layer.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
+
+# ── Memory curation flags ────────────────────────────────────────────────
+# Retraction lets a specific chunk be marked false (and later restored) instead
+# of wiping the whole DB. Model authority is split deliberately:
+#   allow_model_propose (ON by default) — the model may QUEUE a chunk for human
+#       review. Safe: nothing is excluded from retrieval while pending.
+#   allow_model_retract (OFF by default) — the model may retract directly. This
+#       is destructive, so it is opt-in: a model that is confidently wrong would
+#       otherwise delete the correct facts that contradict it.
+ALLOW_MODEL_PROPOSE = os.environ.get("MNEME_ALLOW_MODEL_PROPOSE", "1") == "1"
+ALLOW_MODEL_RETRACT = os.environ.get("MNEME_ALLOW_MODEL_RETRACT", "0") == "1"
+# Inject retracted chunks as labelled warnings instead of dropping them. Absence
+# is dangerous: with nothing to contradict it the model may re-hallucinate the
+# same fact. Mirror of the existing [G:F — FAILED ...] treatment.
+INJECT_RETRACTED = os.environ.get("MNEME_INJECT_RETRACTED", "1") == "1"
+# Label chunks by support tier (single / repeated-by-model / corroborated) and
+# flag self-confirmation loops in the injected header.
+RECURRENCE_LABELING = os.environ.get("MNEME_RECURRENCE_LABELING", "1") == "1"
+
 _db_path   = os.environ.get("MNEME_DB_PATH")
 if _db_path:
     DB_PATH = os.path.expanduser(_db_path)
@@ -915,6 +945,9 @@ for migration in (
     except sqlite3.OperationalError:
         pass  # column already exists
 db.commit()
+# Memory curation schema (retraction / recurrence / provenance / decision log).
+# Additive + idempotent, same style as the migrations above.
+curation.ensure_schema(db)
 # Backfill: mark failure-derived strategies as FAILURE so they inject under the
 # "do NOT do this" header rather than as success examples. Only matches the old
 # "FAILURE on:"/"TRUNCATED on:" text — new failures set outcome at insert time.
@@ -1150,6 +1183,61 @@ def embed(text: str):
 
 
 mntools.embed = embed  # bind the tool system's embed function
+
+
+# ─── Memory curation hooks ───────────────────────────────────────────────
+# The retract/restore tools mutate memory, so their authority is split:
+#   propose (default ON)  — the model may queue a chunk for the user to review.
+#                           Nothing leaves retrieval while a proposal is pending,
+#                           so a confidently-wrong model cannot hide the truth.
+#   retract (default OFF) — the model may retract directly. Destructive, opt-in.
+# The tool result tells the model which happened, so it reports accurately
+# instead of believing it deleted something it only flagged.
+def _curation_retract(chunk_id: str, reason: str = "") -> str:
+    """Called by the retract_memory tool. Acts or proposes per config."""
+    try:
+        c = curation._get_chunk(db, chunk_id)
+        if not c:
+            return f"[retract_memory: no such chunk {chunk_id} — check the id]"
+        if ALLOW_MODEL_RETRACT:
+            curation.retract(db, chunk_id, actor="model", reason=reason)
+            print(f"  [CURATION] model retracted {chunk_id}: {reason[:80]}", flush=True)
+            return (f"[retract_memory: RETRACTED {chunk_id} — it is now labelled "
+                    f"DISPUTED and excluded from future context. Reason recorded: {reason}]")
+        if ALLOW_MODEL_PROPOSE:
+            curation.propose_retract(db, chunk_id, reason=reason, actor="model")
+            print(f"  [CURATION] model PROPOSED retract of {chunk_id}: {reason[:80]}", flush=True)
+            return (f"[retract_memory: FLAGGED {chunk_id} for user review — it is NOT yet "
+                    f"retracted and still in use. Tell the user it is pending their confirmation. "
+                    f"Reason recorded: {reason}]")
+        return "[retract_memory: not permitted on this proxy (curation disabled)]"
+    except Exception as e:
+        _log_error("curation:retract", e)
+        return f"[retract_memory error: {type(e).__name__}: {e}]"
+
+
+def _curation_restore(chunk_id: str, reason: str = "") -> str:
+    """Called by the restore_memory tool — undo a retraction."""
+    try:
+        c = curation._get_chunk(db, chunk_id)
+        if not c:
+            return f"[restore_memory: no such chunk {chunk_id}]"
+        if not curation.is_retracted(c):
+            return f"[restore_memory: {chunk_id} is not retracted — nothing to restore]"
+        curation.restore(db, chunk_id, actor="model" if ALLOW_MODEL_RETRACT else "user",
+                         reason=reason or "restored by model")
+        print(f"  [CURATION] restored {chunk_id}", flush=True)
+        return f"[restore_memory: RESTORED {chunk_id} — it is usable as memory again.]"
+    except Exception as e:
+        _log_error("curation:restore", e)
+        return f"[restore_memory error: {type(e).__name__}: {e}]"
+
+
+mntools.set_curation_hooks(
+    _curation_retract, _curation_restore,
+    retract_allowed=ALLOW_MODEL_RETRACT,
+    propose_allowed=ALLOW_MODEL_PROPOSE,
+)
 
 
 def _embed_or_zeros(text: str) -> np.ndarray:
@@ -3161,7 +3249,9 @@ def build_context(query: str) -> Tuple[str, str]:
         placeholders = ",".join("?" for _ in ordered)
         rows = db.execute(
             f"SELECT chunk_id, topic_label, messages, thinking, strategy, "
-            f"grade, consensus, outcome, problem_type, source, trust, session_id, created_at "
+            f"grade, consensus, outcome, problem_type, source, trust, session_id, created_at, "
+            f"assert_count, independent_sources, retracted, retracted_by, retracted_reason, "
+            f"self_confirm "
             f"FROM chunks WHERE chunk_id IN ({placeholders})",
             ordered
         ).fetchall()
@@ -3174,13 +3264,64 @@ def build_context(query: str) -> Tuple[str, str]:
                 "problem_type": row[8], "source": row[9],
                 "trust": row[10], "session_id": row[11],
                 "created_at": row[12],
+                "assert_count": row[13] or 1,
+                "independent_sources": row[14] or 0,
+                "retracted": row[15] or "",
+                "retracted_by": row[16] or "",
+                "retracted_reason": row[17] or "",
+                "self_confirm": bool(row[18]),
             }
     
     # Per-topic cap: no single topic may dominate the injected set (see _cap_per_topic).
     ordered = _cap_per_topic(ordered, _chunk_cache, MAX_PER_TOPIC)
-    
+
+    # Retraction filter. A retracted chunk is a claim the user (or, when enabled,
+    # the model) has marked false. By default we do NOT silently drop it: with no
+    # contradicting context the model can simply re-hallucinate the same fact, so
+    # it is re-added below as an explicit warning (mirrors the [G:F] treatment).
+    # With INJECT_RETRACTED off it is excluded from retrieval entirely.
+    _retracted_ids = set()
+    _cur_rows = db.execute(
+        "SELECT chunk_id FROM chunks WHERE retracted IS NOT NULL AND retracted != ''"
+    ).fetchall()
+    _retracted_ids = {r[0] for r in _cur_rows}
+    if _retracted_ids and not INJECT_RETRACTED:
+        ordered = [c for c in ordered if c not in _retracted_ids]
+        print(f"  [CURATION] excluded {len(_retracted_ids)} retracted chunk(s)", flush=True)
+
     # Trim to token budget — preserves high-grade, drops low-grade
     trimmed = _trim_chunks_cached(ordered, MAX_INJECTED_TOKENS, _chunk_cache)
+
+    # Re-surface retracted chunks on topics we ARE injecting, as labelled
+    # warnings. Doing this AFTER trimming keeps them from consuming the budget of
+    # live memory, while still preventing the "absence is silent" failure: the
+    # model sees the disputed claim and the correction, not nothing.
+    if _retracted_ids and INJECT_RETRACTED and trimmed:
+        _rtopics = {_chunk_cache[c].get("problem_type") for c in trimmed
+                    if c in _chunk_cache and _chunk_cache[c].get("problem_type")}
+        _want = [r for r in _retracted_ids if r not in trimmed]
+        if _want and _rtopics:
+            _ph = ", ".join("?" for _ in _want)
+            for _r in db.execute(
+                f"SELECT chunk_id, topic_label, messages, thinking, strategy, grade, "
+                f"consensus, outcome, problem_type, source, trust, session_id, created_at, "
+                f"retracted, retracted_by, retracted_reason, assert_count, "
+                f"independent_sources, self_confirm "
+                f"FROM chunks WHERE chunk_id IN ({_ph})", _want
+            ).fetchall():
+                _c = {
+                    "chunk_id": _r[0], "topic_label": _r[1], "messages": json.loads(_r[2]),
+                    "thinking": _r[3], "strategy": _r[4], "grade": _r[5],
+                    "consensus": _r[6], "outcome": _r[7], "problem_type": _r[8],
+                    "source": _r[9], "trust": _r[10], "session_id": _r[11],
+                    "created_at": _r[12], "retracted": _r[13] or "",
+                    "retracted_by": _r[14] or "", "retracted_reason": _r[15] or "",
+                    "assert_count": _r[16] or 1, "independent_sources": _r[17] or 0,
+                    "self_confirm": bool(_r[18]),
+                }
+                _chunk_cache[_r[0]] = _c
+                if _c.get("problem_type") in _rtopics:
+                    trimmed.append(_r[0])
     
     # Build raw chunk text
     parts = []
@@ -3203,7 +3344,20 @@ def build_context(query: str) -> Tuple[str, str]:
         # chunks with no stored trust fall back to the source-derived tier.
         _trust = chunk.get("trust") or _compute_trust(chunk.get("source", ""), [])
         _trusttag = "" if _trust == "verified" else "[UNVERIFIED]"
-        msg_text = f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag} [src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n"
+        # Curation labels (retraction / support tier / self-confirmation). These
+        # describe PROVENANCE, not truth: who asserted it, how many independent
+        # times, and whether its support traces back to the model's own output.
+        _curationtag = ""
+        if INJECT_RETRACTED:
+            _curationtag += curation.retraction_label(chunk)
+        if RECURRENCE_LABELING:
+            _curationtag += curation.confidence_label(chunk)
+            _curationtag += curation.self_confirm_label(chunk)
+        _retr_note = ""
+        if chunk.get("retracted_reason"):
+            _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
+        msg_text = (f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag}{_curationtag}{_retr_note} "
+                    f"[src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n")
         # If next sequential chunk exists, hint it
         _lines = []
         for m in chunk.get("messages", []):
@@ -6534,6 +6688,82 @@ if FLASK_OK:
         except Exception as e:
             print(f"  [SAVE][ERROR] {e}", flush=True)
             return _cors_response({"saved": False, "error": str(e)}, status=500)
+
+    # ── Memory curation (retraction / review / audit) ──────────────
+    # Fixing bad memory through chat: a specific chunk can be marked false and
+    # later restored, instead of wiping the whole DB with /reset.
+
+    @app.route("/memory/retract", methods=["POST"])
+    def memory_retract():
+        """Retract a chunk: {chunk_id, reason?}. Reversible; audited in the log."""
+        try:
+            data = request.get_json(force=True) or {}
+            cid = (data.get("chunk_id") or "").strip()
+            if not cid:
+                return _cors_response({"retracted": False, "error": "chunk_id required"}, status=400)
+            out = curation.retract(db, cid, actor="user", reason=data.get("reason", ""))
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"retracted": False, "error": str(e)}, status=404)
+        except Exception as e:
+            print(f"  [CURATION][ERROR] {e}", flush=True)
+            return _cors_response({"retracted": False, "error": str(e)}, status=500)
+
+    @app.route("/memory/restore", methods=["POST"])
+    def memory_restore():
+        """Undo a retraction: {chunk_id, reason?}."""
+        try:
+            data = request.get_json(force=True) or {}
+            cid = (data.get("chunk_id") or "").strip()
+            if not cid:
+                return _cors_response({"restored": False, "error": "chunk_id required"}, status=400)
+            out = curation.restore(db, cid, actor="user", reason=data.get("reason", ""))
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"restored": False, "error": str(e)}, status=404)
+        except Exception as e:
+            return _cors_response({"restored": False, "error": str(e)}, status=500)
+
+    @app.route("/memory/log", methods=["GET"])
+    def memory_log():
+        """The decision log — every retraction/restore/proposal, who and why.
+        Optional ?chunk_id=mem_xxx to filter to one chunk."""
+        try:
+            cid = (request.args.get("chunk_id") or "").strip() or None
+            limit = int(request.args.get("limit") or 100)
+            return _cors_response({"log": curation.list_log(db, limit=limit, chunk_id=cid)})
+        except Exception as e:
+            return _cors_response({"log": [], "error": str(e)}, status=500)
+
+    @app.route("/memory/proposals", methods=["GET"])
+    def memory_proposals():
+        """Review queue: model-proposed retractions awaiting a human decision."""
+        try:
+            return _cors_response({"proposals": curation.list_proposals(db)})
+        except Exception as e:
+            return _cors_response({"proposals": [], "error": str(e)}, status=500)
+
+    @app.route("/memory/proposals/<chunk_id>/confirm", methods=["POST"])
+    def memory_proposal_confirm(chunk_id):
+        """Confirm a pending proposal — retracts it, attributed to the user."""
+        try:
+            data = request.get_json(force=True) or {}
+            out = curation.retract(db, chunk_id, actor="user",
+                                   reason=data.get("reason") or "confirmed by user")
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"retracted": False, "error": str(e)}, status=404)
+
+    @app.route("/memory/proposals/<chunk_id>/deny", methods=["POST"])
+    def memory_proposal_deny(chunk_id):
+        """Reject a pending proposal — the chunk stays in use."""
+        try:
+            data = request.get_json(force=True) or {}
+            out = curation.deny_proposal(db, chunk_id,
+                                         reason=data.get("reason") or "denied by user")
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"denied": False, "error": str(e)}, status=404)
 
     @app.route("/reset", methods=["POST"])
     def reset():

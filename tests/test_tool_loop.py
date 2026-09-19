@@ -1116,8 +1116,14 @@ def test_assemble_tools_dedup():
     orig = mt.NATIVE_TOOLS_MODE
     try:
         mt.NATIVE_TOOLS_MODE = "auto"
+        # Curation tools (retract/restore_memory) appear when the model has
+        # retraction authority. propose is ON by default, so they are part of
+        # the default surface; see test_curation_tools_authority for the gating.
+        base = ["search_memory", "list_tools", "read_tool", "read_image", "read_file",
+                "fetch_url", "web_search", "bash", "write"]
         names = [t["function"]["name"] for t in mt.assemble_tools([])]
-        assert names == ["search_memory", "list_tools", "read_tool", "read_image", "read_file", "fetch_url", "web_search", "bash", "write"], names
+        self_curation = [t["function"]["name"] for t in mt.enabled_curation_tools()]
+        assert names == base + self_curation, names
         client = [
             {"type": "function", "function": {"name": "bash"}},
             {"type": "function", "function": {"name": "write"}},
@@ -1125,9 +1131,49 @@ def test_assemble_tools_dedup():
         ]
         names = [t["function"]["name"] for t in mt.assemble_tools(client)]
         # web_search is a SERVER tool now — the client's copy is deduped, not appended.
-        assert names == ["search_memory", "list_tools", "read_tool", "read_image", "read_file", "fetch_url", "web_search", "bash", "write"], names
+        assert names == base + self_curation, names
     finally:
         mt.NATIVE_TOOLS_MODE = orig
+
+
+@test
+def test_curation_tools_authority():
+    """retract_memory/restore_memory appear only when the model has authority,
+    and the propose/retract split is honoured."""
+    mt = mp.mntools
+    saved = (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"])
+    try:
+        # No authority -> no curation tools at all
+        mt._curation_hooks["retract_allowed"] = False
+        mt._curation_hooks["propose_allowed"] = False
+        assert mt.enabled_curation_tools() == [], mt.enabled_curation_tools()
+        names = [t["function"]["name"] for t in mt.assemble_tools([])]
+        assert "retract_memory" not in names and "restore_memory" not in names, names
+
+        # Propose only (the safe default)
+        mt._curation_hooks["propose_allowed"] = True
+        got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
+        assert got == ["retract_memory", "restore_memory"], got
+
+        # Direct retract also exposes them
+        mt._curation_hooks["retract_allowed"] = True
+        mt._curation_hooks["propose_allowed"] = False
+        got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
+        assert got == ["retract_memory", "restore_memory"], got
+    finally:
+        mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"] = saved
+
+
+@test
+def test_curation_tool_dispatch():
+    """The tool handlers return a readable result and never raise on bad input."""
+    mt = mp.mntools
+    assert "chunk_id required" in mt.execute_readonly_tool("retract_memory", {})
+    assert "chunk_id required" in mt.execute_readonly_tool("restore_memory", {})
+    # unknown chunk -> a clear message, not an exception
+    out = mt.execute_readonly_tool("retract_memory", {"chunk_id": "mem_does_not_exist",
+                                                      "reason": "test"})
+    assert "no such chunk" in out, out
 
 
 @test

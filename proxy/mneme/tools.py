@@ -207,6 +207,58 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+RETRACT_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "retract_memory",
+        "description": (
+            "Mark a stored memory chunk as FALSE / DISPUTED so it stops being "
+            "treated as fact. Use this when you can show that a memory is wrong — "
+            "for example a saved price, date, or claim that contradicts a page you "
+            "just fetched, or that the user says is incorrect.\n"
+            "\n"
+            "Pass the chunk id (the mem_XXXX in the injected header or in a "
+            "search_memory result) and a one-line reason citing your evidence. "
+            "Retraction is reversible: the chunk is kept and labelled "
+            "[RETRACTED ... DO NOT TRUST] rather than deleted, so the correction "
+            "stays visible and can be undone.\n"
+            "\n"
+            "NOTE: depending on configuration this either retracts immediately or "
+            "queues the chunk for the user to review. Either way, report what you "
+            "did — do not silently retract."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "Chunk id to retract, e.g. mem_1789785523339269"},
+                "reason": {"type": "string", "description": "Why it is false — cite the evidence (a URL, a correction from the user, a contradicting chunk id)"},
+            },
+            "required": ["chunk_id", "reason"],
+        },
+    },
+}
+
+RESTORE_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "restore_memory",
+        "description": (
+            "Undo a retraction: restore a previously retracted memory chunk to "
+            "normal use. Use when a retraction turns out to be mistaken, or when "
+            "the user says a disputed fact is actually correct. Pass the chunk id "
+            "of the retracted chunk."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "Retracted chunk id to restore"},
+                "reason": {"type": "string", "description": "Why it should be restored"},
+            },
+            "required": ["chunk_id"],
+        },
+    },
+}
+
 NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
@@ -240,6 +292,66 @@ NATIVE_WRITE_TOOL = {
 
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
+
+# Curation tools (retract/restore memory). Registered separately because they are
+# gated by their own config flags rather than MNEME_TOOL_<NAME>, and because they
+# mutate memory. The proxy installs the actual DB callbacks via
+# set_curation_hooks() at startup; without hooks the tools report unavailable
+# rather than silently doing nothing.
+CURATION_TOOLS = (RETRACT_MEMORY_TOOL, RESTORE_MEMORY_TOOL)
+
+_curation_hooks = {"retract": None, "restore": None, "propose_allowed": False, "retract_allowed": False}
+
+
+def set_curation_hooks(retract_fn, restore_fn, *, retract_allowed: bool, propose_allowed: bool) -> None:
+    """Install the proxy's curation callbacks + authority level."""
+    _curation_hooks["retract"] = retract_fn
+    _curation_hooks["restore"] = restore_fn
+    _curation_hooks["retract_allowed"] = bool(retract_allowed)
+    _curation_hooks["propose_allowed"] = bool(propose_allowed)
+
+
+def enabled_curation_tools():
+    """The curation tools currently exposed to the model.
+
+    Exposed when the model has ANY authority (direct retract or propose). The
+    tool result tells the model which one applied, so it knows whether its call
+    took effect or was queued.
+    """
+    if not (_curation_hooks["retract_allowed"] or _curation_hooks["propose_allowed"]):
+        return []
+    if not os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1":
+        return []
+    return list(CURATION_TOOLS)
+
+
+def _exec_retract_memory(args):
+    cid = ((args or {}).get("chunk_id") or "").strip()
+    reason = ((args or {}).get("reason") or "").strip()
+    if not cid:
+        return "[retract_memory: chunk_id required]"
+    fn = _curation_hooks.get("retract")
+    if fn is None:
+        return "[retract_memory: memory curation is not available on this proxy]"
+    try:
+        out = fn(cid, reason)
+        return out
+    except Exception as e:
+        return f"[retract_memory error: {type(e).__name__}: {e}]"
+
+
+def _exec_restore_memory(args):
+    cid = ((args or {}).get("chunk_id") or "").strip()
+    reason = ((args or {}).get("reason") or "").strip()
+    if not cid:
+        return "[restore_memory: chunk_id required]"
+    fn = _curation_hooks.get("restore")
+    if fn is None:
+        return "[restore_memory: memory curation is not available on this proxy]"
+    try:
+        return fn(cid, reason)
+    except Exception as e:
+        return f"[restore_memory error: {type(e).__name__}: {e}]"
 
 
 # ─── Per-tool enable flags ─────────────────────────────────────────────
@@ -316,6 +428,10 @@ def assemble_tools(client_tools):
     # LAST so a name collision with a proxy or client tool is resolved in their
     # favour.
     for t in get_manager().tools():
+        add(t)
+    # Curation tools last (same collision policy — built-ins win). Only present
+    # when the model has retraction authority (see set_curation_hooks).
+    for t in enabled_curation_tools():
         add(t)
     return tools
 
@@ -607,6 +723,10 @@ def execute_readonly_tool(name, args):
         return _exec_fetch_url((args or {}).get("url", ""))
     if name == "web_search":
         return _exec_web_search((args or {}).get("query", ""))
+    if name == "retract_memory":
+        return _exec_retract_memory(args)
+    if name == "restore_memory":
+        return _exec_restore_memory(args)
     return f"[unknown registry tool: {name}]"
 
 
