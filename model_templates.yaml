@@ -10,14 +10,18 @@
 #
 #   model_template: muse-glimmer
 #
-# The template's values are merged UNDER the rest of your config:
+# The template's values WIN over the rest of your config:
 #
-#     built-in defaults  <  template  <  mneme.yaml values  <  env vars
+#     built-in defaults  <  mneme.yaml values  <  TEMPLATE  <  env vars
 #
-# So you can adopt a template and still override any single key locally — e.g.
-# take the gemma4 template but raise repeat_penalty further for your quant.
-# With no `model_template:` key (the default) nothing changes at all: the
-# current default settings apply exactly as before this feature existed.
+# Selecting a template means "use this model's known-good settings", so the
+# template must actually take effect — including for keys your config mentions.
+# Any key a template does NOT set falls back to your config value (or the
+# built-in default), so a template never has to be exhaustive.
+#
+# To override ONE template value: edit it here, or set the env var (env still
+# beats everything). Delete `model_template:` to go back to your config alone.
+# `<<SETTINGS>>` in the chat prints what is actually in force after merging.
 #
 # WHAT A TEMPLATE MAY SET
 # Only the keys the proxy already honours:

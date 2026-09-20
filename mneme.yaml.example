@@ -40,10 +40,13 @@
 #
 #        model_template: gemma4-repeat
 #
-#    Templates are loaded as DEFAULTS — every setting below still wins, so you
-#    can adopt a template and override individual keys. Leave it blank (or omit
-#    it) to use the built-in defaults only. Run the setup wizard to pick one
-#    interactively; it writes this line for you.
+#    TEMPLATE VALUES WIN over the settings in this file. Anything the template
+#    does not set falls back to the value here (or the built-in default), so a
+#    template never has to be exhaustive. To override one template value, edit
+#    the template, or use an env var (env still beats everything).
+#    `<<SETTINGS>>` in the chat prints what is actually in force.
+#    Leave it blank (or omit it) to use only the settings in this file. The setup
+#    wizard picks one interactively and writes this line for you.
 #
 #  NOTE: the values below are tuned for the OpenRouter lineup
 #  (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed

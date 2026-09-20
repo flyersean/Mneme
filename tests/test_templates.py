@@ -65,40 +65,47 @@ class TestMerging(unittest.TestCase):
         self.assertEqual(out["sampling"]["top_k"], 64)
         self.assertEqual(out["sampling"]["max_tokens"], 2048)
         self.assertEqual(out["models"]["m"]["num_predict"], 2048)
-        # file's own value is preserved
-        self.assertEqual(out["sampling"]["temperature"], 0.2)
+        # the template also sets temperature, so the TEMPLATE's value wins
+        self.assertEqual(out["sampling"]["temperature"], 1.0)
 
     def test_file_beats_template(self):
-        """A template is a starting point — any key can be overridden locally."""
-        data = {"sampling": {"temperature": 0.99, "top_k": 5}}
+        """Template VALUES WIN now (they are the point of selecting a template).
+        A key the template does NOT set keeps the file/default value."""
+        # ctx_tokens / completion_reserve are not set by muse-glimmer, so the
+        # file's values must survive; temperature/top_k ARE set, so template wins.
+        data = {"sampling": {"temperature": 0.99, "top_k": 5,
+                             "ctx_tokens": 8192, "completion_reserve": 1024}}
         out = T.apply_template(data, "m", "muse-glimmer", CATALOGUE)
-        self.assertEqual(out["sampling"]["temperature"], 0.99)
-        self.assertEqual(out["sampling"]["top_k"], 5)
-        # untouched template keys still applied
-        self.assertEqual(out["sampling"]["max_tokens"], 2048)
+        # template sets temperature/top_k -> template wins
+        self.assertEqual(out["sampling"]["temperature"], 1.0)
+        self.assertEqual(out["sampling"]["top_k"], 64)
+        # template does NOT set these -> file values kept
+        self.assertEqual(out["sampling"]["ctx_tokens"], 8192)
+        self.assertEqual(out["sampling"]["completion_reserve"], 1024)
 
-    def test_file_global_sampling_beats_template_per_model_block(self):
-        """REGRESSION: per-model overrides are applied LAST at payload-build time,
-        so a template's models.<name>.temperature would silently beat a global
-        sampling.temperature set in the file — breaking the 'file wins' promise
-        in a way the user could never see. The template's per-model value for a
-        key the user set globally must be dropped."""
-        data = {"sampling": {"temperature": 0.5}}
+    def test_template_value_wins_over_file(self):
+        """The core contract the user asked for: template settings are applied."""
+        data = {"sampling": {"temperature": 0.2, "top_p": 0.9, "top_k": 64}}
         out = T.apply_template(data, "my-gemma", "gemma4-repeat", CATALOGUE)
-        self.assertEqual(out["sampling"]["temperature"], 0.5)
-        # the clobbering per-model key is gone...
-        self.assertNotIn("temperature", out["models"]["my-gemma"],
-                         "template per-model temp would override the user's global value")
-        # ...but template keys the user did NOT set survive
-        self.assertEqual(out["models"]["my-gemma"]["repeat_penalty"], 1.1)
-        self.assertEqual(out["models"]["my-gemma"]["num_predict"], 3072)
+        self.assertEqual(out["sampling"]["temperature"], 1.0, "template temp must win")
+        self.assertEqual(out["sampling"]["top_p"], 0.95)
+        self.assertEqual(out["sampling"]["top_k"], 64)
 
-    def test_template_per_model_kept_when_user_set_nothing(self):
-        """With no global override, the template's per-model values all apply."""
-        out = T.apply_template({}, "my-gemma", "gemma4-repeat", CATALOGUE)
-        blk = out["models"]["my-gemma"]
-        self.assertEqual(blk["temperature"], 1.0)
-        self.assertEqual(blk["repeat_penalty"], 1.1)
+    def test_key_absent_from_template_falls_back_to_file(self):
+        """A template need not be exhaustive — unset keys come from the file."""
+        data = {"sampling": {"ctx_tokens": 8192, "completion_reserve": 1024}}
+        out = T.apply_template(data, "my-gemma", "gemma4-repeat", CATALOGUE)
+        self.assertEqual(out["sampling"]["ctx_tokens"], 8192, "file value preserved")
+        self.assertEqual(out["sampling"]["completion_reserve"], 1024)
+        # ...while template keys are present
+        self.assertEqual(out["sampling"]["temperature"], 1.0)
+
+    def test_per_model_template_wins_over_file_block(self):
+        data = {"models": {"m": {"temperature": 0.5, "my_custom_key": 7}}}
+        out = T.apply_template(data, "m", "gemma4-repeat", CATALOGUE)
+        blk = out["models"]["m"]
+        self.assertEqual(blk["temperature"], 1.0, "template per-model value wins")
+        self.assertEqual(blk["my_custom_key"], 7, "file-only keys survive")
 
     def test_input_not_mutated(self):
         data = {"sampling": {"temperature": 0.2}}
@@ -116,11 +123,14 @@ class TestMerging(unittest.TestCase):
         self.assertNotIn("{model}", out["models"])
 
     def test_file_per_model_block_merges_key_by_key(self):
-        data = {"models": {"my-model": {"temperature": 0.5, "num_predict": 999}}}
+        """Template per-model values win; file-only keys survive."""
+        data = {"models": {"my-model": {"temperature": 0.5, "num_predict": 999,
+                                        "custom_knob": 3}}}
         out = T.apply_template(data, "my-model", "gemma4-repeat", CATALOGUE)
         blk = out["models"]["my-model"]
-        self.assertEqual(blk["temperature"], 0.5, "file must win")
-        self.assertEqual(blk["num_predict"], 999, "file must win")
+        self.assertEqual(blk["temperature"], 1.0, "template must win")
+        self.assertEqual(blk["num_predict"], 3072, "template must win")
+        self.assertEqual(blk["custom_knob"], 3, "file-only key preserved")
         self.assertEqual(blk["repeat_penalty"], 1.1, "template key preserved")
 
     def test_file_blocks_for_other_models_survive(self):

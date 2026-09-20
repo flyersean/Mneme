@@ -124,18 +124,25 @@ def expand(template: Dict, model: str, name: str = "?") -> Dict:
 
 def apply_template(data: Dict, model: str, template_name: Optional[str],
                    path: Optional[str] = None) -> Dict:
-    """Merge template defaults UNDER `data` (the parsed mneme.yaml).
+    """Merge a template into the config so the TEMPLATE'S VALUES WIN.
 
-    Returns a new dict; `data` is not mutated. File values always win over
-    template values, so a template is a starting point, never a lock-in.
-    Missing/blank template name -> `data` returned unchanged (default settings).
+    Priority (highest first):
 
-    Subtlety worth knowing: per-model overrides are applied LAST at payload-build
-    time, so a template's `models.<name>.temperature` would silently beat a global
-    `sampling.temperature` the user wrote in the file. That would violate the
-    "file wins" promise in a way nobody would notice. So for any key the user set
-    EXPLICITLY in the file's own `sampling:` block, the template's per-model value
-    is dropped — the user's stated global intent wins over the template's default.
+        env vars  >  template  >  explicit config-file values  >  built-in default
+
+    Rationale: selecting a template means "use this model's known-good settings".
+    For that to be true, the template must actually take effect — including for
+    keys the config file also mentions. The previous rule was "file beats
+    template", which combined badly with the setup wizard (it always writes
+    temperature/top_p/top_k/reasoning_enabled), so picking a template silently did
+    nothing for exactly the knobs it cared most about.
+
+    Any key the template does NOT set keeps whatever the config file (or the
+    built-in default) provides, so a template never has to be exhaustive.
+
+    To override a single template value deliberately, delete that key from the
+    template OR put the value in an env var (env still wins over everything).
+    `<<SETTINGS>>` prints what is actually in force.
     """
     if not template_name:
         return data
@@ -147,27 +154,17 @@ def apply_template(data: Dict, model: str, template_name: Optional[str],
         )
     tpl = expand(catalogue[template_name], model, template_name)
     merged = dict(data)
-    file_sampling = data.get("sampling") or {}
+    # Sections: template values override the file's; file keeps anything the
+    # template does not mention.
     for section in ("sampling", "timeouts"):
         block = tpl.get(section)
         if block:
-            merged[section] = {**block, **file_sampling} if section == "sampling" \
-                else {**block, **(data.get(section) or {})}
-    # Per-model overrides: template is the base, the file's own block for the
-    # same model wins key-by-key, and file blocks for OTHER models are kept.
+            merged[section] = {**(data.get(section) or {}), **block}
+    # Per-model overrides: template wins over the file's block for the same model.
     if tpl.get("models"):
-        merged_models = {}
+        merged_models = dict(data.get("models") or {})
         for mname, overrides in tpl["models"].items():
-            block = dict(overrides)
-            # Drop any template per-model key the user set globally in sampling:,
-            # because the per-model layer is applied after sampling at request
-            # time and would otherwise silently override it.
-            for k in list(block):
-                if k in file_sampling and file_sampling[k] is not None:
-                    block.pop(k, None)
-            merged_models[mname] = block
-        for mname, overrides in (data.get("models") or {}).items():
-            merged_models[mname] = {**merged_models.get(mname, {}), **(overrides or {})}
+            merged_models[mname] = {**(merged_models.get(mname) or {}), **overrides}
         merged["models"] = merged_models
     return merged
 
