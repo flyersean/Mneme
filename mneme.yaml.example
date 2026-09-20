@@ -33,6 +33,18 @@
 #    * sampling.temperature             — creativity. Lower = more deterministic.
 #    * retrieval.max_injected_tokens    — how much memory to stuff into the prompt.
 #
+#  MODEL TEMPLATES
+#    Some models only behave with particular settings, and finding them took
+#    measurement. Set `model_template:` to a name from model_templates.yaml to
+#    load that model's known-good generation settings:
+#
+#        model_template: gemma4-repeat
+#
+#    Templates are loaded as DEFAULTS — every setting below still wins, so you
+#    can adopt a template and override individual keys. Leave it blank (or omit
+#    it) to use the built-in defaults only. Run the setup wizard to pick one
+#    interactively; it writes this line for you.
+#
 #  NOTE: the values below are tuned for the OpenRouter lineup
 #  (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed
 #  by asking the model itself. A global max_tokens cap is intentionally OMITTED —

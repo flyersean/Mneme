@@ -1,0 +1,126 @@
+# Model templates — known-good generation settings for specific models.
+#
+# WHY THIS EXISTS
+# Some models only behave with particular settings, and finding those settings
+# was expensive (measured, sometimes over days). A template packages the result
+# so it can be selected at setup time instead of rediscovered.
+#
+# HOW TO USE
+# In mneme.yaml:
+#
+#   model_template: muse-glimmer
+#
+# The template's values are merged UNDER the rest of your config:
+#
+#     built-in defaults  <  template  <  mneme.yaml values  <  env vars
+#
+# So you can adopt a template and still override any single key locally — e.g.
+# take the gemma4 template but raise repeat_penalty further for your quant.
+# With no `model_template:` key (the default) nothing changes at all: the
+# current default settings apply exactly as before this feature existed.
+#
+# WHAT A TEMPLATE MAY SET
+# Only the keys the proxy already honours:
+#   sampling.*        temperature, top_p, top_k, ctx_tokens, max_tokens,
+#                     completion_reserve, reasoning_enabled, reasoning_effort
+#   timeouts.*        chat_timeout, ollama_chat_timeout, first_token_timeout
+#   models.<name>.*   per-model overrides (the exact model name is substituted
+#                     via {model} so one template works for any tag)
+#
+# Anything else in a template is REJECTED loudly at startup — a typo'd knob in a
+# template would otherwise silently do nothing, which is the exact class of bug
+# templates are meant to prevent.
+
+templates:
+
+  # ── Muse Glimmer 30B ──────────────────────────────────────────────────
+  # Harmony-format model (to=self reasoning turn, then to=user). Requires a
+  # custom Modelfile because Ollama's auto-detected template is wrong. Its
+  # `to=self` turn conflicts with Ollama JSON grammars, and it over-generates
+  # badly: measured 5,316 tokens for a ~500-token page summary (~3.3 min of pure
+  # generation). num_predict is the lever that keeps that bounded.
+  muse-glimmer:
+    description: "Muse Glimmer 30B (abliterated) — Harmony format, heavy over-generator"
+    notes: "Needs a custom Modelfile. Reasoning field is `thinking`. Cap output or it generates for minutes."
+    sampling:
+      temperature: 1.0
+      top_k: 64
+      max_tokens: 2048           # global output cap (per-model num_predict below)
+    models:
+      "{model}":
+        temperature: 1.0
+        top_k: 64
+        num_ctx: 32768           # 128K native, but keep within pod VRAM
+        num_predict: 2048
+
+  # ── Qwen 3.8, high thinking ───────────────────────────────────────────
+  # Measured: `high` is NOT a valid effort level — the set is low|medium|xhigh.
+  # Setting reasoning_effort implies thinking ON (no need for reasoning: true).
+  # Caveat from measurement: the mapping is unreliable and `low` over-thinks
+  # MORE than `xhigh`, so xhigh is genuinely the "high thinking" choice here.
+  qwen3.8-xhigh:
+    description: "Qwen 3.8-27B — thinking ON at xhigh effort (there is no 'high')"
+    notes: "reasoning_effort accepts low|medium|xhigh only. Run via /api/chat; the /v1 toggle is broken."
+    sampling:
+      reasoning_enabled: 1
+      reasoning_effort: xhigh
+      temperature: 0.7           # model-card recipe
+      top_p: 0.8
+      top_k: 20
+    models:
+      "{model}":
+        reasoning_effort: xhigh  # implies thinking on
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        num_ctx: 32768           # cap its 256K window to what fits VRAM
+        num_predict: 2048
+
+  # ── Qwen 3.8, no thinking ─────────────────────────────────────────────
+  # The empty-response fix. Qwen3.8 GGUFs mishandle `think:false` and emit
+  # NOTHING; `reasoning: true` stops that, and for a genuinely non-thinking run
+  # the card recipe uses presence_penalty 1.5. Measured fastest and most
+  # consistent config for 1-2 tool tasks.
+  qwen3.8-nothink:
+    description: "Qwen 3.8-27B — thinking OFF (card recipe, presence_penalty 1.5)"
+    notes: "Use when you want speed/consistency on 1-2 tool tasks. thinking OFF is fastest in every measured config."
+    sampling:
+      reasoning_enabled: 0
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+    models:
+      "{model}":
+        reasoning: false        # explicit think:false intent
+        temperature: 0.7
+        top_p: 0.8
+        top_k: 20
+        presence_penalty: 1.5   # card recipe for the non-thinking mode
+        num_ctx: 32768
+        num_predict: 2048
+
+  # ── Gemma 4 26B / 31B, hardened against repetition ────────────────────
+  # Gemma abliterations can degenerate into a token loop (observed: "or way or
+  # way ..." for 65,562 tokens / 32 minutes, HTTP 200, truncated=0). Two causes
+  # stacked: repeat_penalty left at 1.000 (a no-op) and temp 0.0 (greedy), which
+  # makes a loop unrecoverable because nothing ever introduces variation.
+  # This template raises the penalty AND moves off greedy, plus a hard cap.
+  # NOTE: Ollama's option is `repeat_penalty` (singular) — `repetition_penalty`
+  # is silently ignored. Both spellings are accepted in config now, but the
+  # correct one is used here.
+  gemma4-repeat:
+    description: "Gemma 4 26B/31B — anti-repetition hardening (repeat_penalty + temp off greedy)"
+    notes: "Raise repeat_penalty further (1.15-1.25) for crude abliterations. num_predict is the backstop."
+    sampling:
+      temperature: 1.0           # NOT 0.0 — greedy makes a loop unrecoverable
+      top_p: 0.95
+      top_k: 64
+    models:
+      "{model}":
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 64
+        repeat_penalty: 1.1      # was effectively 1.0 (no-op) — this breaks loops
+        presence_penalty: 0.0
+        num_ctx: 32768           # Gemma 4 trains at 32k
+        num_predict: 3072        # hard cap: bounds a runaway

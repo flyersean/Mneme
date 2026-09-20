@@ -690,7 +690,7 @@ def _mcp_yaml(servers):
     return "mcp_servers:\n" + "\n".join("  " + ln for ln in dumped.split("\n"))
 
 
-def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True):
+def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True, model_template=""):
     reserve, tool = _budget_parts(ctx_tokens)
     _mcp_block = _mcp_yaml(mcp_servers)
     _hot_reload_s = "true" if hot_reload else "false"
@@ -702,6 +702,14 @@ def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, m
 # storage.memory_enabled / storage.inject_enabled, mcp_servers, and the prompts.
 # Backend/provider/model identity and backend/port/db path are restart-only.
 # Set runtime.hot_reload: false to lock all of the above (restart to change).
+
+# Model template: named, known-good generation settings for a specific model.
+# Each template in model_templates.yaml bundles sampling / thinking-mode / output
+# caps that have been measured to work well for that model. Template values are
+# loaded as DEFAULTS — anything you set explicitly below still wins, so you can
+# adopt a template and tune individual keys. Remove this line (or set it to "")
+# to use the built-in defaults only.
+model_template: "@@MODEL_TEMPLATE@@"
 
 backend:
   type: @@BTYPE@@          # "ollama" | "openai" (openai = any OpenAI-compatible provider)
@@ -844,7 +852,7 @@ runtime:
 """
 
 
-def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True):
+def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template=""):
     """Write mneme.yaml for the chosen backend into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     inject_s = "true" if str(inject) == "1" else "false"
@@ -853,11 +861,12 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
         btype, bprov = "openai", "openrouter"
     else:
         btype, bprov = "ollama", ""
-    yaml = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload)
+    yaml = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template)
     yaml = (yaml.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
             .replace("@@MAIN@@", models.get("model", ""))
             .replace("@@EMBED@@", models.get("embed_model", ""))
-            .replace("@@LABEL@@", models.get("label_model", "")))
+            .replace("@@LABEL@@", models.get("label_model", ""))
+            .replace("@@MODEL_TEMPLATE@@", model_template or ""))
     path = os.path.join(instance_dir, "mneme.yaml")
     # Write atomically (temp + fsync + rename) so a proxy launched right after
     # this can never read a half-written config. A partial config load silently
@@ -869,6 +878,50 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
         os.fsync(f.fileno())
     os.replace(tmp, path)
     return path
+
+
+def choose_model_template():
+    """Let the user pick a model template, or none (the default).
+
+    A template bundles known-good generation settings for a specific model, so
+    settings that took measurement to find don't have to be rediscovered. Any
+    value it sets can still be overridden in mneme.yaml afterward — the template
+    is a defaults layer, not a lock-in. Choosing none keeps the current defaults
+    exactly as they were before templates existed.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "proxy"))
+        from mneme import templates as _tpl
+        path = _tpl.default_templates_path(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        names = _tpl.list_template_names(path)
+    except Exception as e:
+        print(f"  (model templates unavailable: {e})")
+        return ""
+    if not names:
+        return ""
+    entries = [("None — use the built-in default settings", "")]
+    for n in names:
+        try:
+            d = _tpl.describe(n, path)
+            entries.append((f"{n}  — {d['description']}", n))
+        except Exception:
+            entries.append((n, n))
+    print("\nModel templates package known-good generation settings for a specific")
+    print("model (sampling, thinking mode, output caps). Pick one to load them into")
+    print("the config, or None to keep the current defaults. You can still override")
+    print("any individual setting in mneme.yaml afterward.")
+    choice = _menu("Model template", entries)
+    if choice:
+        try:
+            d = _tpl.describe(choice, path)
+            if d.get("notes"):
+                print(f"  note: {d['notes']}")
+            print(f"  ✓ template {choice!r} will be written as `model_template:` in mneme.yaml")
+        except Exception:
+            pass
+    return choice
 
 
 def write_start_script(backend, models, port, instance_dir):
@@ -1324,6 +1377,9 @@ def _add_instance(memory_dir, shared, memory_only):
     mcp_servers = _ask_mcp_servers()
 
     # Per-instance config: this instance's own settings + the shared DB path.
+    # Model template (optional) — known-good generation settings for this model.
+    model_template = choose_model_template()
+
     instance_models = {
         "model": chat_model,
         "embed_model": embed_model,
@@ -1331,7 +1387,7 @@ def _add_instance(memory_dir, shared, memory_only):
         "ctx_size": ctx_size,
     }
     cfg = write_config(chat_backend, instance_models, port, inject, memory_only,
-                       instance_dir, db_path, mcp_servers)
+                       instance_dir, db_path, mcp_servers, model_template=model_template)
     script = write_instance_start_script(instance_dir, memory_dir, port, chat_backend, chat_model,
                                          embed_model, embed_backend, label_model, label_backend,
                                          inject, memory_only)
@@ -1492,12 +1548,15 @@ def main():
     # MCP servers (optional) — add tools from any MCP server (web, filesystem, ...).
     mcp_servers = _ask_mcp_servers()
 
+    # Model template (optional) — known-good generation settings for this model.
+    model_template = choose_model_template()
+
     # Per-instance config dir + shared DB path.
     instance_dir = _instance_dir(MEMORY_DIR, port)
     db_path = os.path.join(MEMORY_DIR, "mneme.db")
 
     # Write config + start script, then launch.
-    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload)
+    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template)
     save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only)
     start_script = write_start_script(backend, models, port, instance_dir)
     print(f"\n  Config:      {cfg_path}")

@@ -88,6 +88,7 @@ from mneme.grading import (
 )
 import mneme.tools as mntools
 import mneme.curation as curation
+import mneme.templates as _templates
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -193,6 +194,13 @@ _CONFIG_ENV_MAP = {
 
 _STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers"}
 
+# Repo root — used to locate model_templates.yaml (shipped alongside the proxy).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Top-level scalar keys that are handled specially rather than mapped to env.
+# `model_template` selects a named settings bundle from model_templates.yaml.
+_CONFIG_PASSTHROUGH_KEYS = {"model_template"}
+
 
 def _config_scalar(v) -> str:
     if v is True:
@@ -245,6 +253,9 @@ def _apply_config(data: Dict, path: str):
             env = _CONFIG_ENV_MAP[section]
             if os.environ.get(env) is None and val is not None:
                 os.environ[env] = _config_scalar(val)
+            continue
+        if section in _CONFIG_PASSTHROUGH_KEYS:      # handled specially (e.g. model_template)
+            CONFIG_DATA[section] = val
             continue
         if not isinstance(val, dict):
             raise SystemExit(f"[CONFIG] {path}: section '{section}' must be a mapping")
@@ -321,6 +332,22 @@ def load_config():
             time.sleep(CONFIG_LOAD_RETRY_DELAY)
             continue
         CONFIG_PATH = path
+        # Model template (if selected) merges in as a DEFAULTS LAYER beneath the
+        # file, so any template value can still be overridden in mneme.yaml.
+        # No template -> data is returned unchanged (behaviour identical to
+        # before templates existed).
+        _tpl_name = (data.get("model_template") or "").strip() if isinstance(data, dict) else ""
+        if _tpl_name:
+            try:
+                data = _templates.apply_template(
+                    data, os.environ.get("MNEME_MODEL", ""), _tpl_name,
+                    _templates.default_templates_path(REPO_ROOT),
+                )
+                print(f"  [TEMPLATE] applied {_tpl_name!r} (file values still win)", flush=True)
+            except _templates.TemplateError as e:
+                # Fail loud: a bad template must not silently fall back to
+                # defaults, or the user would think the template was applied.
+                raise SystemExit(f"[CONFIG] {e}")
         _apply_config(data, path)
         # Guard against a wrong instance identity. The log path (and prompt/tool
         # dirs) are keyed off $MNEME_CHUNK_DIR; if that env points at a DIFFERENT

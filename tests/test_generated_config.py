@@ -59,10 +59,20 @@ class TestGeneratedConfig(unittest.TestCase):
                 continue  # providers/models are free-form (read by provider resolution)
             if section in mp._CONFIG_ENV_MAP:
                 continue  # top-level scalar key
+            if section in mp._CONFIG_PASSTHROUGH_KEYS:
+                continue  # handled specially, not env-mapped (e.g. model_template)
             self.assertIsInstance(val, dict, f"section '{section}' must be a mapping")
             for key in val:
                 flat = f"{section}.{key}"
                 self.assertIn(flat, mp._CONFIG_ENV_MAP, f"unknown config key: {flat}")
+
+    def test_model_template_key_present_and_documented(self):
+        """The generated config must carry `model_template` (blank by default),
+        and the proxy must accept it as a recognised key — otherwise selecting a
+        template in the wizard would produce a config the proxy rejects."""
+        data = _generated()
+        self.assertIn("model_template", data, "generated config should advertise the key")
+        self.assertIn("model_template", mp._CONFIG_PASSTHROUGH_KEYS)
 
 
 if __name__ == "__main__":
