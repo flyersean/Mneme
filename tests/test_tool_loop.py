@@ -1266,6 +1266,56 @@ def test_retrieval_settings_hot_reload_from_config():
 
 
 @test
+def test_template_survives_hot_reload():
+    """REGRESSION: the hot-reload path re-parsed the raw file and assigned
+    CONFIG_DATA['models'] directly. When the file has an empty `models:` block
+    (exactly what the setup wizard writes) but a template supplies per-model
+    values, that assignment DISCARDED the template's settings — so they applied at
+    boot and then silently vanished on the first request. Observed on a pod as
+    repeat_penalty falling back to 1.000 after the first message.
+
+    Uses a REAL shipped template and the real catalogue path, so it exercises the
+    production code path (the boot-time load resolves REPO_ROOT, so a temp
+    catalogue would not be honoured before import)."""
+    orig = (mp.CONFIG_PATH, mp._CONFIG_MTIME, dict(mp.CONFIG_DATA))
+    tmp = tempfile.mkdtemp(prefix="mneme_tpl_reload_")
+    cfg = os.path.join(tmp, "mneme.yaml")
+    # Empty models: {} — what the wizard generates. The template must supply the
+    # per-model block, and it must survive the reload.
+    with open(cfg, "w") as f:
+        f.write("model_template: gemma4-repeat\n"
+                "sampling:\n  temperature: 0.2\n"
+                "models: {}\n")
+    try:
+        mp.CONFIG_PATH = cfg
+        mp._USER_PINNED_ENV = set()
+        mp.CONFIG_DATA.clear()
+
+        # Boot-time load, as the module does on import.
+        data = mp._parse_config_file(cfg)
+        merged = mp._templates.apply_template(
+            data, mp.MODEL, "gemma4-repeat", mp._templates.default_templates_path(mp.REPO_ROOT))
+        mp.CONFIG_DATA["models"] = merged.get("models") or {}
+        mp.CONFIG_DATA["model_template"] = "gemma4-repeat"
+        boot_blk = (mp.CONFIG_DATA.get("models") or {}).get(mp.MODEL) or {}
+        assert boot_blk.get("repeat_penalty") == 1.1, f"template not applied at boot: {boot_blk}"
+
+        # Force the reload a request triggers (zero the mtime watermark first:
+        # module state is shared across tests, so relying on it is order-dependent).
+        mp._CONFIG_MTIME = 0.0
+        mp._reload_sampling_if_changed()
+
+        blk = (mp.CONFIG_DATA.get("models") or {}).get(mp.MODEL) or {}
+        assert blk.get("repeat_penalty") == 1.1, \
+            f"template per-model values lost on hot-reload: {blk}"
+        assert blk.get("num_predict") == 3072, blk
+    finally:
+        mp.CONFIG_PATH, mp._CONFIG_MTIME = orig[0], orig[1]
+        mp.CONFIG_DATA.clear()
+        mp.CONFIG_DATA.update(orig[2])
+
+
+@test
 def test_settings_snapshot_reports_effective_values():
     """<<SETTINGS>> must report EFFECTIVE values (post template/file/env), because
     the whole point is to reveal what is actually in force rather than what the

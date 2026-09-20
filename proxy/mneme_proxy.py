@@ -580,8 +580,25 @@ def _reload_sampling_if_changed():
         return
     # Per-model overrides are read from CONFIG_DATA at request time, so refreshing
     # this section is enough to make `models:` changes live.
-    if "models" in data:
-        CONFIG_DATA["models"] = data["models"] or {}
+    #
+    # IMPORTANT: re-apply the model template here. The raw file may have an empty
+    # (or absent) `models:` block while the template supplied per-model values —
+    # assigning the raw section directly would silently DISCARD the template's
+    # settings on the first hot-reload, so they applied at boot and then vanished
+    # (observed: repeat_penalty fell back to 1.000 after the first request).
+    if "models" in data or "model_template" in data:
+        _tpl_name = (data.get("model_template") or "").strip()
+        _sect = data.get("models") or {}
+        if _tpl_name:
+            try:
+                _merged = _templates.apply_template(
+                    data, MODEL, _tpl_name, _templates.default_templates_path(REPO_ROOT))
+                _sect = _merged.get("models") or _sect
+            except _templates.TemplateError as e:
+                print(f"  [CONFIG] template re-apply failed: {e}", flush=True)
+        CONFIG_DATA["models"] = _sect
+        if "model_template" in data:
+            CONFIG_DATA["model_template"] = data.get("model_template") or ""
     # Scalar sampling keys -> refresh env (respecting user-pinned env overrides).
     sampling = data.get("sampling") or {}
     changed = []
