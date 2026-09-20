@@ -1383,22 +1383,35 @@ def test_chunk_insert_matches_schema():
     ins_cols = [c.strip() for c in m.group(1).replace("\n", " ").split(",") if c.strip()]
     missing = [c for c in ins_cols if c not in cols]
     assert not missing, f"chunk INSERT references non-existent columns: {missing}"
-    # And it must actually run.
+    # And it must actually run. Use _db_lock + _db_write_retry: a bare commit()
+    # here races the proxy's background archive workers on the shared connection
+    # and intermittently raises "cannot commit - no transaction is active" (the
+    # exact failure _db_lock exists to prevent — see the comment in the proxy).
     cid = "mem_schema_probe"
-    db.execute(
-        "INSERT OR REPLACE INTO chunks "
-        "(chunk_id, topic_label, messages, thinking, strategy, vector, grade, "
-        "consensus, outcome, problem_type, source, cycle, created_at, session_id, "
-        "indexable, superseded_by, pending_embed, embed_model, dim, trust) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, "probe", "[]", "", "", None, "B", 0.0, "SUCCESS", "other", "user",
-         0, "2026-01-01T00:00:00", "default", 1, "", 0, "e", 0, "verified"),
-    )
-    db.commit()
+
+    def _do_insert():
+        with mp._db_lock:
+            db.execute(
+                "INSERT OR REPLACE INTO chunks "
+                "(chunk_id, topic_label, messages, thinking, strategy, vector, grade, "
+                "consensus, outcome, problem_type, source, cycle, created_at, session_id, "
+                "indexable, superseded_by, pending_embed, embed_model, dim, trust) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, "probe", "[]", "", "", None, "B", 0.0, "SUCCESS", "other", "user",
+                 0, "2026-01-01T00:00:00", "default", 1, "", 0, "e", 0, "verified"),
+            )
+            db.commit()
+
+    mp._db_write_retry(_do_insert)
     row = db.execute("SELECT chunk_id FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
     assert row is not None, "chunk insert did not persist"
-    db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
-    db.commit()
+
+    def _do_delete():
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+            db.commit()
+
+    mp._db_write_retry(_do_delete)
 
 
 @test
@@ -1415,17 +1428,25 @@ def test_strategy_insert_matches_schema():
         seg = src[stmt.start():stmt.start() + 260]
         assert "strategy_id," in seg or "(strategy_id" in seg, \
             f"strategies INSERT without explicit columns: {seg[:120]!r}"
-    db.execute(
-        "INSERT OR REPLACE INTO strategies "
-        "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
-        "version, parent_id, effective_grade, use_count, success_count, retired, "
-        "superseded_by, cost, outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("strat_schema_probe", "other", "probe", "", "B", "2026-01-01T00:00:00",
-         1, "", 0.0, 0, 0, 0, "", 0, "SUCCESS"),
-    )
-    db.commit()
-    db.execute("DELETE FROM strategies WHERE strategy_id=?", ("strat_schema_probe",))
-    db.commit()
+    def _do_insert():
+        with mp._db_lock:
+            db.execute(
+                "INSERT OR REPLACE INTO strategies "
+                "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
+                "version, parent_id, effective_grade, use_count, success_count, retired, "
+                "superseded_by, cost, outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("strat_schema_probe", "other", "probe", "", "B", "2026-01-01T00:00:00",
+                 1, "", 0.0, 0, 0, 0, "", 0, "SUCCESS"),
+            )
+            db.commit()
+
+    def _do_delete():
+        with mp._db_lock:
+            db.execute("DELETE FROM strategies WHERE strategy_id=?", ("strat_schema_probe",))
+            db.commit()
+
+    mp._db_write_retry(_do_insert)
+    mp._db_write_retry(_do_delete)
 
 
 @test

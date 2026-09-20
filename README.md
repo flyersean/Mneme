@@ -1,8 +1,55 @@
-# Mneme — conversational memory proxy
+# Mneme — persistent memory and tools for AI agents
 
-> ⚠️ **Work in progress — vibe-coded and under active development.** This works,
-> but it may have bugs and it changes as it's developed. Expect rough edges and
-> occasional breakage. Feedback and bug reports welcome.
+> ⚠️ **Experimental / pre-1.0 — actively developed.**
+>
+> **Written with AI, reviewed by a human.** Mneme was built iteratively with AI
+> coding assistants rather than typed line-by-line.
+
+**Mneme is a persistent memory and tool proxy for AI agents.** It sits between an
+OpenAI-compatible client and a model backend, archives conversations into
+searchable memory, retrieves the relevant parts back into later turns, and gives
+the model a persistent tool layer.
+
+It runs against **local Ollama models** or **any hosted OpenAI-compatible
+provider**. Point Pi, Open WebUI, a script, or any OpenAI-compatible app at it.
+
+```text
+        any OpenAI-compatible client
+                     │
+                     ▼
+        ┌────────────────────────┐
+        │      Mneme Proxy       │
+        │                        │
+        │  memory    tools       │
+        │  provenance  MCP       │
+        │  context budget        │
+        └───────┬────────┬───────┘
+                │        │
+                ▼        ▼
+          SQLite+FAISS   model backend
+          (memory DB)    Ollama / hosted API
+```
+
+## Why Mneme is not just a chat-history database
+
+Three design decisions separate it from "store the transcript, paste it back":
+
+- **Retrieval has a confidence floor.** Mneme does not inject the nearest memory
+  just because it is the nearest. A chunk must clear an absolute similarity
+  threshold to be used at all. Irrelevant context is worse than none.
+
+- **Memory carries provenance, not just content.** Every chunk is tagged as
+  observed (user input, a fetched page, a tool result) or as a claim (model
+  output). Model-generated content is re-injected with an `[UNVERIFIED]` marker
+  so the model cannot quietly re-assert its own earlier output as established
+  fact — which is how a hallucination, once saved, becomes permanent.
+
+- **Bad memories are correctable.** Any chunk can be marked false and later
+  restored, with every action in an audit log. A model can *propose* a chunk is
+  wrong; only you can confirm it. This exists because "the model agreed with
+  itself earlier" is the main way a memory system poisons itself.
+
+See [How memory works](#how-memory-works) for the mechanism.
 
 ## Quick start
 
@@ -314,6 +361,240 @@ Retrieval is **topic-switch aware**. When the current turn diverges from the las
 
 Memory is **portable** across machines and even across 1024-dim embedders. On startup, the proxy re-embeds any chunk whose stored `embed_model` doesn't match the current one, so you can `scp` the `.db` from a pod to a laptop and it self-heals. Text, grades, and strategies survive; only vectors regenerate.
 
+## Agent workflows & swarms
+
+Mneme includes a **declarative agent workflow engine** (`extensions/swarm`).
+
+Rather than writing a Python driver for every multi-agent task, you describe the
+workflow in `swarm_config.yaml`: which agents run, what each one reads, where it
+writes its result, how the flow branches, when it retries, and what runs in
+parallel.
+
+The result is a small workflow language for repeatable agent pipelines — with the
+orchestration *outside* the models rather than negotiated between them.
+
+```text
+                      swarm_config.yaml
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │   Orchestrator  │
+                    │                 │
+                    │ flow / branches │
+                    │ retries         │
+                    │ file state      │
+                    │ parallel steps  │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼              ▼
+           Mneme           Mneme          Ollama
+            agent          agent           model
+              │              │              │
+              └──────────────┼──────────────┘
+                             ▼
+                    filesystem state
+                     / shared board
+```
+
+### Agents communicate through artifacts, not conversation
+
+The workflow uses the filesystem as a shared blackboard. One agent writes a file,
+the next reads it, and a later stage can consume the whole directory.
+
+```text
+input/
+   │
+   ▼
+┌──────────────────────────┐
+│ parallel critics         │
+│   structure.txt          │
+│   prose.txt              │
+│   factual.txt            │
+└────────────┬─────────────┘
+             ▼
+         synthesis
+             ▼
+           draft
+             ▼
+          review
+         /      \
+    approve     revise
+       │           │
+       ▼           └──────► review
+    publish
+```
+
+This is the design choice that matters most: **the workflow defines the
+structure; the models perform the cognitive steps.** An agent doesn't need to
+understand the whole pipeline — it gets "here is the material, you are the
+critic" and writes to a path. Intermediate work stays on disk, so it is visible
+while the run is happening and after it finishes.
+
+It is easier to reason about than a swarm of agents negotiating with each other,
+and it fails in ways you can see.
+
+### What a workflow can express
+
+- sequential model steps, and `goto` loops
+- branching on model output or on filesystem state
+- retries on transient model failure, and per-step `delay` pacing
+- **per-step generation settings** — `options:` overrides temperature/top_p/top_k
+  and backend-specific keys for that one call, without touching the proxy config
+- file and directory primitives, including `swap_dir` (below)
+- cycle throttling (`every`), `skip_if_empty`, and action-only steps that do not
+  spend a model call
+
+Granularity is deliberate: a step that freezes a directory, moves a file, or
+checks state costs nothing, because it never touches a model.
+
+### Atomic workflow snapshots and parallel swarms
+
+Two primitives worth calling out specifically.
+
+**`swap_dir`** gives an iterative workflow a transaction-like boundary:
+
+```text
+input/
+   │
+   │ swap_dir
+   ▼
+input.active/     ← frozen snapshot: what this iteration works on
+input/            ← fresh: new work can accumulate for the next iteration
+```
+
+Agents in the current cycle see a stable input set, while new material keeps
+arriving for the next one. This sounds small and removes a genuinely awkward
+problem in iterative agent systems: *what exactly is the input to this pass?*
+
+**`parallel:`** (in `swarm_p_orchestrator.py`) is a map → reduce for agents — fan
+out independent work, then let the next step read the whole output directory and
+combine the results:
+
+```yaml
+- parallel:
+    - name: structure
+      backend: mneme
+      port: 8080
+      read_dir: input.active
+      write_dir: pass1/structure.txt
+    - name: prose
+      backend: ollama
+      model: qwen2.5:14b
+      read_dir: input.active
+      write_dir: pass1/prose.txt
+```
+
+Worth being precise about "parallel", because it depends on the backend. Against
+a **hosted** provider, requests genuinely run concurrently — with one caveat,
+rate limits: a wide fan-out can trip them, so keep hosted parallel blocks modest.
+On a **single-GPU Ollama** box, different models serialize anyway (VRAM forces a
+model swap per step), so fan-out only helps for the *same* model. The thread pool
+doesn't pretend threads equal GPU parallelism.
+
+### Mneme is optional
+
+The orchestrator talks to Mneme over `/v1/chat/completions`. It does not import
+the proxy or depend on its internals. So a single workflow can mix:
+
+- Mneme-backed agents (memory + tools)
+- raw Ollama models (`backend: ollama`, no memory)
+- different models for different roles
+- several Mneme instances sharing one memory DB
+- hosted and local inference in the same run
+
+```text
+          ┌──────────────┐
+          │  Researcher  │
+          │    Mneme     │
+          └──────┬───────┘
+                 │
+          research/*.txt
+                 │
+       ┌─────────┴─────────┐
+       ▼                   ▼
+   Critic A             Critic B
+    Mneme                Ollama
+   (memory)            (no memory)
+       │                   │
+       └─────────┬─────────┘
+                 ▼
+             Synthesizer
+               Mneme
+                 │
+                 ▼
+              final/
+```
+
+### Why the swarm exists
+
+This is not a general-purpose distributed workflow platform, and it isn't trying
+to be. It exists to test a specific idea.
+
+**The hypothesis:** can a collection of relatively small, locally runnable
+models — given persistent memory, tools, specialized roles, and a structured
+workflow — complete work that would normally require one much larger model?
+
+The approach is to move work that would otherwise have to happen *inside* a
+large model into the surrounding system:
+
+```text
+        large-model approach          Mneme approach
+
+        ┌──────────────────┐          ┌──────────────────┐
+        │                  │          │    small LLM     │
+        │    large LLM     │          │  local / hosted  │
+        │                  │          └────────┬─────────┘
+        │  reasoning       │                   │
+        │  memory          │      ┌────────────┼────────────┐
+        │  tools           │      ▼            ▼            ▼
+        │  planning        │   memory       tools       workflow
+        │  context         │      │            │            │
+        └──────────────────┘      └────────────┼────────────┘
+                                               ▼
+                                        other agents
+```
+
+The workflow engine is the control layer for this. Instead of asking one model to
+perform every part of a task, a workflow splits it across specialized calls and
+combines the results.
+
+### This is not demonstrated yet
+
+**The hypothesis above has not been shown quantitatively.** Mneme provides the
+infrastructure to investigate it; it does not claim the question is settled.
+
+In practice the system is sensitive to configuration, and being honest about that
+is more useful than overselling it:
+
+- Model choice, context size, retrieval threshold, generation settings, prompts,
+  tool availability, and workflow design all interact.
+- Some combinations work well. Some work poorly. **Some model/configuration
+  combinations do not work at all.**
+- There is no single configuration that works equally well across models and
+  tasks. "Model-agnostic" does not mean "model-independent".
+
+If you install Mneme, pair a random 7B with an untuned retrieval threshold, and
+get poor results — that is the expected outcome of an untuned configuration, not
+necessarily a verdict on the approach. Tuning is currently part of using it.
+
+**Model templates** (see [`model_templates.yaml`](model_templates.yaml)) exist to
+reduce that cost: named, known-good settings for specific models, selected during
+setup, so you don't start from scratch. They are a starting point, not a
+guarantee.
+
+Some open questions this exists to ask:
+
+- Can several small specialized models outperform one small general-purpose model?
+- How much does persistent memory actually improve long-running work?
+- Which tasks benefit from parallel specialists, and which don't?
+- When is a large model genuinely necessary?
+- Can tools compensate for a capability a model lacks?
+
+Full reference: [`extensions/swarm/README.md`](extensions/swarm/README.md) for a
+worked example, [`extensions/swarm/SWARM_REFERENCE.md`](extensions/swarm/SWARM_REFERENCE.md)
+for the field-by-field spec.
+
 ## Configuration
 
 Everything is in one file — `$MNEME_CHUNK_DIR/mneme.yaml` (default `~/mneme/chunks/instances/<port>/mneme.yaml`) — plus a few env vars.
@@ -534,9 +815,8 @@ install Pi and point it at Mneme as a provider (see "Pi terminal assistant" abov
 
 ### Swarm (`extensions/swarm`)
 
-The swarm is a config-driven orchestrator — one of the more powerful parts of the system.
-It drives several Mneme proxies (and/or raw Ollama models) through a loop defined entirely
-in `swarm_config.yaml`, so you can coordinate multiple models with no driver code.
+The declarative agent workflow engine — see [Agent workflows & swarms](#agent-workflows--swarms)
+above for what it is and why it exists. Implementation notes that belong here:
 
 **Two orchestrators.**
 
@@ -546,11 +826,7 @@ in `swarm_config.yaml`, so you can coordinate multiple models with no driver cod
 - `swarm_p_orchestrator.py` — the **parallel** driver. Extends the serial one with a single
   new step form, a `parallel:` block that runs a list of independent sub-steps concurrently
   (a thread pool). Everything else is inherited unchanged, so a config written for the
-  serial driver also runs here. Parallel shines against a **hosted** backend (OpenRouter or
-  any OpenAI-compatible provider) — there's no local GPU to thrash, so same-model *and*
-  different-model sub-steps all run concurrently. On a single-GPU Ollama box it only helps
-  for same-model fan-out (different models serialize by VRAM model-swap). See the swarm
-  README for the one hosted caveat (rate limits).
+  serial driver also runs here. See the note on hosted vs single-GPU parallelism above.
 
 **How the config works.**
 
