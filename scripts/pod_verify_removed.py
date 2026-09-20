@@ -99,7 +99,16 @@ def main():
         reply = str(chat)[:200]
     print(f"    reply: {reply[:120]!r}")
 
-    # Archiving is async (background worker) — poll for it.
+    # The staging buffer flushes on the NEXT turn (staging_turns=1) or after
+    # STAGING_IDLE seconds of inactivity — sending one message does not persist it
+    # immediately. So nudge with a second short turn, then poll. Without this the
+    # archive check fails on a healthy system.
+    print("    nudging the staging flush with a follow-up turn…")
+    call("POST", "/v1/chat/completions", {
+        "messages": [{"role": "user", "content": "ok, noted"}],
+        "model": "text-mneme:64k",
+    }, timeout=args.model_timeout)
+
     print("    waiting for the background archive to land…")
     nb = before_chunks
     for _ in range(30):
