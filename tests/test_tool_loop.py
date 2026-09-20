@@ -1444,6 +1444,64 @@ def test_archive_path_stamps_provenance():
 
 
 @test
+def test_dangling_citation_is_not_recorded():
+    """REGRESSION (found live on a pod): a 3B model cited 'mem_1789944977', which
+    was a truncated id matching no real chunk. We recorded it verbatim, so
+    derived_from held a dangling edge pointing nowhere. When tracing a bad
+    memory, a lead that goes nowhere is worse than no lead — it looks real.
+
+    Only citations that resolve to an existing chunk are recorded."""
+    import json as _json
+    db = mp.db
+    import numpy as _np
+    _orig_embed = mp.embed
+    try:
+        def _fake(text):
+            v = _np.zeros(mp.DIM, dtype="float32")
+            v[abs(hash(str(text))) % mp.DIM] = 1.0
+            return v
+        mp.embed = _fake
+
+        real = "mem_dangle_real"
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (real,))
+            db.execute(
+                "INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, source, "
+                "grade, trust, created_at) VALUES (?,?,?,?,?,?,?)",
+                (real, "dangle probe", "[]", "model", "B", "unverified", "2026-01-01T00:00:00"))
+            db.commit()
+
+        _topic = "dangle_probe_7k2"
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE topic_label=?", (_topic,))
+            db.commit()
+        n = mp._archive_single_chunk(
+            [{"role": "user", "content": "what is it?"},
+             {"role": "assistant",
+              # one real id, one that matches nothing
+              "content": f"see [source: {real}] and also [source: mem_9999999999]"}],
+            "what is it?", _topic, source="model", injected_ids=[],
+        )
+        assert n == 1, n
+
+        with mp._db_lock:
+            row = db.execute(
+                "SELECT chunk_id, derived_from FROM chunks WHERE topic_label=? "
+                "ORDER BY rowid DESC LIMIT 1", (_topic,)
+            ).fetchone()
+        assert row, "archived chunk not found"
+        got = _json.loads(row[1] or "[]")
+        assert got == [real], f"expected only the resolvable id, got {got}"
+        assert "mem_9999999999" not in got, "dangling citation must not be recorded"
+    finally:
+        mp.embed = _orig_embed
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=? OR topic_label=?",
+                       (real, "dangle_probe_7k2"))
+            db.commit()
+
+
+@test
 def test_chunk_insert_matches_schema():
     """REGRESSION: the chunk INSERT used a bare `VALUES (?,...,?)` with 20
     placeholders. Adding columns via migration (the curation work added 10) made

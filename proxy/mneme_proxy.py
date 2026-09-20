@@ -4071,7 +4071,24 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
             )
             # Reuse the grading helper rather than a second regex — it is the same
             # parser the fabricated-citation check uses, so the two cannot drift.
-            _cited = sorted(_extract_mem_ids(_chunk_text) - {chunk_id})
+            #
+            # Only keep citations that RESOLVE to a real chunk. A model can emit a
+            # truncated or invented id (observed live: a 3B model cited
+            # "mem_1789944977" when no such chunk existed), and recording those
+            # creates dangling lineage edges that lead nowhere — worse than no
+            # provenance, because they look like real leads when tracing a bad
+            # memory. Unresolved citations are the fabricated-citation path's
+            # business (it grades them F), not provenance's.
+            _cand = _extract_mem_ids(_chunk_text) - {chunk_id}
+            _cited = []
+            for _c in sorted(_cand):
+                try:
+                    _row = db.execute("SELECT 1 FROM chunks WHERE chunk_id=?",
+                                      (_c,)).fetchone()
+                except Exception:
+                    _row = None
+                if _row:
+                    _cited.append(_c)
             if _cited:
                 curation.record_provenance(db, chunk_id, _cited)
             # `injected_ids` is threaded from the caller (snapshotted at enqueue
