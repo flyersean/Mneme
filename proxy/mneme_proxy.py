@@ -89,6 +89,7 @@ from mneme.grading import (
 import mneme.tools as mntools
 import mneme.curation as curation
 import mneme.templates as _templates
+import mneme.chatcmd as _chatcmd
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -401,6 +402,31 @@ _SAMPLING_ENV_MAP = {
     "reasoning_enabled": "MNEME_REASONING_ENABLED",
     "reasoning_effort": "MNEME_REASONING_EFFORT",
 }
+
+# Retrieval keys that are safe to change on a live proxy. These were previously
+# read ONCE at import into module constants, so editing them in mneme.yaml did
+# nothing until a restart — while the config header implied sampling/models were
+# live and said nothing about retrieval. inject_min_similarity is the single
+# most-tuned knob in the whole config, so silently ignoring an edit to it was the
+# worst case. Now refreshed on mtime change like sampling.
+_RETRIEVAL_ENV_MAP = {
+    "max_injected_tokens": "MNEME_MAX_INJECTED_TOKENS",
+    "inject_min_similarity": "MNEME_INJECT_MIN_SIMILARITY",
+    "strategy_min_similarity": "MNEME_STRATEGY_MIN_SIMILARITY",
+    "max_siblings": "MNEME_MAX_SIBLINGS",
+    "age_decay_days": "MNEME_AGE_DECAY_DAYS",
+    "max_per_topic": "MNEME_MAX_PER_TOPIC",
+    "topic_switch_sim": "MNEME_TOPIC_SWITCH_SIM",
+    "novel_inject_floor": "MNEME_NOVEL_INJECT_FLOOR",
+    "keyword_fallback": "MNEME_KEYWORD_FALLBACK",
+}
+# Timeout keys — same story. A long-running turn that the user shortens by
+# editing chat_timeout expects the change to apply to the NEXT turn.
+_TIMEOUT_ENV_MAP = {
+    "chat_timeout": "MNEME_CHAT_TIMEOUT",
+    "ollama_chat_timeout": "MNEME_OLLAMA_CHAT_TIMEOUT",
+    "first_token_timeout": "MNEME_FIRST_TOKEN_TIMEOUT",
+}
 # Env vars the user exported BEFORE the config file loaded stay pinned: hot-reload
 # will never override them (preserves the documented env > file precedence).
 _USER_PINNED_ENV = {env for env in _SAMPLING_ENV_MAP.values() if env in os.environ}
@@ -577,6 +603,19 @@ def _reload_sampling_if_changed():
         if cfg_key in storage and storage[cfg_key] is not None:
             os.environ[env] = _config_scalar(storage[cfg_key])
             changed.append(f"storage.{cfg_key}")
+    # Retrieval + timeout keys — previously import-time-only, so editing them in
+    # the file did nothing until a restart (the "I changed inject_min_similarity
+    # and nothing happened" trap). Refresh the env vars, then re-read the module
+    # constants from them below so the next request uses the new values.
+    for _section, _map in (("retrieval", _RETRIEVAL_ENV_MAP), ("timeouts", _TIMEOUT_ENV_MAP)):
+        _block = data.get(_section) or {}
+        for cfg_key, env in _map.items():
+            if env in _USER_PINNED_ENV:
+                continue
+            if cfg_key in _block and _block[cfg_key] is not None:
+                os.environ[env] = _config_scalar(_block[cfg_key])
+                changed.append(f"{_section}.{cfg_key}")
+    _refresh_runtime_constants()
     # Re-read the flags (the loop above may have just updated their env vars).
     MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"
     MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"
@@ -587,6 +626,91 @@ def _reload_sampling_if_changed():
         mntools.get_manager().reconcile(CONFIG_DATA["mcp_servers"])
         changed.append("mcp_servers")
     print(f"  [CONFIG] hot-reloaded sampling/models/storage ({', '.join(changed) or 'models-only'})", flush=True)
+
+
+def _force_config_reload() -> bool:
+    """Re-read the config file and re-derive runtime constants, ignoring mtime.
+
+    Used by the <<RETRIEVAL>> command so a change applies to the very next
+    message rather than waiting for the mtime poll. Returns True on success.
+    """
+    global _CONFIG_MTIME
+    try:
+        _CONFIG_MTIME = 0.0          # defeat the mtime short-circuit
+        _reload_sampling_if_changed()
+        return True
+    except Exception as e:
+        _log_error("force_config_reload", e)
+        return False
+
+
+def _settings_snapshot() -> Dict:
+    """The EFFECTIVE settings, for the <<SETTINGS>> report.
+
+    Reports resolved values (after template + file + env), plus which template
+    is active, so the user sees what is actually in force rather than what they
+    believe they configured. This is the answer to "I changed a setting and
+    nothing happened" — compare this output against the file.
+    """
+    _model_cfg = (CONFIG_DATA.get("models") or {}).get(MODEL, {}) or {}
+    snap = {
+        "model": {
+            "model": MODEL,
+            "backend": os.environ.get("MNEME_BACKEND", "?"),
+            "embed_model": EMBED_MODEL,
+            "label_model": LABEL_MODEL,
+            "config_path": CONFIG_PATH or "(none)",
+            "hot_reload": "on" if HOT_RELOAD else "LOCKED",
+        },
+        "sampling": {
+            "temperature": OLLAMA_TEMP,
+            "top_p": os.environ.get("MNEME_TOP_P", "0.95"),
+            "top_k": os.environ.get("MNEME_TOP_K", "64"),
+            "ctx_tokens": os.environ.get("MNEME_CTX_TOKENS", "65536"),
+            "max_tokens": os.environ.get("MNEME_MAX_TOKENS", "(unset)"),
+        },
+        "thinking": {
+            "reasoning_enabled": os.environ.get("MNEME_REASONING_ENABLED", "0"),
+            "reasoning_effort": os.environ.get("MNEME_REASONING_EFFORT", "(unset)"),
+            "per_model_reasoning": _model_cfg.get("reasoning", "(unset)"),
+        },
+        "retrieval": {
+            "inject_min_similarity": INJECT_MIN_SIMILARITY,
+            "strategy_min_similarity": STRATEGY_MIN_SIMILARITY,
+            "max_injected_tokens": MAX_INJECTED_TOKENS,
+            "max_per_topic": MAX_PER_TOPIC,
+            "max_siblings": globals().get("MAX_SIBLINGS", "(n/a)"),
+            "topic_switch_sim": TOPIC_SWITCH_SIM,
+            "novel_inject_floor": NOVEL_INJECT_FLOOR,
+            "keyword_fallback": KEYWORD_FALLBACK,
+            "age_decay_days": globals().get("AGE_DECAY_DAYS", "(n/a)"),
+        },
+        "timeouts": {
+            "chat_timeout": globals().get("CHAT_TIMEOUT"),
+            "ollama_chat_timeout": globals().get("OLLAMA_CHAT_TIMEOUT"),
+            "first_token_timeout": globals().get("FIRST_TOKEN_TIMEOUT"),
+        },
+        "storage": {
+            "memory_enabled": MEMORY_ENABLED,
+            "memory_only": MEMORY_ONLY,
+            "inject_enabled": INJECT_ENABLED,
+            "inject_system": INJECT_SYSTEM,
+            "staging_turns": os.environ.get("MNEME_STAGING_TURNS", "1"),
+            "chunk_dir": os.environ.get("MNEME_CHUNK_DIR", "?"),
+            "db_path": DB_PATH,
+        },
+        "curation": {
+            "allow_model_propose": ALLOW_MODEL_PROPOSE,
+            "allow_model_retract": ALLOW_MODEL_RETRACT,
+            "inject_retracted": INJECT_RETRACTED,
+            "recurrence_labeling": RECURRENCE_LABELING,
+        },
+        "template": (CONFIG_DATA.get("model_template") or "") or None,
+    }
+    # Per-model overrides in force for the active model (these beat sampling.*).
+    if _model_cfg:
+        snap["per_model_overrides"] = {k: v for k, v in _model_cfg.items()}
+    return snap
 
 
 # ─── Multi-pass compression config ───
@@ -642,6 +766,48 @@ TOPIC_SWITCH_SIM   = float(os.environ.get("MNEME_TOPIC_SWITCH_SIM", "0.45"))   #
 TOPIC_SWITCH_GRACE = int(os.environ.get("MNEME_TOPIC_SWITCH_GRACE", "2"))      # turns to harden injection after a switch
 NOVEL_INJECT_FLOOR = float(os.environ.get("MNEME_NOVEL_INJECT_FLOOR", "0.60")) # raised injection floor during the grace window
 MAX_PER_TOPIC      = int(os.environ.get("MNEME_MAX_PER_TOPIC", "3"))           # cap on injected chunks per topic_label
+
+
+def _refresh_runtime_constants():
+    """Re-read the retrieval/timeout constants from env after a hot-reload.
+
+    These live as module globals for hot-path speed (read per request), so a
+    config edit only takes effect once they are re-derived. Called from
+    _reload_sampling_if_changed() after the env vars have been refreshed, and
+    also used by the <<SETTINGS>> chat command's sibling <<RETRIEVAL>> setter.
+    """
+    global INJECT_MIN_SIMILARITY, STRATEGY_MIN_SIMILARITY, MAX_INJECTED_TOKENS
+    global TOPIC_SWITCH_SIM, TOPIC_SWITCH_GRACE, NOVEL_INJECT_FLOOR
+    global MAX_PER_TOPIC, KEYWORD_FALLBACK
+    global AGE_DECAY_DAYS, MAX_SIBLINGS
+    global MAX_HISTORY_MESSAGES, CHAT_TIMEOUT, OLLAMA_CHAT_TIMEOUT, FIRST_TOKEN_TIMEOUT
+    INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.45"))
+    STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.40"))
+    MAX_INJECTED_TOKENS = int(os.environ.get("MNEME_MAX_INJECTED_TOKENS", "6000"))
+    TOPIC_SWITCH_SIM = float(os.environ.get("MNEME_TOPIC_SWITCH_SIM", "0.45"))
+    TOPIC_SWITCH_GRACE = int(os.environ.get("MNEME_TOPIC_SWITCH_GRACE", "2"))
+    NOVEL_INJECT_FLOOR = float(os.environ.get("MNEME_NOVEL_INJECT_FLOOR", "0.60"))
+    MAX_PER_TOPIC = int(os.environ.get("MNEME_MAX_PER_TOPIC", "3"))
+    KEYWORD_FALLBACK = os.environ.get("MNEME_KEYWORD_FALLBACK", "0") == "1"
+    try:
+        AGE_DECAY_DAYS = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))
+    except (TypeError, ValueError):
+        AGE_DECAY_DAYS = 7.0
+    try:
+        MAX_SIBLINGS = int(os.environ.get("MNEME_MAX_SIBLINGS", "3"))
+    except (TypeError, ValueError):
+        MAX_SIBLINGS = 3
+    try:
+        MAX_HISTORY_MESSAGES = int(os.environ.get("MNEME_MAX_HISTORY_MESSAGES", "32"))
+    except (TypeError, ValueError):
+        MAX_HISTORY_MESSAGES = 32
+    try:
+        CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "300"))
+        OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "300"))
+        FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "180"))
+    except (TypeError, ValueError):
+        pass
+
 # Keyword fallback: when FAISS returns fewer than top_k hits, pad the result list
 # with SQLite LIKE-substring matches. OFF by default — substring hits carry no
 # semantic score and pollute context (e.g. "tool" matches "Paramotor Tool").
@@ -5130,6 +5296,64 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             return {"content": full_text[:MAX_DETAIL_CHARS], "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
         else:
             return {"content": f"Chunk {chunk_id} not found.", "tool_calls": [], "eval_count": 0, "done_reason": "detail"}
+
+    # ── Settings view: <<SETTINGS>> ──
+    # Prints the EFFECTIVE values (post template / file / env resolution) so the
+    # user can see what is actually in force — not what they think they set.
+    if _chatcmd.SETTINGS_CMD_RE.search(full_user_msg):
+        report = _chatcmd.format_settings(_settings_snapshot())
+        _cmd_re_early = re.compile(r"<<[A-Z_]+(?:\s+[^>]+)?>>")
+        cleaned = _cmd_re_early.sub("", full_user_msg).strip()
+        messages[-1]["content"] = cleaned or "(settings requested)"
+        print("  [SETTINGS] reported current effective settings", flush=True)
+        return {"content": report, "tool_calls": [], "eval_count": 0, "done_reason": "settings"}
+
+    # ── Retrieval threshold: <<RETRIEVAL ...>> ──
+    # <<RETRIEVAL>>            -> show the retrieval section
+    # <<RETRIEVAL k=v [k=v]>>  -> set keys (written to mneme.yaml, hot-reloaded)
+    # <<RETRIEVAL reset>>      -> re-read the config file, discarding live edits
+    _retr_m = _chatcmd.RETRIEVAL_CMD_RE.search(full_user_msg)
+    if _retr_m:
+        _arg = (_retr_m.group(1) or "").strip()
+        _cmd_re_early = re.compile(r"<<[A-Z_]+(?:\s+[^>]+)?>>")
+        cleaned = _cmd_re_early.sub("", full_user_msg).strip()
+        messages[-1]["content"] = cleaned or "(retrieval command)"
+        if not _arg:
+            snap = _settings_snapshot()
+            body = "\n".join(f"  {k:26} {v}" for k, v in (snap.get("retrieval") or {}).items())
+            out = ("=== RETRIEVAL SETTINGS ===\n\n" + body +
+                   "\n\nChange one:  <<RETRIEVAL inject_min_similarity=0.60>>"
+                   "\nReload file: <<RETRIEVAL reset>>")
+            return {"content": out, "tool_calls": [], "eval_count": 0, "done_reason": "retrieval"}
+        if _arg.lower() == "reset":
+            # Force a re-read of the config file and re-derive the constants.
+            _force_config_reload()
+            snap = _settings_snapshot()
+            body = "\n".join(f"  {k:26} {v}" for k, v in (snap.get("retrieval") or {}).items())
+            return {"content": "Reloaded retrieval settings from the config file:\n\n" + body,
+                    "tool_calls": [], "eval_count": 0, "done_reason": "retrieval"}
+        try:
+            assignments = _chatcmd.parse_set_assignments(_arg)
+            summary = _chatcmd.update_config_file(CONFIG_PATH, "retrieval", assignments)
+            # Apply immediately (don't wait for the mtime poll) so the user's next
+            # message uses the new value.
+            _force_config_reload()
+            lines = [f"Updated: {summary}", ""]
+            snap = _settings_snapshot()
+            for k in assignments:
+                lines.append(f"  {k:26} {snap.get('retrieval', {}).get(k)}")
+            lines += ["", "Written to mneme.yaml and applied now (survives restart).",
+                      "Restore the file's values with: <<RETRIEVAL reset>>"]
+            print(f"  [RETRIEVAL] set {summary}", flush=True)
+            return {"content": "\n".join(lines), "tool_calls": [], "eval_count": 0,
+                    "done_reason": "retrieval"}
+        except _chatcmd.CommandError as e:
+            return {"content": f"retrieval command error: {e}", "tool_calls": [],
+                    "eval_count": 0, "done_reason": "retrieval"}
+        except Exception as e:
+            _log_error("chatcmd:retrieval", e)
+            return {"content": f"retrieval command failed: {type(e).__name__}: {e}",
+                    "tool_calls": [], "eval_count": 0, "done_reason": "retrieval"}
 
     # ── Save trigger: <<SAVE>> forces archive ──
     SAVE_TRIGGER = "<<SAVE>>"

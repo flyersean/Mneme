@@ -1219,6 +1219,66 @@ def test_web_tools_prompt_the_search_then_fetch_workflow():
 
 
 @test
+def test_retrieval_settings_hot_reload_from_config():
+    """REGRESSION: retrieval.* and timeouts.* were read ONCE at import into module
+    constants, so editing them in mneme.yaml did nothing until a restart — while
+    the config header implied sampling/models were live and said nothing about
+    retrieval. inject_min_similarity is the most-tuned knob in the config, so
+    silently ignoring an edit to it was the worst case."""
+    orig = (mp.CONFIG_PATH, mp._CONFIG_MTIME, mp.INJECT_MIN_SIMILARITY,
+            mp.MAX_INJECTED_TOKENS, set(mp._USER_PINNED_ENV))
+    tmp = tempfile.mkdtemp(prefix="mneme_retr_reload_")
+    cfg = os.path.join(tmp, "mneme.yaml")
+    tick = [0]
+    try:
+        mp.CONFIG_PATH = cfg
+        mp._CONFIG_MTIME = 0.0
+        mp._USER_PINNED_ENV = set()   # nothing pinned by the environment
+
+        def write(floor, tokens, timeout):
+            with open(cfg, "w") as f:
+                f.write(
+                    "retrieval:\n"
+                    f"  inject_min_similarity: {floor}\n"
+                    f"  max_injected_tokens: {tokens}\n"
+                    "timeouts:\n"
+                    f"  chat_timeout: {timeout}\n"
+                )
+            tick[0] += 100
+            os.utime(cfg, (1700000000 + tick[0], 1700000000 + tick[0]))
+
+        write(0.72, 1234, 42)
+        mp._reload_sampling_if_changed()
+        assert mp.INJECT_MIN_SIMILARITY == 0.72, mp.INJECT_MIN_SIMILARITY
+        assert mp.MAX_INJECTED_TOKENS == 1234, mp.MAX_INJECTED_TOKENS
+        assert mp.CHAT_TIMEOUT == 42, mp.CHAT_TIMEOUT
+
+        # a second edit must also apply (not just the first)
+        write(0.33, 4321, 77)
+        mp._reload_sampling_if_changed()
+        assert mp.INJECT_MIN_SIMILARITY == 0.33, mp.INJECT_MIN_SIMILARITY
+        assert mp.MAX_INJECTED_TOKENS == 4321, mp.MAX_INJECTED_TOKENS
+        assert mp.CHAT_TIMEOUT == 77, mp.CHAT_TIMEOUT
+    finally:
+        mp.CONFIG_PATH, mp._CONFIG_MTIME, mp.INJECT_MIN_SIMILARITY, \
+            mp.MAX_INJECTED_TOKENS, mp._USER_PINNED_ENV = orig
+        mp._refresh_runtime_constants()
+
+
+@test
+def test_settings_snapshot_reports_effective_values():
+    """<<SETTINGS>> must report EFFECTIVE values (post template/file/env), because
+    the whole point is to reveal what is actually in force rather than what the
+    user believes they configured."""
+    snap = mp._settings_snapshot()
+    assert isinstance(snap, dict)
+    for section in ("model", "sampling", "retrieval", "timeouts", "storage"):
+        assert section in snap, section
+    assert "inject_min_similarity" in snap["retrieval"]
+    assert "model" in snap["model"]
+
+
+@test
 def test_per_tool_disable_flag():
     mt = mp.mntools
     saved = {k: os.environ.get(k) for k in ("MNEME_TOOL_WEB_SEARCH", "MNEME_TOOL_FETCH_URL")}
