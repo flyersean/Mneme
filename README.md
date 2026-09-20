@@ -59,7 +59,7 @@ your **laptop** to reach a remote proxy.
 
 | Script | Where it runs | What it does |
 |---|---|---|
-| `install.sh` | the host | Installs Python dependencies + Ollama and clones the repo into `~/mneme/repo`. Idempotent — safe to re-run. |
+| `install.sh` | the host | Installs system + Python deps, Ollama, browser engines and the Hound MCP server, then clones the repo into `~/mneme/repo`. Idempotent — safe to re-run. See below for exactly what it touches. |
 | `mneme_setup.py` | the host | Interactive setup wizard: pick the backend (OpenRouter or Ollama), the chat/embed/label models, the context window, optional Pi, and the port. Writes the config + start script, launches the proxy, and health-checks it. |
 | `mneme_connect.py` | your laptop | (Only for a remote pod.) Opens a stay-alive SSH tunnel and prints the local URLs to open in your browser. |
 
@@ -67,6 +67,33 @@ your **laptop** to reach a remote proxy.
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
+```
+
+**What the installer touches.** It is more than a `pip install`, so here is the
+full list before you run it:
+
+- **Python packages** (system-wide, `--break-system-packages`): flask, flask-cors,
+  faiss-cpu, numpy, requests, pyyaml, ddgs, mcp, playwright, patchright,
+  `hound-mcp[all]`, and `zstandard` if needed.
+- **Ollama** — installed and started, even if you plan to use a hosted backend.
+  On a systemd host it also writes a drop-in at
+  `/etc/systemd/system/ollama.service.d/10-mneme.conf` pinning keep-alive.
+- **Two Chromium builds** (~150 MB each) for the browser-based web tools, plus the
+  system libraries they need.
+- **Removes conflicting apt packages** (`python3-flask`, `python3-werkzeug`,
+  `python3-blinker`) that pin versions incompatible with the pip installs.
+
+**Root vs non-root.** Privileged steps — the apt removal, the systemd drop-in, and
+a `/usr/local/bin` helper — are **skipped automatically if you are not root**, with
+a message saying what was skipped and how to apply it later. The proxy itself needs
+none of them. So a normal laptop install without sudo works; you just lose the
+keep-alive pinning and the apt cleanup.
+
+**Prefer to read before running?** Use the git route instead of the pipe:
+
+```bash
+git clone https://github.com/flyersean/Mneme.git
+cd Mneme && ./scripts/install.sh
 ```
 
 ### 2. Configure (on the host)
@@ -111,7 +138,7 @@ Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenA
 
 ---
 
-Mneme is a proxy that sits between an AI agent and its model backend, archives every conversation into searchable memory, and injects relevant past context on each turn. It grades its own epistemic honesty through provenance, not answer-correctness.
+## How it fits together
 
 **Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `memory_only: false` (or `MNEME_MEMORY_ONLY=0`) to turn them on here — the config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
 
@@ -158,9 +185,19 @@ model access to the host:
 None of this is sandboxed. A tool call the model makes is a real tool call.
 
 **Do not expose the proxy directly to the public internet.** There is no
-authentication on the HTTP API. If you need remote access, put it behind an SSH
-tunnel (`scripts/mneme_connect.py` does this for you), a VPN, or a reverse proxy
-that handles auth — and restrict what the machine itself can reach.
+authentication on the HTTP API. **The proxy binds to `127.0.0.1` (localhost only)
+by default** — that is the safe default and you should keep it. If you need remote
+access, put it behind an SSH tunnel (`scripts/mneme_connect.py` does this for you),
+a VPN, or a reverse proxy that handles auth.
+
+Binding wider is possible but deliberate — you are opting out of the safety net:
+
+```bash
+MNEME_BIND=0.0.0.0        # reachable from the network; starts with a warning
+```
+
+Only do that on a machine where the network is already trusted and firewalled. The
+proxy logs a warning at startup when the bind is not localhost.
 
 **Running a self-editing agent? Lock the config.** If you point an agent at a
 task where it can modify its own files — coding, studying, anything that writes
@@ -312,13 +349,13 @@ Pi is offered during setup. To install or run it by hand:
    npm install -g @earendil-works/pi-coding-agent
    ```
 
-2. Point Pi at Mneme. Setup writes `~/.pi/agent/models.json` for you, but the shape is:
+2. Point Pi at Mneme. Setup writes `~/.pi/agent/models.json` for you using this instance's actual port, but the shape is:
 
    ```json
    {
      "providers": {
        "mneme": {
-         "baseUrl": "http://localhost:8080/v1",
+         "baseUrl": "http://localhost:<port>/v1",
          "api": "openai-completions",
          "apiKey": "none",
          "compat": { "supportsDeveloperRole": false, "supportsReasoningEffort": false },
@@ -328,13 +365,16 @@ Pi is offered during setup. To install or run it by hand:
    }
    ```
 
-3. Run Pi:
+3. Run Pi. Setup prints the exact command, using the paths it downloaded to:
 
    ```bash
    pi --provider mneme --model text-mneme:64k \
-     --extension ~/mneme/repo/extensions/pi/mneme-search-tool.ts \
-     --extension ~/mneme/repo/extensions/pi/mneme-web-tools.ts
+     --extension ~/.pi/mneme-extensions/mneme-search-tool.ts \
+     --extension ~/.pi/mneme-extensions/mneme-web-tools.ts
    ```
+
+   If you are running from a git clone instead, the same files are in the repo:
+   `extensions/pi/mneme-search-tool.ts` and `mneme-web-tools.ts`.
 
 ### Connect any other OpenAI client
 
@@ -622,7 +662,7 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 | `retrieval.inject_min_similarity` | `0.45` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall. **Embedder-dependent** — see the note below. |
 | `retrieval.strategy_min_similarity` | `0.40` | second, lower floor — chunks in `[strategy_min, inject_min)` don't inject as memory, but their **linked strategies** still do (a learned approach generalizes to same-concept queries just under the memory floor). Must stay below `inject_min_similarity`; embedder-dependent too. |
 | `retrieval.max_injected_tokens` | `8000` | token budget for memory stuffed into the prompt |
-| `sampling.ctx_tokens` | `65536` | the model's context window (`num_ctx`) — must match the model's actual capability |
+| `sampling.ctx_tokens` | `65536` | the model's context window (`num_ctx`) — must match the model's actual capability. The wizard's "64K" preset writes `64000`, leaving headroom |
 | `sampling.completion_reserve` | `8192` (setup writes `ctx/8`) | tokens held back for the model's reply — never touched by input |
 | `caps.tool_followup_tokens` | `10000` (setup writes `ctx/6`) | tokens reserved for tool results inside the loop |
 | `storage.memory_enabled` | `true` | master switch — `false` disables ALL memory (no retrieval/injection/staging, `search_memory` off) while keeping tools |
@@ -694,7 +734,9 @@ This is called out in the example's comments too.
 
 ## Multiple instances — one DB, many models
 
-Mneme can run several proxy instances against one shared memory DB. Each instance listens on its own port (8080, 8081, 8082, …) and runs its own chat model + backend; they all read/write the same memory.
+Mneme can run several proxy instances against one shared memory DB. Each instance listens on its own port (8080, 8082, 8083, …) and runs its own chat model + backend; they all read/write the same memory.
+
+> **Avoid port 8081 on RunPod** — nginx reserves it there, so a proxy on 8081 will fail to bind. Elsewhere it is fine. The setup wizard's port picker probes for a free port and will normally skip it.
 
 To add an instance, run the setup wizard again and point it at the same DB directory. It detects the existing DB and offers **"Add another proxy instance"**. The wizard auto-picks the next free port, asks for the new instance's chat model (and backend), and writes a per-instance start script (`start_proxy_<port>.sh`).
 
@@ -722,14 +764,30 @@ Two hard rules apply:
 | GET | `/mcp/servers` | List connected MCP servers + their tools and status |
 | POST | `/mcp/servers` | Add (or replace) an MCP server at runtime — `{"name", "command"?, "args"?, "env"?, "url"?}` |
 | DELETE | `/mcp/servers/<name>` | Remove an MCP server at runtime |
+| POST | `/search` | Direct memory retrieval without a generation — `{"query", "top_k"?}` |
+| GET | `/detail/<chunk_id>` | Full detail for one chunk (messages, grade, topics, provenance) |
+| GET | `/models`, `/v1/models` | List available models |
+| POST | `/memory/retract`, `/memory/restore` | Mark a chunk false / undo — `{"chunk_id", "reason"?}` |
+| GET | `/memory/proposals` | Chunks the model proposed as wrong, awaiting review |
+| POST | `/memory/proposals/<chunk_id>/confirm` or `/deny` | Act on a proposal |
+| GET | `/memory/log` | Audit log of every curation action |
 
 ## Testing
 
 Run the deterministic regression tests with:
 
 ```bash
-~/mneme/venv/bin/python tests/test_tool_loop.py
+python3 tests/test_tool_loop.py
 ```
+
+The whole suite (all files) takes a couple of minutes:
+
+```bash
+for t in tests/test_*.py; do echo "--- $t"; python3 "$t"; done
+```
+
+The installer installs dependencies system-wide (no virtualenv), so `python3` is
+the interpreter to use. If you added your own venv, use that interpreter instead.
 
 The tests require no live model or network. A scripted model stands in for the LLM, and the real SQLite/FAISS + retrieval paths run against an in-memory DB.
 
@@ -843,13 +901,13 @@ DB.
 | --- | --- | --- |
 | Chat | `POST /v1/chat/completions` | Full agent turns — memory retrieval, injection, the tool loop, and grading all happen proxy-side |
 | Chat (native) | `POST /api/chat` | Same, in Ollama's native shape |
-| Memory search | `GET /search` | Direct retrieval without a model call |
+| Memory search | `POST /search` | Direct retrieval without a model call — `{"query", "top_k"?}` |
 | Recent chunks | `GET /list`, `GET /detail/<chunk_id>` | Browsing what memory actually contains |
 | Memory curation | `POST /memory/retract`, `/memory/restore` | Marking a stored chunk false, or undoing it |
 | Review queue | `GET /memory/proposals`, plus `POST .../confirm` and `.../deny` | Acting on a chunk the model proposed as wrong |
 | Audit log | `GET /memory/log` | Every curation action, who did it, and why |
 | Prompts | `GET/POST /instructions*` | Reading or editing the system prompts |
-| Health / models | `GET /health`, `/models` | Discovery, readiness |
+| Health / models | `GET /health`, `/models`, `/v1/models` | Discovery, readiness |
 
 The important one is `POST /v1/chat/completions`: an extension gets memory, tools,
 provenance, and the tool loop **for free** by sending a normal OpenAI-shaped request.
@@ -942,6 +1000,21 @@ prompt or options and it applies to the next step), exactly like the proxy's own
 
 See `extensions/swarm/README.md` for a worked example that exercises every primitive, and
 `extensions/swarm/SWARM_REFERENCE.md` for the complete field reference.
+
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
+| `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
+| `tests/` | The deterministic suite (~292 tests) — see [Testing](#testing) |
+| `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
+| `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, per-model write-ups |
+| `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
+| `launch.sh` | Convenience launcher for a **local** machine: starts the proxy in the background, then runs Pi; exiting Pi stops the proxy |
+| `AGENTS.md` | Instructions written *for AI coding agents* — how to stand up an instance and how to author an extension. If you are pointing a coding agent at this repo, give it this file |
+| `mneme.yaml.example` | Annotated reference config — every setting with a plain-English comment |
+| `model_templates.yaml` | Known-good per-model generation settings — see [Model selection](#model-selection) |
 
 ## Branches
 

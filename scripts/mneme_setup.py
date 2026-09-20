@@ -178,8 +178,16 @@ def load_saved_key():
 
 def save_key(key):
     os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
-    with open(KEY_FILE, "w") as f:
-        f.write(f"OPENROUTER_API_KEY={key}\n")
+    # Create with 0o600 from the start. Writing first and chmod-ing after leaves a
+    # window where the API key sits on disk with default (world-readable)
+    # permissions — an API key is exactly the thing not to leak that way.
+    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, f"OPENROUTER_API_KEY={key}\n".encode())
+    finally:
+        os.close(fd)
+    # Belt and braces: if the file already existed with looser bits, os.open's mode
+    # is ignored (it only applies on create), so enforce it here too.
     os.chmod(KEY_FILE, 0o600)
     print(f"  Saved key to {KEY_FILE} (chmod 600).")
 
@@ -246,11 +254,56 @@ def _budget_parts(ctx_tokens):
     return reserve, tool
 
 
+def _or_model_available(model_id, timeout=10):
+    """Check an OpenRouter model actually has a live endpoint.
+
+    A model id can exist in the catalogue while having ZERO endpoints (retired, or
+    a stealth model that has rotated out) — and picking one produces a config that
+    fails on the first message with a confusing provider error. Checking at setup
+    time turns that into a clear message at the point of choice.
+
+    Uses urllib (stdlib) like the rest of this script — it must run via
+    `curl | python3` with only PyYAML installed, so `requests` is not available.
+
+    Returns (known_bool, endpoint_count) — known_bool is False when the lookup
+    itself failed (offline, API change) so we never block on our own error.
+    """
+    req = urllib.request.Request(
+        f"https://openrouter.ai/api/v1/models/{model_id}/endpoints",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        payload = json.loads(resp.read())
+    except (urllib.error.HTTPError, urllib.error.URLError,
+            OSError, ValueError, TypeError):
+        return False, 0
+    data = (payload or {}).get("data") or {}
+    return True, len(data.get("endpoints") or [])
+
+
+def _warn_if_model_dead(model_id, label="model"):
+    """Non-blocking availability warning for a chosen OpenRouter model id."""
+    known, n = _or_model_available(model_id)
+    if not known:
+        return  # couldn't tell — don't cry wolf
+    if n == 0:
+        print(f"  ⚠ '{model_id}' is listed by OpenRouter but currently has NO live")
+        print(f"    endpoints (retired, or a stealth model that rotated out).")
+        print(f"    The {label} will fail on the first message. Choose another id, or")
+        print(f"    update it later in mneme.yaml (providers.<name>.{label}).")
+    else:
+        print(f"  ✓ {model_id} — {n} endpoint(s) live")
+
+
 def setup_openrouter_models():
     """Pick main/embed/label models (OpenRouter IDs). Returns a dict."""
     print("\n\033[1mModels (all hosted on OpenRouter — nothing downloaded)\033[0m")
+    # NOTE: ids in this list are suggestions, not fixtures — OpenRouter retires
+    # models and rotates stealth ones out. Each choice is checked for a live
+    # endpoint below, so a stale entry warns instead of silently shipping a broken
+    # config. 'Custom' is always available for anything newer.
     main_opts = [
-        ("stealth/ox-alpha           (free frontier coder, 1M ctx, reasoning)", "stealth/ox-alpha"),
         ("deepseek/deepseek-v4-flash  (cheapest thinking MoE)", "deepseek/deepseek-v4-flash"),
         ("deepseek/deepseek-chat      (V3, non-thinking)", "deepseek/deepseek-chat"),
         ("qwen/qwen3-32b              (open-weight)", "qwen/qwen3-32b"),
@@ -261,6 +314,7 @@ def setup_openrouter_models():
         model = ask("Enter OpenRouter model id", OR_DEFAULT_MAIN) or OR_DEFAULT_MAIN
     else:
         model = main_opts[idx][1]
+    _warn_if_model_dead(model, "model")
 
     embed_opts = [
         ("voyageai/voyage-4-lite  (1024-dim, recommended)", "voyageai/voyage-4-lite"),
@@ -271,6 +325,7 @@ def setup_openrouter_models():
         embed_model = ask("Enter embedder model id (1024-dim)", OR_DEFAULT_EMBED) or OR_DEFAULT_EMBED
     else:
         embed_model = embed_opts[idx][1]
+    _warn_if_model_dead(embed_model, "embed_model")
 
     label_opts = [
         ("meta-llama/llama-3.2-3b-instruct  (small, non-thinking — recommended)", "meta-llama/llama-3.2-3b-instruct"),
@@ -281,6 +336,7 @@ def setup_openrouter_models():
         label_model = ask("Enter labeler model id (non-thinking)", OR_DEFAULT_LABEL) or OR_DEFAULT_LABEL
     else:
         label_model = label_opts[idx][1]
+    _warn_if_model_dead(label_model, "label_model")
 
     ctx_size = pick_context_window()
     return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
@@ -301,13 +357,14 @@ def ensure_ollama():
         # Mirror the install.sh systemd drop-in here: this fallback runs when Ollama
         # is NOT under systemd (e.g. RunPod images), so without this the serve
         # process inherits none of the OLLAMA_* settings. keep_alive=-1 keeps models
-        # resident; flash_attention=1 is faster + lower memory (some vision-patched
-        # GGUF models crash with it — set 0 if you hit a CUDA illegal-memory-access
-        # on long prompts); sched_spread=1 spreads models across ALL GPUs instead of
-        # packing them onto GPU 0 (the second A40 would otherwise sit idle at 0%).
+        # resident; flash_attention=0 matches the installer's default (OFF, because
+        # some vision-patched GGUF models crash with "CUDA illegal memory access" on
+        # long prompts when it is ON — set 1 only if your model is unaffected);
+        # sched_spread=1 spreads models across ALL GPUs instead of packing them onto
+        # GPU 0 (the second A40 would otherwise sit idle at 0%).
         _env = os.environ.copy()
         _env["OLLAMA_KEEP_ALIVE"] = "-1"
-        _env["OLLAMA_FLASH_ATTENTION"] = "1"
+        _env["OLLAMA_FLASH_ATTENTION"] = "0"
         _env["OLLAMA_SCHED_SPREAD"] = "1"
         subprocess.Popen(["ollama", "serve"], env=_env, stdout=open("/tmp/ollama.log", "ab"),
                          stderr=subprocess.STDOUT, start_new_session=True)
@@ -638,8 +695,13 @@ def _ensure_node():
     return False
 
 
-def setup_pi(ctx_size, branch="unified_mneme"):
-    """Install Pi + write its provider config pointing at this proxy. Returns True on success."""
+def setup_pi(ctx_size, branch="unified_mneme", port=8080):
+    """Install Pi + write its provider config pointing at this proxy. Returns True on success.
+
+    `port` MUST be this instance's actual port — it is chosen before this runs.
+    Hardcoding 8080 produced a silently broken Pi setup for anyone who picked a
+    different port.
+    """
     if not _ensure_node():
         print("  ⚠ Pi install skipped — Node.js unavailable.")
         return False
@@ -655,7 +717,7 @@ def setup_pi(ctx_size, branch="unified_mneme"):
     pi_config = {
         "providers": {
             "mneme": {
-                "baseUrl": "http://localhost:8080/v1",
+                "baseUrl": f"http://localhost:{port}/v1",
                 "api": "openai-completions",
                 "apiKey": "none",
                 "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
@@ -667,14 +729,29 @@ def setup_pi(ctx_size, branch="unified_mneme"):
     with open(os.path.expanduser("~/.pi/agent/models.json"), "w") as f:
         json.dump(pi_config, f, indent=2)
 
-    # Download the Pi extensions (fresh, cache-busted).
+    # Download the Pi extensions into ~/.pi/mneme-extensions/ (a stable, discoverable
+    # location the printed command below can reference exactly). Previously these
+    # landed as loose files in $HOME while the README documented the in-repo path,
+    # so the two disagreed.
+    _ext_dir = os.path.expanduser("~/.pi/mneme-extensions")
+    os.makedirs(_ext_dir, exist_ok=True)
+    _ext_paths = []
     for name, fname in [("search_memory", "mneme-search-tool.ts"), ("web tools", "mneme-web-tools.ts")]:
         url = f"https://raw.githubusercontent.com/flyersean/Mneme/{branch}/extensions/pi/{fname}"
-        r = run(f"curl -sSL --fail -o {os.path.expanduser('~/' + fname)} '{url}?{int(time.time())}'")
+        dest = os.path.join(_ext_dir, fname)
+        r = run(f"curl -sSL --fail -o {dest} '{url}?{int(time.time())}'")
         print(f"    {'✓' if r.returncode == 0 else '⚠'} {name} extension")
+        if r.returncode == 0:
+            _ext_paths.append(dest)
 
     print("  ✓ Pi configured → run with:")
-    print("      pi --provider mneme --model text-mneme:64k --extension ~/mneme-search-tool.ts --extension ~/mneme-web-tools.ts")
+    if _ext_paths:
+        print("      pi --provider mneme --model text-mneme:64k \\")
+        for i, p in enumerate(_ext_paths):
+            _tail = " \\" if i < len(_ext_paths) - 1 else ""
+            print(f"         --extension {p}{_tail}")
+    else:
+        print("      pi --provider mneme --model text-mneme:64k")
     return True
 
 
@@ -692,6 +769,30 @@ def _mcp_yaml(servers):
         return "mcp_servers: []"
     dumped = yaml.safe_dump(servers, default_flow_style=None, sort_keys=False).rstrip("\n")
     return "mcp_servers:\n" + "\n".join("  " + ln for ln in dumped.split("\n"))
+
+
+def _embedder_floor(embed_model):
+    """Pick an initial `inject_min_similarity` for the chosen embedder.
+
+    This MUST be embedder-dependent: every embedding model has its own similarity
+    scale, so a value that works for one injects noise for another. Shipping a
+    flat 0.45 was wrong for the OpenRouter default (voyage-4-lite has a noise
+    floor near 0.48, so 0.45 lets noise straight through).
+
+    These are measured starting points, not tuned values — the README tells users
+    to tune per embedder. Returns (value, note) where note documents the reasoning
+    in the generated config.
+    """
+    m = (embed_model or "").lower()
+    if "voyage" in m:
+        return 0.62, "voyage ~0.48 noise / ~0.70 relevant — 0.62 measured starting point"
+    if "snowflake" in m:
+        return 0.45, "snowflake-arctic-embed2 — 0.45 measured starting point"
+    if "nomic" in m:
+        return 0.55, "nomic-embed — unverified starting point; tune for your data"
+    # Unknown embedder: be explicit that this is a guess, not a measurement.
+    return 0.50, ("UNKNOWN EMBEDDER — this is a placeholder, not a measurement. "
+                  "Tune it: see 'Tune inject_min_similarity per embedder' in the README")
 
 
 def _template_owned_keys(model_template):
@@ -720,7 +821,7 @@ def _template_owned_keys(model_template):
         return set(), {}
 
 
-def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True, model_template=""):
+def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True, model_template="", embed_model=""):
     reserve, tool = _budget_parts(ctx_tokens)
     _mcp_block = _mcp_yaml(mcp_servers)
     _hot_reload_s = "true" if hot_reload else "false"
@@ -747,6 +848,11 @@ def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, m
             return f"  # {key}: (unset){comment}\n"
         return f"  {key}: {default}{comment}\n"
 
+    _floor, _floor_note = _embedder_floor(embed_model)
+    # The second floor must stay BELOW the injection floor, or the strategy layer
+    # can never fire. Derive it rather than hardcoding a value that silently
+    # inverts if the injection floor is low.
+    _strategy_floor = round(max(0.0, _floor - 0.05), 2)
     return f"""# Mneme proxy config — generated by the unified setup wizard.
 # Precedence: environment variable > this file > built-in default.
 # Full reference (every option + comment): mneme.yaml.example in the repo.
@@ -819,14 +925,14 @@ storage:
 # Memory retrieval: what gets injected into the prompt each turn.
 retrieval:
   max_injected_tokens: 8000        # token budget for memory stuffed into the prompt
-  # inject_min_similarity is EMBEDDER-DEPENDENT: every embedding model has its
-  # own similarity scale, so tune this to YOUR embedder (see mneme.yaml.example).
-  #   voyage-4-lite: ~0.62   snowflake-arctic-embed2: ~0.45
-  inject_min_similarity: 0.45
-  strategy_min_similarity: 0.40    # second floor (must stay below inject_min_similarity)
+  # inject_min_similarity is EMBEDDER-DEPENDENT: every embedding model has its own
+  # similarity scale, so this value is chosen for YOUR embedder ({embed_model}).
+  #   {_floor_note}
+  # Changing embedder? Re-tune this (see the README).
+  inject_min_similarity: {_floor}
+  strategy_min_similarity: {_strategy_floor}    # second floor (must stay below inject_min_similarity)
   keyword_fallback: false          # pad sparse FAISS with substring matches (pollutes context)
   route_threshold: 0.08            # only used by the /search debug endpoint
-  classify_threshold: 0.78         # unused (dead config)
   baseline_noise: 0.20             # auto-calibrated at startup
   age_decay_days: 7                # recency half-life (days)
   max_siblings: 3                  # sibling chunks pulled per topic hit
@@ -912,18 +1018,21 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
         btype, bprov = "openai", "openrouter"
     else:
         btype, bprov = "ollama", ""
-    yaml = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template)
-    yaml = (yaml.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
-            .replace("@@MAIN@@", models.get("model", ""))
-            .replace("@@EMBED@@", models.get("embed_model", ""))
-            .replace("@@LABEL@@", models.get("label_model", "")))
+    # Named `cfg_text`, not `yaml` — a local called `yaml` shadows the imported
+    # PyYAML module for the rest of this function, which is a landmine for any
+    # later edit that needs yaml.safe_load/dump here.
+    cfg_text = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template, models.get("embed_model", ""))
+    cfg_text = (cfg_text.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
+                .replace("@@MAIN@@", models.get("model", ""))
+                .replace("@@EMBED@@", models.get("embed_model", ""))
+                .replace("@@LABEL@@", models.get("label_model", "")))
     path = os.path.join(instance_dir, "mneme.yaml")
     # Write atomically (temp + fsync + rename) so a proxy launched right after
     # this can never read a half-written config. A partial config load silently
     # left reasoning ON and made thinking models runaway-timeout (the 12B hang).
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        f.write(yaml)
+        f.write(cfg_text)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
@@ -1536,7 +1645,7 @@ def main():
             # New install: stop any running instance, wipe the DB, then fall
             # through to the fresh setup below (reconf_port stays None so the
             # fresh defaults — port 8080 etc. — apply).
-            ans = ask("Wipe the existing memory DB and start fresh? This permanently deletes ALL saved memory. [y/N]", "N").strip().lower()
+            ans = ask("Wipe the existing memory DB and start fresh? This permanently deletes ALL saved memory, the FAISS index, and the generated config/start scripts (including any prompts or settings you edited). [y/N]", "N").strip().lower()
             if ans not in ("y", "yes"):
                 print("  Cancelled — keeping the existing install.")
                 return 0
@@ -1614,7 +1723,7 @@ def main():
 
     if install_pi:
         try:
-            setup_pi(models.get("ctx_size"), branch)
+            setup_pi(models.get("ctx_size"), branch, port=port)
         except Exception as e:
             print(f"  ⚠ Pi setup failed ({type(e).__name__}: {e}) — continuing without Pi.")
 

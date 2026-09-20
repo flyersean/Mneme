@@ -19,6 +19,34 @@
 # ============================================================================
 set -e
 
+# ── Privilege model ──────────────────────────────────────────────────
+# Some steps are privileged: removing conflicting apt packages, installing a
+# zstd binary to /usr/local/bin, and writing the Ollama systemd drop-in. Under
+# `set -e` those would ABORT the whole install for a non-root user (the README
+# says a laptop is a valid host, and laptops are usually non-root).
+#
+# So: detect root once, and let privileged steps SKIP with a clear message
+# instead of failing. Nothing here is required for the proxy to run — the drop-in
+# only pins keep-alive, the zstd stub only matters for the tarball fallback, and
+# the apt removal only clears packages that conflict with pip's versions.
+if [ "$(id -u)" -eq 0 ]; then
+  MNEME_HAVE_ROOT=1
+else
+  MNEME_HAVE_ROOT=0
+  echo "  ⓘ Not running as root — skipping privileged steps (apt cleanup,"
+  echo "    systemd drop-in, /usr/local/bin). The proxy itself does not need them."
+  echo "    Re-run with sudo if you want those applied."
+fi
+
+# Run a privileged command only as root; otherwise report and continue.
+maybe_root() {
+  if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+    "$@" || true
+  else
+    return 1
+  fi
+}
+
 # Which repo branch to install. The README passes this (main vs unified_mneme);
 # it drives the self-update URL, the clone, and the tarball fallback so that
 # following the `main` README installs the memory-only build and following the
@@ -46,7 +74,13 @@ echo; echo "[1/3] Python dependencies"
 
 # Remove system packages that conflict with the pip versions (a known pod/laptop
 # gotcha: apt's python3-flask pins old werkzeug/blinker that break the proxy).
-apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-blinker 2>/dev/null || true
+# Root-only, and skipped entirely on a non-root install — if these packages are
+# present the pip install below still shadows them via --ignore-installed.
+if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+  apt-get remove -y -qq python3-flask python3-flask-cors python3-werkzeug python3-blinker 2>/dev/null || true
+else
+  echo "  ⓘ Skipping apt removal (not root) — pip will shadow any system packages."
+fi
 
 # Install from pip. --break-system-packages handles PEP 668 (Ubuntu 22.04+).
 # --ignore-installed bypasses any lingering pinned system packages.
@@ -106,13 +140,18 @@ fi
 # ── 2. Ollama ─────────────────────────────────────────────────────────
 echo; echo "[2/3] Ollama"
 
-# Flash attention ON by default: faster decode and lower memory, which helps fit
-# big models on one GPU. CAVEAT: some vision-patched GGUF models (e.g. the
-# HauhauCS Qwen3.6-35B) crash with "CUDA error: an illegal memory access was
-# encountered" on prompts longer than ~1-2k tokens when flash attention is ON —
-# if you hit that, set OLLAMA_FLASH_ATTENTION=0 for that model. Set before
-# starting ollama.
-export OLLAMA_FLASH_ATTENTION=1
+# Flash attention OFF by default, set consistently in BOTH places below.
+#
+# Why OFF: some vision-patched GGUF models (e.g. the HauhauCS Qwen3.6-35B) crash
+# with "CUDA error: an illegal memory access was encountered" on prompts longer
+# than ~1-2k tokens when flash attention is ON. A crash mid-swarm-step is worse
+# than a slower decode, so the default is the safe one.
+#
+# Turning it ON is a deliberate speed/memory win — faster decode, lower VRAM,
+# useful for fitting a big model on one GPU. Do it ONLY after confirming your
+# model does not hit the crash, and set it in the systemd drop-in below (that is
+# what the running service actually reads) as well as here.
+export OLLAMA_FLASH_ATTENTION=0
 # Keep models resident in VRAM (never unload). Default is 5m — a turn after an
 # idle gap then pays a 30-60s reload of the 27GB model, which can exceed the
 # proxy's first-token timeout. -1 = stay loaded until the pod shuts down.
@@ -135,25 +174,39 @@ else
   # that needs only pip (prebuilt wheel, no compiler) and no package manager.
   if ! command -v zstd >/dev/null 2>&1; then
     echo "  installing zstd (required by Ollama's installer)..."
-    for _ in 1 2 3; do
-      apt-get update -qq 2>/dev/null && break
-      sleep 2
-    done
-    apt-get install -y -qq zstd curl 2>/dev/null || true
+    if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+      for _ in 1 2 3; do
+        apt-get update -qq 2>/dev/null && break
+        sleep 2
+      done
+      apt-get install -y -qq zstd curl 2>/dev/null || true
+    else
+      echo "    (not root — apt install skipped)"
+    fi
   fi
   if ! command -v zstd >/dev/null 2>&1; then
     echo "  apt has no zstd — installing a Python zstandard shim instead..."
     python3 -m pip install --break-system-packages --quiet zstandard 2>/dev/null \
       || python3 -m pip install --quiet zstandard 2>/dev/null || true
     if python3 -c "import zstandard" 2>/dev/null; then
-      cat > /usr/local/bin/zstd <<'EOF'
+      # Write the shim somewhere writable: /usr/local/bin needs root, so fall
+      # back to ~/.local/bin (on PATH for most users) otherwise. Without this a
+      # non-root install under `set -e` died writing to /usr/local/bin.
+      if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+        _ZSTD_DIR=/usr/local/bin
+      else
+        _ZSTD_DIR="$HOME/.local/bin"
+        mkdir -p "$_ZSTD_DIR"
+      fi
+      cat > "$_ZSTD_DIR/zstd" <<'EOF'
 #!/usr/bin/env python3
 # Minimal zstd shim (decompress stdin -> stdout), enough for Ollama's installer.
 import sys
 import zstandard
 zstandard.ZstdDecompressor().copy_stream(sys.stdin.buffer, sys.stdout.buffer)
 EOF
-      chmod +x /usr/local/bin/zstd
+      chmod +x "$_ZSTD_DIR/zstd"
+      export PATH="$_ZSTD_DIR:$PATH"
     fi
   fi
   if ! command -v zstd >/dev/null 2>&1; then
@@ -172,22 +225,29 @@ fi
 # a systemd service with a clean environment, so without this the running server
 # keeps the 5m default and unloads models between swarm steps. Idempotent.
 if systemctl cat ollama.service >/dev/null 2>&1; then
-  mkdir -p /etc/systemd/system/ollama.service.d
-  cat > /etc/systemd/system/ollama.service.d/10-mneme.conf <<'EOF'
+  if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+    mkdir -p /etc/systemd/system/ollama.service.d
+    cat > /etc/systemd/system/ollama.service.d/10-mneme.conf <<'EOF'
 [Service]
 Environment=OLLAMA_KEEP_ALIVE=-1
 Environment=OLLAMA_FLASH_ATTENTION=0
 Environment=OLLAMA_SCHED_SPREAD=1
 EOF
-  systemctl daemon-reload
-  systemctl restart ollama 2>/dev/null || systemctl start ollama 2>/dev/null || true
-  # Wait for the restarted service to come back before the "is it answering"
-  # check below, so we don't fire a competing nohup instance on a port race.
-  for _ in $(seq 1 20); do
-    curl -s --max-time 2 http://localhost:11434 >/dev/null 2>&1 && break
-    sleep 1
-  done
-  echo "  ✓ ollama systemd drop-in written (keep_alive=-1, flash_attention=0) + restarted"
+    systemctl daemon-reload
+    systemctl restart ollama 2>/dev/null || systemctl start ollama 2>/dev/null || true
+    # Wait for the restarted service to come back before the "is it answering"
+    # check below, so we don't fire a competing nohup instance on a port race.
+    for _ in $(seq 1 20); do
+      curl -s --max-time 2 http://localhost:11434 >/dev/null 2>&1 && break
+      sleep 1
+    done
+    echo "  ✓ ollama systemd drop-in written (keep_alive=-1, flash_attention=0) + restarted"
+  else
+    echo "  ⓘ systemd drop-in skipped (not root). Ollama will use its 5m keep-alive"
+    echo "    default, so models unload between swarm steps. To pin it later:"
+    echo "      sudo mkdir -p /etc/systemd/system/ollama.service.d"
+    echo "      # add 10-mneme.conf with OLLAMA_KEEP_ALIVE=-1, then: sudo systemctl daemon-reload"
+  fi
 else
   echo "  (no ollama systemd unit — keep-alive relies on the env export above)"
 fi

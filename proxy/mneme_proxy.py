@@ -7318,7 +7318,19 @@ if __name__ == "__main__":
     if FLASK_OK:
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep
-        app.run(host="0.0.0.0", port=PORT, threaded=True)
+        # Bind to localhost by default. Mneme has NO AUTHENTICATION and exposes
+        # `bash`, `write`, filesystem reads and arbitrary MCP tools — a
+        # network-reachable instance is remote code execution for anyone who can
+        # reach the port. Opt in to a wider bind EXPLICITLY and knowingly:
+        #     MNEME_BIND=0.0.0.0
+        # Only do that behind a tunnel/VPN/firewall. See the Security section of
+        # the README.
+        _bind = os.environ.get("MNEME_BIND", "127.0.0.1").strip() or "127.0.0.1"
+        if _bind not in ("127.0.0.1", "localhost", "::1"):
+            print(f"  [WARN] binding to {_bind} — Mneme has no auth and exposes "
+                  f"bash/file tools. Only do this behind a tunnel or firewall.",
+                  flush=True)
+        app.run(host=_bind, port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",
               flush=True)

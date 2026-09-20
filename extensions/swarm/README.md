@@ -57,20 +57,24 @@ freeze -> snapshot -> critics -> consume -> gate -> synthesize -> decide
 2. Make a working directory for the run's state and put your brief in it:
 
    ```
-   mkdir -p /workspace/swarm/input
-   printf 'A generation ship on a thousand-year voyage...\n' > /workspace/swarm/input/story.txt
+   # On a pod, use persistent storage (e.g. /workspace/swarm — /workspace is the
+   # durable mount on RunPod). On a laptop, anywhere you like, e.g. ~/swarm:
+   WORK=${MNEME_SWARM_DIR:-$HOME/swarm}
+   mkdir -p "$WORK/input"
+   printf 'A generation ship on a thousand-year voyage...\n' > "$WORK/input/story.txt"
    ```
 
 3. Run the orchestrator **from that working directory**:
 
    ```
-   cd /workspace/swarm
+   cd "$WORK"
    python3 /path/to/mneme/extensions/swarm/swarm_orchestrator.py \
        /path/to/mneme/extensions/swarm/swarm_config.yaml
    ```
 
 All folder paths in the config are **relative to the directory you run from**, so the
-inbox, boards, buffer, log and final output live in that directory (e.g. `/workspace/swarm`).
+inbox, boards, buffer, log and final output live in that directory (e.g. `$HOME/swarm`
+on a laptop, `/workspace/swarm` on a pod).
 Pick a directory on persistent storage if you want to keep `output/` and `published/`;
 the `buffer/` and `pass*/` boards are scratch.
 
