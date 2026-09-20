@@ -22,3 +22,6 @@ scripts/benchmark.py
 scripts/gen_doc.py
 scripts/personal_test.py
 scripts/relaunch_effort.sh
+scripts/run_large_input_test.py
+scripts/set_hf.py
+scripts/weather_test.py

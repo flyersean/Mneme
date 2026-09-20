@@ -1504,9 +1504,9 @@ def main():
     print("\n\033[1mStep 0/4 — Memory DB location\033[0m")
     _default_db = os.path.abspath(os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks"))
     # Normalize to an ABSOLUTE path. The proxy resolves a relative chunk_dir against
-    # ITS OWN cwd (the repo), which differs from where setup runs — so "./workspace/chunks"
-    # silently lands in /root/mneme/repo/workspace/chunks (ephemeral) instead of
-    # /workspace/chunks (persistent). abspath() makes the stored path deterministic
+    # ITS OWN cwd (the repo), which differs from where setup runs — so a relative
+    # path silently resolves somewhere ephemeral inside the repo instead of the
+    # intended persistent location. abspath() makes the stored path deterministic
     # no matter where setup or the proxy runs from.
     _raw = ask("Memory DB directory (shared by all instances)", _default_db) or _default_db
     MEMORY_DIR = os.path.abspath(os.path.expanduser(_raw))
