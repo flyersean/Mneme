@@ -1364,6 +1364,86 @@ def test_curation_tools_execute_server_side():
 
 
 @test
+def test_archive_path_stamps_provenance():
+    """REGRESSION: record_provenance() existed but was called from NOWHERE, so
+    derived_from stayed '[]' on a live proxy, detect_self_confirmation() could
+    never fire, and the [SELF-CONFIRMED] label never appeared. Tests passed only
+    because they set the field directly — the classic silent no-op.
+
+    This drives the REAL archive path (not the curation functions) and asserts the
+    chunk comes out carrying both provenance signals.
+
+    Isolation note: `staging` is a module-level buffer shared by every test that
+    runs process_chat, and a background archive worker can flush it concurrently.
+    Asserting against "whatever got archived" is therefore racy. This test instead
+    calls the archive function directly with its own messages and injected_ids, so
+    it verifies the ARCHIVE PATH's stamping without competing with the worker.
+    (An earlier version that seeded staging and let the worker flush it flaked
+    ~50% — the worker archived a previous test's messages instead.)"""
+    import json as _json
+    db = mp.db
+    import numpy as _np
+    _orig_embed = mp.embed
+    try:
+        def _fake(text):
+            v = _np.zeros(mp.DIM, dtype="float32")
+            v[abs(hash(str(text))) % mp.DIM] = 1.0
+            return v
+        mp.embed = _fake
+
+        cid_bad = "mem_prov_bad"
+        # Distinctive topic label so we can find OUR chunk without spying on
+        # save_chunk (a background worker also calls it, and racing that is what
+        # made earlier versions of this test flake).
+        _topic = "provtest_label_9f3a"
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid_bad,))
+            db.execute(
+                "INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, source, "
+                "grade, trust, created_at) VALUES (?,?,?,?,?,?,?)",
+                (cid_bad, "bad fact", "[]", "model", "B", "unverified", "2026-01-01T00:00:00"),
+            )
+            db.commit()
+
+        # Run the archive with the distinctive topic label.
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE topic_label=?", (_topic,))
+            db.commit()
+        n = mp._archive_single_chunk(
+            [{"role": "user", "content": "what is the price?"},
+             {"role": "assistant", "content": f"The price is 42 [source: {cid_bad}]."}],
+            "what is the price?", _topic, source="model",
+            injected_ids=[cid_bad],
+        )
+        assert n == 1, n
+
+        # Read the row immediately, under the db lock.
+        with mp._db_lock:
+            row = db.execute(
+                "SELECT chunk_id, derived_from, injected_chunk_ids, model FROM chunks "
+                "WHERE topic_label=? ORDER BY rowid DESC LIMIT 1", (_topic,)
+            ).fetchone()
+        assert row, "archived chunk not found by topic label"
+        new_id, df, inj, mdl = row[0], _json.loads(row[1] or "[]"), _json.loads(row[2] or "[]"), row[3]
+        assert df == [cid_bad], f"derived_from not stamped by the archive path: {df}"
+        assert inj == [cid_bad], f"injected_chunk_ids not stamped: {inj}"
+        assert mdl == mp.MODEL, f"model not recorded: {mdl!r}"
+
+        # And the whole point: lineage can now find the descendant.
+        from mneme import curation as _cur
+        with mp._db_lock:
+            lin = _cur.lineage(db, cid_bad)
+        kids = {x["chunk_id"]: x["relation"] for x in lin["descendants"]}
+        assert new_id in kids, f"lineage did not find the descendant: {kids}"
+        assert sorted(kids[new_id]) == ["cites", "saw"], kids
+    finally:
+        mp.embed = _orig_embed
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid_bad,))
+            db.commit()
+
+
+@test
 def test_chunk_insert_matches_schema():
     """REGRESSION: the chunk INSERT used a bare `VALUES (?,...,?)` with 20
     placeholders. Adding columns via migration (the curation work added 10) made

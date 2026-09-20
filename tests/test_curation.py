@@ -257,6 +257,129 @@ class TestProvenance(unittest.TestCase):
         out = cur.detect_self_confirmation(db, "mem_m", source="model")
         self.assertFalse(out["self_confirm"])
 
+    def test_self_citation_is_dropped(self):
+        """A chunk citing itself is not evidence, and would make lineage cycle."""
+        db = _mkdb()
+        _chunk(db, "mem_self", source="model")
+        r = cur.record_provenance(db, "mem_self", ["mem_self", "mem_other"])
+        self.assertEqual(r["derived_from"], ["mem_other"])
+
+
+class TestRecordContext(unittest.TestCase):
+    """injected_chunk_ids is the RELIABLE contamination signal: derived_from needs
+    the model to cite what it used, but the proxy knows what it injected."""
+
+    def test_context_and_model_recorded(self):
+        db = _mkdb()
+        _chunk(db, "mem_c")
+        r = cur.record_context(db, "mem_c", ["mem_a", "mem_b"], "gemma4:latest")
+        self.assertEqual(r["injected_chunk_ids"], ["mem_a", "mem_b"])
+        c = cur._get_chunk(db, "mem_c")
+        self.assertEqual(c["injected_chunk_ids"], ["mem_a", "mem_b"])
+        self.assertEqual(c["model"], "gemma4:latest")
+
+    def test_self_excluded_and_deduped(self):
+        db = _mkdb()
+        _chunk(db, "mem_c")
+        r = cur.record_context(db, "mem_c", ["mem_c", "mem_a", "mem_a"], "m")
+        self.assertEqual(r["injected_chunk_ids"], ["mem_a"])
+
+    def test_unknown_chunk_raises(self):
+        db = _mkdb()
+        with self.assertRaises(cur.CurationError):
+            cur.record_context(db, "mem_nope", [], "m")
+
+
+class TestLineage(unittest.TestCase):
+    """lineage() answers: what was built on top of this chunk?"""
+
+    def test_finds_cited_child(self):
+        db = _mkdb()
+        _chunk(db, "mem_p")
+        _chunk(db, "mem_c")
+        cur.record_provenance(db, "mem_c", ["mem_p"])
+        lin = cur.lineage(db, "mem_p")
+        self.assertEqual([n["chunk_id"] for n in lin["descendants"]], ["mem_c"])
+        self.assertEqual(lin["descendants"][0]["relation"], ["cites"])
+
+    def test_finds_context_child(self):
+        """The case that citations miss: no citation, but the chunk was in view."""
+        db = _mkdb()
+        _chunk(db, "mem_p")
+        _chunk(db, "mem_c")
+        cur.record_context(db, "mem_c", ["mem_p"], "m")
+        lin = cur.lineage(db, "mem_p")
+        self.assertEqual([n["chunk_id"] for n in lin["descendants"]], ["mem_c"])
+        self.assertEqual(lin["descendants"][0]["relation"], ["saw"])
+
+    def test_both_relations_reported(self):
+        db = _mkdb()
+        _chunk(db, "mem_p")
+        _chunk(db, "mem_c")
+        cur.record_provenance(db, "mem_c", ["mem_p"])
+        cur.record_context(db, "mem_c", ["mem_p"], "m")
+        lin = cur.lineage(db, "mem_p")
+        self.assertEqual(sorted(lin["descendants"][0]["relation"]), ["cites", "saw"])
+
+    def test_transitive(self):
+        db = _mkdb()
+        for cid in ("mem_p", "mem_c", "mem_gc"):
+            _chunk(db, cid)
+        cur.record_provenance(db, "mem_c", ["mem_p"])
+        cur.record_provenance(db, "mem_gc", ["mem_c"])
+        lin = cur.lineage(db, "mem_p")
+        by_id = {n["chunk_id"]: n for n in lin["descendants"]}
+        self.assertIn("mem_gc", by_id)
+        self.assertEqual(by_id["mem_gc"]["depth"], 2)
+        self.assertEqual(by_id["mem_gc"]["via"], "mem_c")
+
+    def test_cycle_terminates(self):
+        """A→B and B→A must not loop forever."""
+        db = _mkdb()
+        _chunk(db, "mem_a")
+        _chunk(db, "mem_b")
+        cur.record_provenance(db, "mem_a", ["mem_b"])
+        cur.record_provenance(db, "mem_b", ["mem_a"])
+        lin = cur.lineage(db, "mem_a")
+        self.assertLessEqual(lin["count"], 2)
+
+    def test_depth_limit_reported(self):
+        db = _mkdb()
+        prev = None
+        for i in range(8):
+            cid = f"mem_{i}"
+            _chunk(db, cid)
+            if prev:
+                cur.record_provenance(db, cid, [prev])
+            prev = cid
+        lin = cur.lineage(db, "mem_0", max_depth=3)
+        self.assertTrue(lin["truncated"], lin)
+        self.assertLessEqual(max(n["depth"] for n in lin["descendants"]), 3)
+
+    def test_node_carries_state(self):
+        """The caller needs to see how bad each descendant is."""
+        db = _mkdb()
+        _chunk(db, "mem_p")
+        _chunk(db, "mem_c", grade="F", source="model", trust="unverified")
+        cur.record_provenance(db, "mem_c", ["mem_p"])
+        cur.retract(db, "mem_c", actor="user", reason="bad")
+        n = cur.lineage(db, "mem_p")["descendants"][0]
+        self.assertEqual(n["grade"], "F")
+        self.assertEqual(n["retracted"], "user")
+        self.assertEqual(n["trust"], "unverified")
+
+    def test_unknown_root_raises(self):
+        db = _mkdb()
+        with self.assertRaises(cur.CurationError):
+            cur.lineage(db, "mem_nope")
+
+    def test_no_descendants_is_empty_not_error(self):
+        db = _mkdb()
+        _chunk(db, "mem_lonely")
+        lin = cur.lineage(db, "mem_lonely")
+        self.assertEqual(lin["count"], 0)
+        self.assertEqual(lin["descendants"], [])
+
 
 class TestLabels(unittest.TestCase):
     def test_retracted_label_is_explicit(self):

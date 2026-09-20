@@ -192,7 +192,7 @@ def _grade_inline(parsed: dict, content: str, was_edge: bool) -> str:
 # Anything else (tool names, "memory", "training data") is accepted as a soft
 # admission and left to the [guess] path.
 
-_INLINE_MEM_RE = re.compile(r"mem_[a-zA-Z0-9]+")
+_INLINE_MEM_RE = re.compile(r"mem_[a-zA-Z0-9_]+")
 _INLINE_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
 

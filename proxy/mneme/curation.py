@@ -111,6 +111,16 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         # Review queue: model-proposed retractions awaiting a human decision.
         "ALTER TABLE chunks ADD COLUMN proposed_retract TEXT DEFAULT ''",
         "ALTER TABLE chunks ADD COLUMN proposed_reason TEXT DEFAULT ''",
+        # Which chat model produced this chunk. `source` is a CATEGORY ('model',
+        # 'tool:x', 'page:x', 'input', 'user') and cannot answer "delete the chunks
+        # gemma4 wrote" — that needs the model name, which was previously only in
+        # the log line and not stored at all.
+        "ALTER TABLE chunks ADD COLUMN model TEXT DEFAULT ''",
+        # Chunk ids that were IN CONTEXT when this chunk was produced. Unlike
+        # derived_from (which needs the model to cite what it used), the proxy
+        # knows the injected set because it chose it — so this is the reliable
+        # signal for "what turns were contaminated by a bad memory?".
+        "ALTER TABLE chunks ADD COLUMN injected_chunk_ids TEXT DEFAULT '[]'",
     )
     for m in migrations:
         try:
@@ -150,7 +160,8 @@ def _get_chunk(db, chunk_id: str) -> Optional[dict]:
     row = db.execute(
         "SELECT chunk_id, topic_label, messages, retracted, retracted_by, "
         "retracted_reason, assert_count, independent_sources, derived_from, self_confirm, "
-        "proposed_retract, proposed_reason "
+        "proposed_retract, proposed_reason, model, injected_chunk_ids, source, grade, "
+        "trust, created_at "
         "FROM chunks WHERE chunk_id=?",
         (chunk_id,),
     ).fetchone()
@@ -163,6 +174,9 @@ def _get_chunk(db, chunk_id: str) -> Optional[dict]:
         "independent_sources": row[7] or 0,
         "derived_from": json.loads(row[8] or "[]"), "self_confirm": bool(row[9]),
         "proposed_retract": row[10] or "", "proposed_reason": row[11] or "",
+        "model": row[12] or "", "injected_chunk_ids": json.loads(row[13] or "[]"),
+        "source": row[14] or "", "grade": row[15] or "C",
+        "trust": row[16] or "", "created_at": row[17] or "",
     }
 
 
@@ -346,15 +360,115 @@ def confidence_tier(chunk: dict) -> str:
 # ── Provenance chains ────────────────────────────────────────────────────
 
 def record_provenance(db, chunk_id: str, derived_from: list) -> dict:
-    """Record which chunk ids this chunk was derived from / cites as support."""
+    """Record which chunk ids this chunk was derived from / cites as support.
+
+    Self-citations are dropped: a chunk citing itself is not evidence, and
+    including it would make the lineage walk see a cycle immediately.
+    """
     chunk = _get_chunk(db, chunk_id)
     if not chunk:
         raise CurationError(f"unknown chunk: {chunk_id}")
-    ids = [c for c in (derived_from or []) if isinstance(c, str) and c]
+    ids = [c for c in (derived_from or [])
+           if isinstance(c, str) and c and c != chunk_id]
     db.execute("UPDATE chunks SET derived_from=? WHERE chunk_id=?",
                (json.dumps(ids), chunk_id))
     db.commit()
     return {"chunk_id": chunk_id, "derived_from": ids}
+
+
+def record_context(db, chunk_id: str, injected_ids: list, model: str = "") -> dict:
+    """Record what was IN CONTEXT when this chunk was produced, and by which model.
+
+    This is the reliable contamination signal. derived_from depends on the model
+    citing its sources — and models paraphrase without citing constantly. The
+    proxy, by contrast, KNOWS which chunks it injected, because it chose them. So
+    when a hallucination is discovered three days later, this answers "which turns
+    were produced with that bad memory in view?" with no model cooperation needed.
+
+    `model` is stored so a filter like "delete chunks gemma4 wrote" is expressible
+    (chunk `source` is a category, not a model name).
+    """
+    chunk = _get_chunk(db, chunk_id)
+    if not chunk:
+        raise CurationError(f"unknown chunk: {chunk_id}")
+    ids = sorted({c for c in (injected_ids or [])
+                  if isinstance(c, str) and c and c != chunk_id})
+    db.execute("UPDATE chunks SET injected_chunk_ids=?, model=? WHERE chunk_id=?",
+               (json.dumps(ids), (model or "")[:200], chunk_id))
+    db.commit()
+    return {"chunk_id": chunk_id, "injected_chunk_ids": ids, "model": model or ""} 
+
+
+def lineage(db, chunk_id: str, max_depth: int = 10) -> dict:
+    """Everything built on top of `chunk_id`, via both provenance signals.
+
+    Two different relationships, both meaningful for damage assessment:
+
+      cites      — this chunk's messages cited that chunk ([source: mem_X]).
+                   Voluntary: the model has to have named it.
+      saw        — that chunk was injected into the context that produced this one.
+                   Recorded by the proxy, so it holds even when the model
+                   paraphrased without citing.
+
+    Returns the transitive closure with each node's state, so the caller can see
+    the shape of the contamination (how far it spread, how bad each node is).
+    A visited set bounds the walk — a cycle (A saw B, B cites A) must not loop.
+    """
+    root = _get_chunk(db, chunk_id)
+    if not root:
+        raise CurationError(f"unknown chunk: {chunk_id}")
+
+    def _children(cid: str):
+        """Direct children of cid, with how each is related."""
+        out = {}
+        for row in db.execute(
+            "SELECT chunk_id, derived_from, injected_chunk_ids FROM chunks "
+            "WHERE derived_from LIKE ? OR injected_chunk_ids LIKE ?",
+            (f'%"{cid}"%', f'%"{cid}"%'),
+        ).fetchall():
+            ccid, df, inj = row[0], json.loads(row[1] or "[]"), json.loads(row[2] or "[]")
+            rels = []
+            if cid in df:
+                rels.append("cites")
+            if cid in inj:
+                rels.append("saw")
+            if rels:
+                out[ccid] = rels
+        return out
+
+    seen = {chunk_id}
+    frontier = [chunk_id]
+    nodes = []
+    depth = 0
+    while frontier and depth < max_depth:
+        depth += 1
+        nxt = []
+        for parent in frontier:
+            for child, rels in _children(parent).items():
+                if child in seen:
+                    continue
+                seen.add(child)
+                c = _get_chunk(db, child)
+                if not c:
+                    continue
+                nodes.append({
+                    "chunk_id": child, "via": parent, "relation": rels,
+                    "depth": depth, "topic_label": c.get("topic_label", ""),
+                    "grade": c.get("grade", ""), "trust": c.get("trust", ""),
+                    "retracted": c.get("retracted", ""), "model": c.get("model", ""),
+                })
+                nxt.append(child)
+        frontier = nxt
+
+    return {
+        "chunk_id": chunk_id,
+        "root": {"topic_label": root.get("topic_label", ""),
+                 "grade": root.get("grade", ""),
+                 "retracted": root.get("retracted", "")},
+        "descendants": nodes,
+        "count": len(nodes),
+        "truncated": bool(frontier) and depth >= max_depth,
+    }
 
 
 def detect_self_confirmation(db, chunk_id: str, source: str = "") -> dict:

@@ -896,6 +896,10 @@ _chunk_seq_lock = threading.Lock()
 # AFTER the save is enqueued) are queued here and linked to the next archived
 # chunk in _archive_single_chunk.
 _pending_strategy_links = []
+# Chunk ids that went into the current turn's injected context (set by
+# build_context, read by the archive path to stamp injected_chunk_ids). Same
+# turn-scoped-global pattern as _pending_strategy_links above.
+_last_injected_ids = []
 _pending_links_lock = threading.Lock()
 # Single sqlite connection shared by the main thread + 2 background workers
 # (check_same_thread=False). Writes must be serialized: an unguarded commit()
@@ -1059,7 +1063,32 @@ def _enqueue(fn, *args, **kwargs):
 
 # ─── Database ──────────────────────────────────────────────────
 
-db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
+class _LockedConnection(sqlite3.Connection):
+    """A sqlite3 Connection whose commit() holds the shared write lock.
+
+    This one connection is shared by the request thread + background workers. An
+    unguarded commit() racing another thread's commit raises "cannot commit - no
+    transaction is active" (SQLite has no active transaction for THIS thread).
+
+    The codebase guards its hot-path writers with _db_lock, but ~30 call sites
+    (tool registry, capability edges, preferences, ...) commit directly. Rather
+    than depend on every present and future call site remembering, make commit()
+    itself atomic. _db_lock is an RLock, so this is safe inside code that already
+    holds it — no deadlock.
+
+    (Found by the provenance work: the archive thread's new writes used to
+    destabilise unrelated tests, because extra commits widened the race window for
+    every unguarded site. Subclassing is necessary because a Connection's
+    attributes are read-only — you cannot monkey-patch db.commit.)
+    """
+
+    def commit(self, *a, **kw):
+        with _db_lock:
+            return super().commit(*a, **kw)
+
+
+db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60,
+                     factory=_LockedConnection)
 db.execute("PRAGMA journal_mode=WAL")
 db.execute("PRAGMA synchronous=NORMAL")
 capability.db = db  # bind the extracted capability module's db handle
@@ -3644,6 +3673,17 @@ def build_context(query: str) -> Tuple[str, str]:
     print(f"  [INJECT] {len(trimmed)}/{len(ordered)} chunks, "
           f"~{used_tokens} tokens (cap: {MAX_INJECTED_TOKENS})", flush=True)
 
+    # Remember which chunks went into THIS turn's context. The archive path reads
+    # this to stamp the resulting chunk with injected_chunk_ids — the reliable
+    # "what was in view when this was written" signal, used to trace contamination
+    # from a later-discovered bad memory. The proxy knows this set because it chose
+    # it, so unlike a citation it does not depend on the model naming its sources.
+    global _last_injected_ids
+    try:
+        _last_injected_ids = sorted({c.get("chunk_id") for c in trimmed if c.get("chunk_id")})
+    except Exception:
+        _last_injected_ids = []
+
     # Log the full injected context for debugging recall failures
     try:
         with open("/tmp/injection_log.txt", "a", encoding="utf-8") as f:
@@ -3705,17 +3745,26 @@ class StagingBuffer:
 
 staging = StagingBuffer()
 
-def archive_staging():
+def archive_staging(injected_ids=None):
     """Flush the staging buffer into topic-split archived chunks.
 
     Each topic group gets its own chunk. Within a topic, chunks are capped
     at MAX_CHUNK_SIZE chars. Overflow gets versioned sibling chunks.
+
+    `injected_ids` is the set of chunk ids that were in the context of the turn(s)
+    being flushed. It is SNAPSHOT BY THE CALLER at enqueue time and threaded here
+    explicitly rather than read from a module global: archiving runs on a worker
+    thread after the request returns, so by the time it runs a later turn may have
+    overwritten any global — which would stamp this chunk with another turn's
+    context, i.e. confidently WRONG provenance. Wrong is worse than absent here,
+    because it is used to assess contamination.
 
     Returns the number of chunks archived.
     """
     msgs = staging.flush()
     if not msgs:
         return 0
+    _turn_injected = list(injected_ids or [])
 
     # Increment save-cycle counter on every flush
     _next_cycle()
@@ -3725,7 +3774,7 @@ def archive_staging():
     
     total = 0
     for topic_label, group_msgs in groups:
-        n = _archive_group(topic_label, group_msgs)
+        n = _archive_group(topic_label, group_msgs, _turn_injected)
         total += n
     
     print(f"  [ARCHIVE] {len(groups)} topics, {total} chunks total (cycle={_current_cycle()})", flush=True)
@@ -3802,8 +3851,9 @@ MAX_CHUNK_SIZE = int(os.environ.get("MNEME_MAX_CHUNK_SIZE", "10000"))  # chars p
 PAGE_MAX_CHUNK_SIZE = int(os.environ.get("MNEME_PAGE_MAX_CHUNK_SIZE", "4000"))  # chars per page-source chunk
 
 
-def _archive_group(topic_label: str, msgs: list) -> int:
+def _archive_group(topic_label: str, msgs: list, injected_ids=None) -> int:
     """Archive a topic group, splitting if too large. Returns chunk count."""
+    _inj = list(injected_ids or [])
     SEMANTIC_ROLES = ("user", "assistant")
     
     # Build embedding text — strip browser wrapper noise for clean vectors
@@ -3827,7 +3877,7 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     # If group is small enough, archive as single chunk
     if len(user_text) <= max_size:
         descriptive = _llm_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
-        return _archive_single_chunk(msgs, user_text, descriptive, source=source)
+        return _archive_single_chunk(msgs, user_text, descriptive, source=source, injected_ids=_inj)
     
     # Split into sibling chunks by max_size
     total = 0
@@ -3851,7 +3901,7 @@ def _archive_group(topic_label: str, msgs: list) -> int:
             # Archive current batch
             descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
             label = f"{descriptive[:30]}_p{seq_base}"
-            _archive_single_chunk(current, current_text, label, source=source)
+            _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj)
             total += 1
             seq_base += 1
             current = []
@@ -3864,7 +3914,7 @@ def _archive_group(topic_label: str, msgs: list) -> int:
     if current:
         descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
         label = f"{descriptive[:30]}_p{seq_base}" if total > 0 else (_llm_topic_label(user_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label)
-        _archive_single_chunk(current, current_text, label, source=source)
+        _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj)
         total += 1
     
     return total
@@ -3914,7 +3964,7 @@ def _infer_source(msgs: list) -> str:
     return "unknown"
 
 
-def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: str = "unknown") -> int:
+def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: str = "unknown", injected_ids=None) -> int:
     """Archive one chunk. Returns 1 on success."""
     # Determine outcome and problem type heuristically
     full_text = " ".join(m["content"][:200] for m in msgs if m["role"] in ("user", "assistant"))
@@ -3977,6 +4027,48 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     # Pass generated sequential chunk_id through to save_chunk
     save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id, grade=chunk_grade,
                outcome=outcome, problem_type=ptype, source=source)
+
+    # ── Provenance stamping ──────────────────────────────────────────────
+    # Two signals, recorded now that the chunk id exists:
+    #
+    #   derived_from       — chunks this one CITES ([source: mem_XXXX] tags in its
+    #                        own messages). Voluntary: the model has to name them.
+    #   injected_chunk_ids — chunks that were IN CONTEXT when it was produced.
+    #                        Recorded by us, so it survives paraphrasing without
+    #                        citation. This is the one that answers "what was
+    #                        contaminated by this bad memory?".
+    #
+    # Both feed curation.lineage() — finding what was built on top of a
+    # hallucination discovered later. Failures here must never break archiving:
+    # a chunk with no provenance is still useful, a lost chunk is not.
+    #
+    # NOTE the _db_lock: this runs on the archive worker thread, and the curation
+    # functions each do their own write+commit. Unguarded, they race the main
+    # thread's commits on the one shared SQLite connection and intermittently raise
+    # "cannot commit - no transaction is active" (the same hazard the proxy's other
+    # writers are wrapped for). Hold the lock across the whole block.
+    with _db_lock:
+        try:
+            _chunk_text = " ".join(
+                str(m.get("content", "")) for m in msgs if isinstance(m, dict)
+            )
+            # Reuse the grading helper rather than a second regex — it is the same
+            # parser the fabricated-citation check uses, so the two cannot drift.
+            _cited = sorted(_extract_mem_ids(_chunk_text) - {chunk_id})
+            if _cited:
+                curation.record_provenance(db, chunk_id, _cited)
+            # `injected_ids` is threaded from the caller (snapshotted at enqueue
+            # time), NOT read from a global — see archive_staging's docstring.
+            curation.record_context(db, chunk_id, list(injected_ids or []), MODEL)
+            # Self-confirmation: a chunk citing model-generated support with no
+            # independent source of its own. Now that derived_from is actually
+            # populated, this flag can fire on real data.
+            try:
+                curation.detect_self_confirmation(db, chunk_id, source=source)
+            except Exception as _e:
+                _log_error("archive:self_confirm", _e)
+        except Exception as e:
+            _log_error("archive:provenance", e)
 
     # Link pending strategies (saved this turn with no source_chunk) to this chunk.
     with _pending_links_lock:
@@ -4209,7 +4301,7 @@ def _stage_content(content: str, source: str, prefix: str = None) -> int:
         n += 1
     print(f"  [STAGE] {source} {len(content)} chars -> {n} chunks", flush=True)
     if staging.should_flush():
-        _enqueue(archive_staging)
+        _enqueue(archive_staging, list(_last_injected_ids))
     return n
 
 
@@ -5393,7 +5485,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if not user_msg:
             user_msg = "Memory save triggered."
         messages[-1]["content"] = user_msg
-        _enqueue(archive_staging)
+        _enqueue(archive_staging, list(_last_injected_ids))
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
     # ── Learn trigger: <<LEARN problem:...>> runs learning mode (disabled in memory-only) ──
@@ -6069,7 +6161,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # previous turn's last_activity, which staging.add() would otherwise reset
     # (making the idle condition dead code).
     if staging.should_flush():
-        _enqueue(archive_staging)
+        _enqueue(archive_staging, list(_last_injected_ids))
 
     _user_src = "input" if _looks_like_read_dir(user_msg) else "user"
     _img_refs = _ingest_images(_raw_last_user)
@@ -7037,6 +7129,33 @@ if FLASK_OK:
             return _cors_response({"proposals": curation.list_proposals(db)})
         except Exception as e:
             return _cors_response({"proposals": [], "error": str(e)}, status=500)
+
+    @app.route("/memory/lineage/<chunk_id>", methods=["GET"])
+    def memory_lineage(chunk_id):
+        """What was built on top of this chunk?
+
+        Answers the question that matters when a hallucination is found LATE: not
+        "is this chunk bad" (retraction handles that) but "what else did it touch".
+
+        Two relations, both reported per node:
+          cites — that chunk's messages named this one as a source
+          saw   — that chunk was IN CONTEXT when this one was produced (recorded
+                  by the proxy, so it holds even when the model paraphrased)
+
+        ?max_depth=N bounds the walk (default 10).
+        """
+        try:
+            depth = int(request.args.get("max_depth") or 10)
+        except (TypeError, ValueError):
+            depth = 10
+        try:
+            return _cors_response(curation.lineage(db, chunk_id, max_depth=depth))
+        except curation.CurationError as e:
+            return _cors_response({"error": str(e), "descendants": []}, status=404)
+        except Exception as e:
+            _log_error("memory_lineage", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}",
+                                   "descendants": []}, status=500)
 
     @app.route("/memory/proposals/<chunk_id>/confirm", methods=["POST"])
     def memory_proposal_confirm(chunk_id):
