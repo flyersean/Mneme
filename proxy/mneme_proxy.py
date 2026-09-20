@@ -2695,6 +2695,9 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     def _insert_chunk():
         db.execute("""
             INSERT OR REPLACE INTO chunks
+            (chunk_id, topic_label, messages, thinking, strategy, vector, grade,
+             consensus, outcome, problem_type, source, cycle, created_at, session_id,
+             indexable, superseded_by, pending_embed, embed_model, dim, trust)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
               blob, grade, consensus, outcome, problem_type,
@@ -4001,7 +4004,11 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
         new_version = existing_version + 1
         with _db_lock:
             db.execute(
-                "INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO strategies "
+                "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
+                "version, parent_id, effective_grade, use_count, success_count, retired, "
+                "superseded_by, cost, outcome) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (sid, ptype, strategy, chunk_id, "B",
                  datetime.now(timezone.utc).isoformat(),
                  new_version, sid if existing_version > 0 else "",
@@ -6261,7 +6268,11 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
     def _insert_strategy():
-        db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT OR REPLACE INTO strategies "
+                   "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
+                   "version, parent_id, effective_grade, use_count, success_count, retired, "
+                   "superseded_by, cost, outcome) "
+                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
              new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
 
@@ -6604,11 +6615,15 @@ if FLASK_OK:
                     pass
                 new_version = existing_version + 1
                 with _db_lock:
-                    db.execute("INSERT OR REPLACE INTO strategies VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    db.execute("INSERT OR REPLACE INTO strategies "
+                               "(strategy_id, problem_type, strategy_text, source_chunk, grade, "
+                               "created_at, version, parent_id, effective_grade, use_count, "
+                               "success_count, retired, superseded_by, cost, outcome) "
+                               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (sid, "model", st, "", "A",
                          datetime.now(timezone.utc).isoformat(),
                          new_version, sid if existing_version > 0 else "",
-                         0.0, 0, 0, 0, "", 0))
+                         0.0, 0, 0, 0, "", 0, "SUCCESS"))
                     db.commit()
                 print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
                 # Add to FAISS for future dedup

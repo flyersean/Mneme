@@ -1266,6 +1266,71 @@ def test_retrieval_settings_hot_reload_from_config():
 
 
 @test
+def test_chunk_insert_matches_schema():
+    """REGRESSION: the chunk INSERT used a bare `VALUES (?,...,?)` with 20
+    placeholders. Adding columns via migration (the curation work added 10) made
+    the real table 30 columns wide, so EVERY memory save failed with
+    "table chunks has 30 columns but 20 values were supplied".
+
+    Bare positional inserts are a latent trap: any future migration re-breaks
+    them. This asserts the insert's explicit column list exists in the table and
+    that an insert actually succeeds."""
+    import re
+    db = mp.db
+    cols = {r[1] for r in db.execute("PRAGMA table_info(chunks)").fetchall()}
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "proxy", "mneme_proxy.py")).read()
+    m = re.search(r'INSERT OR REPLACE INTO chunks\s*\((.*?)\)\s*VALUES', src, re.S)
+    assert m, "chunk INSERT must use an explicit column list (not bare VALUES)"
+    ins_cols = [c.strip() for c in m.group(1).replace("\n", " ").split(",") if c.strip()]
+    missing = [c for c in ins_cols if c not in cols]
+    assert not missing, f"chunk INSERT references non-existent columns: {missing}"
+    # And it must actually run.
+    cid = "mem_schema_probe"
+    db.execute(
+        "INSERT OR REPLACE INTO chunks "
+        "(chunk_id, topic_label, messages, thinking, strategy, vector, grade, "
+        "consensus, outcome, problem_type, source, cycle, created_at, session_id, "
+        "indexable, superseded_by, pending_embed, embed_model, dim, trust) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (cid, "probe", "[]", "", "", None, "B", 0.0, "SUCCESS", "other", "user",
+         0, "2026-01-01T00:00:00", "default", 1, "", 0, "e", 0, "verified"),
+    )
+    db.commit()
+    row = db.execute("SELECT chunk_id FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
+    assert row is not None, "chunk insert did not persist"
+    db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+    db.commit()
+
+
+@test
+def test_strategy_insert_matches_schema():
+    """Same latent trap for strategies — and one call site already passed 14
+    values for a 15-column table before this was fixed."""
+    import re
+    db = mp.db
+    cols = {r[1] for r in db.execute("PRAGMA table_info(strategies)").fetchall()}
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "proxy", "mneme_proxy.py")).read()
+    # Every strategies INSERT must name its columns explicitly.
+    for stmt in re.finditer(r'INSERT OR REPLACE INTO strategies\s*\\?"?', src):
+        seg = src[stmt.start():stmt.start() + 260]
+        assert "strategy_id," in seg or "(strategy_id" in seg, \
+            f"strategies INSERT without explicit columns: {seg[:120]!r}"
+    db.execute(
+        "INSERT OR REPLACE INTO strategies "
+        "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
+        "version, parent_id, effective_grade, use_count, success_count, retired, "
+        "superseded_by, cost, outcome) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("strat_schema_probe", "other", "probe", "", "B", "2026-01-01T00:00:00",
+         1, "", 0.0, 0, 0, 0, "", 0, "SUCCESS"),
+    )
+    db.commit()
+    db.execute("DELETE FROM strategies WHERE strategy_id=?", ("strat_schema_probe",))
+    db.commit()
+
+
+@test
 def test_template_survives_hot_reload():
     """REGRESSION: the hot-reload path re-parsed the raw file and assigned
     CONFIG_DATA['models'] directly. When the file has an empty `models:` block
