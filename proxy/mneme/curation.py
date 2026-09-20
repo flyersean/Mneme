@@ -121,6 +121,23 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         # knows the injected set because it chose it — so this is the reliable
         # signal for "what turns were contaminated by a bad memory?".
         "ALTER TABLE chunks ADD COLUMN injected_chunk_ids TEXT DEFAULT '[]'",
+        # REMOVED — the flags. 'injectable' (default) or 'removed'.
+        #
+        # NOT a delete. The row, content and id all stay; the flags change what
+        # Mneme does with the chunk:
+        #   injection                skips it, unconditionally
+        #   the model's search_memory skips it
+        #   /search and /list         skip it unless the caller opts in
+        #   the management page       still shows it, flagged, with content
+        #
+        # We do NOT filter deleted rows out of the table, and we do not touch the
+        # FAISS index — so this is fully reversible and a mistake costs nothing.
+        # (Contrast a real delete, which leaves orphan vectors and dangling
+        # strategy links; that is why purge is a separate, later problem.)
+        "ALTER TABLE chunks ADD COLUMN removed TEXT DEFAULT 'injectable'",
+        "ALTER TABLE chunks ADD COLUMN removed_by TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN removed_reason TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN removed_at TEXT DEFAULT ''",
     )
     for m in migrations:
         try:
@@ -161,7 +178,7 @@ def _get_chunk(db, chunk_id: str) -> Optional[dict]:
         "SELECT chunk_id, topic_label, messages, retracted, retracted_by, "
         "retracted_reason, assert_count, independent_sources, derived_from, self_confirm, "
         "proposed_retract, proposed_reason, model, injected_chunk_ids, source, grade, "
-        "trust, created_at "
+        "trust, created_at, removed, removed_by, removed_reason, removed_at "
         "FROM chunks WHERE chunk_id=?",
         (chunk_id,),
     ).fetchone()
@@ -171,6 +188,8 @@ def _get_chunk(db, chunk_id: str) -> Optional[dict]:
         "chunk_id": row[0], "topic_label": row[1], "messages": row[2],
         "retracted": row[3] or "", "retracted_by": row[4] or "",
         "retracted_reason": row[5] or "", "assert_count": row[6] or 1,
+        "removed": row[18] or "injectable", "removed_by": row[19] or "",
+        "removed_reason": row[20] or "", "removed_at": row[21] or "",
         "independent_sources": row[7] or 0,
         "derived_from": json.loads(row[8] or "[]"), "self_confirm": bool(row[9]),
         "proposed_retract": row[10] or "", "proposed_reason": row[11] or "",
@@ -178,6 +197,176 @@ def _get_chunk(db, chunk_id: str) -> Optional[dict]:
         "source": row[14] or "", "grade": row[15] or "C",
         "trust": row[16] or "", "created_at": row[17] or "",
     }
+
+
+# ── Removed flags (management) ───────────────────────────────────────────
+#
+# These are the flags the memory management page drives. NOT a delete: the row,
+# content and id all stay. The flag changes what Mneme does with the chunk —
+# injection and the model's search_memory skip it, while the management page
+# still shows it (flagged, with content) so a user can review and reverse.
+#
+# Deliberately separate from retract()/proposed_retract(): retraction carries an
+# epistemic claim ("this is disputed"), whereas `removed` is a plain management
+# flag ("stop using this"). A user may remove a chunk for reasons that have
+# nothing to do with its truth (duplicate, test junk, superseded).
+
+REMOVABLE = "injectable"
+REMOVED = "removed"
+_REMOVED_STATES = (REMOVABLE, REMOVED)
+
+
+def set_removed(db, chunk_id, removed=True, actor="user", reason=""):
+    """Set or clear the removed flag on ONE chunk. Reversible, logged.
+
+    `removed=True`  -> 'removed'      (skip from injection + model search)
+    `removed=False` -> 'injectable'   (back to normal)
+
+    Does not touch the FAISS index or any other row, so this cannot corrupt
+    retrieval — nothing is deleted, so nothing can dangle.
+    """
+    if actor not in ("user", "model", "system"):
+        raise CurationError(f"bad actor: {actor!r}")
+    chunk = _get_chunk(db, chunk_id)
+    if not chunk:
+        raise CurationError(f"unknown chunk: {chunk_id}")
+    state = REMOVED if removed else REMOVABLE
+    db.execute(
+        "UPDATE chunks SET removed=?, removed_by=?, removed_reason=?, removed_at=? "
+        "WHERE chunk_id=?",
+        (state, actor if removed else "", (reason or "")[:1000] if removed else "",
+         _now() if removed else "", chunk_id),
+    )
+    _log(db, chunk_id, "remove" if removed else "unremove", actor, reason,
+         prev_state=chunk.get("removed", REMOVABLE))
+    db.commit()
+    return {"chunk_id": chunk_id, "removed": state, "previous": chunk.get("removed", REMOVABLE)}
+
+
+def is_removed(chunk) -> bool:
+    """True when a chunk dict is flagged removed. Tolerates missing key."""
+    return (chunk or {}).get("removed", REMOVABLE) == REMOVED
+
+
+def list_chunks(db, filters=None, limit=200, offset=0):
+    """Query chunks for the management page. Returns rows + total count.
+
+    Filters are ANDed; every one is optional. Kept as a plain query over the
+    chunks table (no FAISS, no embeddings) so the page works even when the
+    vector index is unavailable.
+
+    Supported keys:
+      keyword        substring over the messages JSON (exact-ish; SQL LIKE)
+      source         e.g. 'model', 'user', 'tool:terminal', 'page:example.com'
+      model          the chat model that produced it (e.g. 'gemma4')
+      grade          A..F (exact)
+      trust          verified / unverified / ...
+      removed        'removed' | 'injectable' — omit for both
+      proposed       True -> only chunks with a pending removal proposal
+      self_confirm   True -> only chunks flagged as self-confirming
+      uncorroborated True -> independent_sources = 0
+      session        session_id
+      since / until  ISO date or datetime bounds on created_at (inclusive)
+      order          'newest' (default) | 'oldest'
+    """
+    f = dict(filters or {})
+    where, args = [], []
+
+    kw = (f.get("keyword") or "").strip()
+    if kw:
+        # Search content AND topic label. A user looking for a chunk thinks in
+        # terms of the label shown in the UI, which is frequently not a substring
+        # of the stored content (the label is derived, the content is verbatim).
+        where.append("(messages LIKE ? OR topic_label LIKE ?)")
+        args.extend([f"%{kw}%", f"%{kw}%"])
+    if f.get("source"):
+        where.append("source = ?")
+        args.append(f["source"])
+    if f.get("model"):
+        where.append("model LIKE ?")
+        args.append(f"%{f['model']}%")
+    if f.get("grade"):
+        where.append("grade = ?")
+        args.append(f["grade"])
+    if f.get("trust"):
+        where.append("trust = ?")
+        args.append(f["trust"])
+    if f.get("session"):
+        where.append("session_id = ?")
+        args.append(f["session"])
+
+    # Removed state. Default: show BOTH (this is the management view — hiding
+    # removed chunks here would defeat the purpose).
+    rem = f.get("removed")
+    if rem in _REMOVED_STATES:
+        where.append("COALESCE(NULLIF(removed,''),'injectable') = ?")
+        args.append(rem)
+    elif rem in ("", None) and f.get("injectable_only"):
+        where.append("COALESCE(NULLIF(removed,''),'injectable') = ?")
+        args.append(REMOVABLE)
+
+    if f.get("proposed"):
+        where.append("proposed_retract != '' AND proposed_retract IS NOT NULL")
+    if f.get("self_confirm"):
+        where.append("self_confirm = 1")
+    if f.get("uncorroborated"):
+        where.append("COALESCE(independent_sources,0) = 0")
+    if f.get("since"):
+        where.append("created_at >= ?")
+        args.append(f["since"])
+    if f.get("until"):
+        # Inclusive of the whole day when given a bare date.
+        until = f["until"]
+        if len(str(until)) == 10:
+            until = f"{until}T23:59:59"
+        where.append("created_at <= ?")
+        args.append(until)
+
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    order = "ASC" if (f.get("order") or "newest") == "oldest" else "DESC"
+
+    total = db.execute(
+        f"SELECT COUNT(*) FROM chunks {clause}", args
+    ).fetchone()[0]
+
+    rows = db.execute(
+        f"SELECT chunk_id, topic_label, messages, source, model, grade, trust, "
+        f"created_at, removed, removed_reason, retracted, proposed_retract, "
+        f"self_confirm, COALESCE(independent_sources,0), session_id, derived_from "
+        f"FROM chunks {clause} ORDER BY created_at {order}, rowid {order} "
+        f"LIMIT ? OFFSET ?",
+        args + [int(limit), int(offset)],
+    ).fetchall()
+
+    out = []
+    for r in rows:
+        out.append({
+            "chunk_id": r[0], "topic_label": r[1],
+            # Truncated for the list view; the detail endpoint returns full text.
+            "preview": _preview(r[2]),
+            "source": r[3] or "", "model": r[4] or "", "grade": r[5] or "",
+            "trust": r[6] or "", "created_at": r[7] or "",
+            "removed": r[8] or REMOVABLE, "removed_reason": r[9] or "",
+            "retracted": r[10] or "", "proposed_retract": r[11] or "",
+            "self_confirm": bool(r[12]), "independent_sources": r[13] or 0,
+            "session_id": r[14] or "", "derived_from": json.loads(r[15] or "[]"),
+        })
+    return {"chunks": out, "count": len(out), "total": total}
+
+
+def _preview(messages_json, limit=280):
+    """First bit of readable text from a chunk's messages JSON."""
+    try:
+        msgs = json.loads(messages_json or "[]")
+    except (ValueError, TypeError):
+        return ""
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
+            text = str(m.get("content", "")).strip()
+            if text:
+                text = " ".join(text.split())
+                return text[:limit] + ("…" if len(text) > limit else "")
+    return ""
 
 
 # ── Retraction ───────────────────────────────────────────────────────────

@@ -2763,13 +2763,29 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     if is_indexable and vector is not None and not MEMORY_ONLY and os.environ.get("MNEME_BELIEF_EVOLUTION", "0") == "1":
         _enqueue(_check_belief_evolution, chunk_id, topic_label)
 
-def load_chunk(chunk_id: str) -> Optional[dict]:
+def load_chunk(chunk_id: str, allow_removed: bool = False) -> Optional[dict]:
+    """Load one chunk by id.
+
+    REMOVED CHUNKS ARE INVISIBLE BY DEFAULT. This is the single choke point where
+    retrieval results become usable chunks, so filtering here enforces the rule for
+    injection, the model's search_memory, and any other caller at once — rather
+    than relying on every caller to remember.
+
+    `allow_removed=True` is for the management page (and the `ignore_removed`
+    setting), which must SEE removed chunks in order to review and reverse them.
+    It is deliberately NOT plumbed into the injection path: a removed chunk must
+    never be injected, or removing it would mean nothing.
+    """
     row = db.execute(
         "SELECT chunk_id, topic_label, messages, thinking, strategy, "
-        "grade, consensus, outcome, problem_type, source, session_id, cycle FROM chunks WHERE chunk_id=?",
+        "grade, consensus, outcome, problem_type, source, session_id, cycle, "
+        "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
+        "FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
     if not row:
+        return None
+    if row[12] == "removed" and not allow_removed:
         return None
     return {
         "chunk_id": row[0], "topic_label": row[1],
@@ -2777,6 +2793,7 @@ def load_chunk(chunk_id: str) -> Optional[dict]:
         "strategy": row[4], "grade": row[5],
         "consensus": row[6], "outcome": row[7],
         "problem_type": row[8], "source": row[9], "session_id": row[10], "cycle": row[11],
+        "removed": row[12], "removed_reason": row[13] or "",
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -6565,6 +6582,21 @@ if FLASK_OK:
             print(f"  [CHAT-UI][ERR] {str(e)[:100]}", flush=True)
             return _cors_response({"error": "chat UI not found"}, status=404)
 
+    # ── Memory management UI ──
+    # Mirrors the /instructions pattern: a static page served by the proxy, backed
+    # by the /memory/* JSON endpoints. Deliberately model-free — nothing here
+    # builds a chat turn, so reviewing removed chunks cannot re-archive them.
+    _MEMORY_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "memory.html")
+
+    @app.route("/memory", methods=["GET"])
+    def memory_ui():
+        try:
+            with open(_MEMORY_HTML_PATH, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except Exception as e:
+            print(f"  [MEMORY-UI][ERR] {str(e)[:100]}", flush=True)
+            return _cors_response({"error": "memory UI not found"}, status=404)
+
     # ── Instructions reference UI: read/edit the injected prompts in conversation order ──
     _INSTRUCTIONS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "instructions.html")
 
@@ -7043,9 +7075,18 @@ if FLASK_OK:
     # ── Save: force-flush the staging buffer ──
     @app.route("/search", methods=["POST"])
     def search_memory():
+        """Search memory. Returns injectable chunks by default.
+
+        Removed chunks are EXCLUDED unless the caller passes include_removed=true
+        (the management page does; the model's search_memory does not). Without
+        this, a removed chunk could still be surfaced as a search result — and
+        then re-archived into a new chunk that cites it, rebuilding the very
+        memory the user just took out of circulation.
+        """
         data = request.get_json(force=True)
         query = data.get("query", "")
         top_k = data.get("top_k", 10)
+        _inc = str(data.get("include_removed", "")).lower() in ("1", "true", "yes", "on")
         vec = embed(query)
         results_raw = _cosine_search(vec, top_k, 0.0)
         faiss_results = [(s - BASELINE_NOISE, cid) for s, cid in results_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
@@ -7053,10 +7094,18 @@ if FLASK_OK:
         hybrid = _hybrid_search(query, top_k, faiss_results)
         chunks = []
         for score, chunk_id, method in hybrid:
-            row = db.execute("SELECT topic_label, grade, created_at, outcome, source, session_id, cycle FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
-            if row:
-                entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4), "method": method}
-                chunks.append(entry)
+            row = db.execute(
+                "SELECT topic_label, grade, created_at, outcome, source, session_id, cycle, "
+                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
+                "FROM chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if not row:
+                continue
+            if row[7] == "removed" and not _inc:
+                continue
+            entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4), "method": method,
+                     "removed": row[7], "removed_reason": row[8] or ""}
+            chunks.append(entry)
         return _cors_response({"results": chunks})
 
 
@@ -7129,6 +7178,142 @@ if FLASK_OK:
             return _cors_response({"proposals": curation.list_proposals(db)})
         except Exception as e:
             return _cors_response({"proposals": [], "error": str(e)}, status=500)
+
+    # ── Memory management (the management page) ──────────────────────────
+    @app.route("/memory/chunks", methods=["GET"])
+    def memory_chunks():
+        """Filterable chunk list for the management page.
+
+        Unlike /list (which is the old compact view), this exposes the fields the
+        page filters on and INCLUDES removed chunks — seeing them is the entire
+        point of the page.
+
+        Query params (all optional, ANDed):
+          keyword, source, model, grade, trust, session,
+          removed=removed|injectable, proposed=1, self_confirm=1,
+          uncorroborated=1, since=YYYY-MM-DD, until=YYYY-MM-DD,
+          order=newest|oldest, limit, offset
+        """
+        def _q(name):
+            v = (request.args.get(name) or "").strip()
+            return v or None
+
+        def _flag(name):
+            return str(request.args.get(name) or "").lower() in ("1", "true", "yes", "on")
+
+        filters = {
+            "keyword": _q("keyword"), "source": _q("source"), "model": _q("model"),
+            "grade": _q("grade"), "trust": _q("trust"), "session": _q("session"),
+            "removed": _q("removed"), "since": _q("since"), "until": _q("until"),
+            "order": _q("order") or "newest",
+            "proposed": _flag("proposed"), "self_confirm": _flag("self_confirm"),
+            "uncorroborated": _flag("uncorroborated"),
+        }
+        try:
+            limit = max(1, min(int(request.args.get("limit") or 100), 500))
+            offset = max(0, int(request.args.get("offset") or 0))
+        except (TypeError, ValueError):
+            limit, offset = 100, 0
+        try:
+            return _cors_response(curation.list_chunks(db, filters, limit, offset))
+        except Exception as e:
+            _log_error("memory_chunks", e)
+            return _cors_response({"chunks": [], "total": 0,
+                                   "error": f"{type(e).__name__}: {e}"}, status=500)
+
+    @app.route("/memory/chunks/<chunk_id>", methods=["GET"])
+    def memory_chunk_detail(chunk_id):
+        """One chunk in full, INCLUDING removed ones (management view).
+
+        This is the endpoint that makes review possible: the user must be able to
+        read a removed chunk's content to decide whether removing it was right.
+        """
+        try:
+            ch = curation._get_chunk(db, chunk_id)
+            if not ch:
+                return _cors_response({"error": "unknown chunk"}, status=404)
+            try:
+                ch["messages"] = json.loads(ch.get("messages") or "[]")
+            except (ValueError, TypeError):
+                pass
+            return _cors_response({"chunk": ch})
+        except Exception as e:
+            _log_error("memory_chunk_detail", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    @app.route("/memory/chunks/<chunk_id>/remove", methods=["POST"])
+    def memory_chunk_remove(chunk_id):
+        """Set or clear the removed flag. Body: {"removed": true, "reason": "..."}.
+
+        Not a delete — the row and content stay, so this is reversible. Flagging
+        only changes what Mneme uses: injection and model search skip it.
+        """
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            removed = data.get("removed", True)
+            if isinstance(removed, str):
+                removed = removed.lower() in ("1", "true", "yes", "on")
+            out = curation.set_removed(db, chunk_id, bool(removed), actor="user",
+                                       reason=data.get("reason") or "")
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"error": str(e)}, status=404)
+        except Exception as e:
+            _log_error("memory_chunk_remove", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    @app.route("/memory/chunks/remove", methods=["POST"])
+    def memory_chunks_remove_bulk():
+        """Flag several chunks at once. Body: {"ids": [...], "removed": true, "reason": "..."}
+
+        Flagging is reversible and non-destructive, so bulk is safe — but the
+        response reports per-id outcomes rather than a single count, so a typo'd
+        id cannot pass silently as success.
+        """
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            ids = data.get("ids") or []
+            if not isinstance(ids, list):
+                return _cors_response({"error": "ids must be a list"}, status=400)
+            ids = [str(i).strip() for i in ids if str(i).strip()]
+            if not ids:
+                return _cors_response({"error": "no ids given"}, status=400)
+            removed = data.get("removed", True)
+            if isinstance(removed, str):
+                removed = removed.lower() in ("1", "true", "yes", "on")
+            ok, failed = [], []
+            for cid in ids:
+                try:
+                    curation.set_removed(db, cid, bool(removed), actor="user",
+                                         reason=data.get("reason") or "")
+                    ok.append(cid)
+                except curation.CurationError as e:
+                    failed.append({"chunk_id": cid, "error": str(e)})
+            return _cors_response({"removed": bool(removed), "changed": ok,
+                                   "failed": failed, "count": len(ok)})
+        except Exception as e:
+            _log_error("memory_chunks_remove_bulk", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    @app.route("/memory/sources", methods=["GET"])
+    def memory_sources():
+        """Distinct source/model/tag values — populates the page's filter dropdowns
+        from real data instead of a hardcoded list that drifts."""
+        try:
+            srcs = [r[0] for r in db.execute(
+                "SELECT DISTINCT source FROM chunks WHERE source != '' ORDER BY source").fetchall()]
+            models = [r[0] for r in db.execute(
+                "SELECT DISTINCT model FROM chunks WHERE model != '' ORDER BY model").fetchall()]
+            trusts = [r[0] for r in db.execute(
+                "SELECT DISTINCT trust FROM chunks WHERE trust != '' ORDER BY trust").fetchall()]
+            grades = [r[0] for r in db.execute(
+                "SELECT DISTINCT grade FROM chunks WHERE grade != '' ORDER BY grade").fetchall()]
+            return _cors_response({"sources": srcs, "models": models,
+                                   "trusts": trusts, "grades": grades})
+        except Exception as e:
+            _log_error("memory_sources", e)
+            return _cors_response({"sources": [], "models": [], "trusts": [],
+                                   "grades": [], "error": str(e)}, status=500)
 
     @app.route("/memory/lineage/<chunk_id>", methods=["GET"])
     def memory_lineage(chunk_id):

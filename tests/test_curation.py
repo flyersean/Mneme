@@ -21,14 +21,24 @@ from mneme import curation as cur  # noqa: E402
 
 
 def _mkdb():
-    """In-memory-ish DB with the minimal chunks table the curation code needs."""
+    """In-memory-ish DB with the minimal chunks table the curation code needs.
+
+    `session_id`, `independent_sources`, `self_confirm` and `derived_from` are
+    included because list_chunks() reads them — this fixture stands in for the
+    real table, and a query over the real table needs the real columns. (They are
+    what ensure_schema() would add on a live DB.)
+    """
     path = os.path.join(tempfile.mkdtemp(prefix="mneme_cur_"), "t.db")
     db = sqlite3.connect(path)
     db.execute("""
         CREATE TABLE chunks (
             chunk_id TEXT PRIMARY KEY, topic_label TEXT, messages TEXT,
             grade TEXT DEFAULT 'C', trust TEXT DEFAULT '', source TEXT DEFAULT 'unknown',
-            created_at TEXT
+            created_at TEXT,
+            session_id TEXT DEFAULT 'default',
+            independent_sources INTEGER DEFAULT 0,
+            self_confirm INTEGER DEFAULT 0,
+            derived_from TEXT DEFAULT '[]'
         )
     """)
     cur.ensure_schema(db)
@@ -421,6 +431,160 @@ class TestLabels(unittest.TestCase):
         cur.record_provenance(db, "mem_e", ["mem_o"])
         cur.detect_self_confirmation(db, "mem_e", source="model")
         self.assertIn("SELF-CONFIRMED", cur.self_confirm_label(cur._get_chunk(db, "mem_e")))
+
+
+class TestRemovedFlag(unittest.TestCase):
+    """The management flag. NOT a delete: the row and content stay, and the flag
+    only changes what Mneme USES (injection + model search)."""
+
+    def test_default_state_is_injectable(self):
+        db = _mkdb()
+        _chunk(db, "mem_r")
+        self.assertEqual(cur._get_chunk(db, "mem_r")["removed"], "removed" if False else "injectable")
+
+    def test_set_removed_marks_and_reports(self):
+        db = _mkdb()
+        _chunk(db, "mem_r")
+        out = cur.set_removed(db, "mem_r", True, actor="user", reason="junk")
+        self.assertEqual(out["removed"], "removed")
+        self.assertEqual(out["previous"], "injectable")
+
+    def test_content_survives_the_flag(self):
+        """The whole point: nothing is deleted."""
+        db = _mkdb()
+        _chunk(db, "mem_r", messages='[{"role":"user","content":"keep me"}]')
+        cur.set_removed(db, "mem_r", True, actor="user")
+        ch = cur._get_chunk(db, "mem_r")
+        self.assertIn("keep me", ch["messages"])
+
+    def test_unflag_is_reversible(self):
+        db = _mkdb()
+        _chunk(db, "mem_r")
+        cur.set_removed(db, "mem_r", True, actor="user", reason="x")
+        cur.set_removed(db, "mem_r", False, actor="user")
+        ch = cur._get_chunk(db, "mem_r")
+        self.assertEqual(ch["removed"], "injectable")
+        self.assertEqual(ch["removed_reason"], "")
+
+    def test_is_removed_helper(self):
+        self.assertTrue(cur.is_removed({"removed": "removed"}))
+        self.assertFalse(cur.is_removed({"removed": "injectable"}))
+        self.assertFalse(cur.is_removed({}))
+        self.assertFalse(cur.is_removed(None))
+
+    def test_unknown_chunk_raises_rather_than_noop(self):
+        db = _mkdb()
+        with self.assertRaises(cur.CurationError):
+            cur.set_removed(db, "mem_nope", True)
+
+    def test_bad_actor_rejected(self):
+        db = _mkdb()
+        _chunk(db, "mem_r")
+        with self.assertRaises(cur.CurationError):
+            cur.set_removed(db, "mem_r", True, actor="hacker")
+
+    def test_flag_is_logged(self):
+        db = _mkdb()
+        _chunk(db, "mem_r")
+        cur.set_removed(db, "mem_r", True, actor="user", reason="why not")
+        rows = db.execute(
+            "SELECT action, actor, reason FROM curation_log WHERE chunk_id='mem_r'"
+        ).fetchall()
+        self.assertTrue(any(r[0] == "remove" and r[1] == "user" for r in rows), rows)
+
+
+class TestChunkListing(unittest.TestCase):
+    """list_chunks powers the management page's filters."""
+
+    def _seed(self, db):
+        _chunk(db, "mem_a", topic="alpha topic", source="model", grade="A",
+               messages='[{"role":"assistant","content":"the price is 42"}]')
+        _chunk(db, "mem_b", topic="beta topic", source="user", grade="F",
+               messages='[{"role":"user","content":"pizza order note"}]')
+        db.execute("UPDATE chunks SET model='gemma4', created_at='2026-08-01T10:00:00' WHERE chunk_id='mem_a'")
+        db.execute("UPDATE chunks SET model='qwen3', created_at='2026-08-05T10:00:00' WHERE chunk_id='mem_b'")
+        db.commit()
+
+    def test_returns_all_by_default(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {})
+        self.assertEqual(out["total"], 2)
+
+    def test_keyword_matches_content(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {"keyword": "price"})
+        self.assertEqual([c["chunk_id"] for c in out["chunks"]], ["mem_a"])
+
+    def test_keyword_matches_topic_label(self):
+        """Users search by the label they can SEE, which is often not in content."""
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {"keyword": "beta topic"})
+        self.assertEqual([c["chunk_id"] for c in out["chunks"]], ["mem_b"])
+
+    def test_source_filter(self):
+        db = _mkdb(); self._seed(db)
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"source": "user"})["chunks"]], ["mem_b"])
+
+    def test_model_filter(self):
+        db = _mkdb(); self._seed(db)
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"model": "gemma4"})["chunks"]], ["mem_a"])
+
+    def test_grade_filter(self):
+        db = _mkdb(); self._seed(db)
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"grade": "F"})["chunks"]], ["mem_b"])
+
+    def test_date_range(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {"since": "2026-08-04", "until": "2026-08-06"})
+        self.assertEqual([c["chunk_id"] for c in out["chunks"]], ["mem_b"])
+
+    def test_bare_date_until_is_inclusive(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {"since": "2026-08-05", "until": "2026-08-05"})
+        self.assertEqual([c["chunk_id"] for c in out["chunks"]], ["mem_b"])
+
+    def test_removed_filter_both_states(self):
+        db = _mkdb(); self._seed(db)
+        cur.set_removed(db, "mem_a", True, actor="user")
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"removed": "removed"})["chunks"]], ["mem_a"])
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"removed": "injectable"})["chunks"]], ["mem_b"])
+        self.assertEqual(cur.list_chunks(db, {})["total"], 2, "no filter must show BOTH")
+
+    def test_order(self):
+        db = _mkdb(); self._seed(db)
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"order": "oldest"})["chunks"]],
+                         ["mem_a", "mem_b"])
+
+    def test_uncorroborated_filter(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {"uncorroborated": True})
+        self.assertEqual(out["total"], 2, "both start with 0 independent sources")
+
+    def test_self_confirm_filter(self):
+        db = _mkdb(); self._seed(db)
+        db.execute("UPDATE chunks SET self_confirm=1 WHERE chunk_id='mem_a'"); db.commit()
+        self.assertEqual([c["chunk_id"] for c in cur.list_chunks(db, {"self_confirm": True})["chunks"]], ["mem_a"])
+
+    def test_unknown_filter_values_are_ignored_not_applied(self):
+        """A bad value must not silently filter to nothing. An unrecognised
+        `removed` is ignored (both shown); an impossible grade legitimately
+        matches nothing, which is why the two are asserted separately."""
+        db = _mkdb(); self._seed(db)
+        self.assertEqual(cur.list_chunks(db, {"removed": "banana"})["total"], 2,
+                         "unknown removed value must be ignored")
+        self.assertEqual(cur.list_chunks(db, {"grade": "Z"})["total"], 0,
+                         "an impossible grade matches nothing (correct)")
+
+    def test_preview_is_populated(self):
+        db = _mkdb(); self._seed(db)
+        row = next(c for c in cur.list_chunks(db, {"grade": "A"})["chunks"])
+        self.assertIn("price", row["preview"])
+
+    def test_pagination(self):
+        db = _mkdb(); self._seed(db)
+        out = cur.list_chunks(db, {}, limit=1, offset=0)
+        self.assertEqual(len(out["chunks"]), 1)
+        self.assertEqual(out["total"], 2, "total counts all matches, not the page")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Memory Management</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1a1d21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --warn: #b45309;
+    --warn-soft: #fffbeb;
+    --danger: #b91c1c;
+    --danger-soft: #fef2f2;
+    --ok: #15803d;
+    --ok-soft: #f0fdf4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 900px; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  header a:hover { text-decoration: underline; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 20px 80px; }
+
+  .notice {
+    background: var(--accent-soft); border: 1px solid #d7e2ff; border-radius: 8px;
+    padding: 12px 16px; font-size: 13px; color: #1e3a8a; margin-bottom: 18px;
+  }
+  .notice b { font-weight: 600; }
+  .notice.warn { background: var(--warn-soft); border-color: #fde68a; color: #78350f; }
+
+  /* ── Filters ── */
+  .filters {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .frow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .f { display: flex; flex-direction: column; gap: 4px; }
+  .f label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .f input, .f select {
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
+    font-size: 13px; background: #fff; color: var(--text); min-width: 130px;
+    font-family: inherit;
+  }
+  .f input:focus, .f select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .f.grow input { min-width: 230px; }
+  .checks { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; padding: 8px 0 2px; }
+  .checks label { font-size: 13px; color: var(--text); display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  button {
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    border-radius: 7px; padding: 8px 13px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #f3f4f6; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #1d4ed8; }
+  button.danger { color: var(--danger); border-color: #fecaca; background: #fff; }
+  button.danger:hover { background: var(--danger-soft); }
+  button.ok { color: var(--ok); border-color: #bbf7d0; background: #fff; }
+  button.ok:hover { background: var(--ok-soft); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.tiny { padding: 4px 9px; font-size: 12px; }
+
+  .resultbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .bulkbar {
+    display: none; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--warn-soft); border: 1px solid #fde68a; border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #78350f;
+  }
+  .bulkbar.on { display: flex; }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  thead th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600; padding: 10px 12px; background: #fafbfc;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid #f1f3f5; font-size: 13px; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.removed { background: var(--danger-soft); }
+  tbody tr:hover { background: #f8fafc; }
+  tbody tr.removed:hover { background: #fee2e2; }
+  .cid { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; white-space: nowrap; }
+  .preview { max-width: 460px; color: #374151; }
+  .topic { font-weight: 600; margin-bottom: 2px; }
+  .when { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .tags { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; border: 1px solid var(--border); background: #f9fafb; color: #374151;
+    white-space: nowrap;
+  }
+  .tag.removed { background: var(--danger-soft); border-color: #fecaca; color: var(--danger); font-weight: 600; }
+  .tag.model { background: #f5f3ff; border-color: #ddd6fe; color: #5b21b6; }
+  .tag.selfconf { background: var(--warn-soft); border-color: #fde68a; color: var(--warn); }
+  .tag.uncorr { background: #fdf2f8; border-color: #fbcfe8; color: #9d174d; }
+  .tag.gradeA { background: var(--ok-soft); border-color: #bbf7d0; color: var(--ok); }
+  .tag.gradeF { background: var(--danger-soft); border-color: #fecaca; color: var(--danger); }
+  .rowacts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .err { background: var(--danger-soft); border: 1px solid #fecaca; color: var(--danger); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; display: none; }
+  .err.on { display: block; }
+
+  /* ── Detail drawer ── */
+  .drawer-back { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: none; z-index: 40; }
+  .drawer-back.on { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(680px, 94vw);
+    background: var(--card); border-left: 1px solid var(--border); z-index: 41;
+    transform: translateX(100%); transition: transform .18s ease; overflow-y: auto;
+  }
+  .drawer.on { transform: translateX(0); }
+  .drawer-head { position: sticky; top: 0; background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .drawer-body { padding: 16px 18px 60px; }
+  .msg { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+  .msg .role { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; display: block; margin-bottom: 5px; }
+  .msg.user { background: #f8fafc; }
+  .msg.assistant { background: #fff; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 5px 12px; font-size: 13px; margin-bottom: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .sect { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 18px 0 8px; }
+  .lineage-row { border-left: 3px solid var(--accent); padding: 5px 0 5px 10px; margin-bottom: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Memory Management</h1>
+  <p>
+    Review stored chunks and set the <b>injectable</b> / <b>removed</b> flag.
+    Removing a chunk does <b>not</b> delete it — the content stays and stays readable here.
+    It only changes what Mneme uses: removed chunks are skipped by injection and by the
+    model's memory search. Reversible at any time.
+    &nbsp;·&nbsp; <a href="/instructions">Injected prompts →</a> &nbsp;·&nbsp; <a href="/">Chat →</a>
+  </p>
+</header>
+
+<main>
+  <div class="notice">
+    <b>Good enough, not perfect.</b> Reviewing chunks one at a time reduces the impact of
+    bad facts; it won't fully clean a polluted DB. The blunt instrument is the date filter —
+    if a bad fact landed at a known time, narrowing to everything saved after it is the
+    reliable way to catch what it contaminated.
+  </div>
+  <div class="err" id="err"></div>
+
+  <div class="filters">
+    <div class="frow">
+      <div class="f grow">
+        <label for="keyword">Keyword (content or topic)</label>
+        <input id="keyword" placeholder="e.g. price, pizza, model name" autocomplete="off">
+      </div>
+      <div class="f">
+        <label for="removed">Removed state</label>
+        <select id="removed">
+          <option value="">All chunks</option>
+          <option value="injectable">Injectable only</option>
+          <option value="removed">Removed only</option>
+        </select>
+      </div>
+      <div class="f">
+        <label for="source">Source</label>
+        <select id="source"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="model">Model</label>
+        <select id="model"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="grade">Grade</label>
+        <select id="grade"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="trust">Trust</label>
+        <select id="trust"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="since">Saved on/after</label>
+        <input id="since" type="date">
+      </div>
+      <div class="f">
+        <label for="until">Saved on/before</label>
+        <input id="until" type="date">
+      </div>
+      <div class="f">
+        <label for="order">Sort</label>
+        <select id="order">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+      </div>
+      <div class="f">
+        <button class="primary" id="apply">Search</button>
+      </div>
+      <div class="f">
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="proposed"> Pending removal proposal</label>
+      <label><input type="checkbox" id="self_confirm"> Self-confirming (echoes its own output)</label>
+      <label><input type="checkbox" id="uncorroborated"> Never corroborated</label>
+    </div>
+  </div>
+
+  <div class="resultbar">
+    <div class="count" id="count">—</div>
+    <div style="display:flex;gap:8px;">
+      <button class="tiny" id="selall">Select all on page</button>
+      <button class="tiny" id="selnone">Clear selection</button>
+    </div>
+  </div>
+
+  <div class="bulkbar" id="bulkbar">
+    <span id="bulkcount">0 selected</span>
+    <button class="danger" id="bulkremove">Remove selected</button>
+    <button class="ok" id="bulkrestore">Restore selected</button>
+    <button id="bulkcancel">Cancel</button>
+  </div>
+
+  <div id="listwrap"></div>
+</main>
+
+<div class="drawer-back" id="back"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div><b id="dtitle">Chunk</b><div class="cid" id="dcid" style="color:var(--muted)"></div></div>
+    <div style="display:flex;gap:8px;">
+      <button id="dflag" class="danger">Remove</button>
+      <button id="dclose">Close</button>
+    </div>
+  </div>
+  <div class="drawer-body" id="dbody"></div>
+</aside>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { chunks: [], selected: new Set(), current: null };
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function showErr(msg) {
+  $("err").textContent = msg;
+  $("err").classList.add("on");
+}
+function clearErr() { $("err").classList.remove("on"); }
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString();
+}
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let body = {};
+  try { body = await r.json(); } catch (e) { body = {}; }
+  if (!r.ok) throw new Error(body.error || (r.status + " " + r.statusText));
+  return body;
+}
+
+function qs() {
+  const p = new URLSearchParams();
+  const add = (k, v) => { if (v) p.set(k, v); };
+  add("keyword", $("keyword").value.trim());
+  add("removed", $("removed").value);
+  add("source", $("source").value);
+  add("model", $("model").value);
+  add("grade", $("grade").value);
+  add("trust", $("trust").value);
+  add("since", $("since").value);
+  add("until", $("until").value);
+  add("order", $("order").value);
+  if ($("proposed").checked) p.set("proposed", "1");
+  if ($("self_confirm").checked) p.set("self_confirm", "1");
+  if ($("uncorroborated").checked) p.set("uncorroborated", "1");
+  p.set("limit", "200");
+  return p.toString();
+}
+
+async function loadSources() {
+  try {
+    const d = await api("/memory/sources");
+    const fill = (sel, items) => {
+      items.forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = v; sel.appendChild(o);
+      });
+    };
+    fill($("source"), d.sources || []);
+    fill($("model"), d.models || []);
+    fill($("grade"), d.grades || []);
+    fill($("trust"), d.trusts || []);
+  } catch (e) { /* dropdowns are a nicety; the page still works without them */ }
+}
+
+function rowTags(c) {
+  const t = [];
+  if (c.removed === "removed") t.push('<span class="tag removed">REMOVED</span>');
+  if (c.retracted) t.push('<span class="tag removed">retracted:' + esc(c.retracted) + '</span>');
+  if (c.proposed_retract) t.push('<span class="tag selfconf">proposed</span>');
+  if (c.self_confirm) t.push('<span class="tag selfconf">self-confirming</span>');
+  if (!c.independent_sources) t.push('<span class="tag uncorr">uncorroborated</span>');
+  if (c.model) t.push('<span class="tag model">' + esc(c.model) + '</span>');
+  if (c.source) t.push('<span class="tag">' + esc(c.source) + '</span>');
+  if (c.grade) {
+    const cls = c.grade === "A" ? "gradeA" : (c.grade === "F" || c.grade === "D" ? "gradeF" : "");
+    t.push('<span class="tag ' + cls + '">grade ' + esc(c.grade) + '</span>');
+  }
+  return t.join(" ");
+}
+
+function render() {
+  const wrap = $("listwrap");
+  if (!state.chunks.length) {
+    wrap.innerHTML = '<div class="empty">No chunks match these filters.</div>';
+    return;
+  }
+  const rows = state.chunks.map((c) => {
+    const on = state.selected.has(c.chunk_id);
+    return `
+      <tr class="${c.removed === "removed" ? "removed" : ""}">
+        <td><input type="checkbox" data-sel="${esc(c.chunk_id)}" ${on ? "checked" : ""}></td>
+        <td>
+          <div class="topic">${esc(c.topic_label || "(no topic)")}</div>
+          <div class="when">${esc(when(c.created_at))}</div>
+        </td>
+        <td class="preview">${esc(c.preview)}</td>
+        <td><div class="tags">${rowTags(c)}</div></td>
+        <td class="cid">${esc(c.chunk_id)}</td>
+        <td>
+          <div class="rowacts">
+            <button class="tiny" data-open="${esc(c.chunk_id)}">View</button>
+            ${c.removed === "removed"
+              ? `<button class="tiny ok" data-flag="${esc(c.chunk_id)}" data-to="injectable">Restore</button>`
+              : `<button class="tiny danger" data-flag="${esc(c.chunk_id)}" data-to="removed">Remove</button>`}
+          </div>
+        </td>
+      </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:34px"></th><th>Topic / saved</th><th>Preview</th>
+      <th>Flags</th><th>Chunk id</th><th>Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function updateBulk() {
+  const n = state.selected.size;
+  $("bulkbar").classList.toggle("on", n > 0);
+  $("bulkcount").textContent = n + " selected";
+}
+
+async function search() {
+  clearErr();
+  try {
+    const d = await api("/memory/chunks?" + qs());
+    state.chunks = d.chunks || [];
+    state.selected = new Set([...state.selected].filter((id) =>
+      state.chunks.some((c) => c.chunk_id === id)));
+    $("count").textContent = `Showing ${d.count} of ${d.total} matching chunk(s)`;
+    render(); updateBulk();
+  } catch (e) {
+    showErr("Search failed: " + e.message);
+  }
+}
+
+async function flag(ids, removed) {
+  clearErr();
+  try {
+    const r = await api("/memory/chunks/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, removed, reason: "set in management UI" }),
+    });
+    // Per-id outcomes: a bad id must not pass as success.
+    if (r.failed && r.failed.length) {
+      showErr("Some ids could not be changed: " +
+        r.failed.map((f) => f.chunk_id + " (" + f.error + ")").join(", "));
+    }
+    state.selected.clear();
+    await search();
+    return r;
+  } catch (e) {
+    showErr("Update failed: " + e.message);
+  }
+}
+
+async function openDetail(id) {
+  clearErr();
+  try {
+    const d = await api("/memory/chunks/" + encodeURIComponent(id));
+    const c = d.chunk || {};
+    state.current = c;
+    $("dtitle").textContent = c.topic_label || "(no topic)";
+    $("dcid").textContent = c.chunk_id || "";
+    const f = $("dflag");
+    const isRemoved = c.removed === "removed";
+    f.textContent = isRemoved ? "Restore (un-remove)" : "Remove";
+    f.className = isRemoved ? "ok" : "danger";
+    f.dataset.to = isRemoved ? "injectable" : "removed";
+    f.dataset.id = c.chunk_id || "";
+
+    let msgs = c.messages;
+    if (typeof msgs === "string") { try { msgs = JSON.parse(msgs); } catch (e) { msgs = []; } }
+    const msgHtml = (Array.isArray(msgs) ? msgs : []).map((m) =>
+      `<div class="msg ${esc(m.role || "")}"><span class="role">${esc(m.role || "?")}</span>${esc(m.content)}</div>`
+    ).join("") || "<div class='empty'>No messages stored.</div>";
+
+    $("dbody").innerHTML = `
+      <dl class="kv">
+        <dt>State</dt><dd>${isRemoved ? "<b style='color:var(--danger)'>removed</b> — skipped by injection and model search" : "injectable"}</dd>
+        <dt>Removed reason</dt><dd>${esc(c.removed_reason || "—")}</dd>
+        <dt>Saved</dt><dd>${esc(when(c.created_at))}</dd>
+        <dt>Source</dt><dd>${esc(c.source || "—")}</dd>
+        <dt>Model</dt><dd>${esc(c.model || "—")}</dd>
+        <dt>Grade / trust</dt><dd>${esc(c.grade || "—")} / ${esc(c.trust || "—")}</dd>
+        <dt>Corroboration</dt><dd>${c.independent_sources || 0} independent source(s)${c.self_confirm ? " — <b>self-confirming</b>" : ""}</dd>
+        <dt>Derived from</dt><dd>${(c.derived_from && c.derived_from.length) ? esc(c.derived_from.join(", ")) : "—"}</dd>
+        <dt>Session</dt><dd>${esc(c.session_id || "—")}</dd>
+      </dl>
+      <div class="sect">Messages</div>
+      ${msgHtml}
+      <div class="sect">Derived chunks (built on top of this)</div>
+      <div id="dlineage" style="color:var(--muted);font-size:13px">Loading…</div>
+    `;
+    $("back").classList.add("on");
+    $("drawer").classList.add("on");
+
+    // Lineage is a live query (nothing stored), so it reflects the current DB.
+    try {
+      const l = await api("/memory/lineage/" + encodeURIComponent(id));
+      const kids = l.descendants || [];
+      $("dlineage").innerHTML = kids.length
+        ? kids.map((k) => `<div class="lineage-row">
+             <b>${esc(k.chunk_id)}</b>
+             <span style="color:var(--muted)">· depth ${k.depth} · via ${esc((k.relation || []).join("+"))}</span>
+             <div>${esc(k.topic_label || "")}</div>
+           </div>`).join("") +
+           '<div style="margin-top:8px;color:var(--muted);font-size:12px">Flagging a chunk does not flag these automatically — they are listed so you can judge whether they inherited the problem.</div>'
+        : '<span style="color:var(--muted);font-size:13px">Nothing recorded as derived from this chunk.</span>';
+    } catch (e) {
+      $("dlineage").textContent = "Lineage unavailable: " + e.message;
+    }
+  } catch (e) {
+    showErr("Could not load chunk: " + e.message);
+  }
+}
+
+function closeDrawer() {
+  $("back").classList.remove("on");
+  $("drawer").classList.remove("on");
+  state.current = null;
+}
+
+// ── wiring ──
+$("apply").addEventListener("click", search);
+$("clear").addEventListener("click", () => {
+  ["keyword", "since", "until"].forEach((i) => { $(i).value = ""; });
+  ["removed", "source", "model", "grade", "trust"].forEach((i) => { $(i).value = ""; });
+  $("order").value = "newest";
+  ["proposed", "self_confirm", "uncorroborated"].forEach((i) => { $(i).checked = false; });
+  search();
+});
+$("keyword").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+$("selall").addEventListener("click", () => {
+  state.chunks.forEach((c) => state.selected.add(c.chunk_id));
+  render(); updateBulk();
+});
+$("selnone").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkcancel").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkremove").addEventListener("click", () => flag([...state.selected], true));
+$("bulkrestore").addEventListener("click", () => flag([...state.selected], false));
+$("dclose").addEventListener("click", closeDrawer);
+$("back").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+$("listwrap").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.open) openDetail(t.dataset.open);
+  else if (t.dataset && t.dataset.flag) flag([t.dataset.flag], t.dataset.to === "removed");
+});
+$("listwrap").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.sel) {
+    if (t.checked) state.selected.add(t.dataset.sel);
+    else state.selected.delete(t.dataset.sel);
+    updateBulk();
+  }
+});
+$("dflag").addEventListener("click", async () => {
+  const f = $("dflag");
+  await flag([f.dataset.id], f.dataset.to === "removed");
+  closeDrawer();
+});
+
+loadSources().then(search);
+</script>
+</body>
+</html>
