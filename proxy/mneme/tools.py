@@ -134,7 +134,7 @@ READ_FILE_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Absolute path to the file, e.g. /home/sean/mneme-ox/repo/proxy/mneme_proxy.py"},
+                "path": {"type": "string", "description": "Absolute path to the file, e.g. /path/to/repo/proxy/mneme_proxy.py"},
                 "start": {"type": "integer", "description": "Optional 1-based first line to read (default 1)"},
                 "end": {"type": "integer", "description": "Optional 1-based last line to read, inclusive (default: end of file)"},
             },
@@ -263,7 +263,7 @@ NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a shell command on the Mneme host. Runs from the home directory (/root). To access files elsewhere, use absolute paths (e.g. ls /root/mneme/chunks/instructions or cat /workspace/...) or cd first.",
+        "description": "Run a shell command on the Mneme host. Runs from the home directory of the user Mneme runs as. To access files elsewhere, use absolute paths or cd first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -278,7 +278,7 @@ NATIVE_WRITE_TOOL = {
     "type": "function",
     "function": {
         "name": "write",
-        "description": "Write a file on the Mneme host. Use to save a script you are building. Relative paths land in the tools directory (/root/mneme/chunks/tools); the returned text shows the full saved path.",
+        "description": "Write a file on the Mneme host. Use to save a script you are building. Relative paths land in the tools directory (under the configured chunk dir, e.g. <chunk_dir>/tools); the returned text shows the full saved path.",
         "parameters": {
             "type": "object",
             "properties": {

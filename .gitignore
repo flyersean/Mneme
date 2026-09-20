@@ -14,3 +14,11 @@ faiss.index
 
 # OS
 .DS_Store
+
+# Personal / local dev scratch scripts — hardcode local paths and model names and
+# are not part of the distributed tooling. Kept out of the repo so a `git add -A`
+# can't sweep them into a release.
+scripts/benchmark.py
+scripts/gen_doc.py
+scripts/personal_test.py
+scripts/relaunch_effort.sh

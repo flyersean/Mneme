@@ -7,7 +7,7 @@ exists), and the max_steps safety cap. No model or proxy is involved — these a
 pure filesystem + control-flow semantics.
 
 Run:
-    /home/sean/mneme/venv/bin/python tests/test_swarm_orchestrator.py
+    python3 tests/test_swarm_orchestrator.py
 """
 
 import os

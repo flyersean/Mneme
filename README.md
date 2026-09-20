@@ -93,6 +93,49 @@ Everything lives under one directory, `~/mneme/`:
   chunks/    memory DB (mneme.db), per-instance config (instances/<port>/mneme.yaml), and editable prompts
 ```
 
+## Security
+
+**Mneme is designed for local or otherwise trusted environments.** It is a tool
+proxy, not a hardened service. Treat it the way you would treat a shell account.
+
+When enabled, the proxy can expose capabilities that are equivalent to giving a
+model access to the host:
+
+- **`bash`** — runs shell commands on the Mneme host
+- **`write`** — creates and overwrites files
+- **`read_file` / `read_image`** — reads any file the proxy process can read
+- **MCP servers** — each one you configure adds its own tools and privileges
+- **HTTP endpoints** — including a prompt editor that writes to disk
+- **Model-directed tool use** — the model chooses which tools to call
+
+None of this is sandboxed. A tool call the model makes is a real tool call.
+
+**Do not expose the proxy directly to the public internet.** There is no
+authentication on the HTTP API. If you need remote access, put it behind an SSH
+tunnel (`scripts/mneme_connect.py` does this for you), a VPN, or a reverse proxy
+that handles auth — and restrict what the machine itself can reach.
+
+**Running a self-editing agent? Lock the config.** If you point an agent at a
+task where it can modify its own files — coding, studying, anything that writes
+to the repo — set:
+
+```yaml
+runtime:
+  hot_reload: false
+```
+
+This freezes the config, the system prompts, and `swarm_config.yaml` so runtime
+edits cannot change the proxy's behaviour until it is restarted. Without it, an
+agent that can write files can rewrite the instructions it runs under. The lock
+is read once at startup and never re-read, so it cannot be turned back on by a
+running proxy.
+
+**What Mneme does *not* protect against.** Memory is retrievable by anything that
+can reach the proxy, and the memory DB is a plain SQLite file. Do not put secrets
+in conversations you intend to archive. Injection defences (provenance grading,
+the similarity floor, retraction) reduce the risk of a bad memory being treated
+as fact — they are not a security boundary.
+
 ## Model selection
 
 Mneme runs three models — chat, embedder, labeler — and each has one hard requirement:
@@ -422,14 +465,40 @@ They cover:
 - The two-floor retrieval helpers.
 - The token-based context budget (recent-window eviction, followup compaction).
 - Per-tool disable flags and the `memory_enabled` master switch.
+- Memory curation: retraction/restore state, the model-propose vs user-confirm
+  split, recurrence tiers, self-confirmation detection, and the decision log.
+- Model templates: the merge priority (env > template > config > default) and
+  validation that rejects unknown keys instead of silently ignoring them.
+- In-chat commands (`<<SETTINGS>>`, `<<RETRIEVAL>>`), including that the config
+  rewrite preserves comments and neighbouring keys.
 
-72 tests.
+83 tests in `tests/test_tool_loop.py`.
 
-Additional test files cover the pieces beyond the tool loop: `tests/test_mcp_client.py` +
-`tests/test_mcp_endpoints.py` (MCP connect/list/call/remove against a real stdio MCP
-server, and the hot-add endpoints), `tests/test_hot_reload_lock.py` (the config/prompt
-lock), `tests/test_generated_config.py` (every wizard-emitted config key is valid), and
-`tests/test_swarm_skip_throttle.py` (swarm `skip_if_empty` / `every` step fields).
+The full suite is **292 tests** across 18 files. Beyond the tool loop:
+
+| File | Tests | Covers |
+| --- | --- | --- |
+| `test_tool_loop.py` | 83 | tool loop, retrieval gate, provenance, budgets |
+| `test_swarm_orchestrator.py` | 47 | swarm control flow, primitives, per-step options |
+| `test_images.py` | 18 | image handling in memory chunks |
+| `test_curation.py` | 28 | retraction, recurrence, provenance chains, decision log |
+| `test_chatcmd.py` | 27 | `<<SETTINGS>>` / `<<RETRIEVAL>>`, config rewrite safety |
+| `test_templates.py` | 26 | model-template merge + validation |
+| `test_trust.py` | 15 | provenance/trust grading |
+| `test_model_config.py` | 11 | per-model overrides, sampler option mapping |
+| `test_logfile.py` | 7 | log routing |
+| `test_config_load.py` | 5 | config precedence |
+| `test_mcp_client.py` | 5 | MCP connect/list/call/remove (needs `mcp`) |
+| `test_generated_config.py` | 4 | every wizard-emitted key is valid |
+| `test_swarm_skip_throttle.py` | 4 | swarm `skip_if_empty` / `every` |
+| `test_hot_reload_lock.py` | 3 | config/prompt lock |
+| `test_mcp_endpoints.py` | 3 | MCP hot-add endpoints |
+| `test_swarm_p_orchestrator.py` | 2 | parallel orchestrator |
+| `test_db_write_retry.py` | 2 | DB write retry |
+| `test_inject_flag.py` | 2 | injection on/off switch |
+
+`tests/test_mcp_client.py` requires the `mcp` package (`pip install mcp`); its
+tests are skipped/failed without it.
 
 The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
 

@@ -9,10 +9,14 @@ Walks the user through ONE flow that configures the whole system:
 
 Then writes ONE config file (mneme.yaml), a start script, and launches the proxy.
 
-Run it after the installer:
+Runs as a standalone script after the installer. It imports only PyYAML beyond the
+standard library, and install.sh installs PyYAML, so it can be fetched and run with
+no separate pip step:
+
   curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 
-Self-contained (stdlib only) so it runs via curl | python3 with no pip installs.
+(If you run it on a machine where the installer hasn't run, install PyYAML first:
+`pip install pyyaml` or your distro's python3-yaml package.)
 """
 
 import os
