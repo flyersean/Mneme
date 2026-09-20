@@ -1266,6 +1266,31 @@ def test_retrieval_settings_hot_reload_from_config():
 
 
 @test
+def test_curation_tools_execute_server_side():
+    """REGRESSION: retract_memory/restore_memory were registered in a separate
+    CURATION_TOOLS tuple, so they were absent from enabled_readonly_names() — the
+    set process_chat uses to decide what runs SERVER-side. Their calls therefore
+    fell into `other_calls` and were passed through to the client instead of being
+    executed (observed: empty answer + "passing tool call through to client").
+    """
+    mt = mp.mntools
+    saved = (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"])
+    try:
+        mt._curation_hooks["retract_allowed"] = False
+        mt._curation_hooks["propose_allowed"] = True
+        curation_names = {t["function"]["name"] for t in mt.enabled_curation_tools()}
+        assert curation_names, "curation tools should be exposed with propose on"
+
+        # They must be reachable by the server-side dispatcher.
+        for name in curation_names:
+            out = mt.execute_readonly_tool(name, {"chunk_id": "mem_missing"})
+            assert out and "unknown registry tool" not in out, \
+                f"{name} is not dispatched server-side: {out!r}"
+    finally:
+        mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"] = saved
+
+
+@test
 def test_chunk_insert_matches_schema():
     """REGRESSION: the chunk INSERT used a bare `VALUES (?,...,?)` with 20
     placeholders. Adding columns via migration (the curation work added 10) made
