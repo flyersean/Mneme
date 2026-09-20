@@ -148,6 +148,18 @@ options: { temperature: 0.4, top_p: 0.9, top_k: 40, max_tokens: 400 }
 options: { temperature: 0.7, top_p: 0.9, top_k: 40, num_predict: 400 }
 ```
 
+Any other key is passed straight through to the backend, so Ollama-specific knobs
+that the proxy itself honours are available per step too — e.g.
+`repeat_penalty` (anti-repetition), `num_ctx` (KV window), `presence_penalty`:
+
+```yaml
+options: { temperature: 1.0, repeat_penalty: 1.1, num_predict: 3072 }
+```
+
+Note `max_tokens` and `num_predict` are the SAME knob (`max_tokens` is mapped to
+`num_predict` for the Ollama backend). Setting `max_tokens` on a `backend: ollama`
+step works, but prefer `num_predict` there for clarity.
+
 Flow-style (`{ k: v }`) and block style are equivalent. For Mneme, `options` MUST
 be nested under the top-level `"options"` key in the request payload — bare
 `temperature`/`top_p` fields are ignored by the proxy.

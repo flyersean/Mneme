@@ -51,6 +51,11 @@ _PROXY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pro
 sys.path.insert(0, _PROXY_DIR)
 import mneme_proxy as mp  # noqa: E402
 
+# Captured at import, BEFORE any test can patch it. Several tests do
+# `mp.query_model = ScriptedModel()` and never restore it, so a later test that
+# needs the REAL function must reach for this reference instead of mp.query_model.
+_REAL_QUERY_MODEL = mp.query_model
+
 # Save the real functions so tests that stub globals can still reach the real one.
 _REAL_ROUTE_QUERY = mp.route_query
 _REAL_COSINE_SEARCH = mp._cosine_search
@@ -1263,6 +1268,74 @@ def test_retrieval_settings_hot_reload_from_config():
         mp.CONFIG_PATH, mp._CONFIG_MTIME, mp.INJECT_MIN_SIMILARITY, \
             mp.MAX_INJECTED_TOKENS, mp._USER_PINNED_ENV = orig
         mp._refresh_runtime_constants()
+
+
+@test
+def test_swarm_step_options_reach_the_payload():
+    """The swarm passes per-step generation overrides as a NESTED `options` object
+    (swarm_orchestrator.call_mneme -> payload["options"]), documented in
+    swarm_config.yaml as:
+        backend=mneme:  { temperature, top_p, top_k, max_tokens }
+        backend=ollama: { temperature, top_p, top_k, num_predict }
+
+    This asserts the proxy honours them all, including pass-through of arbitrary
+    Ollama option keys (num_predict / repeat_penalty / num_ctx) that the swarm
+    lets a step specify. Without this the docs would promise something the proxy
+    silently dropped."""
+    cap = {}
+    _payloads = []
+
+    class _R:
+        encoding = "utf-8"
+        def iter_lines(self, decode_unicode=True):
+            yield json.dumps({"message": {"role": "assistant",
+                                          "content": "A long enough answer to avoid the continue nudge."},
+                              "done": True, "done_reason": "stop"})
+        def close(self): pass
+        def raise_for_status(self): pass
+        def json(self): return {}
+
+    def _post(url, **kw):
+        if "/api/chat" in url:
+            _payloads.append(kw.get("json"))
+        return _R()
+
+    _orig = mp.requests.post
+    # Some earlier tests assign mp.query_model = ScriptedModel() and never restore
+    # it, which would make this test inherit a scripted queue. Use the real
+    # function explicitly so the assertion is about the PROXY, not a leftover stub.
+    _orig_query_model = mp.query_model
+    try:
+        mp.query_model = _REAL_QUERY_MODEL
+        mp.requests.post = _post
+
+        def _opts_for(options, max_tokens=None):
+            _payloads.clear()
+            mp.process_chat([{"role": "user", "content": "review"}], session_id="sw",
+                            tools=[], options=options, max_tokens=max_tokens)
+            assert _payloads, "no /api/chat payload captured"
+            return (_payloads[-1] or {}).get("options", {})
+
+        opts = _opts_for({"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                          "num_predict": 400})
+        assert opts.get("temperature") == 0.7, opts
+        assert opts.get("top_p") == 0.8, opts
+        assert opts.get("top_k") == 20, opts
+        assert opts.get("num_predict") == 400, opts
+
+        # max_tokens (OpenAI-style) already maps to num_predict — the raw key must
+        # NOT be forwarded into Ollama options, where it would be silently ignored.
+        opts = _opts_for({"max_tokens": 512}, max_tokens=512)
+        assert opts.get("num_predict") == 512, opts
+        assert "max_tokens" not in opts, f"raw max_tokens leaked to Ollama: {opts}"
+
+        # arbitrary ollama keys pass through
+        opts = _opts_for({"repeat_penalty": 1.15, "num_ctx": 8192})
+        assert opts.get("repeat_penalty") == 1.15, opts
+        assert opts.get("num_ctx") == 8192, opts
+    finally:
+        mp.requests.post = _orig
+        mp.query_model = _orig_query_model
 
 
 @test

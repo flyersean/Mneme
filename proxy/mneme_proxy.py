@@ -2263,7 +2263,14 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
             break
     if options:
         opts.update(options)
-    
+    # `max_tokens` is the OpenAI-style name and is NOT an Ollama option key —
+    # Ollama silently ignores unknown keys, so forwarding it would look like it
+    # worked while doing nothing. It is already mapped to num_predict above (the
+    # caller passes it as max_tokens=), so drop the raw key here to keep the
+    # payload honest and avoid the exact silent-no-op class this project has been
+    # bitten by before.
+    opts.pop("max_tokens", None)
+
     payload = {
         "model": _model, "stream": True, "messages": msgs,
         "options": opts
