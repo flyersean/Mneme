@@ -591,6 +591,11 @@ Some open questions this exists to ask:
 - When is a large model genuinely necessary?
 - Can tools compensate for a capability a model lacks?
 
+The swarm is itself an **extension** — a self-contained program that talks to Mneme
+over HTTP and shares no code with the proxy. It doubles as the reference example for
+writing your own; see [Extensions](#extensions) for the integration contract and what
+else the API exposes.
+
 Full reference: [`extensions/swarm/README.md`](extensions/swarm/README.md) for a
 worked example, [`extensions/swarm/SWARM_REFERENCE.md`](extensions/swarm/SWARM_REFERENCE.md)
 for the field-by-field spec.
@@ -802,16 +807,85 @@ Two deliberate runtime details are worth knowing:
 
 ## Extensions
 
-Non-core consumers of Mneme live in `extensions/` — they use the proxy over HTTP but are
-not part of the proxy stack. Each one is self-contained and talks to proxies only over
-`/v1/chat/completions`, which is the integration contract Mneme exposes: you could write a
-serial driver, a parallel fan-out, a cron job, or a full UI against the same endpoints
-without touching proxy code.
+Non-core consumers of Mneme live in `extensions/`. They are **separate programs that
+talk to the proxy over HTTP** — not plugins, and not part of the proxy stack. Nothing
+in `extensions/` is imported by `proxy/`, and an extension never imports the proxy:
+the only connection is the network API.
+
+See [`extensions/README.md`](extensions/README.md) for the full integration guide.
+
+That separation is deliberate, and it is what makes the API the contract:
+
+```text
+     ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
+     │  Pi extension  │   │  swarm         │   │  your tool     │
+     └───────┬────────┘   └───────┬────────┘   └───────┬────────┘
+             │                    │                    │
+             └────────────────────┼────────────────────┘
+                                  │  HTTP
+                       ┌──────────┴──────────┐
+                       │   Mneme proxy       │
+                       │   /v1/chat/...      │
+                       │   /search /list     │
+                       │   /memory/...       │
+                       └─────────────────────┘
+```
+
+Because the boundary is HTTP, an extension can be written in any language, can run on
+a different machine from the proxy, and cannot break the proxy by changing. Equally,
+the proxy can be upgraded or restarted without touching an extension. Multiple
+extensions can point at the same proxy, or at different instances sharing one memory
+DB.
+
+### What an extension can use
+
+| Surface | Endpoint | Use it for |
+| --- | --- | --- |
+| Chat | `POST /v1/chat/completions` | Full agent turns — memory retrieval, injection, the tool loop, and grading all happen proxy-side |
+| Chat (native) | `POST /api/chat` | Same, in Ollama's native shape |
+| Memory search | `GET /search` | Direct retrieval without a model call |
+| Recent chunks | `GET /list`, `GET /detail/<chunk_id>` | Browsing what memory actually contains |
+| Memory curation | `POST /memory/retract`, `/memory/restore` | Marking a stored chunk false, or undoing it |
+| Review queue | `GET /memory/proposals`, plus `POST .../confirm` and `.../deny` | Acting on a chunk the model proposed as wrong |
+| Audit log | `GET /memory/log` | Every curation action, who did it, and why |
+| Prompts | `GET/POST /instructions*` | Reading or editing the system prompts |
+| Health / models | `GET /health`, `/models` | Discovery, readiness |
+
+The important one is `POST /v1/chat/completions`: an extension gets memory, tools,
+provenance, and the tool loop **for free** by sending a normal OpenAI-shaped request.
+It does not have to know how any of that works. That is the whole point of putting the
+memory layer in a proxy rather than in a library.
+
+### The swarm is the reference example
+
+`extensions/swarm` is a complete, working extension — and the intended template for
+writing others. It is the best guide in the repo because it exercises the contract
+properly rather than trivially:
+
+- **Zero coupling.** It imports no Mneme code. Its entire integration is a plain HTTP
+  POST to `/v1/chat/completions` (see `call_mneme()` in `swarm_orchestrator.py` — that
+  method is the only touchpoint with Mneme, and it is ~20 lines).
+- **It shows both modes.** `backend: mneme` drives a proxy (memory + tools);
+  `backend: ollama` drives a raw model over Ollama's native API. A workflow can mix
+  them, which demonstrates that Mneme is optional rather than required.
+- **It shows the per-step override pattern.** A step can pass generation settings for
+  that one call without touching the proxy's config.
+- **It is self-contained.** One config file, two scripts, its own docs.
+
+Read `extensions/swarm/swarm_orchestrator.py` if you want to write your own extension:
+find `call_mneme()`, and you have seen the whole integration surface.
+
+**Things an extension can do that the swarm does not**, which are also worth copying
+from the endpoint table above: calling `/search` directly for retrieval without a
+generation, writing to the memory curation endpoints, or reading `/health` to wait for
+a proxy to come up before starting work.
 
 ### Pi (`extensions/pi`)
 
 Pi coding-agent tools that let Pi call Mneme's memory and web tools. The setup wizard can
-install Pi and point it at Mneme as a provider (see "Pi terminal assistant" above).
+install Pi and point it at Mneme as a provider (see "Pi terminal assistant" above). A
+second, much smaller example of the same contract — useful for seeing how little is
+required to integrate.
 
 ### Swarm (`extensions/swarm`)
 

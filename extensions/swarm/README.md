@@ -8,6 +8,27 @@ orchestrator is an independent consumer that talks to proxies only over HTTP
 (`http://localhost:<port>/v1/chat/completions`). You can swap it for a serial
 orchestrator, a parallel fan-out, or any other driver without touching proxy code.
 
+## As a guide for writing your own extension
+
+This is the reference example for **extensions** — programs that add capability on top
+of Mneme without sharing any code with it. If you want to build one, the pattern is:
+
+1. **Decide what the proxy should do for you.** Anything sent to
+   `POST /v1/chat/completions` comes back with memory retrieval, injection, the tool
+   loop, and provenance grading already applied. You do not implement any of that.
+2. **Talk to it over HTTP.** Any language, any machine. Nothing is imported.
+3. **Keep your own state outside Mneme.** The swarm uses the filesystem as its shared
+   board; that is one choice, not the required one.
+
+The whole integration lives in one method — `call_mneme()` in `swarm_orchestrator.py`
+(~20 lines). Read that first. The README's [Extensions](../../README.md#extensions)
+section lists the other endpoints an extension can use (`/search` for retrieval without
+a generation, the memory curation endpoints, `/health` for readiness).
+
+Beyond that, the orchestration ideas worth stealing are in this document: control flow
+in config rather than code, artifacts on disk as the communication channel between
+steps, and per-step generation overrides.
+
 ## What it does
 
 The example config runs a creative-writing loop that exercises **every** orchestrator
