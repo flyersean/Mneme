@@ -26,6 +26,13 @@ from, and whether a human disputed it.
    that cites a chunk the model itself wrote is not corroboration, it is an
    echo. That flag is the highest-value signal for the reported symptom.
 
+   ⚠ INCOMPLETE AS SHIPPED: the storage, the diffing and detect_self_confirmation()
+   are implemented and tested, but `record_provenance()` is NOT yet called from the
+   archive path — so on a live proxy `derived_from` stays '[]' and the
+   self-confirmation flag never fires. Wiring it up is step 1 of
+   docs/provenance-and-chunk-lifecycle-plan.md. Until then, treat the mechanism as
+   unavailable rather than merely unproven.
+
 4. DECISION LOG — every retraction / flag / restore is appended to an audit
    trail with who did it and why, and can be undone. The model may PROPOSE
    (queue a candidate for review); only the user CONFIRMS. Acting and proposing
