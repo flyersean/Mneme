@@ -1082,7 +1082,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
 | `tests/` | The deterministic suite (~348 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
-| `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle-plan.md` (planned: lineage tracking + soft-delete/purge), per-model write-ups |
+| `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
 | `launch.sh` | Convenience launcher for a **local** machine: starts the proxy in the background, then runs Pi; exiting Pi stops the proxy |
 | `AGENTS.md` | Instructions written *for AI coding agents* — how to stand up an instance and how to author an extension. If you are pointing a coding agent at this repo, give it this file |

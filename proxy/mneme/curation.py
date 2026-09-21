@@ -26,18 +26,21 @@ from, and whether a human disputed it.
    that cites a chunk the model itself wrote is not corroboration, it is an
    echo. That flag is the highest-value signal for the reported symptom.
 
-   ⚠ INCOMPLETE AS SHIPPED: the storage, the diffing and detect_self_confirmation()
-   are implemented and tested, but `record_provenance()` is NOT yet called from the
-   archive path — so on a live proxy `derived_from` stays '[]' and the
-   self-confirmation flag never fires. Wiring it up is step 1 of
-   docs/provenance-and-chunk-lifecycle-plan.md. Until then, treat the mechanism as
-   unavailable rather than merely unproven.
+   Recorded by the archive path, which parses [source: mem_XXXX] citations out of
+   a chunk's own messages. Only citations that RESOLVE to a real chunk are kept —
+   a model can emit a truncated id (observed live), and a dangling edge is worse
+   than no edge when tracing contamination because it looks like a real lead.
 
-4. DECISION LOG — every retraction / flag / restore is appended to an audit
-   trail with who did it and why, and can be undone. The model may PROPOSE
-   (queue a candidate for review); only the user CONFIRMS. Acting and proposing
-   are separate capabilities behind separate flags so the model can never
-   silently delete a correct fact that contradicts it.
+   A second, more reliable signal lives alongside it: `injected_chunk_ids` records
+   which chunks were IN CONTEXT when this one was produced. That one does not
+   depend on the model citing anything, which matters because models paraphrase
+   without citing constantly.
+
+4. DECISION LOG — every flag / removal / clear is appended to an audit trail with
+   who did it and why. Acting and flagging are separate capabilities: the model may
+   MARK a chunk as suspected-wrong (flag_bad_memory) and nothing more; only the user
+   can remove one. A model that could remove memory could silently hide the facts
+   that contradict it.
 
 Schema is additive — every column is added via ALTER TABLE guarded by a
 try/except, matching the existing migration style in mneme_proxy.py.
