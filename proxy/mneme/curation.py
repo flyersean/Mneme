@@ -369,6 +369,59 @@ def _preview(messages_json, limit=280):
     return ""
 
 
+def set_bad_chunk(db, chunk_id, bad=True, actor="user", reason=""):
+    """Set or clear the "bad chunk" flag on ONE chunk.
+
+    A question mark, not a decision: marking a chunk bad records that it is
+    SUSPECTED of being wrong — nothing about what Mneme uses changes. Clearing it
+    says the suspicion was unfounded. It does not touch `removed`, which is the
+    separate, deliberate action that takes a chunk out of circulation.
+
+    `actor` records WHO flagged it, which the page renders as colour:
+        'model' -> amber   (the model suggested it — evaluate it)
+        'user'  -> red     (you flagged it — you already made the call)
+
+    Distinct from retract(): retraction is an epistemic claim that also changes
+    injection (a dispute warning is attached). This is just a marker.
+    """
+    if actor not in ("user", "model"):
+        raise CurationError(f"bad actor: {actor!r}")
+    chunk = _get_chunk(db, chunk_id)
+    if not chunk:
+        raise CurationError(f"unknown chunk: {chunk_id}")
+    if bad:
+        db.execute(
+            "UPDATE chunks SET proposed_retract=?, proposed_reason=? WHERE chunk_id=?",
+            (actor, (reason or "")[:1000], chunk_id),
+        )
+    else:
+        db.execute(
+            "UPDATE chunks SET proposed_retract='', proposed_reason='' WHERE chunk_id=?",
+            (chunk_id,),
+        )
+    _log(db, chunk_id, "bad_chunk" if bad else "bad_chunk_cleared", actor, reason,
+         prev_state=chunk.get("proposed_retract", ""))
+    db.commit()
+    return {"chunk_id": chunk_id, "bad_chunk": actor if bad else "",
+            "previous": chunk.get("proposed_retract", "")}
+
+
+def set_bad_chunk_many(db, chunk_ids, bad=True, actor="user", reason=""):
+    """Bulk form of set_bad_chunk. Returns per-id outcomes.
+
+    Per-id rather than a bare count so a typo'd id cannot pass as success.
+    """
+    changed, failed = [], []
+    for cid in (chunk_ids or []):
+        try:
+            set_bad_chunk(db, cid, bad=bad, actor=actor, reason=reason)
+            changed.append(cid)
+        except CurationError as e:
+            failed.append({"chunk_id": cid, "error": str(e)})
+    return {"bad_chunk": actor if bad else "", "changed": changed,
+            "failed": failed, "count": len(changed)}
+
+
 # ── Retraction ───────────────────────────────────────────────────────────
 
 def retract(db, chunk_id: str, actor: str, reason: str = "") -> dict:

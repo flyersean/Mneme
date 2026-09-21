@@ -587,5 +587,72 @@ class TestChunkListing(unittest.TestCase):
         self.assertEqual(out["total"], 2, "total counts all matches, not the page")
 
 
+class TestBadChunk(unittest.TestCase):
+    """"Bad chunk" is a MARKER, not a decision. It records that a chunk is
+    suspected-wrong and changes nothing about what Mneme uses. The page renders it
+    amber when the model set it and red when the user did."""
+
+    def test_set_by_model(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        out = cur.set_bad_chunk(db, "mem_b", True, actor="model", reason="contradicted later")
+        self.assertEqual(out["bad_chunk"], "model")
+        c = cur._get_chunk(db, "mem_b")
+        self.assertEqual(c["proposed_retract"], "model")
+        self.assertEqual(c["proposed_reason"], "contradicted later")
+
+    def test_set_by_user(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        cur.set_bad_chunk(db, "mem_b", True, actor="user")
+        self.assertEqual(cur._get_chunk(db, "mem_b")["proposed_retract"], "user")
+
+    def test_clear_is_a_toggle(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        cur.set_bad_chunk(db, "mem_b", True, actor="model", reason="x")
+        cur.set_bad_chunk(db, "mem_b", False, actor="user")
+        c = cur._get_chunk(db, "mem_b")
+        self.assertEqual(c["proposed_retract"], "")
+        self.assertEqual(c["proposed_reason"], "", "reason must clear with the flag")
+
+    def test_marker_does_not_remove(self):
+        """The critical property: flagging is not removing."""
+        db = _mkdb(); _chunk(db, "mem_b")
+        cur.set_bad_chunk(db, "mem_b", True, actor="model")
+        c = cur._get_chunk(db, "mem_b")
+        self.assertEqual(c["removed"], "injectable", "flagging must not remove")
+        self.assertEqual(c["retracted"], "", "flagging must not retract")
+
+    def test_model_can_flag_but_not_pick_user(self):
+        """A model-set flag must not be able to masquerade as a user decision."""
+        db = _mkdb(); _chunk(db, "mem_b")
+        cur.set_bad_chunk(db, "mem_b", True, actor="model")
+        self.assertNotEqual(cur._get_chunk(db, "mem_b")["proposed_retract"], "user")
+
+    def test_bad_actor_rejected(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        with self.assertRaises(cur.CurationError):
+            cur.set_bad_chunk(db, "mem_b", True, actor="system")
+
+    def test_unknown_chunk_raises(self):
+        db = _mkdb()
+        with self.assertRaises(cur.CurationError):
+            cur.set_bad_chunk(db, "mem_nope", True)
+
+    def test_bulk_reports_per_id(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        out = cur.set_bad_chunk_many(db, ["mem_b", "mem_nope"], bad=True, actor="user")
+        self.assertEqual(out["changed"], ["mem_b"])
+        self.assertEqual(len(out["failed"]), 1)
+
+    def test_logged_with_actor(self):
+        db = _mkdb(); _chunk(db, "mem_b")
+        cur.set_bad_chunk(db, "mem_b", True, actor="model")
+        cur.set_bad_chunk(db, "mem_b", False, actor="user")
+        rows = db.execute(
+            "SELECT action, actor FROM curation_log WHERE chunk_id='mem_b' ORDER BY rowid"
+        ).fetchall()
+        self.assertIn(("bad_chunk", "model"), rows)
+        self.assertIn(("bad_chunk_cleared", "user"), rows)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

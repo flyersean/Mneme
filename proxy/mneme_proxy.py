@@ -7312,6 +7312,49 @@ if FLASK_OK:
             _log_error("memory_chunks_remove_bulk", e)
             return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
 
+    @app.route("/memory/chunks/<chunk_id>/bad", methods=["POST"])
+    def memory_chunk_bad(chunk_id):
+        """Set or clear the "bad chunk" flag. Body: {"bad": true, "actor": "user"}.
+
+        A marker, not an action — nothing about what Mneme uses changes. The page
+        renders it amber when the model set it and red when the user did.
+        """
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            bad = data.get("bad", True)
+            if isinstance(bad, str):
+                bad = bad.lower() in ("1", "true", "yes", "on")
+            actor = (data.get("actor") or "user").strip().lower()
+            out = curation.set_bad_chunk(db, chunk_id, bool(bad), actor=actor,
+                                         reason=data.get("reason") or "")
+            return _cors_response(out)
+        except curation.CurationError as e:
+            return _cors_response({"error": str(e)}, status=404)
+        except Exception as e:
+            _log_error("memory_chunk_bad", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
+    @app.route("/memory/chunks/bad", methods=["POST"])
+    def memory_chunks_bad_bulk():
+        """Flag several chunks bad at once. Body: {"ids": [...], "bad": true}"""
+        try:
+            data = request.get_json(force=True, silent=True) or {}
+            ids = data.get("ids") or []
+            if not isinstance(ids, list):
+                return _cors_response({"error": "ids must be a list"}, status=400)
+            ids = [str(i).strip() for i in ids if str(i).strip()]
+            if not ids:
+                return _cors_response({"error": "no ids given"}, status=400)
+            bad = data.get("bad", True)
+            if isinstance(bad, str):
+                bad = bad.lower() in ("1", "true", "yes", "on")
+            actor = (data.get("actor") or "user").strip().lower()
+            return _cors_response(curation.set_bad_chunk_many(
+                db, ids, bad=bool(bad), actor=actor, reason=data.get("reason") or ""))
+        except Exception as e:
+            _log_error("memory_chunks_bad_bulk", e)
+            return _cors_response({"error": f"{type(e).__name__}: {e}"}, status=500)
+
     @app.route("/memory/sources", methods=["GET"])
     def memory_sources():
         """Distinct source/model/tag values — populates the page's filter dropdowns
