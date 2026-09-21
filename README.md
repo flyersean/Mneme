@@ -221,8 +221,9 @@ running proxy.
 **What Mneme does *not* protect against.** Memory is retrievable by anything that
 can reach the proxy, and the memory DB is a plain SQLite file. Do not put secrets
 in conversations you intend to archive. Injection defences (provenance grading,
-the similarity floor, retraction) reduce the risk of a bad memory being treated
-as fact — they are not a security boundary.
+the similarity floor, the [management page's flags](#managing-memory--the-management-page))
+reduce the risk of a bad memory being treated as fact — they are not a security
+boundary.
 
 ## Model selection
 
@@ -449,7 +450,9 @@ A flagged chunk keeps being injected — that is what "the flag changes nothing"
  relying on it (reason: The phone number 555-0100 is incorrect ...)]
 ```
 
-Without this the model would see a chunk it flagged yesterday looking exactly like a trusted one, and might trust it — or re-flag it having forgotten. The wording is deliberately weaker than the retraction tag (`DO NOT TRUST`): a flag is an unverified suspicion, possibly self-raised, and the chunk may well be correct.
+The label matters because the model is usually the one who raised the flag. Without it, the model would find a contradiction, flag the chunk, and on the next turn see the same chunk injected with nothing to indicate it was ever doubted — so it might trust it, or flag it a second time having forgotten.
+
+The wording is deliberately cautious: **"treat with suspicion"**, not "do not use". A flag is an unverified suspicion, often raised by the model itself, and the chunk may well be correct. The label names who flagged it and repeats their reason, so the model can weigh it rather than simply obey.
 
 ### Filters
 
@@ -878,25 +881,26 @@ They cover:
 - The two-floor retrieval helpers.
 - The token-based context budget (recent-window eviction, followup compaction).
 - Per-tool disable flags and the `memory_enabled` master switch.
-- Memory curation: retraction/restore state, the model-propose vs user-confirm
-  split, recurrence tiers, self-confirmation detection, and the decision log.
+- Memory management: the removed flag (and that it is reversible), the bad-chunk
+  marker and who set it, the injection label for flagged chunks, list filters,
+  recurrence tiers, self-confirmation detection, and the decision log.
 - Model templates: the merge priority (env > template > config > default) and
   validation that rejects unknown keys instead of silently ignoring them.
 - In-chat commands (`<<SETTINGS>>`, `<<RETRIEVAL>>`), including that the config
   rewrite preserves comments and neighbouring keys.
 
-83 tests in `tests/test_tool_loop.py`.
+86 tests in `tests/test_tool_loop.py`.
 
-The full suite is **292 tests** across 18 files. Beyond the tool loop:
+The full suite is **348 tests** across 18 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `test_tool_loop.py` | 83 | tool loop, retrieval gate, provenance, budgets |
+| `test_tool_loop.py` | 86 | tool loop, retrieval gate, provenance, budgets |
+| `test_curation.py` | 81 | removed flag, bad-chunk marker + injection label, filters, recurrence, self-confirmation, decision log |
 | `test_swarm_orchestrator.py` | 47 | swarm control flow, primitives, per-step options |
-| `test_images.py` | 18 | image handling in memory chunks |
-| `test_curation.py` | 28 | retraction, recurrence, provenance chains, decision log |
 | `test_chatcmd.py` | 27 | `<<SETTINGS>>` / `<<RETRIEVAL>>`, config rewrite safety |
 | `test_templates.py` | 26 | model-template merge + validation |
+| `test_images.py` | 18 | image handling in memory chunks |
 | `test_trust.py` | 15 | provenance/trust grading |
 | `test_model_config.py` | 11 | per-model overrides, sampler option mapping |
 | `test_logfile.py` | 7 | log routing |
@@ -1076,7 +1080,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~292 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~348 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle-plan.md` (planned: lineage tracking + soft-delete/purge), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
