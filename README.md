@@ -118,6 +118,10 @@ Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenA
 - **Prompt editor** — open `http://localhost:8080/instructions` to see every prompt Mneme
   injects, in the order it fires. Edit any of them inline (Save writes straight back to the
   file), or click "open file" for the raw text. Edits apply to the next message.
+- **Memory management** — open `http://localhost:8080/memory` to review and filter stored
+  chunks. This is where you deal with memory that turned out to be wrong: mark a chunk as
+  suspected-bad, or take it out of circulation entirely. Nothing is deleted — see
+  [Managing memory](#managing-memory--the-management-page).
 
 ### Live edits (no restart)
 
@@ -400,6 +404,64 @@ Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject
 Retrieval is **topic-switch aware**. When the current turn diverges from the last few turns (a topic switch), injection is hardened for a short grace window — a raised `novel_inject_floor` and no sibling expansion — so a dominant stale topic in a large DB can't steer the model back. `max_per_topic` further caps how many chunks any single `topic_label` may contribute. These four knobs live under `retrieval:` in `mneme.yaml.example` and default to sensible values (set any to `0` to disable).
 
 Memory is **portable** across machines and even across 1024-dim embedders. On startup, the proxy re-embeds any chunk whose stored `embed_model` doesn't match the current one, so you can `scp` the `.db` from a pod to a laptop and it self-heals. Text, grades, and strategies survive; only vectors regenerate.
+
+## Managing memory — the management page
+
+Memory that only grows is memory that eventually rots. Mneme saves everything, and a bad fact saved once gets retrieved forever — and worse, later turns get built on top of it. The management page at **`/memory`** is where you fix that.
+
+It is deliberately **model-free**: it reads and writes chunks over plain HTTP endpoints and never builds a chat turn. Reviewing a bad chunk therefore cannot re-archive it, which is the obvious failure mode if you asked the model to "go find and review" it.
+
+### Not a delete
+
+Nothing on this page deletes anything. The row, its content and its id all stay in the database, and the FAISS index is untouched — so every action here is reversible and a mistake costs nothing. Removing a chunk is a **flag**: it changes what Mneme does with the chunk, not whether it exists.
+
+### Two independent flags
+
+| Flag | What it means | What changes |
+|---|---|---|
+| **removed** | You decided this chunk should stop being used | Injection and the model's memory search both skip it. It still appears here, with its content, so you can review or restore it. |
+| **bad chunk** | This chunk is *suspected* wrong — a marker, not a decision | **Nothing.** The chunk keeps being used exactly as before. The marker exists so you can find it again. |
+
+The split matters. `removed` is a decision with a consequence; `bad chunk` is a question mark. Only the first changes behaviour.
+
+**`bad chunk` has two colours, and the colour tells you who set it:**
+
+| Colour | Set by | Meaning |
+|---|---|---|
+| amber | the model | it found a contradiction — worth evaluating |
+| red | you | you already made the call |
+| grey (dashed) | — | not flagged |
+
+Clicking the button toggles it on and off. That is the entire interaction: a flag sits there until you either remove the chunk or clear the flag. There is no approval step, and the model has no follow-up action — flagging is the whole of its authority.
+
+### Why the model is allowed to flag but not to remove
+
+A model can be confidently wrong. If it could remove a memory, it could silently hide the facts that contradict it — and a memory system that lets its own mistakes edit the record is worse than one with no memory at all. So the model can raise a suspicion and nothing more; the destructive action is yours.
+
+This is enforced in the code, not just by convention: the tool is named `flag_bad_memory` and its description states plainly that it marks a chunk and changes nothing.
+
+### Flagged chunks still announce themselves
+
+A flagged chunk keeps being injected — that is what "the flag changes nothing" means — but it is injected **with a label**, so the model knows it is under suspicion:
+
+```
+[FLAGGED as suspected-wrong by the model — treat with suspicion, verify before
+ relying on it (reason: The phone number 555-0100 is incorrect ...)]
+```
+
+Without this the model would see a chunk it flagged yesterday looking exactly like a trusted one, and might trust it — or re-flag it having forgotten. The wording is deliberately weaker than the retraction tag (`DO NOT TRUST`): a flag is an unverified suspicion, possibly self-raised, and the chunk may well be correct.
+
+### Filters
+
+Keyword (searches content **and** topic label), removed state, source, model, grade, trust, date range, sort order, plus toggles for **Flagged as bad chunk**, **Self-confirming**, and **Never corroborated**. Dropdown values come from the data, so they never drift from what's actually stored.
+
+Click any row to open a detail view with the full messages, the metadata, and a **live lineage section** listing the chunks built on top of it — so before removing something you can see what else was derived from it.
+
+### Good enough, not perfect
+
+Reviewing chunks one at a time reduces the damage from bad facts. It will not fully clean a polluted database, because you are deciding chunk by chunk against content you may not remember the truth of.
+
+**The blunt instrument is the date filter.** When you know *when* a bad fact was saved, narrowing to everything after that point and reviewing the range is far more reliable than hunting individual chunks — anything derived from the bad fact was written after it.
 
 ## Agent workflows & swarms
 
@@ -768,11 +830,16 @@ Two hard rules apply:
 | GET | `/detail/<chunk_id>` | Full detail for one chunk (messages, grade, topics, provenance) |
 | GET | `/models`, `/v1/models` | List available models |
 | POST | `/memory/retract`, `/memory/restore` | Mark a chunk false / undo — `{"chunk_id", "reason"?}` |
+| GET | `/memory` | **Memory management page** — review chunks, set flags |
 | GET | `/memory/chunks` | Filterable chunk list for the management page (includes removed chunks) |
-| POST | `/memory/chunks/<id>/remove` | Set/clear the **removed** flag — the only thing that changes what the model uses |
 | GET | `/memory/chunks/<id>` | One chunk in full, including removed ones (management view) |
-| POST | `/memory/chunks/bad` | Set/clear the **bad chunk** marker (bulk; per-id outcomes) |
-| GET | `/memory/log` | Audit log of every curation action |
+| POST | `/memory/chunks/<id>/remove` | Set/clear the **removed** flag — the only thing that changes what the model uses |
+| POST | `/memory/chunks/remove` | Same, for a list of ids (per-id outcomes) |
+| POST | `/memory/chunks/<id>/bad` | Set/clear the **bad chunk** marker |
+| POST | `/memory/chunks/bad` | Same, for a list of ids (per-id outcomes) |
+| GET | `/memory/sources` | Distinct source/model/grade/trust values (populates the page's filters) |
+| GET | `/memory/log` | Audit log of every curation action, who, and why |
+| GET | `/memory/lineage/<id>` | What was built on top of this chunk |
 
 ## Testing
 
