@@ -3523,7 +3523,7 @@ def build_context(query: str) -> Tuple[str, str]:
             f"SELECT chunk_id, topic_label, messages, thinking, strategy, "
             f"grade, consensus, outcome, problem_type, source, trust, session_id, created_at, "
             f"assert_count, independent_sources, retracted, retracted_by, retracted_reason, "
-            f"self_confirm "
+            f"self_confirm, proposed_retract, proposed_reason "
             f"FROM chunks WHERE chunk_id IN ({placeholders})",
             ordered
         ).fetchall()
@@ -3542,6 +3542,10 @@ def build_context(query: str) -> Tuple[str, str]:
                 "retracted_by": row[16] or "",
                 "retracted_reason": row[17] or "",
                 "self_confirm": bool(row[18]),
+                # Needed for bad_chunk_label(): a flagged chunk still injects and
+                # must announce that it is flagged.
+                "proposed_retract": row[19] or "",
+                "proposed_reason": row[20] or "",
             }
     
     # Per-topic cap: no single topic may dominate the injected set (see _cap_per_topic).
@@ -3578,7 +3582,7 @@ def build_context(query: str) -> Tuple[str, str]:
                 f"SELECT chunk_id, topic_label, messages, thinking, strategy, grade, "
                 f"consensus, outcome, problem_type, source, trust, session_id, created_at, "
                 f"retracted, retracted_by, retracted_reason, assert_count, "
-                f"independent_sources, self_confirm "
+                f"independent_sources, self_confirm, proposed_retract, proposed_reason "
                 f"FROM chunks WHERE chunk_id IN ({_ph})", _want
             ).fetchall():
                 _c = {
@@ -3590,6 +3594,10 @@ def build_context(query: str) -> Tuple[str, str]:
                     "retracted_by": _r[14] or "", "retracted_reason": _r[15] or "",
                     "assert_count": _r[16] or 1, "independent_sources": _r[17] or 0,
                     "self_confirm": bool(_r[18]),
+                    # Carry these too so every injected chunk dict has the same
+                    # shape — a missing key would make bad_chunk_label() silently
+                    # return empty rather than fail loudly.
+                    "proposed_retract": _r[19] or "", "proposed_reason": _r[20] or "",
                 }
                 _chunk_cache[_r[0]] = _c
                 if _c.get("problem_type") in _rtopics:
@@ -3622,6 +3630,13 @@ def build_context(query: str) -> Tuple[str, str]:
         _curationtag = ""
         if INJECT_RETRACTED:
             _curationtag += curation.retraction_label(chunk)
+        # A chunk flagged as a bad chunk but not yet removed still injects — the
+        # flag is a marker, not a decision — so it must SAY it is flagged. Without
+        # this the model sees a chunk it (or the user) flagged yesterday looking
+        # exactly like a trusted one. Gated by the same switch as retraction labels
+        # so one setting controls all curation warnings in the prompt.
+        if INJECT_RETRACTED:
+            _curationtag += curation.bad_chunk_label(chunk)
         if RECURRENCE_LABELING:
             _curationtag += curation.confidence_label(chunk)
             _curationtag += curation.self_confirm_label(chunk)

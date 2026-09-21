@@ -654,5 +654,57 @@ class TestBadChunk(unittest.TestCase):
         self.assertIn(("bad_chunk_cleared", "user"), rows)
 
 
+class TestBadChunkLabel(unittest.TestCase):
+    """A flagged chunk still injects (the flag is a marker, not a decision), so it
+    must ANNOUNCE that it is flagged. Without this the model sees a chunk it
+    itself flagged yesterday looking exactly like a trusted one."""
+
+    def test_flagged_chunk_gets_a_label(self):
+        lab = cur.bad_chunk_label({"proposed_retract": "model"})
+        self.assertTrue(lab)
+        self.assertIn("FLAGGED", lab)
+        self.assertIn("the model", lab)
+
+    def test_user_flag_reads_differently(self):
+        lab = cur.bad_chunk_label({"proposed_retract": "user"})
+        self.assertIn("the user", lab)
+        self.assertNotIn("the model", lab)
+
+    def test_clean_chunk_has_no_label(self):
+        self.assertEqual(cur.bad_chunk_label({}), "")
+        self.assertEqual(cur.bad_chunk_label({"proposed_retract": ""}), "")
+
+    def test_reason_is_included(self):
+        lab = cur.bad_chunk_label({"proposed_retract": "model",
+                                   "proposed_reason": "contradicts a fetched page"})
+        self.assertIn("contradicts a fetched page", lab)
+
+    def test_reason_is_truncated(self):
+        lab = cur.bad_chunk_label({"proposed_retract": "model",
+                                   "proposed_reason": "x" * 5000})
+        self.assertLess(len(lab), 400, "a huge reason must not blow up the header")
+
+    def test_language_is_suspicion_not_prohibition(self):
+        """A flag is an unverified suspicion, possibly self-raised — it must not
+        read like the stronger [RETRACTED ... DO NOT TRUST] tag."""
+        lab = cur.bad_chunk_label({"proposed_retract": "model"})
+        self.assertIn("treat with suspicion", lab)
+        self.assertNotIn("DO NOT TRUST", lab)
+
+    def test_distinct_from_retraction_label(self):
+        """The two labels must not be confused: retraction is a decision, the flag
+        is not."""
+        flagged = cur.bad_chunk_label({"proposed_retract": "model"})
+        retracted = cur.retraction_label({"retracted": "user", "retracted_by": "user"})
+        self.assertNotEqual(flagged, retracted)
+        self.assertIn("RETRACTED", retracted)
+        self.assertNotIn("RETRACTED", flagged)
+
+    def test_label_survives_a_missing_key(self):
+        """Every injected chunk dict must carry the key; if one doesn't, the label
+        must degrade to empty rather than raise."""
+        self.assertEqual(cur.bad_chunk_label({"chunk_id": "x"}), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -779,6 +779,33 @@ def retraction_label(chunk: dict) -> str:
     return f"[RETRACTED by {by} — DISPUTED / DO NOT TRUST OR REPEAT]"
 
 
+def bad_chunk_label(chunk: dict) -> str:
+    """The injection tag for a chunk FLAGGED as bad but not (yet) removed.
+
+    Without this the model has no idea the chunk is under suspicion. That matters
+    because the model is often the one that flagged it: it finds a contradiction,
+    flags the chunk, and on the next turn sees the same chunk injected with no
+    indication anything is doubtful — so it may trust it this time, or re-flag it
+    having forgotten. The retracted case already carries a warning for exactly this
+    reason (absence is dangerous); a pending flag is the same exposure.
+
+    Deliberately weaker language than the retraction tag: a flag is an unverified
+    suspicion, possibly raised by the model itself, not a user decision. It says
+    "treat with suspicion", not "do not use" — the chunk is still in circulation
+    and may well be correct.
+    """
+    who = chunk.get("proposed_retract") or ""
+    if not who:
+        return ""
+    by = "the model" if who == "model" else "the user"
+    reason = chunk.get("proposed_reason") or ""
+    note = f" (reason: {str(reason)[:160]})" if reason else ""
+    # No "UNVERIFIED" here — the trust tag already prints that immediately before
+    # this label, and repeating it twice in one header reads as noise.
+    return (f"[FLAGGED as suspected-wrong by {by} — treat with suspicion, "
+            f"verify before relying on it{note}]")
+
+
 def confidence_label(chunk: dict) -> str:
     """Injection tag describing support (not truth)."""
     tier = confidence_tier(chunk)
