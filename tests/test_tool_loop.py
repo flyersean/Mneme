@@ -1143,8 +1143,12 @@ def test_assemble_tools_dedup():
 
 @test
 def test_curation_tools_authority():
-    """retract_memory/restore_memory appear only when the model has authority,
-    and the propose/retract split is honoured."""
+    """The bad-memory tools appear only when the model has authority.
+
+    The names are flag_bad_memory / clear_bad_memory_flag, NOT retract/restore —
+    the old names promised an action the model cannot take, and it acted on the
+    promise (telling users "once you confirm, I will proceed with retracting it").
+    """
     mt = mp.mntools
     saved = (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"])
     try:
@@ -1153,32 +1157,76 @@ def test_curation_tools_authority():
         mt._curation_hooks["propose_allowed"] = False
         assert mt.enabled_curation_tools() == [], mt.enabled_curation_tools()
         names = [t["function"]["name"] for t in mt.assemble_tools([])]
-        assert "retract_memory" not in names and "restore_memory" not in names, names
+        assert "flag_bad_memory" not in names, names
+        assert "retract_memory" not in names, "the misleading old name must be gone"
 
         # Propose only (the safe default)
         mt._curation_hooks["propose_allowed"] = True
         got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
-        assert got == ["retract_memory", "restore_memory"], got
+        assert got == ["flag_bad_memory", "clear_bad_memory_flag"], got
 
-        # Direct retract also exposes them
+        # Direct retract authority also exposes them
         mt._curation_hooks["retract_allowed"] = True
         mt._curation_hooks["propose_allowed"] = False
         got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
-        assert got == ["retract_memory", "restore_memory"], got
+        assert got == ["flag_bad_memory", "clear_bad_memory_flag"], got
     finally:
         mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"] = saved
+
+
+@test
+def test_flag_tool_result_does_not_promise_authority():
+    """REGRESSION: the tool result used to say the flag was 'pending their
+    confirmation', which the model read as 'I can retract once they confirm'.
+    The result text must state plainly that nothing changed and nothing is
+    waiting on the user."""
+    txt = mp._curation_retract("mem_no_such_chunk_xyz", "probe")
+    assert "no such chunk" in txt, txt  # unrecognised id path still readable
+
+    # With a real chunk, the success text must be unambiguous.
+    db = mp.db
+    cid = "mem_flagtext_probe"
+    with mp._db_lock:
+        db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+        db.execute("INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, source, "
+                   "grade, trust, created_at) VALUES (?,?,?,?,?,?,?)",
+                   (cid, "flag text probe", "[]", "model", "B", "unverified", "2026-01-01T00:00:00"))
+        db.commit()
+    saved = (mp.ALLOW_MODEL_PROPOSE, mp.ALLOW_MODEL_RETRACT)
+    try:
+        mp.ALLOW_MODEL_PROPOSE, mp.ALLOW_MODEL_RETRACT = True, False
+        out = mp._curation_retract(cid, "probe reason")
+        low = out.lower()
+        assert "marked" in low, out
+        assert "still in use" in low, out
+        # The phrasing that caused the model to invent a confirmation flow. The text
+        # may mention 'confirm' ONLY to negate it ("nothing ... to 'confirm'").
+        assert "pending" not in low, f"must not imply a pending confirmation: {out}"
+        assert "you will" not in low and "proceed" not in low, out
+        for bad_phrase in ("once you confirm", "waiting on your", "awaiting your",
+                           "would you like to confirm"):
+            assert bad_phrase not in low, f"invites a confirmation step ({bad_phrase!r}): {out}"
+        # And it must not claim to have retracted/removed anything.
+        assert "not removed" in low, out
+    finally:
+        mp.ALLOW_MODEL_PROPOSE, mp.ALLOW_MODEL_RETRACT = saved
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+            db.commit()
 
 
 @test
 def test_curation_tool_dispatch():
     """The tool handlers return a readable result and never raise on bad input."""
     mt = mp.mntools
-    assert "chunk_id required" in mt.execute_readonly_tool("retract_memory", {})
-    assert "chunk_id required" in mt.execute_readonly_tool("restore_memory", {})
+    assert "chunk_id required" in mt.execute_readonly_tool("flag_bad_memory", {})
+    assert "chunk_id required" in mt.execute_readonly_tool("clear_bad_memory_flag", {})
     # unknown chunk -> a clear message, not an exception
-    out = mt.execute_readonly_tool("retract_memory", {"chunk_id": "mem_does_not_exist",
-                                                      "reason": "test"})
+    out = mt.execute_readonly_tool("flag_bad_memory", {"chunk_id": "mem_does_not_exist",
+                                                       "reason": "test"})
     assert "no such chunk" in out, out
+    # the old names must no longer dispatch at all
+    assert "unknown registry tool" in mt.execute_readonly_tool("retract_memory", {})
 
 
 @test

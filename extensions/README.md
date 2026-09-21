@@ -45,8 +45,8 @@ Other endpoints an extension may want:
 | Chat (native) | `POST /api/chat` | Same, in Ollama's native shape |
 | Memory search | `GET /search` | Retrieval without spending a generation |
 | Recent chunks | `GET /list`, `GET /detail/<chunk_id>` | Browsing what memory contains |
-| Memory curation | `POST /memory/retract`, `/memory/restore` | Marking a chunk false, or undoing it |
-| Review queue | `GET /memory/proposals`, `POST .../confirm`, `.../deny` | Acting on a chunk the model proposed as wrong |
+| Memory management | `POST /memory/chunks/<id>/remove` | Taking a chunk out of circulation (or restoring it) |
+| Bad chunks | `GET /memory/chunks?proposed=1`, `POST /memory/chunks/<id>/bad` | Chunks flagged as suspected-wrong (by the model or the user) — a marker, not a removal |
 | Audit log | `GET /memory/log` | Every curation action, who, and why |
 | Prompts | `GET/POST /instructions*` | Reading or editing system prompts |
 | Health / models | `GET /health`, `/models` | Discovery, readiness |

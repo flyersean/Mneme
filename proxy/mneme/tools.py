@@ -210,28 +210,38 @@ WEB_SEARCH_TOOL = {
 RETRACT_MEMORY_TOOL = {
     "type": "function",
     "function": {
-        "name": "retract_memory",
+        # Named "flag_bad_memory", NOT "retract_memory". The old name promised an
+        # action the model cannot take, and the model acted on the promise: it told
+        # users "once you confirm, I will proceed with retracting it" and offered to
+        # mark chunks false. The name is what the model reads in its tool list every
+        # turn, so it has to describe what actually happens — the model raises a
+        # suspicion, the user decides.
+        "name": "flag_bad_memory",
         "description": (
-            "Mark a stored memory chunk as FALSE / DISPUTED so it stops being "
-            "treated as fact. Use this when you can show that a memory is wrong — "
-            "for example a saved price, date, or claim that contradicts a page you "
-            "just fetched, or that the user says is incorrect.\n"
+            "Flag a stored memory chunk as SUSPECTED WRONG so the user can review it.\n"
             "\n"
-            "Pass the chunk id (the mem_XXXX in the injected header or in a "
-            "search_memory result) and a one-line reason citing your evidence. "
-            "Retraction is reversible: the chunk is kept and labelled "
-            "[RETRACTED ... DO NOT TRUST] rather than deleted, so the correction "
-            "stays visible and can be undone.\n"
+            "Use this when you have evidence that a memory is wrong — for example a "
+            "saved price, date, or claim that contradicts a page you just fetched, or "
+            "that the user says is incorrect.\n"
             "\n"
-            "NOTE: depending on configuration this either retracts immediately or "
-            "queues the chunk for the user to review. Either way, report what you "
-            "did — do not silently retract."
+            "IMPORTANT — this only MARKS the chunk. It does not change, remove, "
+            "retract, or stop anything. The memory keeps being used exactly as "
+            "before until the USER decides. You cannot remove a memory, and there "
+            "is no step for you to take afterwards.\n"
+            "\n"
+            "So when you report this, say that you have flagged it for the user to "
+            "review. Do NOT say you have retracted it, marked it false, or that it "
+            "will be corrected once they confirm — none of that is yours to do, and "
+            "it is not waiting on their confirmation.\n"
+            "\n"
+            "Pass the chunk id (the mem_XXXX in the injected header or a "
+            "search_memory result) and a one-line reason citing your evidence."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "chunk_id": {"type": "string", "description": "Chunk id to retract, e.g. mem_1789785523339269"},
-                "reason": {"type": "string", "description": "Why it is false — cite the evidence (a URL, a correction from the user, a contradicting chunk id)"},
+                "chunk_id": {"type": "string", "description": "Chunk id to flag, e.g. mem_1789785523339269"},
+                "reason": {"type": "string", "description": "Why you believe it is wrong — cite the evidence (a URL, a correction from the user, a contradicting chunk id)"},
             },
             "required": ["chunk_id", "reason"],
         },
@@ -241,18 +251,24 @@ RETRACT_MEMORY_TOOL = {
 RESTORE_MEMORY_TOOL = {
     "type": "function",
     "function": {
-        "name": "restore_memory",
+        # Likewise renamed: this clears a flag, it does not restore a retraction.
+        "name": "clear_bad_memory_flag",
         "description": (
-            "Undo a retraction: restore a previously retracted memory chunk to "
-            "normal use. Use when a retraction turns out to be mistaken, or when "
-            "the user says a disputed fact is actually correct. Pass the chunk id "
-            "of the retracted chunk."
+            "Clear a 'bad memory' flag you previously raised on a chunk — for "
+            "example when new evidence shows the memory was correct after all, or "
+            "the user says so.\n"
+            "\n"
+            "This only removes the marker. Like flag_bad_memory it does not change "
+            "what is used; whether a chunk is in use is the user's decision, made "
+            "in the memory management page.\n"
+            "\n"
+            "Pass the chunk id you flagged."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "chunk_id": {"type": "string", "description": "Retracted chunk id to restore"},
-                "reason": {"type": "string", "description": "Why it should be restored"},
+                "chunk_id": {"type": "string", "description": "Flagged chunk id whose flag should be cleared"},
+                "reason": {"type": "string", "description": "Why the flag should be cleared"},
             },
             "required": ["chunk_id"],
         },
@@ -329,29 +345,29 @@ def _exec_retract_memory(args):
     cid = ((args or {}).get("chunk_id") or "").strip()
     reason = ((args or {}).get("reason") or "").strip()
     if not cid:
-        return "[retract_memory: chunk_id required]"
+        return "[flag_bad_memory: chunk_id required]"
     fn = _curation_hooks.get("retract")
     if fn is None:
-        return "[retract_memory: memory curation is not available on this proxy]"
+        return "[flag_bad_memory: memory curation is not available on this proxy]"
     try:
         out = fn(cid, reason)
         return out
     except Exception as e:
-        return f"[retract_memory error: {type(e).__name__}: {e}]"
+        return f"[flag_bad_memory error: {type(e).__name__}: {e}]"
 
 
 def _exec_restore_memory(args):
     cid = ((args or {}).get("chunk_id") or "").strip()
     reason = ((args or {}).get("reason") or "").strip()
     if not cid:
-        return "[restore_memory: chunk_id required]"
+        return "[clear_bad_memory_flag: chunk_id required]"
     fn = _curation_hooks.get("restore")
     if fn is None:
-        return "[restore_memory: memory curation is not available on this proxy]"
+        return "[clear_bad_memory_flag: memory curation is not available on this proxy]"
     try:
         return fn(cid, reason)
     except Exception as e:
-        return f"[restore_memory error: {type(e).__name__}: {e}]"
+        return f"[clear_bad_memory_flag error: {type(e).__name__}: {e}]"
 
 
 # ─── Per-tool enable flags ─────────────────────────────────────────────
@@ -723,9 +739,9 @@ def execute_readonly_tool(name, args):
         return _exec_fetch_url((args or {}).get("url", ""))
     if name == "web_search":
         return _exec_web_search((args or {}).get("query", ""))
-    if name == "retract_memory":
+    if name == "flag_bad_memory":
         return _exec_retract_memory(args)
-    if name == "restore_memory":
+    if name == "clear_bad_memory_flag":
         return _exec_restore_memory(args)
     return f"[unknown registry tool: {name}]"
 

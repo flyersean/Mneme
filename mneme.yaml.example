@@ -138,10 +138,11 @@ curation:
   # is confidently wrong would happily delete the correct facts contradicting it
   # (exactly the hallucinated-validation failure). OFF by default.
   allow_model_retract: false
-  # May the MODEL flag a memory for you to review? Safe, so ON by default:
-  # while a proposal is pending the chunk is still used normally, so a wrong
-  # model judgement can never silently hide correct information. Confirm or deny
-  # each one via /memory/proposals.
+  # May the MODEL mark a chunk as a "bad chunk" for you to review? Safe, so ON by
+  # default: the marker changes NOTHING about how the chunk is used — it stays in
+  # circulation until YOU remove it on the memory management page (/memory). A
+  # wrong model judgement therefore cannot hide correct information. The model has
+  # no follow-up step; flagging is the whole of its authority.
   allow_model_propose: true
   # Inject retracted chunks as a labelled warning [RETRACTED ... DO NOT TRUST]
   # instead of dropping them. Default ON because absence is dangerous: with

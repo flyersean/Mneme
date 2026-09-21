@@ -768,8 +768,10 @@ Two hard rules apply:
 | GET | `/detail/<chunk_id>` | Full detail for one chunk (messages, grade, topics, provenance) |
 | GET | `/models`, `/v1/models` | List available models |
 | POST | `/memory/retract`, `/memory/restore` | Mark a chunk false / undo — `{"chunk_id", "reason"?}` |
-| GET | `/memory/proposals` | Chunks the model proposed as wrong, awaiting review |
-| POST | `/memory/proposals/<chunk_id>/confirm` or `/deny` | Act on a proposal |
+| GET | `/memory/chunks` | Filterable chunk list for the management page (includes removed chunks) |
+| POST | `/memory/chunks/<id>/remove` | Set/clear the **removed** flag — the only thing that changes what the model uses |
+| GET | `/memory/chunks/<id>` | One chunk in full, including removed ones (management view) |
+| POST | `/memory/chunks/bad` | Set/clear the **bad chunk** marker (bulk; per-id outcomes) |
 | GET | `/memory/log` | Audit log of every curation action |
 
 ## Testing
@@ -903,8 +905,8 @@ DB.
 | Chat (native) | `POST /api/chat` | Same, in Ollama's native shape |
 | Memory search | `POST /search` | Direct retrieval without a model call — `{"query", "top_k"?}` |
 | Recent chunks | `GET /list`, `GET /detail/<chunk_id>` | Browsing what memory actually contains |
-| Memory curation | `POST /memory/retract`, `/memory/restore` | Marking a stored chunk false, or undoing it |
-| Review queue | `GET /memory/proposals`, plus `POST .../confirm` and `.../deny` | Acting on a chunk the model proposed as wrong |
+| Memory management | `POST /memory/chunks/<id>/remove` | Taking a chunk out of circulation (or restoring it) — the only call that changes what the model sees |
+| Bad chunks | `GET /memory/chunks?proposed=1`, `POST /memory/chunks/<id>/bad` | Chunks the MODEL flagged as suspected-wrong — a marker for you to review, not a removal |
 | Audit log | `GET /memory/log` | Every curation action, who did it, and why |
 | Prompts | `GET/POST /instructions*` | Reading or editing the system prompts |
 | Health / models | `GET /health`, `/models`, `/v1/models` | Discovery, readiness |

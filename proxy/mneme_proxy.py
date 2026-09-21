@@ -1425,51 +1425,57 @@ mntools.embed = embed  # bind the tool system's embed function
 
 
 # ─── Memory curation hooks ───────────────────────────────────────────────
-# The retract/restore tools mutate memory, so their authority is split:
-#   propose (default ON)  — the model may queue a chunk for the user to review.
-#                           Nothing leaves retrieval while a proposal is pending,
-#                           so a confidently-wrong model cannot hide the truth.
-#   retract (default OFF) — the model may retract directly. Destructive, opt-in.
-# The tool result tells the model which happened, so it reports accurately
-# instead of believing it deleted something it only flagged.
+# The flag tool is a MARKER, not an action: the model can raise a suspicion, the
+# user decides. This is the only mode — there is no confirm/deny flow, and no path
+# by which the model removes anything.
+#
+# The tool NAME and the RESULT TEXT both have to say this, because both feed the
+# model's self-report. An earlier version named the tool `retract_memory`, used
+# the word "propose", and returned "...pending their confirmation" — and the model
+# duly told users "once you confirm, I will proceed with retracting it". Three
+# separate wordings promising authority it does not have. Now the wording is
+# consistent with the behaviour.
 def _curation_retract(chunk_id: str, reason: str = "") -> str:
-    """Called by the retract_memory tool. Acts or proposes per config."""
+    """Called by the flag_bad_memory tool. Only ever marks the chunk."""
     try:
         c = curation._get_chunk(db, chunk_id)
         if not c:
-            return f"[retract_memory: no such chunk {chunk_id} — check the id]"
-        if ALLOW_MODEL_RETRACT:
-            curation.retract(db, chunk_id, actor="model", reason=reason)
-            print(f"  [CURATION] model retracted {chunk_id}: {reason[:80]}", flush=True)
-            return (f"[retract_memory: RETRACTED {chunk_id} — it is now labelled "
-                    f"DISPUTED and excluded from future context. Reason recorded: {reason}]")
-        if ALLOW_MODEL_PROPOSE:
-            curation.propose_retract(db, chunk_id, reason=reason, actor="model")
-            print(f"  [CURATION] model PROPOSED retract of {chunk_id}: {reason[:80]}", flush=True)
-            return (f"[retract_memory: FLAGGED {chunk_id} for user review — it is NOT yet "
-                    f"retracted and still in use. Tell the user it is pending their confirmation. "
-                    f"Reason recorded: {reason}]")
-        return "[retract_memory: not permitted on this proxy (curation disabled)]"
+            return f"[flag_bad_memory: no such chunk {chunk_id} — check the id]"
+        if not (ALLOW_MODEL_PROPOSE or ALLOW_MODEL_RETRACT):
+            return "[flag_bad_memory: not permitted on this proxy (curation disabled)]"
+        curation.set_bad_chunk(db, chunk_id, True, actor="model", reason=reason)
+        print(f"  [CURATION] model flagged {chunk_id} as bad: {reason[:80]}", flush=True)
+        return (
+            f"[flag_bad_memory: MARKED {chunk_id} as a bad chunk. Nothing has changed "
+            f"about how this memory is used — it is still in use, unmodified, and not "
+            f"removed. The user will see it flagged in the memory management page and "
+            f"may act on it if they agree; that is entirely their decision and you "
+            f"have no part in it. Report exactly this: you flagged it, you did not "
+            f"change or remove it, and nothing further is required from the user to "
+            f"'confirm' anything with you. Reason recorded: {reason}]"
+        )
     except Exception as e:
-        _log_error("curation:retract", e)
-        return f"[retract_memory error: {type(e).__name__}: {e}]"
+        _log_error("curation:flag", e)
+        return f"[flag_bad_memory error: {type(e).__name__}: {e}]"
 
 
 def _curation_restore(chunk_id: str, reason: str = "") -> str:
-    """Called by the restore_memory tool — undo a retraction."""
+    """Called by the clear_bad_memory_flag tool — remove a marker."""
     try:
         c = curation._get_chunk(db, chunk_id)
         if not c:
-            return f"[restore_memory: no such chunk {chunk_id}]"
-        if not curation.is_retracted(c):
-            return f"[restore_memory: {chunk_id} is not retracted — nothing to restore]"
-        curation.restore(db, chunk_id, actor="model" if ALLOW_MODEL_RETRACT else "user",
-                         reason=reason or "restored by model")
-        print(f"  [CURATION] restored {chunk_id}", flush=True)
-        return f"[restore_memory: RESTORED {chunk_id} — it is usable as memory again.]"
+            return f"[clear_bad_memory_flag: no such chunk {chunk_id}]"
+        if not c.get("proposed_retract"):
+            return (f"[clear_bad_memory_flag: {chunk_id} is not flagged as a bad chunk "
+                    f"— nothing to clear]")
+        curation.set_bad_chunk(db, chunk_id, False, actor="model", reason=reason)
+        print(f"  [CURATION] cleared bad-chunk flag on {chunk_id}", flush=True)
+        return (f"[clear_bad_memory_flag: CLEARED the flag on {chunk_id}. It is now "
+                f"unmarked. As before, nothing about how it is used changed — that "
+                f"remains the user's decision.]")
     except Exception as e:
-        _log_error("curation:restore", e)
-        return f"[restore_memory error: {type(e).__name__}: {e}]"
+        _log_error("curation:clear_flag", e)
+        return f"[clear_bad_memory_flag error: {type(e).__name__}: {e}]"
 
 
 mntools.set_curation_hooks(
@@ -7188,15 +7194,18 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"log": [], "error": str(e)}, status=500)
 
-    @app.route("/memory/proposals", methods=["GET"])
-    def memory_proposals():
-        """Review queue: model-proposed retractions awaiting a human decision."""
-        try:
-            return _cors_response({"proposals": curation.list_proposals(db)})
-        except Exception as e:
-            return _cors_response({"proposals": [], "error": str(e)}, status=500)
-
     # ── Memory management (the management page) ──────────────────────────
+    #
+    # NOTE: /memory/proposals, .../confirm and .../deny were REMOVED here. They
+    # modelled a two-party approval flow (model proposes -> user confirms -> chunk
+    # retracted) that the system does not have and should not have:
+    #   - the model cannot remove anything; it can only mark a chunk "bad chunk"
+    #   - there is no follow-up step for the model to take
+    #   - the page shows flagged chunks via ?proposed=1 and the user acts with
+    #     the Remove button, which is the only thing that changes injection
+    # Their existence also leaked into the model's behaviour: the model read the
+    # presence of a confirm step as evidence it could retract on user approval,
+    # and told users "once you confirm, I will proceed with retracting it".
     @app.route("/memory/chunks", methods=["GET"])
     def memory_chunks():
         """Filterable chunk list for the management page.
@@ -7401,28 +7410,6 @@ if FLASK_OK:
             _log_error("memory_lineage", e)
             return _cors_response({"error": f"{type(e).__name__}: {e}",
                                    "descendants": []}, status=500)
-
-    @app.route("/memory/proposals/<chunk_id>/confirm", methods=["POST"])
-    def memory_proposal_confirm(chunk_id):
-        """Confirm a pending proposal — retracts it, attributed to the user."""
-        try:
-            data = request.get_json(force=True) or {}
-            out = curation.retract(db, chunk_id, actor="user",
-                                   reason=data.get("reason") or "confirmed by user")
-            return _cors_response(out)
-        except curation.CurationError as e:
-            return _cors_response({"retracted": False, "error": str(e)}, status=404)
-
-    @app.route("/memory/proposals/<chunk_id>/deny", methods=["POST"])
-    def memory_proposal_deny(chunk_id):
-        """Reject a pending proposal — the chunk stays in use."""
-        try:
-            data = request.get_json(force=True) or {}
-            out = curation.deny_proposal(db, chunk_id,
-                                         reason=data.get("reason") or "denied by user")
-            return _cors_response(out)
-        except curation.CurationError as e:
-            return _cors_response({"denied": False, "error": str(e)}, status=404)
 
     @app.route("/reset", methods=["POST"])
     def reset():
