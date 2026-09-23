@@ -108,16 +108,20 @@ curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/mai
 curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
-Once running, the proxy is at `http://localhost:8080/` — chat UI at `/`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.
+Once running, the proxy is at `http://localhost:8080/` — dashboard at `/` (links to chat, memory, prompts, templates), chat UI at `/chat`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.
 
 ### What you get
 
-- **Chat UI** — open `http://localhost:8080/` in a browser. It's a simple light-theme web
-  client over the same `/v1/chat/completions` API. Type a message and the proxy runs the
-  full tool loop behind it (memory search, `bash`/`write`, web search, file access).
+- **Dashboard** — open `http://localhost:8080/` for the control panel: live status (model,
+  template, chunk count) and links to every page below, plus a "Reload config" action.
+- **Chat UI** — open `http://localhost:8080/chat` in a browser. It's a simple light-theme
+  web client over the same `/v1/chat/completions` API. Type a message and the proxy runs
+  the full tool loop behind it (memory search, `bash`/`write`, web search, file access).
 - **Prompt editor** — open `http://localhost:8080/instructions` to see every prompt Mneme
   injects, in the order it fires. Edit any of them inline (Save writes straight back to the
   file), or click "open file" for the raw text. Edits apply to the next message.
+- **Templates** — open `http://localhost:8080/templates` to view, edit, and save model
+  templates (including inline Modelfile editing) and to import/export them as YAML.
 - **Memory management** — open `http://localhost:8080/memory` to review and filter stored
   chunks. This is where you deal with memory that turned out to be wrong: mark a chunk as
   suspected-bad, or take it out of circulation entirely. Nothing is deleted — see
@@ -251,6 +255,29 @@ out. Mneme handles them for you:
 In short: if a model seems "broken" or hangs, check the proxy's settings and generation
 parameters first — it's almost always a settings issue, not the model.
 
+### Model templates
+
+Some models only behave with particular generation settings, and finding them is expensive
+(measured, sometimes over days). A **template** packages those known-good settings —
+sampling, thinking mode, output caps, and per-model overrides — so you select them at setup
+time instead of rediscovering them. See [`model_templates.yaml`](model_templates.yaml).
+
+- **Select at setup** — after you pick the chat model, the wizard offers a template menu
+  (or "None" for the built-in defaults). The template's values win over your config's
+  `sampling.*` / `models.*`, but any single key can still be overridden in `mneme.yaml` or
+  an env var (priority: env > template > config > default).
+- **One template, any quant** — per-model settings are keyed through a `{model}` placeholder,
+  so a template written for one model or quant applies cleanly to another.
+- **Custom chat templates (Modelfiles)** — some models (e.g. Muse Glimmer's Harmony channel
+  format) need a corrected Ollama chat template. A template can ship a `modelfile:` block
+  (`from` / `template` / `parameters`). At setup the wizard builds the Modelfile against
+  **your chosen model** — auto-editing `from` to match it and printing "modelfile edited to
+  match chosen model" — so a Q4 model can adopt a template authored against Q5. The chat
+  `TEMPLATE` and `PARAMETER` lines are quant-agnostic and are used as-is.
+- **User templates** — save, edit, import, and export templates from the **Templates** page
+  at `/templates`. User templates live in a separate file next to your shared DB (so they
+  survive `git pull`) and override same-named shipped templates.
+
 ## Features
 
 ### Core memory
@@ -339,7 +366,10 @@ Once the proxy is running with any backend:
 
 | URL | What it is |
 |---|---|
-| `http://localhost:8080/` (or `/chat`) | **Chat UI** — a light-theme web client over `/v1/chat/completions`. Full native toolset (memory search, built-tool registry, `bash`/`write`). |
+| `http://localhost:8080/` | **Dashboard** — the control panel: live status (model, template, chunk count) and links to every page below, plus a "Reload config" action. |
+| `http://localhost:8080/chat` | **Chat UI** — a light-theme web client over `/v1/chat/completions`. Full native toolset (memory search, built-tool registry, `bash`/`write`). |
+| `http://localhost:8080/templates` | **Templates** — view/edit/save model templates, edit a template's Modelfile inline, and import/export templates as YAML. |
+| `http://localhost:8080/memory` | **Memory management** — review, flag, and remove chunks. |
 | `http://localhost:8080/instructions` | **Prompt editor** — every injected prompt, in the order it fires during a conversation. Read them, edit them inline (Save writes straight back to the file), or click "open file" for the raw text. |
 | `http://localhost:8080/v1` | OpenAI-compatible API base (for Pi, Hermes, or any client). |
 | `http://localhost:8080/health` | Health check (`curl http://localhost:8080/health`). |
@@ -685,8 +715,10 @@ necessarily a verdict on the approach. Tuning is currently part of using it.
 
 **Model templates** (see [`model_templates.yaml`](model_templates.yaml)) exist to
 reduce that cost: named, known-good settings for specific models, selected during
-setup, so you don't start from scratch. They are a starting point, not a
-guarantee.
+setup, so you don't start from scratch. They can also ship a corrected Ollama
+Modelfile for models that need a custom chat template (auto-edited to match your
+chosen model), and can be saved, edited, imported, and exported from the
+`/templates` page. They are a starting point, not a guarantee.
 
 Some open questions this exists to ask:
 
@@ -819,7 +851,17 @@ Two hard rules apply:
 | POST | `/save` | Flush staging buffer to persistent storage |
 | POST | `/search` | Debug search: `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
-| GET | `/` / `/chat` | Built-in chat UI |
+| GET | `/` | Dashboard — control panel linking to every page + live status |
+| GET | `/chat` | Built-in chat UI |
+| GET | `/dashboard/status` | Live status JSON (model, template, chunk count, storage) |
+| POST | `/admin/reload` | Force a config re-read (hot-reload) |
+| GET | `/templates` | Template management page (shipped + user catalogues) |
+| GET | `/templates/data` | List templates, each with its rendered Modelfile text |
+| POST | `/templates/save` | Create/update a user template (rejects unknown keys) |
+| POST | `/templates/delete` | Delete a user template |
+| POST | `/templates/install-modelfile` | `ollama create` a template's Modelfile |
+| GET | `/templates/export` | Download templates as YAML (all, or `?name=<tpl>`) |
+| POST | `/templates/import` | Import templates from a YAML/JSON body |
 | GET | `/instructions` | Prompt reference + editor (the injected prompts) |
 | GET | `/list` | List all chunks with metadata |
 | GET/POST | `/capabilities` | *(experimental)* List capability-edge records / flag or clear |
@@ -884,14 +926,16 @@ They cover:
 - Memory management: the removed flag (and that it is reversible), the bad-chunk
   marker and who set it, the injection label for flagged chunks, list filters,
   recurrence tiers, self-confirmation detection, and the decision log.
-- Model templates: the merge priority (env > template > config > default) and
-  validation that rejects unknown keys instead of silently ignoring them.
+- Model templates: the merge priority (env > template > config > default),
+  validation that rejects unknown keys instead of silently ignoring them, the
+  optional `modelfile:` block (validation + render/parse round-trip), and the
+  user-template catalogue merge.
 - In-chat commands (`<<SETTINGS>>`, `<<RETRIEVAL>>`), including that the config
   rewrite preserves comments and neighbouring keys.
 
 86 tests in `tests/test_tool_loop.py`.
 
-The full suite is **348 tests** across 18 files. Beyond the tool loop:
+The full suite is **360 tests** across 18 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -899,7 +943,7 @@ The full suite is **348 tests** across 18 files. Beyond the tool loop:
 | `test_curation.py` | 81 | removed flag, bad-chunk marker + injection label, filters, recurrence, self-confirmation, decision log |
 | `test_swarm_orchestrator.py` | 47 | swarm control flow, primitives, per-step options |
 | `test_chatcmd.py` | 27 | `<<SETTINGS>>` / `<<RETRIEVAL>>`, config rewrite safety |
-| `test_templates.py` | 26 | model-template merge + validation |
+| `test_templates.py` | 38 | model-template merge/validation, Modelfile render/parse, user merge |
 | `test_images.py` | 18 | image handling in memory chunks |
 | `test_trust.py` | 15 | provenance/trust grading |
 | `test_model_config.py` | 11 | per-model overrides, sampler option mapping |
@@ -1087,7 +1131,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | `launch.sh` | Convenience launcher for a **local** machine: starts the proxy in the background, then runs Pi; exiting Pi stops the proxy |
 | `AGENTS.md` | Instructions written *for AI coding agents* — how to stand up an instance and how to author an extension. If you are pointing a coding agent at this repo, give it this file |
 | `mneme.yaml.example` | Annotated reference config — every setting with a plain-English comment |
-| `model_templates.yaml` | Known-good per-model generation settings — see [Model selection](#model-selection) |
+| `model_templates.yaml` | Shipped model templates (known-good settings + optional Modelfiles) — see [Model selection](#model-selection) |
 
 ## Branches
 
