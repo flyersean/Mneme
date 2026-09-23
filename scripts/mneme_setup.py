@@ -37,7 +37,7 @@ DEFAULT_PORT = 8080
 MEMORY_DIR = os.environ.get("MNEME_CHUNK_DIR", os.path.expanduser("~/mneme/chunks"))
 KEY_FILE = os.environ.get("MNEME_KEY_FILE", os.path.expanduser("~/mneme/env"))
 _REPO_DERIVED = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO_ROOT = None
+REPO_ROOT = _REPO_DERIVED  # overwritten by main() → find_repo() (resolves standalone installs)
 
 # OpenRouter defaults (hosted)
 OR_BASE = "https://openrouter.ai/api/v1"
@@ -810,11 +810,9 @@ def _template_owned_keys(model_template):
     if not model_template:
         return set(), {}
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "proxy"))
+        sys.path.insert(0, os.path.join(REPO_ROOT, "proxy"))
         from mneme import templates as _tpl
-        path = _tpl.default_templates_path(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
+        path = _tpl.default_templates_path(REPO_ROOT)
         tpl = (_tpl.load_templates(path) or {}).get(model_template) or {}
         return set((tpl.get("sampling") or {}).keys()), (tpl.get("sampling") or {})
     except Exception:
@@ -1049,11 +1047,9 @@ def choose_model_template():
     exactly as they were before templates existed.
     """
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "proxy"))
+        sys.path.insert(0, os.path.join(REPO_ROOT, "proxy"))
         from mneme import templates as _tpl
-        path = _tpl.default_templates_path(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
+        path = _tpl.default_templates_path(REPO_ROOT)
         names = _tpl.list_template_names(path)
     except Exception as e:
         print(f"  (model templates unavailable: {e})")
