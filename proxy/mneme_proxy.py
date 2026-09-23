@@ -6732,16 +6732,18 @@ if FLASK_OK:
 
     def _template_record(name, shipped, user):
         tpl = user.get(name, shipped.get(name))
+        mf = tpl.get("modelfile") or {}
         return {
             "name": name,
             "user": name in user,
             "description": tpl.get("description", ""),
             "notes": tpl.get("notes", ""),
-            "has_modelfile": bool(tpl.get("modelfile")),
+            "has_modelfile": bool(mf),
             "sampling": tpl.get("sampling") or {},
             "timeouts": tpl.get("timeouts") or {},
             "models": tpl.get("models") or {},
-            "modelfile": tpl.get("modelfile") or {},
+            "modelfile": mf,
+            "modelfile_text": _templates.render_modelfile(mf) if mf else "",
         }
 
     @app.route("/templates/data", methods=["GET"])
@@ -6763,6 +6765,16 @@ if FLASK_OK:
         tpl = data.get("template")
         if not isinstance(tpl, dict):
             return _cors_response({"error": "template must be an object"}, status=400)
+        # The editor sends the Modelfile as raw text; parse it into the
+        # structured block. Empty/blank -> no custom Modelfile.
+        mf = tpl.get("modelfile")
+        if isinstance(mf, str):
+            try:
+                tpl["modelfile"] = _templates.parse_modelfile(mf)
+            except Exception as e:
+                return _cors_response({"error": f"bad modelfile: {e}"}, status=400)
+        elif mf is None:
+            tpl["modelfile"] = {}
         try:
             _templates.validate(tpl, name)
         except _templates.TemplateError as e:
@@ -6825,6 +6837,79 @@ if FLASK_OK:
             return _cors_response({"error": str(e)}, status=500)
         rc = _run(f"ollama create {name} -f {mf_path}", 300)
         return _cors_response({"ok": rc == 0, "name": name, "steps": steps})
+
+    @app.route("/templates/export", methods=["GET"])
+    def templates_export():
+        import yaml
+        name = (request.args.get("name") or "").strip()
+        shipped = _templates.load_templates(_templates.default_templates_path(REPO_ROOT))
+        user = _templates.load_templates(USER_TEMPLATES_PATH)
+        merged = dict(shipped)
+        merged.update(user)
+        if name:
+            if name not in merged:
+                return _cors_response({"error": f"unknown template {name!r}"}, status=404)
+            payload = {"templates": {name: merged[name]}}
+            fname = f"{name}.yaml"
+        else:
+            payload = {"templates": merged}
+            fname = "templates.yaml"
+        text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+        return text, 200, {
+            "Content-Type": "text/yaml; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{fname}"',
+        }
+
+    @app.route("/templates/import", methods=["POST"])
+    def templates_import():
+        import yaml
+        data = request.get_json(force=True, silent=True)
+        if not data or "content" not in data:
+            return _cors_response({"error": "missing 'content'"}, status=400)
+        raw = data["content"]
+        if not isinstance(raw, str):
+            return _cors_response({"error": "content must be text (YAML or JSON)"}, status=400)
+        parsed = None
+        err = None
+        try:
+            parsed = yaml.safe_load(raw)
+        except Exception as e:
+            err = e
+        if not isinstance(parsed, dict):
+            try:
+                parsed = json.loads(raw)
+                err = None
+            except Exception as e:
+                err = err or e
+        if not isinstance(parsed, dict):
+            return _cors_response({"error": f"could not parse import: {err}"}, status=400)
+        if "templates" in parsed:
+            entries = parsed.get("templates") or {}
+        else:
+            name = (data.get("name") or "").strip()
+            if not name:
+                return _cors_response({"error": "single-template import needs a 'name'"}, status=400)
+            entries = {name: parsed}
+        if not isinstance(entries, dict):
+            return _cors_response({"error": "templates must be a mapping"}, status=400)
+        cat = _templates.load_templates(USER_TEMPLATES_PATH)
+        imported, errors = [], []
+        for nm, tpl in entries.items():
+            if not isinstance(tpl, dict):
+                errors.append(f"{nm}: not a mapping")
+                continue
+            try:
+                _templates.validate(tpl, nm)
+                cat[nm] = tpl
+                imported.append(nm)
+            except _templates.TemplateError as e:
+                errors.append(str(e))
+        if imported:
+            try:
+                _write_user_templates(cat)
+            except Exception as e:
+                return _cors_response({"error": str(e)}, status=500)
+        return _cors_response({"imported": imported, "errors": errors})
 
     # ── Turn cancellation (the chat UI "Stop" button) ──
     @app.route("/cancel", methods=["POST"])

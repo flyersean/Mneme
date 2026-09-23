@@ -254,6 +254,20 @@ class TestModelfile(unittest.TestCase):
         self.assertTrue(d["modelfile"].get("from"))
         T.render_modelfile(d["modelfile"])  # must not raise
 
+    def test_modelfile_round_trip(self):
+        mf = {"from": "hf.co/Some/Model-GGUF:Q5_K_M",
+              "template": "{{ if .Prompt }}x\n\ny\n\nz<|start|>assistant",
+              "parameters": {"stop": ["<|eot|>", "<|start|>user"], "num_ctx": 32768}}
+        rendered = T.render_modelfile(mf)
+        self.assertEqual(T.render_modelfile(T.parse_modelfile(rendered)), rendered)
+
+    def test_parse_blank_is_empty(self):
+        self.assertEqual(T.parse_modelfile(""), {})
+        self.assertEqual(T.parse_modelfile("   \n  "), {})
+
+    def test_empty_modelfile_block_validates(self):
+        T.validate({"description": "x", "modelfile": {}}, "ok")  # no from -> fine
+
 
 class TestUserMerge(unittest.TestCase):
     def test_user_template_overrides_shipped(self):

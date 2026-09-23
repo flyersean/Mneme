@@ -11,14 +11,15 @@
   header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:16px; }
   header h1 { font-size:18px; margin:0; font-weight:650; }
   header a { color:var(--muted); text-decoration:none; font-size:14px; }
-  main { padding:20px 24px; max-width:980px; margin:0 auto; }
-  .toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  main { padding:20px 24px; max-width:1000px; margin:0 auto; }
+  .toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:10px; }
+  .toolbar .right { display:flex; gap:10px; align-items:center; }
   .badge { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
   .badge.user { background:var(--accent); border-color:var(--accent); color:#fff; }
   .badge.mf { background:#fef3c7; border-color:#f59e0b; color:#92400e; }
   table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  th, td { text-align:left; padding:10px 12px; font-size:14px; border-bottom:1px solid var(--line); }
-  th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); background:var(--panel); }
+  th, td { text-align:left; padding:10px 12px; font-size:14px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
   tr:last-child td { border-bottom:none; }
   td .desc { color:var(--muted); font-size:12px; }
   .btn { font:inherit; font-size:13px; padding:5px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
@@ -29,12 +30,16 @@
   .editor.open { display:block; }
   .editor label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
   .editor input[type=text], .editor textarea { width:100%; font:inherit; font-size:14px; padding:8px; border:1px solid var(--line); border-radius:7px; }
-  .editor textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; min-height:200px; }
+  .editor textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .editor textarea.code { min-height:140px; }
+  .editor textarea.modelfile { min-height:140px; background:#fafafa; }
   .editor .row { display:flex; gap:10px; }
   .editor .row > div { flex:1; }
+  .hint { font-size:12px; color:var(--muted); margin-top:3px; }
   #msg { font-size:13px; color:var(--muted); }
   #msg.err { color:var(--danger); }
   #msg.ok { color:var(--ok); }
+  input[type=file] { display:none; }
 </style>
 </head>
 <body>
@@ -45,10 +50,16 @@
 <main>
   <div class="toolbar">
     <span id="msg"></span>
-    <button class="btn primary" id="newBtn">+ New template</button>
+    <div class="right">
+      <button class="btn" id="importBtn">Import</button>
+      <button class="btn" id="exportAllBtn">Export all</button>
+      <button class="btn primary" id="newBtn">+ New template</button>
+    </div>
   </div>
+  <input type="file" id="fileInput" accept=".yaml,.yml,.json">
+
   <table>
-    <thead><tr><th>Name</th><th>Description</th><th>Tags</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Description</th><th>Tags</th><th>Actions</th></tr></thead>
     <tbody id="rows"><tr><td colspan="4">Loading…</td></tr></tbody>
   </table>
 
@@ -63,8 +74,14 @@
       <div><label>Description</label><input type="text" id="f_desc" placeholder="Short summary"></div>
       <div><label>Notes</label><input type="text" id="f_notes" placeholder="Any caveats"></div>
     </div>
-    <label>Body (JSON — sampling / timeouts / models / modelfile)</label>
-    <textarea id="f_body" spellcheck="false"></textarea>
+    <label>Settings (JSON — sampling / timeouts / models)</label>
+    <textarea id="f_settings" class="code" spellcheck="false"></textarea>
+    <div class="hint">Keys the proxy honours. Anything else is rejected on save.</div>
+
+    <label>Modelfile <span style="font-weight:400;">(leave blank if the model needs no custom chat template)</span></label>
+    <textarea id="f_modelfile" class="modelfile" spellcheck="false"></textarea>
+    <div class="hint">Ollama Modelfile text: FROM / TEMPLATE / PARAMETER lines. Saved as-is; parsed back into the template.</div>
+
     <div style="margin-top:12px; display:flex; gap:10px;">
       <button class="btn primary" id="saveBtn">Save</button>
       <button class="btn danger" id="deleteBtn" style="display:none;">Delete</button>
@@ -74,7 +91,7 @@
 </main>
 <script>
 let templates = [];
-let editingName = null; // null = new
+let editingName = null;
 
 function setMsg(t, ok) {
   const m = document.getElementById('msg');
@@ -93,13 +110,14 @@ async function load() {
     if (t.has_modelfile) tags.push('<span class="badge mf">modelfile</span>');
     const actions = [];
     actions.push(`<button class="btn" onclick="edit('${t.name}')">Edit</button>`);
+    actions.push(`<button class="btn" onclick="exportOne('${t.name}')">Export</button>`);
     if (t.user) actions.push(`<button class="btn danger" onclick="del('${t.name}')">Delete</button>`);
     if (t.has_modelfile) actions.push(`<button class="btn" onclick="install('${t.name}')">Install modelfile</button>`);
     return `<tr>
       <td><code>${t.name}</code></td>
       <td>${esc(t.description)}<div class="desc">${esc(t.notes)}</div></td>
       <td>${tags.join(' ')}</td>
-      <td>${actions.join(' ')}</td>
+      <td style="white-space:nowrap;">${actions.join(' ')}</td>
     </tr>`;
   }).join('');
 }
@@ -111,9 +129,10 @@ function openEditor(t) {
   document.getElementById('f_name').value = t ? t.name : '';
   document.getElementById('f_desc').value = t ? (t.description||'') : '';
   document.getElementById('f_notes').value = t ? (t.notes||'') : '';
-  const body = t ? {description:t.description, notes:t.notes, sampling:t.sampling, timeouts:t.timeouts, models:t.models, modelfile:t.modelfile}
-                  : {description:'', notes:'', sampling:{}, timeouts:{}, models:{}, modelfile:{}};
-  document.getElementById('f_body').value = JSON.stringify(body, null, 2);
+  const settings = t ? {sampling:t.sampling, timeouts:t.timeouts, models:t.models}
+                     : {sampling:{}, timeouts:{}, models:{}};
+  document.getElementById('f_settings').value = JSON.stringify(settings, null, 2);
+  document.getElementById('f_modelfile').value = t ? (t.modelfile_text||'') : '';
   document.getElementById('f_name').disabled = !!(t && !t.user);
   document.getElementById('deleteBtn').style.display = (t && t.user) ? '' : 'none';
   editingName = t ? t.name : null;
@@ -121,16 +140,20 @@ function openEditor(t) {
 
 function edit(name) { const t = templates.find(x => x.name === name); if (t) openEditor(t); }
 
-document.getElementById('newBtn').addEventListener('click', () => { openEditor(null); });
+document.getElementById('newBtn').addEventListener('click', () => openEditor(null));
 document.getElementById('cancelBtn').addEventListener('click', () => document.getElementById('editor').classList.remove('open'));
 
 document.getElementById('saveBtn').addEventListener('click', async () => {
   const name = document.getElementById('f_name').value.trim();
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) { setMsg('Invalid name (a-z 0-9 . _ -)', false); return; }
-  let body;
-  try { body = JSON.parse(document.getElementById('f_body').value); }
-  catch (e) { setMsg('Body is not valid JSON: ' + e.message, false); return; }
-  if (!body || typeof body !== 'object') { setMsg('Body must be a JSON object', false); return; }
+  let settings;
+  try { settings = JSON.parse(document.getElementById('f_settings').value); }
+  catch (e) { setMsg('Settings is not valid JSON: ' + e.message, false); return; }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) { setMsg('Settings must be a JSON object', false); return; }
+  const body = Object.assign({}, settings);
+  body.description = document.getElementById('f_desc').value.trim();
+  body.notes = document.getElementById('f_notes').value.trim();
+  body.modelfile = document.getElementById('f_modelfile').value;  // raw text; server parses
   const r = await fetch('/templates/save', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ name, template: body })
@@ -160,6 +183,28 @@ async function install(name) {
   const j = await r.json();
   setMsg(j.ok ? ('Installed ' + name) : ('Install failed: ' + JSON.stringify(j.steps || j.error)), !j.ok ? false : true);
 }
+
+function exportOne(name) { window.location = '/templates/export?name=' + encodeURIComponent(name); }
+document.getElementById('exportAllBtn').addEventListener('click', () => { window.location = '/templates/export'; });
+
+document.getElementById('importBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', async (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  setMsg('Importing ' + file.name + '…', true);
+  const r = await fetch('/templates/import', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content: text })
+  });
+  const j = await r.json();
+  if (!r.ok) { setMsg(j.error || 'import failed', false); return; }
+  const parts = [];
+  if (j.imported && j.imported.length) parts.push('imported ' + j.imported.join(', '));
+  if (j.errors && j.errors.length) parts.push('errors: ' + j.errors.join('; '));
+  setMsg(parts.join(' | ') || 'nothing imported', !(j.errors && j.errors.length));
+  await load();
+  ev.target.value = '';
+});
 
 load();
 </script>

@@ -134,9 +134,9 @@ def validate(template: Dict, name: str = "?") -> None:
             if k not in ALLOWED_MODEL_KEYS:
                 _fail(name, f"unknown models key {k!r} in {mname!r} "
                             f"(allowed: {sorted(ALLOWED_MODEL_KEYS)})")
-    # Optional modelfile block.
-    mf = template.get("modelfile")
-    if mf is not None:
+    # Optional modelfile block ({} or absent = no custom Modelfile).
+    mf = template.get("modelfile") or {}
+    if mf:
         if not isinstance(mf, dict):
             _fail(name, "modelfile must be a mapping")
         for k in mf:
@@ -254,6 +254,84 @@ def render_modelfile(modelfile: Dict) -> str:
         for item in vals:
             lines.append(f"PARAMETER {k} {_val(item)}")
     return "\n".join(lines) + "\n"
+
+
+def _coerce_param(v: str):
+    """Best-effort type coercion for a PARAMETER value read back from text."""
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1]
+    if v.lower() in ("true", "false"):
+        return v.lower() == "true"
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def parse_modelfile(text: str) -> Dict:
+    """Parse an Ollama Modelfile back into a structured ``modelfile`` block.
+
+    Reverse of ``render_modelfile()``: ``FROM`` -> from, ``TEMPLATE`` -> template
+    (triple-quote aware, so a multi-line template round-trips), ``PARAMETER``
+    lines -> parameters (a repeated key becomes a list). Returns {} for blank
+    input. Best-effort — malformed lines are skipped, not an error.
+    """
+    if not text or not text.strip():
+        return {}
+    out: Dict = {}
+    params: Dict = {}
+    tmpl_lines = []
+    in_tmpl = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if in_tmpl:
+            if '"""' in line:
+                head = line.split('"""', 1)[0]
+                if head.strip():
+                    tmpl_lines.append(head)
+                in_tmpl = False
+            else:
+                tmpl_lines.append(line)
+            continue
+        if line.startswith("FROM "):
+            out["from"] = line[5:].strip().strip('"')
+        elif line.startswith("TEMPLATE "):
+            rest = line[len("TEMPLATE "):].strip()
+            if rest.startswith('"""'):
+                rest = rest[3:]
+                if '"""' in rest:
+                    out["template"] = rest.split('"""', 1)[0]
+                else:
+                    tmpl_lines.append(rest)
+                    in_tmpl = True
+            else:
+                out["template"] = rest
+        elif line.startswith("PARAMETER "):
+            rest = line[len("PARAMETER "):].strip()
+            if not rest:
+                continue
+            parts = rest.split(None, 1)
+            key = parts[0]
+            val = _coerce_param(parts[1]) if len(parts) > 1 else ""
+            if key == "stop":
+                # `stop` is always a list in the schema, even for one token.
+                params.setdefault("stop", []).append(val)
+            elif key in params:
+                params[key] = (params[key] if isinstance(params[key], list)
+                               else [params[key]]) + [val]
+            else:
+                params[key] = val
+    if tmpl_lines:
+        out["template"] = "\n".join(tmpl_lines)
+    if params:
+        out["parameters"] = params
+    return out
 
 
 def describe(name: str, path: Optional[str] = None,
