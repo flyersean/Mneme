@@ -1090,11 +1090,26 @@ def choose_model_template():
     return choice
 
 
+def _modelfile_model_name(model_template, chosen_model):
+    """Deterministic, non-colliding name for a Modelfile-derived model, keyed on
+    BOTH the template and the chosen model, so one template can be applied to
+    several models/quants without overwriting any of them."""
+    tfrag = re.sub(r"[^a-zA-Z0-9]+", "-", model_template).strip("-").lower()
+    mfrag = re.sub(r"[^a-zA-Z0-9]+", "-", chosen_model).strip("-").lower()
+    return f"{tfrag}-{mfrag}"
+
+
 def _install_template_modelfile(model_template, backend, current_model, current_ctx):
-    """If the selected template ships a custom Ollama Modelfile, pull its source
-    and create the model with it. Returns (model, ctx_size) to use — the created
+    """If the selected template ships a custom Ollama Modelfile, build it against
+    the CHOSEN model and create it. Returns (model, ctx_size) to use — the created
     model name and the Modelfile's num_ctx (falling back to the current values
     when there is nothing to install, the backend isn't Ollama, or create fails).
+
+    The template's `from` is only a DEFAULT source (e.g. a specific quant). When
+    the user already picked a model, the Modelfile is auto-edited to
+    `FROM <chosen model>` instead, because the chat TEMPLATE + PARAMETERs are
+    quant-agnostic — so a Q4 model can use a template authored against Q5 and
+    still get the corrected chat format.
     """
     if not model_template or backend != "ollama":
         return current_model, current_ctx
@@ -1107,11 +1122,17 @@ def _install_template_modelfile(model_template, backend, current_model, current_
         return current_model, current_ctx
     if not mf:
         return current_model, current_ctx
+    if not current_model:
+        return current_model, current_ctx  # nothing pulled to build against
     src = (mf.get("from") or "").strip()
-    name = model_template.strip()
     ensure_ollama()
-    print(f"  ∎ template {model_template!r} ships a custom Modelfile — creating {name!r}...")
-    pull_model(src)
+    # Auto-edit the Modelfile to reference the chosen model instead of the
+    # template's hardcoded source (which may be a different quant).
+    mf = dict(mf)
+    mf["from"] = current_model
+    if src and src != current_model:
+        print(f"  ∎ modelfile edited to match chosen model (FROM {src} → {current_model})")
+    name = _modelfile_model_name(model_template, current_model)
     mf_path = os.path.join(MEMORY_DIR, f"Modelfile.{name}")
     try:
         with open(mf_path, "w") as f:
