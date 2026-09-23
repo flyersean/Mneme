@@ -1521,6 +1521,9 @@ def _add_instance(memory_dir, shared, memory_only):
         ask_and_validate_key()
     chat_model, ctx_size = pick_chat_model(chat_backend)
 
+    # Model template (optional) — known-good generation settings for this model.
+    model_template = choose_model_template()
+
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
         "No (skip — use a merged prompt from your own harness)",
@@ -1532,9 +1535,6 @@ def _add_instance(memory_dir, shared, memory_only):
     mcp_servers = _ask_mcp_servers()
 
     # Per-instance config: this instance's own settings + the shared DB path.
-    # Model template (optional) — known-good generation settings for this model.
-    model_template = choose_model_template()
-
     instance_models = {
         "model": chat_model,
         "embed_model": embed_model,
@@ -1675,6 +1675,9 @@ def main():
     else:
         models = setup_ollama_models()
 
+    # Model template (optional) — known-good generation settings for this model.
+    model_template = choose_model_template()
+
     # 3. Pi (optional)
     print("\n\033[1mStep 3/4 — Chat interface\033[0m")
     print("  Pi is a lightweight terminal AI assistant. If you say no, you can still:")
@@ -1702,9 +1705,6 @@ def main():
 
     # MCP servers (optional) — add tools from any MCP server (web, filesystem, ...).
     mcp_servers = _ask_mcp_servers()
-
-    # Model template (optional) — known-good generation settings for this model.
-    model_template = choose_model_template()
 
     # Per-instance config dir + shared DB path.
     instance_dir = _instance_dir(MEMORY_DIR, port)
