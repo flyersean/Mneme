@@ -795,6 +795,19 @@ def _embedder_floor(embed_model):
                   "Tune it: see 'Tune inject_min_similarity per embedder' in the README")
 
 
+def _user_templates_path():
+    """User template catalogue — kept OUT of the repo (survives git pull) and in
+    the shared memory dir so every instance sees the same saved templates."""
+    return os.environ.get("MNEME_TEMPLATES_FILE") or os.path.join(MEMORY_DIR, "templates.yaml")
+
+
+def _templates_module():
+    """Import mneme.templates, adding the repo's proxy/ dir to sys.path once."""
+    sys.path.insert(0, os.path.join(REPO_ROOT, "proxy"))
+    from mneme import templates as _tpl
+    return _tpl
+
+
 def _template_owned_keys(model_template):
     """Keys the chosen template sets, so the wizard can OMIT them from the file.
 
@@ -810,10 +823,9 @@ def _template_owned_keys(model_template):
     if not model_template:
         return set(), {}
     try:
-        sys.path.insert(0, os.path.join(REPO_ROOT, "proxy"))
-        from mneme import templates as _tpl
+        _tpl = _templates_module()
         path = _tpl.default_templates_path(REPO_ROOT)
-        tpl = (_tpl.load_templates(path) or {}).get(model_template) or {}
+        tpl = (_tpl.load_templates(path, _user_templates_path()) or {}).get(model_template) or {}
         return set((tpl.get("sampling") or {}).keys()), (tpl.get("sampling") or {})
     except Exception:
         return set(), {}
@@ -1047,10 +1059,9 @@ def choose_model_template():
     exactly as they were before templates existed.
     """
     try:
-        sys.path.insert(0, os.path.join(REPO_ROOT, "proxy"))
-        from mneme import templates as _tpl
+        _tpl = _templates_module()
         path = _tpl.default_templates_path(REPO_ROOT)
-        names = _tpl.list_template_names(path)
+        names = _tpl.list_template_names(path, _user_templates_path())
     except Exception as e:
         print(f"  (model templates unavailable: {e})")
         return ""
@@ -1059,7 +1070,7 @@ def choose_model_template():
     entries = [("None — use the built-in default settings", "")]
     for n in names:
         try:
-            d = _tpl.describe(n, path)
+            d = _tpl.describe(n, path, _user_templates_path())
             entries.append((f"{n}  — {d['description']}", n))
         except Exception:
             entries.append((n, n))
@@ -1070,13 +1081,55 @@ def choose_model_template():
     choice = _menu("Model template", entries)
     if choice:
         try:
-            d = _tpl.describe(choice, path)
+            d = _tpl.describe(choice, path, _user_templates_path())
             if d.get("notes"):
                 print(f"  note: {d['notes']}")
             print(f"  ✓ template {choice!r} will be written as `model_template:` in mneme.yaml")
         except Exception:
             pass
     return choice
+
+
+def _install_template_modelfile(model_template, backend, current_model, current_ctx):
+    """If the selected template ships a custom Ollama Modelfile, pull its source
+    and create the model with it. Returns (model, ctx_size) to use — the created
+    model name and the Modelfile's num_ctx (falling back to the current values
+    when there is nothing to install, the backend isn't Ollama, or create fails).
+    """
+    if not model_template or backend != "ollama":
+        return current_model, current_ctx
+    try:
+        _tpl = _templates_module()
+        d = _tpl.describe(model_template, _tpl.default_templates_path(REPO_ROOT),
+                          _user_templates_path())
+        mf = d.get("modelfile") or {}
+    except Exception:
+        return current_model, current_ctx
+    if not mf:
+        return current_model, current_ctx
+    src = (mf.get("from") or "").strip()
+    name = model_template.strip()
+    ensure_ollama()
+    print(f"  ∎ template {model_template!r} ships a custom Modelfile — creating {name!r}...")
+    pull_model(src)
+    mf_path = os.path.join(MEMORY_DIR, f"Modelfile.{name}")
+    try:
+        with open(mf_path, "w") as f:
+            f.write(_tpl.render_modelfile(mf))
+        r = run(f"ollama create {name} -f {mf_path}", timeout=300)
+    except Exception as e:
+        print(f"  ⚠ could not write/run Modelfile: {e}")
+        return current_model, current_ctx
+    if r.returncode != 0:
+        print(f"  ⚠ could not create {name!r}: {(r.stderr or r.stdout or '')[-200:]}")
+        return current_model, current_ctx
+    print(f"  ✓ created {name!r} with the corrected template")
+    new_ctx = current_ctx
+    params = mf.get("parameters") or {}
+    if params.get("num_ctx"):
+        new_ctx = int(params["num_ctx"])
+        print(f"  ✓ context window set to {new_ctx} to match the Modelfile")
+    return name, new_ctx
 
 
 def write_start_script(backend, models, port, instance_dir):
@@ -1524,6 +1577,12 @@ def _add_instance(memory_dir, shared, memory_only):
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
 
+    # A template that ships a custom Modelfile must create its model from it
+    # (Ollama only) — this overrides the picked chat model + context window.
+    if chat_backend == "ollama":
+        chat_model, ctx_size = _install_template_modelfile(
+            model_template, chat_backend, chat_model, ctx_size)
+
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
         "No (skip — use a merged prompt from your own harness)",
@@ -1558,7 +1617,8 @@ def _add_instance(memory_dir, shared, memory_only):
     print(f"  Start:       {script}")
     print(f"  Log:         {instance_dir}/proxy-{port}.log")
     print(f"  Shared DB:   {memory_dir}")
-    print(f"  Chat UI:     http://localhost:{port}/")
+    print(f"  Dashboard:   http://localhost:{port}/")
+    print(f"  Chat UI:     http://localhost:{port}/chat")
     return 0 if started else 1
 
 
@@ -1678,10 +1738,16 @@ def main():
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
 
+    # A template that ships a custom Modelfile must create its model from it
+    # (Ollama only) — this overrides the picked chat model + context window.
+    if backend == "ollama":
+        models["model"], models["ctx_size"] = _install_template_modelfile(
+            model_template, backend, models["model"], models.get("ctx_size", 64000))
+
     # 3. Pi (optional)
     print("\n\033[1mStep 3/4 — Chat interface\033[0m")
     print("  Pi is a lightweight terminal AI assistant. If you say no, you can still:")
-    print("    • use the built-in chat page at http://localhost:8080/")
+    print("    • use the built-in chat page at http://localhost:8080/chat")
     print("    • connect any OpenAI-compatible client to http://localhost:8080/v1")
     idx = choose("Install Pi?", ["No — proxy only (built-in chat / my own client)", "Yes — install Pi"])
     install_pi = (idx == 1)
@@ -1740,7 +1806,10 @@ def main():
     print(f"  Config:     {instance_dir}")
     print(f"  Start/stop: {start_script}")
     print(f"  Log:       {instance_dir}/proxy-{port}.log")
-    print("\n  Chat UI:        http://localhost:%d/" % port)
+    print("\n  Dashboard:      http://localhost:%d/" % port)
+    print("  Chat UI:        http://localhost:%d/chat" % port)
+    print("  Memory:         http://localhost:%d/memory" % port)
+    print("  Templates:      http://localhost:%d/templates" % port)
     print("  Prompt editor:  http://localhost:%d/instructions" % port)
     print("  OpenAI API:     http://localhost:%d/v1" % port)
     print("  Health:         http://localhost:%d/health" % port)

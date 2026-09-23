@@ -215,5 +215,66 @@ class TestDescribe(unittest.TestCase):
             T.describe("nope", CATALOGUE)
 
 
+class TestModelfile(unittest.TestCase):
+    def test_valid_modelfile_passes(self):
+        T.validate({"description": "x", "modelfile": {
+            "from": "hf.co/Some/Model-GGUF:Q5_K_M",
+            "template": "{{ if .Prompt }}...<|start|>assistant",
+            "parameters": {"stop": ["<|eot|>"], "num_ctx": 32768},
+        }}, "ok")
+
+    def test_missing_from_rejected(self):
+        with self.assertRaises(T.TemplateError):
+            T.validate({"modelfile": {"template": "x"}}, "bad")
+
+    def test_unknown_modelfile_key_rejected(self):
+        with self.assertRaises(T.TemplateError):
+            T.validate({"modelfile": {"from": "x", "templte": "x"}}, "bad")
+
+    def test_unknown_modelfile_param_rejected(self):
+        with self.assertRaises(T.TemplateError):
+            T.validate({"modelfile": {"from": "x", "parameters": {"num_ct": 5}}}, "bad")
+
+    def test_stop_must_be_list_of_strings(self):
+        with self.assertRaises(T.TemplateError):
+            T.validate({"modelfile": {"from": "x", "parameters": {"stop": "eot"}}}, "bad")
+
+    def test_render_modelfile(self):
+        mf = {"from": "hf.co/Some/Model-GGUF:Q5_K_M",
+              "template": "{{ if .Prompt }}...<|start|>assistant",
+              "parameters": {"stop": ["<|eot|>"], "num_ctx": 32768}}
+        out = T.render_modelfile(mf)
+        self.assertEqual(out.splitlines()[0], "FROM hf.co/Some/Model-GGUF:Q5_K_M")
+        self.assertIn('TEMPLATE """{{ if .Prompt }}...<|start|>assistant"""', out)
+        self.assertIn('PARAMETER stop "<|eot|>"', out)
+        self.assertIn("PARAMETER num_ctx 32768", out)
+
+    def test_shipped_muse_template_has_modelfile(self):
+        d = T.describe("muse-glimmer", CATALOGUE)
+        self.assertTrue(d["modelfile"].get("from"))
+        T.render_modelfile(d["modelfile"])  # must not raise
+
+
+class TestUserMerge(unittest.TestCase):
+    def test_user_template_overrides_shipped(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as td:
+            up = os.path.join(td, "user.yaml")
+            with open(up, "w") as f:
+                yaml.safe_dump({"templates": {"muse-glimmer": {
+                    "description": "override", "sampling": {"temperature": 0.5}}}}, f)
+            names = T.list_template_names(CATALOGUE, up)
+            self.assertIn("muse-glimmer", names)
+            cat = T.load_templates(CATALOGUE, up)
+            self.assertEqual(cat["muse-glimmer"]["description"], "override")
+            out = T.apply_template({"sampling": {}}, "m", "muse-glimmer", CATALOGUE, up)
+            self.assertEqual(out["sampling"]["temperature"], 0.5)
+
+    def test_missing_user_catalogue_is_fine(self):
+        shipped = T.load_templates(CATALOGUE)["muse-glimmer"]
+        merged = T.load_templates(CATALOGUE, "/nonexistent/nope.yaml")["muse-glimmer"]
+        self.assertEqual(merged, shipped)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

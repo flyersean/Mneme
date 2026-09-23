@@ -5,6 +5,13 @@ measurement (sometimes days). A template packages the result so it is selected
 at setup time rather than rediscovered. With no template selected, behaviour is
 byte-identical to before this module existed.
 
+A template may also carry an OPTIONAL ``modelfile`` block. Some models (e.g.
+Muse Glimmer's Harmony channel format) need a corrected Ollama chat template —
+Ollama's auto-detected one stalls generation. The ``modelfile`` block declares
+the source model + the corrected TEMPLATE/PARAMETERs so the setup wizard (or the
+/templates page) can ``ollama create`` it automatically instead of asking the
+user to do it by hand.
+
 Resolution order (lowest to highest priority):
 
     built-in code defaults  <  template  <  mneme.yaml values  <  env vars
@@ -17,6 +24,10 @@ Why unknown keys are rejected loudly: a template that sets a knob the proxy does
 not read would silently do nothing — precisely the "I changed a setting and it
 had no effect" class of bug this audit was about. Failing loud on an unknown
 template key turns a silent no-op into a startup error.
+
+User templates: a separate catalogue (``user_path``) is merged on top of the
+shipped one, so a user's own templates survive ``git pull`` of the repo. A user
+template with the same name as a shipped one wins.
 """
 
 from __future__ import annotations
@@ -45,7 +56,17 @@ ALLOWED_MODEL_KEYS = {
     "repetition_penalty", "repeat_penalty", "num_ctx", "num_predict",
     "reasoning", "reasoning_effort",
 }
-ALLOWED_TOP_KEYS = {"description", "notes", "sampling", "timeouts", "models"}
+# The optional modelfile block — an Ollama-side chat-template recipe. Only
+# relevant to the setup wizard / templates page; it is NOT merged into config.
+ALLOWED_MODEFILE_KEYS = {"from", "template", "parameters"}
+# Ollama Modelfile PARAMETERs a template may pin. Keep tight: anything else is
+# rejected loudly so a typo cannot silently do nothing.
+ALLOWED_MODEFILE_PARAM_KEYS = {
+    "num_ctx", "num_predict", "stop", "temperature", "top_p", "top_k",
+    "repeat_penalty", "presence_penalty", "reasoning_effort", "min_p",
+}
+ALLOWED_TOP_KEYS = {"description", "notes", "sampling", "timeouts", "models",
+                    "modelfile"}
 
 
 class TemplateError(Exception):
@@ -56,12 +77,8 @@ def default_templates_path(repo_root: str) -> str:
     return os.path.join(repo_root, "model_templates.yaml")
 
 
-def load_templates(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load the template catalogue. Returns {} when the file is absent.
-
-    A missing catalogue is NOT an error — it just means no templates are
-    available, which is the pre-existing behaviour.
-    """
+def _load_file(path: Optional[str]) -> Dict[str, Any]:
+    """Load one template catalogue file. Returns {} when absent/empty."""
     if not path or not os.path.exists(path):
         return {}
     if yaml is None:
@@ -71,8 +88,22 @@ def load_templates(path: Optional[str] = None) -> Dict[str, Any]:
     return (data.get("templates") or {})
 
 
-def list_template_names(path: Optional[str] = None) -> list:
-    return sorted(load_templates(path).keys())
+def load_templates(path: Optional[str] = None,
+                   user_path: Optional[str] = None) -> Dict[str, Any]:
+    """Load the template catalogue — shipped file merged with user overrides.
+
+    A missing catalogue is NOT an error — it just means no templates are
+    available, which is the pre-existing behaviour. User templates (if any) are
+    merged on top of the shipped ones; same-named user templates win.
+    """
+    merged = _load_file(path)
+    merged.update(_load_file(user_path))
+    return merged
+
+
+def list_template_names(path: Optional[str] = None,
+                        user_path: Optional[str] = None) -> list:
+    return sorted(load_templates(path, user_path).keys())
 
 
 def _fail(name: str, msg: str):
@@ -103,6 +134,33 @@ def validate(template: Dict, name: str = "?") -> None:
             if k not in ALLOWED_MODEL_KEYS:
                 _fail(name, f"unknown models key {k!r} in {mname!r} "
                             f"(allowed: {sorted(ALLOWED_MODEL_KEYS)})")
+    # Optional modelfile block.
+    mf = template.get("modelfile")
+    if mf is not None:
+        if not isinstance(mf, dict):
+            _fail(name, "modelfile must be a mapping")
+        for k in mf:
+            if k not in ALLOWED_MODEFILE_KEYS:
+                _fail(name, f"unknown modelfile key {k!r} "
+                            f"(allowed: {sorted(ALLOWED_MODEFILE_KEYS)})")
+        if not isinstance(mf.get("from"), str) or not (mf.get("from") or "").strip():
+            _fail(name, "modelfile.from is required (the source model to pull)")
+        tmpl = mf.get("template")
+        if tmpl is not None and not isinstance(tmpl, str):
+            _fail(name, "modelfile.template must be a string")
+        params = mf.get("parameters") or {}
+        if not isinstance(params, dict):
+            _fail(name, "modelfile.parameters must be a mapping")
+        for pk, pv in params.items():
+            if pk not in ALLOWED_MODEFILE_PARAM_KEYS:
+                _fail(name, f"unknown modelfile parameter {pk!r} "
+                            f"(allowed: {sorted(ALLOWED_MODEFILE_PARAM_KEYS)})")
+            if pk == "stop":
+                if not isinstance(pv, (list, tuple)) or \
+                        not all(isinstance(s, str) for s in pv):
+                    _fail(name, "modelfile.parameters.stop must be a list of strings")
+            elif not isinstance(pv, (str, int, float, bool)):
+                _fail(name, f"modelfile.parameters.{pk} must be a scalar")
 
 
 def expand(template: Dict, model: str, name: str = "?") -> Dict:
@@ -123,7 +181,8 @@ def expand(template: Dict, model: str, name: str = "?") -> Dict:
 
 
 def apply_template(data: Dict, model: str, template_name: Optional[str],
-                   path: Optional[str] = None) -> Dict:
+                   path: Optional[str] = None,
+                   user_path: Optional[str] = None) -> Dict:
     """Merge a template into the config so the TEMPLATE'S VALUES WIN.
 
     Priority (highest first):
@@ -140,13 +199,16 @@ def apply_template(data: Dict, model: str, template_name: Optional[str],
     Any key the template does NOT set keeps whatever the config file (or the
     built-in default) provides, so a template never has to be exhaustive.
 
+    The ``modelfile`` block (if present) is NOT merged — it is an install
+    directive for the setup wizard / templates page, not a config value.
+
     To override a single template value deliberately, delete that key from the
     template OR put the value in an env var (env still wins over everything).
     `<<SETTINGS>>` prints what is actually in force.
     """
     if not template_name:
         return data
-    catalogue = load_templates(path)
+    catalogue = load_templates(path, user_path)
     if template_name not in catalogue:
         raise TemplateError(
             f"unknown model template {template_name!r}. Available: "
@@ -169,9 +231,35 @@ def apply_template(data: Dict, model: str, template_name: Optional[str],
     return merged
 
 
-def describe(name: str, path: Optional[str] = None) -> Dict:
+def render_modelfile(modelfile: Dict) -> str:
+    """Render an Ollama Modelfile from a template's ``modelfile`` block.
+
+    Produces ``FROM <source>`` + the optional ``TEMPLATE`` + one ``PARAMETER``
+    line per entry (a ``stop`` list emits one line per stop token). The caller
+    writes this to a file and runs ``ollama create <name> -f <file>``.
+    """
+    def _val(v) -> str:
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return str(v)
+        return f'"{v}"'  # strings (stop tokens, etc.) are quoted like the docs
+
+    lines = [f"FROM {modelfile['from'].strip()}"]
+    tmpl = (modelfile.get("template") or "").strip()
+    if tmpl:
+        lines.append(f'TEMPLATE """{tmpl}"""')
+    for k, v in (modelfile.get("parameters") or {}).items():
+        vals = v if isinstance(v, (list, tuple)) else [v]
+        for item in vals:
+            lines.append(f"PARAMETER {k} {_val(item)}")
+    return "\n".join(lines) + "\n"
+
+
+def describe(name: str, path: Optional[str] = None,
+             user_path: Optional[str] = None) -> Dict:
     """Metadata for the setup wizard / a /templates endpoint."""
-    tpl = (load_templates(path) or {}).get(name)
+    tpl = (load_templates(path, user_path) or {}).get(name)
     if tpl is None:
         raise TemplateError(f"unknown model template {name!r}")
     return {
@@ -181,4 +269,5 @@ def describe(name: str, path: Optional[str] = None) -> Dict:
         "sampling": tpl.get("sampling") or {},
         "timeouts": tpl.get("timeouts") or {},
         "models": tpl.get("models") or {},
+        "modelfile": tpl.get("modelfile") or {},
     }

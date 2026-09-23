@@ -343,6 +343,7 @@ def load_config():
                 data = _templates.apply_template(
                     data, os.environ.get("MNEME_MODEL", ""), _tpl_name,
                     _templates.default_templates_path(REPO_ROOT),
+                    USER_TEMPLATES_PATH,
                 )
                 print(f"  [TEMPLATE] applied {_tpl_name!r} (file values still win)", flush=True)
             except _templates.TemplateError as e:
@@ -546,6 +547,23 @@ else:
           f"Set storage.db_path for a shared/external DB.", flush=True)
 DB_DIR     = os.path.dirname(DB_PATH) or "."
 
+# User-authored model templates live OUT of the repo (survive git pull), next to
+# the shared DB so every instance sees the same saved templates. The shipped
+# catalogue stays in the repo (REPO_ROOT/model_templates.yaml) and is merged
+# beneath user templates (user wins on a name clash).
+USER_TEMPLATES_PATH = os.environ.get("MNEME_TEMPLATES_FILE") or os.path.join(DB_DIR, "templates.yaml")
+
+
+def _write_user_templates(cat: Dict) -> None:
+    """Persist the user template catalogue (overwrites the file)."""
+    import yaml
+    d = os.path.dirname(USER_TEMPLATES_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(USER_TEMPLATES_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump({"templates": cat}, f, sort_keys=False, allow_unicode=True)
+
+
 # Sampling defaults (per-model overrides live in config `models:`)
 OLLAMA_TEMP    = float(os.environ.get("MNEME_TEMPERATURE", "0.3"))
 
@@ -592,7 +610,8 @@ def _reload_sampling_if_changed():
         if _tpl_name:
             try:
                 _merged = _templates.apply_template(
-                    data, MODEL, _tpl_name, _templates.default_templates_path(REPO_ROOT))
+                    data, MODEL, _tpl_name, _templates.default_templates_path(REPO_ROOT),
+                    USER_TEMPLATES_PATH)
                 _sect = _merged.get("models") or _sect
             except _templates.TemplateError as e:
                 print(f"  [CONFIG] template re-apply failed: {e}", flush=True)
@@ -6607,18 +6626,39 @@ if FLASK_OK:
         resp.headers["Access-Control-Allow-Methods"] = "*"
         return resp, status
     
-    # ── Chat UI: simple light-theme HTML front end (thin client -> /v1/chat/completions) ──
+    # ── Dashboard: single entry point linking out to every page ──
+    _DASHBOARD_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html")
     _CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "chat.html")
 
-    @app.route("/", methods=["GET"])
-    @app.route("/chat", methods=["GET"])
-    def chat_ui():
+    def _serve_html(path, err_tag):
         try:
-            with open(_CHAT_HTML_PATH, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
         except Exception as e:
-            print(f"  [CHAT-UI][ERR] {str(e)[:100]}", flush=True)
-            return _cors_response({"error": "chat UI not found"}, status=404)
+            print(f"  [{err_tag}][ERR] {str(e)[:100]}", flush=True)
+            return _cors_response({"error": f"{err_tag.lower()} UI not found"}, status=404)
+
+    @app.route("/", methods=["GET"])
+    def dashboard_ui():
+        return _serve_html(_DASHBOARD_HTML_PATH, "DASHBOARD-UI")
+
+    @app.route("/chat", methods=["GET"])
+    def chat_ui():
+        return _serve_html(_CHAT_HTML_PATH, "CHAT-UI")
+
+    @app.route("/dashboard/status", methods=["GET"])
+    def dashboard_status():
+        try:
+            snap = _settings_snapshot()
+            snap["model"]["template"] = CONFIG_DATA.get("model_template", "")
+            snap["chunks"] = len(_id_map)
+            return _cors_response(snap)
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/admin/reload", methods=["POST"])
+    def admin_reload():
+        return _cors_response({"ok": _force_config_reload()})
 
     # ── Memory management UI ──
     # Mirrors the /instructions pattern: a static page served by the proxy, backed
@@ -6682,6 +6722,109 @@ if FLASK_OK:
                 return f.read(), 200, {"Content-Type": "text/plain; charset=utf-8"}
         except OSError as e:
             return _cors_response({"error": str(e)}, status=500)
+
+    # ── Model templates management UI (shipped + user catalogue) ──
+    _TEMPLATES_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "templates.html")
+
+    @app.route("/templates", methods=["GET"])
+    def templates_ui():
+        return _serve_html(_TEMPLATES_HTML_PATH, "TEMPLATES-UI")
+
+    def _template_record(name, shipped, user):
+        tpl = user.get(name, shipped.get(name))
+        return {
+            "name": name,
+            "user": name in user,
+            "description": tpl.get("description", ""),
+            "notes": tpl.get("notes", ""),
+            "has_modelfile": bool(tpl.get("modelfile")),
+            "sampling": tpl.get("sampling") or {},
+            "timeouts": tpl.get("timeouts") or {},
+            "models": tpl.get("models") or {},
+            "modelfile": tpl.get("modelfile") or {},
+        }
+
+    @app.route("/templates/data", methods=["GET"])
+    def templates_data():
+        try:
+            shipped = _templates.load_templates(_templates.default_templates_path(REPO_ROOT))
+            user = _templates.load_templates(USER_TEMPLATES_PATH)
+            recs = [_template_record(n, shipped, user) for n in sorted(set(shipped) | set(user))]
+            return _cors_response({"templates": recs, "user_path": USER_TEMPLATES_PATH})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/templates/save", methods=["POST"])
+    def templates_save():
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+            return _cors_response({"error": "invalid template name (a-z 0-9 . _ -)"}, status=400)
+        tpl = data.get("template")
+        if not isinstance(tpl, dict):
+            return _cors_response({"error": "template must be an object"}, status=400)
+        try:
+            _templates.validate(tpl, name)
+        except _templates.TemplateError as e:
+            return _cors_response({"error": str(e)}, status=400)
+        try:
+            cat = _templates.load_templates(USER_TEMPLATES_PATH)
+            cat[name] = tpl
+            _write_user_templates(cat)
+            return _cors_response({"ok": True, "name": name})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/templates/delete", methods=["POST"])
+    def templates_delete():
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        try:
+            cat = _templates.load_templates(USER_TEMPLATES_PATH)
+            if name not in cat:
+                return _cors_response({"error": f"no user template {name!r}"}, status=404)
+            del cat[name]
+            _write_user_templates(cat)
+            return _cors_response({"ok": True, "name": name})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/templates/install-modelfile", methods=["POST"])
+    def templates_install_modelfile():
+        import subprocess
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+            return _cors_response({"error": "invalid template name"}, status=400)
+        try:
+            d = _templates.describe(name, _templates.default_templates_path(REPO_ROOT),
+                                    USER_TEMPLATES_PATH)
+        except _templates.TemplateError as e:
+            return _cors_response({"error": str(e)}, status=404)
+        mf = d.get("modelfile") or {}
+        if not mf:
+            return _cors_response({"error": f"template {name!r} has no modelfile"}, status=400)
+        src = (mf.get("from") or "").strip()
+        steps = []
+
+        def _run(cmd, timeout):
+            try:
+                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+                steps.append({"cmd": cmd, "rc": r.returncode, "err": (r.stderr or "")[-500:]})
+                return r.returncode
+            except subprocess.TimeoutExpired:
+                steps.append({"cmd": cmd, "rc": 124, "err": "timed out"})
+                return 124
+
+        _run(f"ollama pull {src}", 900)
+        mf_path = os.path.join(CHUNK_DIR, f"Modelfile.{name}")
+        try:
+            with open(mf_path, "w", encoding="utf-8") as f:
+                f.write(_templates.render_modelfile(mf))
+        except OSError as e:
+            return _cors_response({"error": str(e)}, status=500)
+        rc = _run(f"ollama create {name} -f {mf_path}", 300)
+        return _cors_response({"ok": rc == 0, "name": name, "steps": steps})
 
     # ── Turn cancellation (the chat UI "Stop" button) ──
     @app.route("/cancel", methods=["POST"])

@@ -38,14 +38,28 @@
 templates:
 
   # ── Muse Glimmer 30B ──────────────────────────────────────────────────
-  # Harmony-format model (to=self reasoning turn, then to=user). Requires a
-  # custom Modelfile because Ollama's auto-detected template is wrong. Its
-  # `to=self` turn conflicts with Ollama JSON grammars, and it over-generates
-  # badly: measured 5,316 tokens for a ~500-token page summary (~3.3 min of pure
-  # generation). num_predict is the lever that keeps that bounded.
+  # Harmony-format model (to=self reasoning turn, then to=user). Ollama's
+  # auto-detected template is wrong (hardcodes to=user + premature stop tokens,
+  # stalling generation at ~3 tokens), so this template ships a corrected
+  # Modelfile the setup wizard auto-creates. Its `to=self` turn also conflicts
+  # with Ollama JSON grammars, and it over-generates badly (measured 5,316
+  # tokens for a ~500-token page summary). num_predict keeps that bounded.
   muse-glimmer:
     description: "Muse Glimmer 30B (abliterated) — Harmony format, heavy over-generator"
-    notes: "Needs a custom Modelfile. Reasoning field is `thinking`. Cap output or it generates for minutes."
+    notes: "Auto-creates muse-glimmer with a corrected Modelfile. Reasoning field is `thinking`. Cap output or it generates for minutes."
+    modelfile:
+      from: hf.co/Blackfrost-AI/Muse-Glimmer-30B-Abliterated-GGUF:Q5_K_M
+      template: |
+        {{ if .System }}<|begin_of_text|><|start|>system<|message|>{{ .System }}
+
+        Reasoning strength: high.
+
+        # Valid recipients: "self", "user".<|eot|>{{ end }}{{ if .Prompt }}<|start|>user<|message|>{{ .Prompt }}<|eot|>{{ end }}<|start|>assistant
+      parameters:
+        stop:
+          - "<|eot|>"
+          - "<|start|>user<|message|>"
+        num_ctx: 32768
     sampling:
       temperature: 1.0
       top_k: 64
