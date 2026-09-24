@@ -78,12 +78,25 @@
   .status { position: fixed; bottom: 20px; right: 20px; background: #111827; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
   .status.show { opacity: 1; }
 </style>
+<style>
+.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
+.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+</style>
 </head>
 <body>
 <header>
   <h1>Mneme — Injected Instructions</h1>
   <p>Every prompt Mneme injects into the model, in the order they fire during a conversation. Edit a box and click <b>Save</b> to change that prompt — it writes straight back to its file (the <code># when / vars / used_by</code> header is metadata, not part of the prompt). Delete a file to revert to the built-in default.</p>
 </header>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions" class="active">Instructions</a>
+  <a href="/templates">Templates</a>
+</nav>
 <main>
   <div class="legend">
     Order = the flow of one conversation: the first three fire on <b>every</b> turn (context build), then the escalation prompts fire as a task gets harder — a few tool calls → many → stuck → concede. Not every prompt fires every turn.

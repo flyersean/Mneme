@@ -164,6 +164,12 @@
   .sect { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 18px 0 8px; }
   .lineage-row { border-left: 3px solid var(--accent); padding: 5px 0 5px 10px; margin-bottom: 6px; font-size: 13px; }
 </style>
+<style>
+.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
+.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+</style>
 </head>
 <body>
 <header>
@@ -185,6 +191,13 @@
     <span><span class="swatch red"></span>flagged <b>by you</b> — you already made the call</span>
   </div>
 </header>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory" class="active">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+</nav>
 
 <main>
   <div class="notice">

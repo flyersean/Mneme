@@ -28,6 +28,12 @@
   #reloadMsg { margin-left:10px; font-size:13px; color:var(--muted); }
   .actions { display:flex; gap:10px; align-items:center; }
 </style>
+<style>
+.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
+.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+</style>
 </head>
 <body>
 <header>
@@ -37,6 +43,13 @@
     <span id="reloadMsg"></span>
   </div>
 </header>
+<nav class="mneme-nav">
+  <a href="/" class="active">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+</nav>
 <main>
   <section>
     <h3>Pages</h3>
