@@ -313,6 +313,37 @@ CONFIG_LOAD_ATTEMPTS = 6
 CONFIG_LOAD_RETRY_DELAY = 0.5  # seconds — tolerate a setup script still writing the file
 
 
+def _resolve_user_templates_path(data=None):
+    """Path to the user-authored model-template catalogue.
+
+    The module-level ``USER_TEMPLATES_PATH`` is defined BELOW ``load_config()``'s
+    call site (it depends on DB_PATH, which is only known after the config load
+    has exported ``storage.db_path``). Referencing that global inside
+    ``load_config`` is therefore a NameError whenever a model template is
+    selected — the startup crash this resolves. This helper recomputes the same
+    path from the parsed config (or env) at the point the template merge needs
+    it. Kept in sync with the module-level definition: env override first, then
+    the directory of ``storage.db_path``, then a legacy co-location next to the
+    chunk dir.
+    """
+    p = os.environ.get("MNEME_TEMPLATES_FILE")
+    if p:
+        return p
+    db_path = os.environ.get("MNEME_DB_PATH")
+    if not db_path and isinstance(data, dict):
+        db_path = (data.get("storage") or {}).get("db_path")
+    if db_path:
+        db_dir = os.path.dirname(os.path.abspath(os.path.expanduser(str(db_path)))) or "."
+    else:
+        # Legacy install (no storage.db_path): co-locate next to the chunk dir,
+        # matching the module-level DB_PATH fallback (CHUNK_DIR/mneme.db).
+        chunk = os.environ.get("MNEME_CHUNK_DIR")
+        if not chunk and isinstance(data, dict):
+            chunk = (data.get("storage") or {}).get("chunk_dir")
+        db_dir = os.path.abspath(os.path.expanduser(str(chunk or ".")))
+    return os.path.join(db_dir, "templates.yaml")
+
+
 def load_config():
     global CONFIG_PATH
     # The setup wizard writes mneme.yaml and launches the proxy back-to-back, so
@@ -343,7 +374,7 @@ def load_config():
                 data = _templates.apply_template(
                     data, os.environ.get("MNEME_MODEL", ""), _tpl_name,
                     _templates.default_templates_path(REPO_ROOT),
-                    USER_TEMPLATES_PATH,
+                    _resolve_user_templates_path(data),
                 )
                 print(f"  [TEMPLATE] applied {_tpl_name!r} (file values still win)", flush=True)
             except _templates.TemplateError as e:

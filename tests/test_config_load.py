@@ -13,6 +13,8 @@ _PROXY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pro
 sys.path.insert(0, _PROXY_DIR)
 import mneme_proxy as mp  # noqa: E402
 
+_MISSING = object()
+
 
 class TestConfigLoadRetry(unittest.TestCase):
     """The setup wizard writes mneme.yaml and launches the proxy back-to-back, so
@@ -130,6 +132,38 @@ class TestConfigLoadRetry(unittest.TestCase):
              mock.patch.object(mp, "save_chunk"):
             out2 = mp._chunk_large_messages([{"role": "user", "content": "x" * 8000}])
         self.assertIn("AUTO-CHUNKED", out2[0]["content"])
+
+
+    def test_load_config_with_model_template_no_nameerror(self):
+        """Regression: USER_TEMPLATES_PATH was defined BELOW load_config()'s call
+        site, so a first import with a model template selected crashed with a
+        NameError at startup. load_config() must resolve the user-template path
+        from the parsed config instead of the not-yet-defined module global."""
+        import io
+        from contextlib import redirect_stdout
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        data = {"model_template": "gemma4-repeat",
+                "storage": {"db_path": os.path.join(tempfile.mkdtemp(), "mneme.db")},
+                "sampling": {}}
+        saved = mp.__dict__.get("USER_TEMPLATES_PATH", _MISSING)
+        saved_db = os.environ.get("MNEME_DB_PATH")
+        mp.__dict__.pop("USER_TEMPLATES_PATH", None)  # simulate pre-definition state
+        try:
+            buf = io.StringIO()
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data), \
+                 redirect_stdout(buf):
+                mp.load_config()  # must not raise NameError
+            self.assertIn("[TEMPLATE] applied", buf.getvalue())
+        finally:
+            if saved is _MISSING:
+                mp.__dict__.pop("USER_TEMPLATES_PATH", None)
+            else:
+                mp.USER_TEMPLATES_PATH = saved
+            if saved_db is None:
+                os.environ.pop("MNEME_DB_PATH", None)
+            else:
+                os.environ["MNEME_DB_PATH"] = saved_db
 
 
 if __name__ == "__main__":
