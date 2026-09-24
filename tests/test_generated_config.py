@@ -75,5 +75,37 @@ class TestGeneratedConfig(unittest.TestCase):
         self.assertIn("model_template", mp._CONFIG_PASSTHROUGH_KEYS)
 
 
+class TestModelNameLength(unittest.TestCase):
+    """Ollama rejects model names longer than 80 chars ("invalid model name").
+    The wizard derives names from base-model paths (HF paths, quant tags) which
+    can exceed that; both derived-name helpers must cap deterministically."""
+
+    def _long_base(self):
+        return "hf.co/Blackfrost-AI/" + "SomeModel-" * 12 + "GGUF:Q4_K_M"
+
+    def test_derived_name_stays_within_limit(self):
+        name = setup._derived_model_name(self._long_base(), 128000)
+        self.assertLessEqual(len(name), 80)
+
+    def test_modelfile_name_caps_the_real_failure(self):
+        # The exact case that broke on the pod: muse-glimmer applied to the
+        # derived 128k context model produced an 89-char name Ollama rejected.
+        chosen = "mneme-chat-hf-co-blackfrost-ai-muse-glimmer-30b-abliterated-gguf-q4-k-m-128k"
+        name = setup._modelfile_model_name("muse-glimmer", chosen)
+        self.assertLessEqual(len(name), 80)
+
+    def test_capped_names_unique_and_deterministic(self):
+        a = setup._modelfile_model_name("muse-glimmer", "model-" + "a" * 60)
+        b = setup._modelfile_model_name("muse-glimmer", "model-" + "b" * 60)
+        self.assertNotEqual(a, b)
+        self.assertEqual(a, setup._modelfile_model_name("muse-glimmer", "model-" + "a" * 60))
+
+    def test_short_name_unchanged(self):
+        # Under the limit, the name must not be hashed/truncated (no change for
+        # existing valid installs).
+        self.assertEqual(setup._modelfile_model_name("muse-glimmer", "qwen3.8"),
+                         "muse-glimmer-qwen3-8")
+
+
 if __name__ == "__main__":
     unittest.main()

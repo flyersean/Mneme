@@ -26,6 +26,7 @@ import time
 import shutil
 import socket
 import getpass
+import hashlib
 import subprocess
 import urllib.request
 import urllib.error
@@ -603,13 +604,32 @@ def setup_ollama_models():
     return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
+_OLLAMA_MAX_NAME_LEN = 80  # measured: ollama 0.34.x rejects model names > 80 chars
+
+
+def _cap_model_name(name, max_len=_OLLAMA_MAX_NAME_LEN):
+    """Cap an auto-generated Ollama model name at the length Ollama accepts.
+
+    Ollama rejects model names longer than 80 chars ("invalid model name"). The
+    wizard derives names from base-model paths (HF paths, quant tags), which can
+    easily exceed that. When one would, truncate and append a stable 8-hex hash
+    of the FULL name so the result stays valid, deterministic, and collision-free
+    — two different long base names never collapse onto the same capped name.
+    """
+    if len(name) <= max_len:
+        return name
+    h = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    keep = max_len - 1 - len(h)
+    return f"{name[:keep]}-{h}"
+
+
 def _derived_model_name(base_model, ctx_size):
     """Deterministic derived-model name keyed on the base model + context window
     (NOT the port). Instances sharing a base model + context then share one
     derived name, so Ollama keeps a single resident copy of the weights instead
     of one per port. ':' '/' '.' are sanitized to '-' for a valid name."""
     frag = re.sub(r"[^a-zA-Z0-9]+", "-", base_model).strip("-").lower()
-    return f"mneme-chat-{frag}-{int(ctx_size) // 1000}k"
+    return _cap_model_name(f"mneme-chat-{frag}-{int(ctx_size) // 1000}k")
 
 
 def create_context_modelfile(base_model, ctx_size, name=None):
@@ -1096,7 +1116,7 @@ def _modelfile_model_name(model_template, chosen_model):
     several models/quants without overwriting any of them."""
     tfrag = re.sub(r"[^a-zA-Z0-9]+", "-", model_template).strip("-").lower()
     mfrag = re.sub(r"[^a-zA-Z0-9]+", "-", chosen_model).strip("-").lower()
-    return f"{tfrag}-{mfrag}"
+    return _cap_model_name(f"{tfrag}-{mfrag}")
 
 
 def _install_template_modelfile(model_template, backend, current_model, current_ctx):
