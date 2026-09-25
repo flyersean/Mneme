@@ -1174,6 +1174,29 @@ def _install_template_modelfile(model_template, backend, current_model, current_
     return name, new_ctx
 
 
+def _port_free_lines():
+    """Bash lines that stop any proxy already listening on $MNEME_PORT before the
+    proxy starts, so re-running the start script is a clean stop-and-restart (it
+    frees the port) instead of a bind conflict. Mirrors stop_proxy_on_port():
+    SIGTERM, wait ~5s, then SIGKILL."""
+    return [
+        "# Stop any proxy already on this port, so re-running this script is a clean",
+        "# stop-and-restart (frees the port) rather than a bind conflict.",
+        '_PID="$(ss -ltnp 2>/dev/null | grep -E ":${MNEME_PORT}[[:space:]]" | sed -n \'s/.*pid=\\([0-9]*\\).*/\\1/p\' | head -1)"',
+        'if [ -n "${_PID}" ]; then',
+        '  echo "Stopping existing proxy on port ${MNEME_PORT} (pid ${_PID})..."',
+        '  kill "${_PID}" 2>/dev/null',
+        '  for _i in $(seq 1 50); do',
+        '    kill -0 "${_PID}" 2>/dev/null || break',
+        '    sleep 0.1',
+        '  done',
+        '  kill -9 "${_PID}" 2>/dev/null',
+        '  sleep 1',
+        'fi',
+        '',
+    ]
+
+
 def write_start_script(backend, models, port, instance_dir):
     """Write a start script into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
@@ -1205,6 +1228,9 @@ def write_start_script(backend, models, port, instance_dir):
         f'export MNEME_CONFIG="{os.path.join(instance_dir, "mneme.yaml")}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
+    ]
+    lines += _port_free_lines()
+    lines += [
         f'cd "{REPO_ROOT}"',
         "exec python3 -uB proxy/mneme_proxy.py",
         "",
@@ -1502,6 +1528,9 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         f'export MNEME_INJECT_SYSTEM="{inject}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
+    ]
+    lines += _port_free_lines()
+    lines += [
         f'cd "{REPO_ROOT}"',
         "exec python3 -uB proxy/mneme_proxy.py",
         "",

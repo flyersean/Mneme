@@ -935,7 +935,7 @@ They cover:
 
 86 tests in `tests/test_tool_loop.py`.
 
-The full suite is **366 tests** across 18 files. Beyond the tool loop:
+The full suite is **368 tests** across 18 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -950,7 +950,7 @@ The full suite is **366 tests** across 18 files. Beyond the tool loop:
 | `test_logfile.py` | 7 | log routing |
 | `test_config_load.py` | 7 | config precedence |
 | `test_mcp_client.py` | 5 | MCP connect/list/call/remove (needs `mcp`) |
-| `test_generated_config.py` | 8 | every wizard-emitted key is valid |
+| `test_generated_config.py` | 10 | every wizard-emitted key is valid |
 | `test_swarm_skip_throttle.py` | 4 | swarm `skip_if_empty` / `every` |
 | `test_hot_reload_lock.py` | 3 | config/prompt lock |
 | `test_mcp_endpoints.py` | 3 | MCP hot-add endpoints |

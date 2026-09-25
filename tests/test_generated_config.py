@@ -107,5 +107,31 @@ class TestModelNameLength(unittest.TestCase):
                          "muse-glimmer-qwen3-8")
 
 
+class TestStartScript(unittest.TestCase):
+    """Generated start scripts must free their own port before starting, so a
+    re-run is a clean stop-and-restart instead of a bind conflict."""
+
+    def _has_port_free(self, path):
+        with open(path) as f:
+            body = f.read()
+        return ("ss -ltnp" in body and "kill -9" in body and "${MNEME_PORT}" in body)
+
+    def test_main_start_script_frees_port(self):
+        d = tempfile.mkdtemp()
+        p = setup.write_start_script(
+            "ollama", {"model": "test-model", "embed_model": "test-embed",
+                       "label_model": "test-label"}, 8080, d)
+        self.assertTrue(self._has_port_free(p),
+                        "start_proxy.sh must free the port before starting")
+
+    def test_instance_start_script_frees_port(self):
+        d = tempfile.mkdtemp()
+        p = setup.write_instance_start_script(
+            os.path.join(d, "8081"), d, 8081, "ollama", "test-model",
+            "test-embed", "ollama", "test-label", "ollama", "1", "0")
+        self.assertTrue(self._has_port_free(p),
+                        "start_proxy_<port>.sh must free the port before starting")
+
+
 if __name__ == "__main__":
     unittest.main()
