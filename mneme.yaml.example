@@ -201,6 +201,7 @@ caps:
   compress_max_tok: 2048     # max tokens for the compression summarizer
   max_tool_forward: 12000    # cap on a tool result forwarded to the model (head+tail window)
   tool_followup_tokens: 10000  # tokens reserved for tool results in the input; recent-window = ctx_tokens - completion_reserve - this
+  max_server_rounds: 30      # cap on tool-loop rounds per turn (raise for long coding/agent steps)
   chunk_size: 4000           # chars per staged memory chunk
 
 # Inbuilt tools — enable/disable each one. `native` (auto|on|off) controls the

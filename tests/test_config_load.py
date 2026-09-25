@@ -166,5 +166,24 @@ class TestConfigLoadRetry(unittest.TestCase):
                 os.environ["MNEME_DB_PATH"] = saved_db
 
 
+    def test_load_config_sets_max_server_rounds_from_config(self):
+        """caps.max_server_rounds must flow to MNEME_MAX_SERVER_ROUNDS so the
+        request-time read in process_chat picks it up (the override lives in
+        overcome.py, which is read at import time — before the config loads)."""
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        data = {"caps": {"max_server_rounds": 60}}
+        saved = os.environ.get("MNEME_MAX_SERVER_ROUNDS")
+        try:
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data):
+                mp.load_config()
+            self.assertEqual(os.environ.get("MNEME_MAX_SERVER_ROUNDS"), "60")
+        finally:
+            if saved is None:
+                os.environ.pop("MNEME_MAX_SERVER_ROUNDS", None)
+            else:
+                os.environ["MNEME_MAX_SERVER_ROUNDS"] = saved
+
+
 if __name__ == "__main__":
     unittest.main()

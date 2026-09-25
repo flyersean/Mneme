@@ -981,6 +981,7 @@ caps:
   compress_max_tok: 2048
   max_tool_forward: 12000
   tool_followup_tokens: {tool}    # tool-results slice — scales with ctx (ctx/6)
+  max_server_rounds: 30           # cap on tool-loop rounds per turn (raise for long coding/agent steps)
   chunk_size: 4000
 
 # Inbuilt tools — set any to false to hide it from the model.

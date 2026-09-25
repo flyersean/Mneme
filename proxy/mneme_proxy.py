@@ -169,6 +169,7 @@ _CONFIG_ENV_MAP = {
     "caps.compress_max_tok": "MNEME_COMPRESS_MAX_TOK",
     "caps.max_tool_forward": "MNEME_MAX_TOOL_FORWARD",
     "caps.tool_followup_tokens": "MNEME_TOOL_FOLLOWUP_TOKENS",
+    "caps.max_server_rounds": "MNEME_MAX_SERVER_ROUNDS",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
     "tools.native": "MNEME_NATIVE_TOOLS",
     "tools.dir": "MNEME_TOOLS_DIR",
@@ -5808,7 +5809,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _trace_search_chunks = set()
     passthrough_calls = []
     _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
-    _MAX_SERVER_ROUNDS = MAX_SERVER_ROUNDS  # absolute round ceiling (high backstop)
+    _MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", MAX_SERVER_ROUNDS))  # round ceiling — config caps.max_server_rounds overrides
     _REDUNDANCY_LIMIT = 4  # identical tool-call signature this many rounds in a row = stuck loop
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
