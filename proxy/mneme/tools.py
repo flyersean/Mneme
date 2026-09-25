@@ -279,7 +279,7 @@ NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a shell command on the Mneme host. Runs from the home directory of the user Mneme runs as. To access files elsewhere, use absolute paths or cd first.",
+        "description": "Run a shell command on the Mneme host. Its working directory is the tools directory — the same place the write tool saves relative paths. Use an absolute path (e.g. /workspace/x) to touch files elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -294,11 +294,11 @@ NATIVE_WRITE_TOOL = {
     "type": "function",
     "function": {
         "name": "write",
-        "description": "Write a file on the Mneme host. Use to save a script you are building. Relative paths land in the tools directory (under the configured chunk dir, e.g. <chunk_dir>/tools); the returned text shows the full saved path.",
+        "description": "Write a file on the Mneme host. Relative paths are saved into the tools directory — the same directory the bash tool runs in. Use an absolute path (e.g. /workspace/x) to write anywhere else. Returns the full path written.",
         "parameters": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Path to write (absolute, or relative to the tools dir)"},
+                "file_path": {"type": "string", "description": "Path to write. Relative paths go in the tools directory; absolute paths (e.g. /workspace/x) go exactly there."},
                 "content": {"type": "string", "description": "Full file contents"},
             },
             "required": ["file_path", "content"],
@@ -475,7 +475,7 @@ def _exec_bash(command):
         os.makedirs(TOOLS_DIR, exist_ok=True)
         p = subprocess.run(
             command, shell=True, capture_output=True, text=True,
-            timeout=BASH_TIMEOUT, cwd=os.path.expanduser("~"),
+            timeout=BASH_TIMEOUT, cwd=TOOLS_DIR,
         )
         out = (p.stdout or "").rstrip()
         if p.stderr:
