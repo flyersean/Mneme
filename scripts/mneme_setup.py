@@ -1121,16 +1121,22 @@ def choose_model_template():
     return choice
 
 
-def _modelfile_model_name(model_template, chosen_model):
+def _modelfile_model_name(model_template, chosen_model, port=None):
     """Deterministic, non-colliding name for a Modelfile-derived model, keyed on
     BOTH the template and the chosen model, so one template can be applied to
-    several models/quants without overwriting any of them."""
+    several models/quants without overwriting any of them. When `port` is given
+    the name is further keyed on the instance, so two proxies running the SAME
+    model + template each get their OWN derived model (a per-proxy Modelfile)."""
     tfrag = re.sub(r"[^a-zA-Z0-9]+", "-", model_template).strip("-").lower()
     mfrag = re.sub(r"[^a-zA-Z0-9]+", "-", chosen_model).strip("-").lower()
-    return _cap_model_name(f"{tfrag}-{mfrag}")
+    name = f"{tfrag}-{mfrag}"
+    if port is not None:
+        name = f"{name}-p{port}"
+    return _cap_model_name(name)
 
 
-def _install_template_modelfile(model_template, backend, current_model, current_ctx):
+def _install_template_modelfile(model_template, backend, current_model, current_ctx,
+                                port=None, instance_dir=None):
     """If the selected template ships a custom Ollama Modelfile, build it against
     the CHOSEN model and create it. Returns (model, ctx_size) to use — the created
     model name and the Modelfile's num_ctx (falling back to the current values
@@ -1163,8 +1169,8 @@ def _install_template_modelfile(model_template, backend, current_model, current_
     mf["from"] = current_model
     if src and src != current_model:
         print(f"  ∎ modelfile edited to match chosen model (FROM {src} → {current_model})")
-    name = _modelfile_model_name(model_template, current_model)
-    mf_path = os.path.join(MEMORY_DIR, f"Modelfile.{name}")
+    name = _modelfile_model_name(model_template, current_model, port=port)
+    mf_path = os.path.join(instance_dir or MEMORY_DIR, f"Modelfile.{name}")
     try:
         with open(mf_path, "w") as f:
             f.write(_tpl.render_modelfile(mf))
@@ -1665,7 +1671,8 @@ def _add_instance(memory_dir, shared, memory_only):
     # (Ollama only) — this overrides the picked chat model + context window.
     if chat_backend == "ollama":
         chat_model, ctx_size = _install_template_modelfile(
-            model_template, chat_backend, chat_model, ctx_size)
+            model_template, chat_backend, chat_model, ctx_size,
+            port=port, instance_dir=instance_dir)
 
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
@@ -1822,12 +1829,6 @@ def main():
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
 
-    # A template that ships a custom Modelfile must create its model from it
-    # (Ollama only) — this overrides the picked chat model + context window.
-    if backend == "ollama":
-        models["model"], models["ctx_size"] = _install_template_modelfile(
-            model_template, backend, models["model"], models.get("ctx_size", 64000))
-
     # 3. Pi (optional)
     print("\n\033[1mStep 3/4 — Chat interface\033[0m")
     print("  Pi is a lightweight terminal AI assistant. If you say no, you can still:")
@@ -1859,6 +1860,15 @@ def main():
     # Per-instance config dir + shared DB path.
     instance_dir = _instance_dir(MEMORY_DIR, port)
     db_path = os.path.join(MEMORY_DIR, "mneme.db")
+
+    # A template that ships a custom Modelfile must create its model from it
+    # (Ollama only) — keyed on the PORT so each proxy gets its own derived
+    # model + Modelfile instead of sharing one with another proxy on the same
+    # base model.
+    if backend == "ollama":
+        models["model"], models["ctx_size"] = _install_template_modelfile(
+            model_template, backend, models["model"], models.get("ctx_size", 64000),
+            port=port, instance_dir=instance_dir)
 
     # Write config + start script, then launch.
     cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template)
