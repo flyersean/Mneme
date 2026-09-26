@@ -580,8 +580,10 @@ ALLOW_MODEL_REMOVE = os.environ.get("MNEME_ALLOW_MODEL_REMOVE", "0") == "1"
 # is dangerous: with nothing to contradict it the model may re-hallucinate the
 # same fact. Mirror of the existing [G:F — FAILED ...] treatment.
 INJECT_RETRACTED = os.environ.get("MNEME_INJECT_RETRACTED", "1") == "1"
-# Label chunks by support tier (single / repeated-by-model / corroborated) and
-# flag self-confirmation loops in the injected header.
+# Flag self-confirmation loops in the injected header. (Recurrence/support-tier
+# labelling was removed — the assert_count/independent_sources counters were
+# never wired to the archive path, so the "single/repeated/corroborated" tiers
+# could not fire; only self-confirmation, which IS populated, remains.)
 RECURRENCE_LABELING = os.environ.get("MNEME_RECURRENCE_LABELING", "1") == "1"
 
 _db_path   = os.environ.get("MNEME_DB_PATH")
@@ -3731,7 +3733,6 @@ def build_context(query: str) -> Tuple[str, str]:
         if INJECT_RETRACTED:
             _curationtag += curation.bad_chunk_label(chunk)
         if RECURRENCE_LABELING:
-            _curationtag += curation.confidence_label(chunk)
             _curationtag += curation.self_confirm_label(chunk)
         _retr_note = ""
         if chunk.get("retracted_reason"):

@@ -1,4 +1,4 @@
-"""Memory curation — retraction, recurrence, provenance, and the decision log.
+"""Memory curation — retraction, provenance, and the decision log.
 
 The problem this solves: a hallucinated fact, once saved and re-injected, becomes
 self-reinforcing. Mneme's existing machinery (grade F labels, trust tiers,
@@ -6,22 +6,16 @@ self-reinforcing. Mneme's existing machinery (grade F labels, trust tiers,
 say "this specific chunk is false" — the only destructive lever was a full
 /reset.
 
-Four mechanisms live here, all built on one principle: **judge provenance, not
+Three mechanisms live here, all built on one principle: **judge provenance, not
 truth.** Nothing in this module decides whether a claim is factually correct.
-It records who asserted it, how many independent times, what it was derived
-from, and whether a human disputed it.
+It records who asserted it, what it was derived from, and whether a human
+disputed it.
 
 1. RETRACTION — a chunk can be retracted (by the model, gated by a config flag)
    or flagged by the user. Retracted chunks are excluded from retrieval, or kept
    as labelled negative examples (see INJECT_RETRACTED). Reversible.
 
-2. RECURRENCE — how many times a claim has been asserted, across independent
-   turns and by whom. A single-assertion model claim is the dangerous case
-   (that is the hallucinated-validation shape: the model restating its own
-   earlier output). Counts are per (topic, normalized-claim) so restatements
-   accumulate rather than being treated as fresh evidence.
-
-3. PROVENANCE CHAINS — each chunk records the chunk ids it was derived from.
+2. PROVENANCE CHAINS — each chunk records the chunk ids it was derived from.
    This makes a SELF-CONFIRMATION LOOP mechanically detectable: a "validation"
    that cites a chunk the model itself wrote is not corroboration, it is an
    echo. That flag is the highest-value signal for the reported symptom.
@@ -36,7 +30,7 @@ from, and whether a human disputed it.
    depend on the model citing anything, which matters because models paraphrase
    without citing constantly.
 
-4. DECISION LOG — every flag / removal / clear is appended to an audit trail with
+3. DECISION LOG — every flag / removal / clear is appended to an audit trail with
    who did it and why. Acting and flagging are separate capabilities: the model may
    MARK a chunk as suspected-wrong (flag_bad_memory) and nothing more; only the user
    can remove one. A model that could remove memory could silently hide the facts
@@ -67,26 +61,6 @@ RETRACT_AUTO = "auto"          # reserved: automated policy retraction
 # (absence is dangerous: with nothing to contradict it, the model may simply
 # re-hallucinate the same fact).
 _RETRACTED_STATES = (RETRACT_USER, RETRACT_MODEL, RETRACT_AUTO)
-
-# ── Confidence / recurrence tiers ────────────────────────────────────────
-# Derived, not stored: computed from recurrence counts + trust. Kept as a
-# function so it stays consistent as counts change.
-CONF_SINGLE = "single"       # asserted once, by a model -> treat as a claim
-CONF_REPEATED = "repeated"   # asserted repeatedly, but only by the model
-CONF_CORROBORATED = "corroborated"  # asserted from an independent non-model source
-
-
-def _norm_claim(text: str) -> str:
-    """Normalize a claim for recurrence counting.
-
-    Aggressive on purpose: restatements differ in whitespace, punctuation, and
-    casing, and we WANT those to collapse onto one counter so that repetition
-    accumulates instead of looking like fresh independent evidence.
-    """
-    t = (text or "").lower()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^\w\s.]", "", t)
-    return t.strip()[:400]
 
 
 class CurationError(Exception):
@@ -557,51 +531,6 @@ def undo_last(db, chunk_id: str, actor: str = "user") -> dict:
     return {"chunk_id": chunk_id, "retracted": prev_state or "", "undone": action}
 
 
-# ── Recurrence ───────────────────────────────────────────────────────────
-
-def bump_recurrence(db, chunk_id: str, claim_text: str, source: str) -> dict:
-    """Record another assertion of `claim_text`.
-
-    Increments the chunk's assertion count, and counts INDEPENDENT sources: a
-    model restating its own earlier claim is not corroboration, so only
-    non-model sources (user input, a fetched page, a tool result) move that
-    counter.
-    """
-    chunk = _get_chunk(db, chunk_id)
-    if not chunk:
-        raise CurationError(f"unknown chunk: {chunk_id}")
-    s = (source or "").lower()
-    is_model = not (s == "user" or s.startswith("page:") or s.startswith("tool:"))
-    if is_model:
-        db.execute(
-            "UPDATE chunks SET assert_count = COALESCE(assert_count,1) + 1 WHERE chunk_id=?",
-            (chunk_id,),
-        )
-    else:
-        db.execute(
-            "UPDATE chunks SET assert_count = COALESCE(assert_count,1) + 1, "
-            "independent_sources = COALESCE(independent_sources,0) + 1 WHERE chunk_id=?",
-            (chunk_id,),
-        )
-    db.commit()
-    return confidence_tier(_get_chunk(db, chunk_id))
-
-
-def confidence_tier(chunk: dict) -> str:
-    """Derive the confidence tier from recurrence + trust.
-
-    Deliberately NOT a truth judgement — it is a statement about support:
-      corroborated — someone other than the model has asserted this
-      repeated     — the model has said it more than once (could be an echo)
-      single       — asserted once; the dangerous case
-    """
-    if (chunk.get("independent_sources") or 0) > 0:
-        return CONF_CORROBORATED
-    if (chunk.get("assert_count") or 1) > 1:
-        return CONF_REPEATED
-    return CONF_SINGLE
-
-
 # ── Provenance chains ────────────────────────────────────────────────────
 
 def record_provenance(db, chunk_id: str, derived_from: list) -> dict:
@@ -807,16 +736,6 @@ def bad_chunk_label(chunk: dict) -> str:
     # this label, and repeating it twice in one header reads as noise.
     return (f"[FLAGGED as suspected-wrong by {by} — treat with suspicion, "
             f"verify before relying on it{note}]")
-
-
-def confidence_label(chunk: dict) -> str:
-    """Injection tag describing support (not truth)."""
-    tier = confidence_tier(chunk)
-    if tier == CONF_SINGLE:
-        return "[SINGLE-SOURCE CLAIM — asserted once; verify before repeating]"
-    if tier == CONF_REPEATED:
-        return "[REPEATED BY MODEL ONLY — may be self-echo, not corroboration]"
-    return ""  # corroborated needs no warning
 
 
 def self_confirm_label(chunk: dict) -> str:

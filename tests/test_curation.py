@@ -173,47 +173,6 @@ class TestProposalQueue(unittest.TestCase):
         self.assertEqual(cur.list_proposals(db), [])
 
 
-class TestRecurrence(unittest.TestCase):
-    def test_model_restatement_is_not_independent(self):
-        """The hallucinated-validation shape: the model repeating itself must not
-        look like corroboration."""
-        db = _mkdb()
-        _chunk(db, "mem_1", source="model")
-        cur.bump_recurrence(db, "mem_1", "the price is $8", "model")
-        cur.bump_recurrence(db, "mem_1", "the price is $8", "model")
-        c = cur._get_chunk(db, "mem_1")
-        self.assertEqual(c["assert_count"], 3)         # 1 initial + 2
-        self.assertEqual(c["independent_sources"], 0)  # still nobody else
-        self.assertEqual(cur.confidence_tier(c), cur.CONF_REPEATED)
-
-    def test_user_assertion_counts_as_independent(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="user")
-        cur.bump_recurrence(db, "mem_1", "the price is $13.49", "user")
-        c = cur._get_chunk(db, "mem_1")
-        self.assertEqual(c["independent_sources"], 1)
-        self.assertEqual(cur.confidence_tier(c), cur.CONF_CORROBORATED)
-
-    def test_page_source_counts_as_independent(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="page:example.com")
-        cur.bump_recurrence(db, "mem_1", "price $13.49", "page:example.com")
-        c = cur._get_chunk(db, "mem_1")
-        self.assertEqual(cur.confidence_tier(c), cur.CONF_CORROBORATED)
-
-    def test_tool_source_counts_as_independent(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="tool:terminal")
-        cur.bump_recurrence(db, "mem_1", "x", "tool:terminal")
-        self.assertEqual(cur.confidence_tier(cur._get_chunk(db, "mem_1")), cur.CONF_CORROBORATED)
-
-    def test_single_assertion_is_single_tier(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="model")
-        c = cur._get_chunk(db, "mem_1")
-        self.assertEqual(cur.confidence_tier(c), cur.CONF_SINGLE)
-
-
 class TestProvenance(unittest.TestCase):
     def test_provenance_recorded(self):
         db = _mkdb()
@@ -239,7 +198,10 @@ class TestProvenance(unittest.TestCase):
         _chunk(db, "mem_orig", source="model")
         _chunk(db, "mem_ok", source="model")
         cur.record_provenance(db, "mem_ok", ["mem_orig"])
-        cur.bump_recurrence(db, "mem_ok", "claim", "page:example.com")  # someone else agrees
+        # Independent support clears the flag: set the counter directly (recurrence
+        # bumping was removed; the column remains and is read here).
+        db.execute("UPDATE chunks SET independent_sources=1 WHERE chunk_id='mem_ok'")
+        db.commit()
         out = cur.detect_self_confirmation(db, "mem_ok", source="model")
         self.assertFalse(out["self_confirm"], "independent support must clear the flag")
 
@@ -404,25 +366,6 @@ class TestLabels(unittest.TestCase):
         db = _mkdb()
         _chunk(db, "mem_1")
         self.assertEqual(cur.retraction_label(cur._get_chunk(db, "mem_1")), "")
-
-    def test_single_source_warns(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="model")
-        self.assertIn("SINGLE-SOURCE", cur.confidence_label(cur._get_chunk(db, "mem_1")))
-
-    def test_repeated_by_model_only_warns(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="model")
-        cur.bump_recurrence(db, "mem_1", "x", "model")
-        label = cur.confidence_label(cur._get_chunk(db, "mem_1")).lower()
-        self.assertIn("self-echo", label)
-        self.assertIn("repeated", label)
-
-    def test_corroborated_has_no_warning(self):
-        db = _mkdb()
-        _chunk(db, "mem_1", source="page:x")
-        cur.bump_recurrence(db, "mem_1", "x", "page:x")
-        self.assertEqual(cur.confidence_label(cur._get_chunk(db, "mem_1")), "")
 
     def test_self_confirm_label(self):
         db = _mkdb()

@@ -937,12 +937,12 @@ They cover:
 
 87 tests in `tests/test_tool_loop.py`.
 
-The full suite is **385 tests** across 20 files. Beyond the tool loop:
+The full suite is **377 tests** across 20 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
 | `test_tool_loop.py` | 86 | tool loop, retrieval gate, provenance, budgets |
-| `test_curation.py` | 81 | removed flag, bad-chunk marker + injection label, filters, recurrence, self-confirmation, decision log |
+| `test_curation.py` | 73 | removed flag, bad-chunk marker + injection label, filters, self-confirmation, decision log |
 | `test_swarm_orchestrator.py` | 47 | swarm control flow, primitives, per-step options |
 | `test_chatcmd.py` | 27 | `<<SETTINGS>>` / `<<RETRIEVAL>>`, config rewrite safety |
 | `test_templates.py` | 38 | model-template merge/validation, Modelfile render/parse, user merge |
@@ -1128,7 +1128,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~361 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~353 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |

@@ -54,8 +54,6 @@ Fields:
   Provenance labels (only on chunks that warrant them):
     [RETRACTED by X — DISPUTED / DO NOT TRUST OR REPEAT]
     [FLAGGED as suspected-wrong by X — treat with suspicion]
-    [SINGLE-SOURCE CLAIM — asserted once; verify before repeating]
-    [REPEATED BY MODEL ONLY — may be self-echo, not corroboration]
     [SELF-CONFIRMED — support traces back to the model's own output]
 
   Timestamp — when saved. Newer chunks may be more current.
