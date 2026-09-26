@@ -118,13 +118,18 @@ class TestModelNameLength(unittest.TestCase):
                          "muse-glimmer-qwen3-8")
 
     def test_modelfile_name_keyed_on_port(self):
-        # Two proxies on the same model + template must derive DIFFERENT names,
-        # so each gets its own Modelfile instead of sharing one.
+        # Default (shared=True): same model + template on two ports -> SAME name,
+        # so Ollama keeps ONE resident copy of the weights.
         a = setup._modelfile_model_name("muse-glimmer", "model-x", port=8080)
         b = setup._modelfile_model_name("muse-glimmer", "model-x", port=8081)
-        self.assertNotEqual(a, b)
-        self.assertIn("p8080", a)
-        self.assertIn("p8081", b)
+        self.assertEqual(a, b)
+        self.assertNotIn("-p", a)
+        # Per-proxy (shared=False): two proxies derive DIFFERENT names.
+        pa = setup._modelfile_model_name("muse-glimmer", "model-x", port=8080, shared=False)
+        pb = setup._modelfile_model_name("muse-glimmer", "model-x", port=8081, shared=False)
+        self.assertNotEqual(pa, pb)
+        self.assertIn("p8080", pa)
+        self.assertIn("p8081", pb)
         # Without a port the name stays backward-compatible (no -p suffix).
         c = setup._modelfile_model_name("muse-glimmer", "model-x")
         self.assertNotIn("-p", c)

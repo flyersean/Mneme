@@ -1121,22 +1121,23 @@ def choose_model_template():
     return choice
 
 
-def _modelfile_model_name(model_template, chosen_model, port=None):
+def _modelfile_model_name(model_template, chosen_model, port=None, shared=True):
     """Deterministic, non-colliding name for a Modelfile-derived model, keyed on
-    BOTH the template and the chosen model, so one template can be applied to
-    several models/quants without overwriting any of them. When `port` is given
-    the name is further keyed on the instance, so two proxies running the SAME
-    model + template each get their OWN derived model (a per-proxy Modelfile)."""
+    the template + chosen model. By default (`shared=True`) two proxies on the
+    SAME model + template derive the SAME name, so Ollama keeps ONE resident
+    copy of the weights. With `shared=False` the name is further keyed on the
+    instance port, so each proxy gets its OWN derived model (a per-proxy
+    Modelfile) at the cost of N× VRAM."""
     tfrag = re.sub(r"[^a-zA-Z0-9]+", "-", model_template).strip("-").lower()
     mfrag = re.sub(r"[^a-zA-Z0-9]+", "-", chosen_model).strip("-").lower()
     name = f"{tfrag}-{mfrag}"
-    if port is not None:
+    if port is not None and not shared:
         name = f"{name}-p{port}"
     return _cap_model_name(name)
 
 
 def _install_template_modelfile(model_template, backend, current_model, current_ctx,
-                                port=None, instance_dir=None):
+                                port=None, instance_dir=None, shared=True):
     """If the selected template ships a custom Ollama Modelfile, build it against
     the CHOSEN model and create it. Returns (model, ctx_size) to use — the created
     model name and the Modelfile's num_ctx (falling back to the current values
@@ -1169,7 +1170,7 @@ def _install_template_modelfile(model_template, backend, current_model, current_
     mf["from"] = current_model
     if src and src != current_model:
         print(f"  ∎ modelfile edited to match chosen model (FROM {src} → {current_model})")
-    name = _modelfile_model_name(model_template, current_model, port=port)
+    name = _modelfile_model_name(model_template, current_model, port=port, shared=shared)
     mf_path = os.path.join(instance_dir or MEMORY_DIR, f"Modelfile.{name}")
     try:
         with open(mf_path, "w") as f:
@@ -1387,7 +1388,7 @@ def load_shared_config(memory_dir):
     return {}
 
 
-def save_shared_config(memory_dir, models, backend, port=None, inject=None, memory_only=None):
+def save_shared_config(memory_dir, models, backend, port=None, inject=None, memory_only=None, shared_weights=None):
     """Persist the shared settings (embedder/labeler + their backends) so a later
     'add instance' locks them to this DB's original choice, and 'reconfigure' can
     recover the original port + injection settings."""
@@ -1405,6 +1406,8 @@ def save_shared_config(memory_dir, models, backend, port=None, inject=None, memo
         data["inject"] = inject
     if memory_only is not None:
         data["memory_only"] = bool(memory_only)
+    if shared_weights is not None:
+        data["shared_weights"] = bool(shared_weights)
     with open(_scfg_path(memory_dir), "w") as f:
         json.dump(data, f, indent=2)
 
@@ -1672,7 +1675,8 @@ def _add_instance(memory_dir, shared, memory_only):
     if chat_backend == "ollama":
         chat_model, ctx_size = _install_template_modelfile(
             model_template, chat_backend, chat_model, ctx_size,
-            port=port, instance_dir=instance_dir)
+            port=port, instance_dir=instance_dir,
+            shared=bool(shared.get("shared_weights", True)))
 
     idx = choose("Inject Mneme's system instructions?", [
         "Yes (default — inject the memory instructions + toolset prompt)",
@@ -1861,18 +1865,28 @@ def main():
     instance_dir = _instance_dir(MEMORY_DIR, port)
     db_path = os.path.join(MEMORY_DIR, "mneme.db")
 
+    # VRAM: share model weights across proxies on the same model, or give each
+    # proxy its own derived model (per-proxy Modelfile)? Shared is the default
+    # (one resident copy per model); per-proxy lets each proxy edit its own
+    # Modelfile (context window / stop tokens) at the cost of N× VRAM.
+    shared_weights = True
+    if backend == "ollama":
+        shared_weights = (choose("Share model weights across proxies on the same model?", [
+            "Yes — share (default; one resident copy, saves VRAM)",
+            "No — per-proxy Modelfile (each proxy edits its own; more VRAM)",
+        ]) == 0)
+
     # A template that ships a custom Modelfile must create its model from it
-    # (Ollama only) — keyed on the PORT so each proxy gets its own derived
-    # model + Modelfile instead of sharing one with another proxy on the same
-    # base model.
+    # (Ollama only). With shared_weights the derived name ignores the port (one
+    # model per base+template); otherwise it's keyed on the port (per-proxy).
     if backend == "ollama":
         models["model"], models["ctx_size"] = _install_template_modelfile(
             model_template, backend, models["model"], models.get("ctx_size", 64000),
-            port=port, instance_dir=instance_dir)
+            port=port, instance_dir=instance_dir, shared=shared_weights)
 
     # Write config + start script, then launch.
     cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template)
-    save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only)
+    save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only, shared_weights=shared_weights)
     start_script = write_start_script(backend, models, port, instance_dir)
     print(f"\n  Config:      {cfg_path}")
     print(f"  Start/stop:  {start_script}")
