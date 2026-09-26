@@ -1928,6 +1928,20 @@ def main():
     instance_dir = _instance_dir(MEMORY_DIR, port)
     db_path = os.path.join(MEMORY_DIR, "mneme.db")
 
+    # Reconfigure with a CHANGED embedder: existing vectors were built with the
+    # old embedder, so similarity against them becomes meaningless. Warn loudly
+    # (same cross-embedder hazard the wizard documents at add-instance) instead
+    # of silently letting the user walk into it.
+    if reconf_port is not None:
+        _old_embed = (shared.get("embed_model") or "").strip()
+        _new_embed = (models.get("embed_model") or "").strip()
+        if _old_embed and _new_embed and _old_embed != _new_embed and os.path.exists(db_path):
+            _n = _count_chunks(MEMORY_DIR)
+            if _n:
+                print(f"  ⚠ WARNING: embedder changed from {_old_embed!r} to {_new_embed!r}. "
+                      f"The {_n} existing chunk vector(s) were built with the old embedder — "
+                      f"retrieval similarity will be meaningless. Consider a fresh install (wipe).")
+
     # VRAM: share model weights across proxies on the same model, or give each
     # proxy its own derived model (per-proxy Modelfile)? Shared is the default
     # (one resident copy per model); per-proxy lets each proxy edit its own
