@@ -1201,14 +1201,18 @@ def _port_free_lines():
         "# stop-and-restart (frees the port) rather than a bind conflict.",
         '_PID="$(ss -ltnp 2>/dev/null | grep -E ":${MNEME_PORT}[[:space:]]" | sed -n \'s/.*pid=\\([0-9]*\\).*/\\1/p\' | head -1)"',
         'if [ -n "${_PID}" ]; then',
-        '  echo "Stopping existing proxy on port ${MNEME_PORT} (pid ${_PID})..."',
-        '  kill "${_PID}" 2>/dev/null',
-        '  for _i in $(seq 1 50); do',
-        '    kill -0 "${_PID}" 2>/dev/null || break',
-        '    sleep 0.1',
-        '  done',
-        '  kill -9 "${_PID}" 2>/dev/null',
-        '  sleep 1',
+        '  if ! grep -q "mneme_proxy.py" "/proc/${_PID}/cmdline" 2>/dev/null; then',
+        '    echo "⚠ port ${MNEME_PORT} is held by a non-Mneme process (pid ${_PID}) — NOT stopping it."',
+        '  else',
+        '    echo "Stopping existing proxy on port ${MNEME_PORT} (pid ${_PID})..."',
+        '    kill "${_PID}" 2>/dev/null',
+        '    for _i in $(seq 1 50); do',
+        '      kill -0 "${_PID}" 2>/dev/null || break',
+        '      sleep 0.1',
+        '    done',
+        '    kill -9 "${_PID}" 2>/dev/null',
+        '    sleep 1',
+        '  fi',
         'fi',
         '',
     ]
@@ -1285,11 +1289,33 @@ def _pid_on_port(port):
     return None
 
 
+def _is_mneme_proxy_pid(pid):
+    """True if `pid` is a Mneme proxy process. Guards stop_proxy_on_port and the
+    generated start script against killing an unrelated service that happens to
+    hold the port (a Jupyter server, another app, etc.)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"mneme_proxy.py" in f.read()
+    except Exception:
+        try:
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                                 capture_output=True, text=True, timeout=5).stdout
+            return "mneme_proxy.py" in out
+        except Exception:
+            return False
+
+
 def stop_proxy_on_port(port):
     """Stop a running Mneme proxy on `port` (best-effort). Returns True if one was
-    found and killed. SIGTERM first, SIGKILL if it doesn't exit within 5s."""
+    found and killed. SIGTERM first, SIGKILL if it doesn't exit within 5s.
+
+    Only kills processes that are actually Mneme proxies — a port held by some
+    other service is left alone (with a warning) rather than killed blindly."""
     pid = _pid_on_port(port)
     if not pid:
+        return False
+    if not _is_mneme_proxy_pid(pid):
+        print(f"  ⚠ port {port} is held by a non-Mneme process (pid {pid}) — NOT stopping it.")
         return False
     try:
         os.kill(pid, 15)  # SIGTERM
@@ -1383,8 +1409,10 @@ def load_shared_config(memory_dir):
         try:
             with open(p) as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠ setup_config.json is unreadable ({e}) — treating as absent. "
+                  f"The embedder/labeler will fall back to defaults, which may not "
+                  f"match the vectors already in this DB.")
     return {}
 
 
@@ -1661,6 +1689,15 @@ def _add_instance(memory_dir, shared, memory_only):
     instance_dir = _instance_dir(memory_dir, port)
     db_path = os.path.join(memory_dir, "mneme.db")
 
+    # Guard against clobbering a stopped instance: free_port only avoids
+    # *listening* ports, so a manually-stopped instance's port is offered again,
+    # and typing Enter would overwrite its mneme.yaml / Modelfile / start script.
+    if os.path.isfile(os.path.join(instance_dir, "mneme.yaml")):
+        ans = ask(f"  ⚠ an instance already exists on port {port} — overwrite its config and start script? [y/N]", "N").strip().lower()
+        if ans not in ("y", "yes"):
+            print("  Cancelled — keeping the existing instance.")
+            return 0
+
     if chat_backend == "openrouter":
         ask_and_validate_key()
     chat_model, ctx_size = pick_chat_model(chat_backend)
@@ -1798,10 +1835,24 @@ def main():
             if ans not in ("y", "yes"):
                 print("  Cancelled — keeping the existing install.")
                 return 0
+            # Stop EVERY running instance, not just the last-saved port. A
+            # multi-instance setup has several proxies; stopping only one leaves
+            # the others holding the DB open while we delete it — they'd keep
+            # writing to the deleted file (resurrecting a partial wipe). Enumerate
+            # instances/<port>/ plus the saved port, then stop each Mneme proxy.
+            _ports = set()
+            _inst = os.path.join(MEMORY_DIR, "instances")
+            if os.path.isdir(_inst):
+                for _n in os.listdir(_inst):
+                    if _n.isdigit():
+                        _ports.add(int(_n))
             _old_port = shared.get("port")
-            if _old_port and stop_proxy_on_port(_old_port):
-                print(f"  Stopped old instance on port {_old_port}.")
-                time.sleep(1)
+            if _old_port:
+                _ports.add(int(_old_port))
+            for _p in sorted(_ports):
+                if stop_proxy_on_port(_p):
+                    print(f"  Stopped instance on port {_p}.")
+                    time.sleep(0.5)
             wiped = wipe_db(MEMORY_DIR)
             print(f"  Wiped {len(wiped)} file(s). Starting a fresh install...")
         else:

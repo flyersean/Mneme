@@ -213,6 +213,17 @@ class TestStartScript(unittest.TestCase):
             self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", body)
             self.assertNotIn("export MNEME_INJECT_SYSTEM=", body)
 
+    def test_start_script_guards_against_killing_non_mneme(self):
+        """The port-freeing logic must verify the PID is a Mneme proxy before
+        killing it — otherwise re-running the start script would SIGKILL whatever
+        unrelated service happens to hold the port."""
+        d = tempfile.mkdtemp()
+        p = setup.write_start_script(
+            "ollama", {"model": "m", "embed_model": "e", "label_model": "l"}, 8080, d)
+        body = self._body(p)
+        self.assertIn("mneme_proxy.py", body)
+        self.assertIn("non-Mneme process", body)
+
 
 if __name__ == "__main__":
     unittest.main()
