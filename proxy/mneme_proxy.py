@@ -26,6 +26,7 @@ from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 import requests
+import subprocess
 
 from mneme.util import _extract_text, _log_error, _split_content, _image_bytes_from_block, _image_token_estimate, _to_ollama_messages, _sniff_mime, _mime_to_ext
 from mneme.logfile import setup_logging
@@ -6699,6 +6700,184 @@ if FLASK_OK:
     @app.route("/admin/reload", methods=["POST"])
     def admin_reload():
         return _cors_response({"ok": _force_config_reload()})
+
+    # ── Overview: one hub linking every proxy instance + the Ollama panel ──
+    _OVERVIEW_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "overview.html")
+    _OLLAMA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "ollama.html")
+
+    def _pid_on_port(port):
+        try:
+            out = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                m = re.search(rf":{port}\s.*pid=(\d+)", line)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+        return None
+
+    def _instances_root():
+        # Instances live at <shared DB dir>/instances/<port>/. The shared dir is
+        # DB_DIR (the directory holding the shared mneme.db).
+        root = os.path.join(DB_DIR, "instances")
+        if os.path.isdir(root):
+            return root
+        alt = os.path.join(os.path.dirname(CHUNK_DIR), "instances") if CHUNK_DIR else None
+        return alt if (alt and os.path.isdir(alt)) else root
+
+    def _instance_meta(port):
+        inst_dir = os.path.join(_instances_root(), str(port))
+        cfg = os.path.join(inst_dir, "mneme.yaml")
+        model, backend = None, "ollama"
+        if os.path.isfile(cfg):
+            try:
+                import yaml as _yaml
+                with open(cfg, "r", encoding="utf-8") as f:
+                    data = _yaml.safe_load(f.read()) or {}
+                model = data.get("model") or ((data.get("providers") or {}).get("openrouter") or {}).get("model")
+                backend = (data.get("backend") or {}).get("type", "ollama")
+            except Exception:
+                pass
+        return model, backend
+
+    def _proxy_up(port):
+        try:
+            r = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    @app.route("/overview", methods=["GET"])
+    def overview_ui():
+        return _serve_html(_OVERVIEW_HTML_PATH, "OVERVIEW-UI")
+
+    @app.route("/overview/instances", methods=["GET"])
+    def overview_instances():
+        out = []
+        root = _instances_root()
+        seen = set()
+        try:
+            names = [n for n in os.listdir(root) if n.isdigit()] if os.path.isdir(root) else []
+        except Exception:
+            names = []
+        for n in names:
+            port = int(n)
+            if port in seen:
+                continue
+            seen.add(port)
+            model, backend = _instance_meta(port)
+            out.append({"port": port, "model": model or "(unknown)",
+                        "backend": backend or "ollama", "running": _proxy_up(port),
+                        "self": port == PORT})
+        if PORT not in seen:
+            out.append({"port": PORT, "model": MODEL,
+                        "backend": os.environ.get("MNEME_BACKEND", "ollama"),
+                        "running": True, "self": True})
+        out.sort(key=lambda d: d["port"])
+        return _cors_response({"instances": out, "self_port": PORT})
+
+    @app.route("/overview/stop", methods=["POST"])
+    def overview_stop():
+        port = int((request.get_json(force=True) or {}).get("port", 0))
+        if not port:
+            return _cors_response({"error": "missing port"}, status=400)
+        pid = _pid_on_port(port)
+        if not pid:
+            return _cors_response({"ok": False, "message": f"nothing listening on port {port}"})
+        try:
+            os.kill(pid, 15)
+            for _ in range(10):
+                time.sleep(0.4)
+                if _pid_on_port(port) is None:
+                    break
+            else:
+                os.kill(pid, 9)
+            return _cors_response({"ok": True, "port": port})
+        except Exception as e:
+            return _cors_response({"ok": False, "error": str(e)}, status=500)
+
+    @app.route("/overview/start", methods=["POST"])
+    def overview_start():
+        port = int((request.get_json(force=True) or {}).get("port", 0))
+        if not port:
+            return _cors_response({"error": "missing port"}, status=400)
+        inst_dir = os.path.join(_instances_root(), str(port))
+        script = None
+        for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
+            p = os.path.join(inst_dir, cand)
+            if os.path.isfile(p):
+                script = p
+                break
+        if not script:
+            return _cors_response({"ok": False, "error": f"no start script for port {port}"}, status=404)
+        try:
+            subprocess.Popen(["bash", script], cwd=REPO_ROOT, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return _cors_response({"ok": True, "port": port})
+        except Exception as e:
+            return _cors_response({"ok": False, "error": str(e)}, status=500)
+
+    # ── Ollama control panel ──
+    @app.route("/ollama", methods=["GET"])
+    def ollama_ui():
+        return _serve_html(_OLLAMA_HTML_PATH, "OLLAMA-UI")
+
+    def _ollama(method, path, json_body=None, timeout=15):
+        try:
+            r = requests.request(method, f"{OLLAMA_URL}{path}", json=json_body, timeout=timeout)
+            try:
+                body = r.json()
+            except Exception:
+                body = {"raw": r.text[:500]}
+            return body, r.status_code
+        except Exception as e:
+            return {"error": str(e)}, 502
+
+    @app.route("/ollama/models", methods=["GET"])
+    def ollama_models():
+        body, code = _ollama("GET", "/api/tags", timeout=30)
+        return _cors_response(body, status=code)
+
+    @app.route("/ollama/ps", methods=["GET"])
+    def ollama_ps():
+        body, code = _ollama("GET", "/api/ps", timeout=15)
+        return _cors_response(body, status=code)
+
+    @app.route("/ollama/pull", methods=["POST"])
+    def ollama_pull():
+        name = ((request.get_json(force=True) or {}).get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "missing model name"}, status=400)
+        try:
+            subprocess.Popen(["ollama", "pull", name], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return _cors_response({"ok": True, "message": f"pulling {name} in the background"})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/ollama/rm", methods=["POST"])
+    def ollama_rm():
+        name = ((request.get_json(force=True) or {}).get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "missing model name"}, status=400)
+        body, code = _ollama("DELETE", "/api/delete", {"name": name}, timeout=120)
+        return _cors_response(body, status=code)
+
+    @app.route("/ollama/load", methods=["POST"])
+    def ollama_load():
+        name = ((request.get_json(force=True) or {}).get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "missing model name"}, status=400)
+        body, code = _ollama("POST", "/api/generate", {"model": name, "keep_alive": -1, "prompt": ""}, timeout=180)
+        return _cors_response(body, status=code)
+
+    @app.route("/ollama/unload", methods=["POST"])
+    def ollama_unload():
+        name = ((request.get_json(force=True) or {}).get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "missing model name"}, status=400)
+        body, code = _ollama("POST", "/api/generate", {"model": name, "keep_alive": 0, "prompt": ""}, timeout=60)
+        return _cors_response(body, status=code)
 
     # ── Memory management UI ──
     # Mirrors the /instructions pattern: a static page served by the proxy, backed

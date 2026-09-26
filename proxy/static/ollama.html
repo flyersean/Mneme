@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Ollama</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --green:#16a34a; --red:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; font-weight:650; }
+  .toolbar { display:flex; gap:10px; align-items:center; }
+  a.back { color:var(--accent); text-decoration:none; font-size:14px; }
+  a.back:hover { text-decoration:underline; }
+  main { padding:24px 28px; max-width:1100px; margin:0 auto; }
+  .pull { display:flex; gap:8px; margin-bottom:20px; }
+  input { font:inherit; font-size:14px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; flex:1; }
+  button { font:inherit; font-size:13px; padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--red); }
+  button.danger:hover { border-color:var(--red); }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:22px 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .name { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; word-break:break-all; }
+  .size { color:var(--muted); font-size:13px; white-space:nowrap; }
+  .actions button { margin-left:6px; }
+  #msg { font-size:13px; color:var(--muted); min-height:18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mneme — Ollama</h1>
+  <div class="toolbar">
+    <a class="back" href="/overview">← Overview</a>
+    <button onclick="load()">Refresh</button>
+  </div>
+</header>
+<main>
+  <div class="pull">
+    <input id="pullName" placeholder="Model to pull (e.g. qwen2.5:1.5b or hf.co/...)">
+    <button class="primary" onclick="pull()">Pull</button>
+  </div>
+  <p id="msg"></p>
+
+  <h3>Loaded (running)</h3>
+  <table>
+    <thead><tr><th>Model</th><th>Size</th><th>VRAM</th><th></th></tr></thead>
+    <tbody id="psRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+  </table>
+
+  <h3>All models</h3>
+  <table>
+    <thead><tr><th>Model</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+    <tbody id="modelRows"><tr><td colspan="4">Loading…</td></tr></tbody>
+  </table>
+</main>
+<script>
+function fmtBytes(n) {
+  if (n == null) return '—';
+  const u = ['B','KB','MB','GB','TB']; let i = 0;
+  while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+  return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function load() {
+  setMsg('');
+  await loadPs();
+  await loadModels();
+}
+async function loadPs() {
+  const t = document.getElementById('psRows');
+  try {
+    const j = await (await fetch('/ollama/ps')).json();
+    const models = j.models || [];
+    if (!models.length) { t.innerHTML = '<tr><td colspan="4">Nothing loaded.</td></tr>'; return; }
+    t.innerHTML = '';
+    for (const m of models) {
+      const name = m.name || m.model || '?';
+      t.insertAdjacentHTML('beforeend',
+        `<tr><td class="name">${esc(name)}</td><td class="size">${fmtBytes(m.size)}</td><td class="size">${fmtBytes(m.size_vram)}</td><td class="actions"><button class="danger" onclick="unload('${esc(name)}')">Unload</button></td></tr>`);
+    }
+  } catch (e) { t.innerHTML = `<tr><td colspan="4">Error: ${esc(e.message)}</td></tr>`; }
+}
+async function loadModels() {
+  const t = document.getElementById('modelRows');
+  try {
+    const j = await (await fetch('/ollama/models')).json();
+    const models = j.models || [];
+    if (!models.length) { t.innerHTML = '<tr><td colspan="4">No models.</td></tr>'; return; }
+    t.innerHTML = '';
+    for (const m of models) {
+      const name = m.name || m.model || '?';
+      t.insertAdjacentHTML('beforeend',
+        `<tr><td class="name">${esc(name)}</td><td class="size">${fmtBytes(m.size)}</td><td class="size">${esc(m.modified_at || '')}</td><td class="actions"><button onclick="loadOne('${esc(name)}')">Load</button><button class="danger" onclick="rm('${esc(name)}')">Delete</button></td></tr>`);
+    }
+  } catch (e) { t.innerHTML = `<tr><td colspan="4">Error: ${esc(e.message)}</td></tr>`; }
+}
+
+function setMsg(s) { document.getElementById('msg').textContent = s; }
+
+async function pull() {
+  const name = document.getElementById('pullName').value.trim();
+  if (!name) { setMsg('Enter a model name first.'); return; }
+  setMsg('Pulling ' + name + ' in the background…');
+  await fetch('/ollama/pull', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  setTimeout(load, 1500);
+}
+async function rm(name) {
+  if (!confirm('Delete ' + name + '?')) return;
+  setMsg('Deleting ' + name + '…');
+  await fetch('/ollama/rm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  setTimeout(load, 800);
+}
+async function loadOne(name) {
+  setMsg('Loading ' + name + '…');
+  await fetch('/ollama/load', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  setTimeout(load, 800);
+}
+async function unload(name) {
+  setMsg('Unloading ' + name + '…');
+  await fetch('/ollama/unload', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  setTimeout(load, 800);
+}
+
+load();
+</script>
+</body>
+</html>
