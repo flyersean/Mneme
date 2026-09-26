@@ -275,6 +275,39 @@ RESTORE_MEMORY_TOOL = {
     },
 }
 
+REMOVE_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        # Only exposed when curation.allow_model_remove is on. Takes a chunk out
+        # of circulation (injection + search skip it) — reversible by the user.
+        "name": "remove_memory",
+        "description": (
+            "Remove a stored memory chunk so it is no longer used.\n"
+            "\n"
+            "Sets the chunk's 'removed' flag: memory injection and search_memory "
+            "skip it from now on. The chunk is NOT deleted — the row and content "
+            "stay, and the user can restore it from the memory management page if "
+            "removal was a mistake.\n"
+            "\n"
+            "Use this only when you are CONFIDENT the memory is wrong or harmful — "
+            "for example it contradicts a page you just fetched, or the user told "
+            "you it is incorrect. If you merely suspect it, use flag_bad_memory "
+            "instead so the user can decide.\n"
+            "\n"
+            "Pass the chunk id (the mem_XXXX in the injected header or a "
+            "search_memory result) and a one-line reason citing your evidence."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "Chunk id to remove, e.g. mem_1789785523339269"},
+                "reason": {"type": "string", "description": "Why it should be removed — cite the evidence (URL, user correction, contradicting chunk id)"},
+            },
+            "required": ["chunk_id", "reason"],
+        },
+    },
+}
+
 NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
@@ -316,29 +349,51 @@ READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, RE
 # rather than silently doing nothing.
 CURATION_TOOLS = (RETRACT_MEMORY_TOOL, RESTORE_MEMORY_TOOL)
 
-_curation_hooks = {"retract": None, "restore": None, "propose_allowed": False, "retract_allowed": False}
+_curation_hooks = {"retract": None, "restore": None, "remove": None,
+                   "propose_allowed": False, "retract_allowed": False, "remove_allowed": False}
 
 
-def set_curation_hooks(retract_fn, restore_fn, *, retract_allowed: bool, propose_allowed: bool) -> None:
+def set_curation_hooks(retract_fn, restore_fn, *, retract_allowed: bool, propose_allowed: bool,
+                       remove_fn=None, remove_allowed: bool = False) -> None:
     """Install the proxy's curation callbacks + authority level."""
     _curation_hooks["retract"] = retract_fn
     _curation_hooks["restore"] = restore_fn
+    _curation_hooks["remove"] = remove_fn
     _curation_hooks["retract_allowed"] = bool(retract_allowed)
     _curation_hooks["propose_allowed"] = bool(propose_allowed)
+    _curation_hooks["remove_allowed"] = bool(remove_allowed)
 
 
 def enabled_curation_tools():
     """The curation tools currently exposed to the model.
 
-    Exposed when the model has ANY authority (direct retract or propose). The
-    tool result tells the model which one applied, so it knows whether its call
-    took effect or was queued.
+    Exposed when the model has ANY authority (direct retract, propose, or
+    remove). flag_bad_memory + clear_bad_memory_flag come with propose/retract;
+    remove_memory is added only when removal authority is granted.
     """
-    if not (_curation_hooks["retract_allowed"] or _curation_hooks["propose_allowed"]):
+    if not (_curation_hooks["retract_allowed"] or _curation_hooks["propose_allowed"]
+            or _curation_hooks["remove_allowed"]):
         return []
     if not os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1":
         return []
-    return list(CURATION_TOOLS)
+    tools = []
+    if _curation_hooks["retract_allowed"] or _curation_hooks["propose_allowed"]:
+        flag = RETRACT_MEMORY_TOOL
+        if _curation_hooks["remove_allowed"]:
+            # flag_bad_memory's stock wording says "you cannot remove a memory",
+            # which is wrong once remove_memory is available. Rewrite it so the
+            # description never contradicts the model's actual authority.
+            flag = json.loads(json.dumps(RETRACT_MEMORY_TOOL))
+            flag["function"]["description"] = flag["function"]["description"].replace(
+                "You cannot remove a memory, and there is no step for you to take afterwards.",
+                "This tool only marks. If you are CONFIDENT the memory is wrong and "
+                "want it out of use, call remove_memory instead.",
+            )
+        tools.append(flag)
+        tools.append(RESTORE_MEMORY_TOOL)
+    if _curation_hooks["remove_allowed"]:
+        tools.append(REMOVE_MEMORY_TOOL)
+    return tools
 
 
 def _exec_retract_memory(args):
@@ -368,6 +423,20 @@ def _exec_restore_memory(args):
         return fn(cid, reason)
     except Exception as e:
         return f"[clear_bad_memory_flag error: {type(e).__name__}: {e}]"
+
+
+def _exec_remove_memory(args):
+    cid = ((args or {}).get("chunk_id") or "").strip()
+    reason = ((args or {}).get("reason") or "").strip()
+    if not cid:
+        return "[remove_memory: chunk_id required]"
+    fn = _curation_hooks.get("remove")
+    if fn is None:
+        return "[remove_memory: memory removal is not available on this proxy]"
+    try:
+        return fn(cid, reason)
+    except Exception as e:
+        return f"[remove_memory error: {type(e).__name__}: {e}]"
 
 
 # ─── Per-tool enable flags ─────────────────────────────────────────────
@@ -743,6 +812,8 @@ def execute_readonly_tool(name, args):
         return _exec_retract_memory(args)
     if name == "clear_bad_memory_flag":
         return _exec_restore_memory(args)
+    if name == "remove_memory":
+        return _exec_remove_memory(args)
     return f"[unknown registry tool: {name}]"
 
 

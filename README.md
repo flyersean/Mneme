@@ -471,6 +471,8 @@ A model can be confidently wrong. If it could remove a memory, it could silently
 
 This is enforced in the code, not just by convention: the tool is named `flag_bad_memory` and its description states plainly that it marks a chunk and changes nothing.
 
+That default can be flipped with `curation.allow_model_remove: true` (or `MNEME_ALLOW_MODEL_REMOVE=1`), which additionally gives the model a `remove_memory` tool that sets a chunk's `removed` flag (injection and `search_memory` skip it). Removal is still reversible — the row is kept and you can restore it from the memory page — but it is opt-in, because a confidently-wrong model can now hide the facts that contradict it.
+
 ### Flagged chunks still announce themselves
 
 A flagged chunk keeps being injected — that is what "the flag changes nothing" means — but it is injected **with a label**, so the model knows it is under suspicion:
@@ -933,9 +935,9 @@ They cover:
 - In-chat commands (`<<SETTINGS>>`, `<<RETRIEVAL>>`), including that the config
   rewrite preserves comments and neighbouring keys.
 
-86 tests in `tests/test_tool_loop.py`.
+87 tests in `tests/test_tool_loop.py`.
 
-The full suite is **383 tests** across 20 files. Beyond the tool loop:
+The full suite is **384 tests** across 20 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -1126,7 +1128,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~359 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~360 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |

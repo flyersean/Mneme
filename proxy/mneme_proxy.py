@@ -139,11 +139,13 @@ _CONFIG_ENV_MAP = {
     # Memory curation (retraction / recurrence / provenance).
     #   curation.allow_model_retract      — model may retract directly (destructive)
     #   curation.allow_model_propose      — model may queue a retraction for human review
+    #   curation.allow_model_remove       — model may remove a chunk (stop using it)
     #   curation.inject_retracted         — inject retracted chunks as labelled warnings
     #                                       instead of dropping them (absence lets the
     #                                       model re-hallucinate the same fact)
     "curation.allow_model_retract": "MNEME_ALLOW_MODEL_RETRACT",
     "curation.allow_model_propose": "MNEME_ALLOW_MODEL_PROPOSE",
+    "curation.allow_model_remove": "MNEME_ALLOW_MODEL_REMOVE",
     "curation.inject_retracted": "MNEME_INJECT_RETRACTED",
     "curation.recurrence_labeling": "MNEME_RECURRENCE_LABELING",
     "storage.memory_enabled": "MNEME_MEMORY_ENABLED",
@@ -568,6 +570,12 @@ INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = sav
 #       otherwise delete the correct facts that contradict it.
 ALLOW_MODEL_PROPOSE = os.environ.get("MNEME_ALLOW_MODEL_PROPOSE", "1") == "1"
 ALLOW_MODEL_RETRACT = os.environ.get("MNEME_ALLOW_MODEL_RETRACT", "0") == "1"
+# Remove (vs flag): the model may set the `removed` management flag on a chunk
+# directly, taking it out of injection + search. OFF by default — flagging is
+# the safe default, removal is opt-in (a confidently-wrong model could otherwise
+# hide the facts that contradict it). Reversible: the row is kept and the user
+# can restore it from the management page.
+ALLOW_MODEL_REMOVE = os.environ.get("MNEME_ALLOW_MODEL_REMOVE", "0") == "1"
 # Inject retracted chunks as labelled warnings instead of dropping them. Absence
 # is dangerous: with nothing to contradict it the model may re-hallucinate the
 # same fact. Mirror of the existing [G:F — FAILED ...] treatment.
@@ -779,6 +787,7 @@ def _settings_snapshot() -> Dict:
         "curation": {
             "allow_model_propose": ALLOW_MODEL_PROPOSE,
             "allow_model_retract": ALLOW_MODEL_RETRACT,
+            "allow_model_remove": ALLOW_MODEL_REMOVE,
             "inject_retracted": INJECT_RETRACTED,
             "recurrence_labeling": RECURRENCE_LABELING,
         },
@@ -1538,10 +1547,34 @@ def _curation_restore(chunk_id: str, reason: str = "") -> str:
         return f"[clear_bad_memory_flag error: {type(e).__name__}: {e}]"
 
 
+def _curation_remove(chunk_id: str, reason: str = "") -> str:
+    """Called by the remove_memory tool. Sets the `removed` flag on a chunk,
+    taking it out of injection and model search. Reversible (user can restore)."""
+    try:
+        c = curation._get_chunk(db, chunk_id)
+        if not c:
+            return f"[remove_memory: no such chunk {chunk_id} — check the id]"
+        if not ALLOW_MODEL_REMOVE:
+            return "[remove_memory: not permitted on this proxy (model removal disabled)]"
+        curation.set_removed(db, chunk_id, True, actor="model", reason=reason)
+        print(f"  [CURATION] model removed {chunk_id}: {reason[:80]}", flush=True)
+        return (
+            f"[remove_memory: REMOVED {chunk_id} from memory. It will no longer be "
+            f"injected into context or returned by search_memory. The row is kept and "
+            f"the user can restore it from the memory management page if this was wrong. "
+            f"Reason recorded: {reason}]"
+        )
+    except Exception as e:
+        _log_error("curation:remove", e)
+        return f"[remove_memory error: {type(e).__name__}: {e}]"
+
+
 mntools.set_curation_hooks(
     _curation_retract, _curation_restore,
     retract_allowed=ALLOW_MODEL_RETRACT,
     propose_allowed=ALLOW_MODEL_PROPOSE,
+    remove_fn=_curation_remove,
+    remove_allowed=ALLOW_MODEL_REMOVE,
 )
 
 

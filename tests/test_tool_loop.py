@@ -1148,19 +1148,23 @@ def test_curation_tools_authority():
     The names are flag_bad_memory / clear_bad_memory_flag, NOT retract/restore —
     the old names promised an action the model cannot take, and it acted on the
     promise (telling users "once you confirm, I will proceed with retracting it").
+    remove_memory is a separate opt-in tool gated by remove_allowed.
     """
     mt = mp.mntools
-    saved = (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"])
+    saved = (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"],
+             mt._curation_hooks["remove_allowed"])
     try:
         # No authority -> no curation tools at all
         mt._curation_hooks["retract_allowed"] = False
         mt._curation_hooks["propose_allowed"] = False
+        mt._curation_hooks["remove_allowed"] = False
         assert mt.enabled_curation_tools() == [], mt.enabled_curation_tools()
         names = [t["function"]["name"] for t in mt.assemble_tools([])]
         assert "flag_bad_memory" not in names, names
         assert "retract_memory" not in names, "the misleading old name must be gone"
+        assert "remove_memory" not in names, names
 
-        # Propose only (the safe default)
+        # Propose only (the safe default) -> flag + clear, no remove
         mt._curation_hooks["propose_allowed"] = True
         got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
         assert got == ["flag_bad_memory", "clear_bad_memory_flag"], got
@@ -1170,8 +1174,24 @@ def test_curation_tools_authority():
         mt._curation_hooks["propose_allowed"] = False
         got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
         assert got == ["flag_bad_memory", "clear_bad_memory_flag"], got
+
+        # Remove authority (opt-in) -> flag + clear + remove_memory
+        mt._curation_hooks["propose_allowed"] = True
+        mt._curation_hooks["retract_allowed"] = False
+        mt._curation_hooks["remove_allowed"] = True
+        got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
+        assert got == ["flag_bad_memory", "clear_bad_memory_flag", "remove_memory"], got
+        # flag_bad_memory's wording must not still claim "you cannot remove"
+        flag_desc = mt.enabled_curation_tools()[0]["function"]["description"]
+        assert "You cannot remove a memory" not in flag_desc, flag_desc
+
+        # Remove authority alone (no propose/retract) still exposes remove_memory
+        mt._curation_hooks["propose_allowed"] = False
+        got = [t["function"]["name"] for t in mt.enabled_curation_tools()]
+        assert got == ["remove_memory"], got
     finally:
-        mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"] = saved
+        (mt._curation_hooks["retract_allowed"], mt._curation_hooks["propose_allowed"],
+         mt._curation_hooks["remove_allowed"]) = saved
 
 
 @test
@@ -1216,14 +1236,53 @@ def test_flag_tool_result_does_not_promise_authority():
 
 
 @test
+def test_remove_memory_gated_by_flag():
+    """remove_memory (model-side) is OFF unless ALLOW_MODEL_REMOVE is on.
+
+    Default: the model can flag but NOT remove. With the flag on, _curation_remove
+    sets the `removed` flag (actor=model) and reports it plainly.
+    """
+    db = mp.db
+    cid = "mem_remove_probe"
+    with mp._db_lock:
+        db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+        db.execute("INSERT OR REPLACE INTO chunks (chunk_id, topic_label, messages, source, "
+                   "grade, trust, created_at) VALUES (?,?,?,?,?,?,?)",
+                   (cid, "remove probe", "[]", "model", "B", "unverified", "2026-01-01T00:00:00"))
+        db.commit()
+    saved = mp.ALLOW_MODEL_REMOVE
+    try:
+        mp.ALLOW_MODEL_REMOVE = False
+        out = mp._curation_remove(cid, "probe")
+        assert "not permitted" in out, out
+
+        mp.ALLOW_MODEL_REMOVE = True
+        out = mp._curation_remove(cid, "probe reason")
+        assert "REMOVED" in out, out
+        with mp._db_lock:
+            row = db.execute("SELECT removed, removed_by FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
+        assert row[0] == "removed", row
+        assert row[1] == "model", row
+    finally:
+        mp.ALLOW_MODEL_REMOVE = saved
+        with mp._db_lock:
+            db.execute("DELETE FROM chunks WHERE chunk_id=?", (cid,))
+            db.commit()
+
+
+@test
 def test_curation_tool_dispatch():
     """The tool handlers return a readable result and never raise on bad input."""
     mt = mp.mntools
     assert "chunk_id required" in mt.execute_readonly_tool("flag_bad_memory", {})
     assert "chunk_id required" in mt.execute_readonly_tool("clear_bad_memory_flag", {})
+    assert "chunk_id required" in mt.execute_readonly_tool("remove_memory", {})
     # unknown chunk -> a clear message, not an exception
     out = mt.execute_readonly_tool("flag_bad_memory", {"chunk_id": "mem_does_not_exist",
                                                        "reason": "test"})
+    assert "no such chunk" in out, out
+    out = mt.execute_readonly_tool("remove_memory", {"chunk_id": "mem_does_not_exist",
+                                                     "reason": "test"})
     assert "no such chunk" in out, out
     # the old names must no longer dispatch at all
     assert "unknown registry tool" in mt.execute_readonly_tool("retract_memory", {})

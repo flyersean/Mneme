@@ -144,6 +144,13 @@ curation:
   # wrong model judgement therefore cannot hide correct information. The model has
   # no follow-up step; flagging is the whole of its authority.
   allow_model_propose: true
+  # May the MODEL remove a chunk outright — set its "removed" flag so injection
+  # and search_memory skip it? OFF by default: flagging (above) is the safe
+  # default, and removal is opt-in. When ON the model also gets a `remove_memory`
+  # tool. Removal stays reversible — the row is kept and you can restore it from
+  # /memory — but a confidently-wrong model can now hide the facts that
+  # contradict it.
+  allow_model_remove: false
   # Inject retracted chunks as a labelled warning [RETRACTED ... DO NOT TRUST]
   # instead of dropping them. Default ON because absence is dangerous: with
   # nothing to contradict it, the model can simply re-hallucinate the same fact.
