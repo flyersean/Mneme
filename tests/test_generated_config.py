@@ -174,7 +174,7 @@ class TestStartScript(unittest.TestCase):
             "ollama", {"model": "test-model", "embed_model": "test-embed",
                        "label_model": "test-label"}, 8080, d)
         body = self._body(p)
-        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", body)
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", body)
         self.assertNotIn("export MNEME_MODEL=", body)
 
     def test_openrouter_start_script_unsets_models(self):
@@ -185,7 +185,7 @@ class TestStartScript(unittest.TestCase):
         p = setup.write_start_script(
             "openrouter", {"model": "test-model", "embed_model": "test-embed",
                            "label_model": "test-label"}, 8080, d)
-        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", self._body(p))
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", self._body(p))
 
     def test_instance_start_script_unsets_models(self):
         d = tempfile.mkdtemp()
@@ -193,8 +193,25 @@ class TestStartScript(unittest.TestCase):
             os.path.join(d, "8081"), d, 8081, "ollama", "test-model",
             "test-embed", "ollama", "test-label", "ollama", "1", "0")
         body = self._body(p)
-        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", body)
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", body)
         self.assertNotIn("export MNEME_MODEL=", body)
+
+    def test_start_scripts_unset_inject_system(self):
+        """inject_system must come from the config, not a stale env var. The
+        fresh and instance scripts must clear MNEME_INJECT_SYSTEM (and never
+        export it), so a leftover MNEME_INJECT_SYSTEM=1 in the shell cannot
+        override the config's inject_system:false — the same class of bug as
+        the stale-model fix, applied to the injection switch."""
+        d = tempfile.mkdtemp()
+        fresh = setup.write_start_script(
+            "ollama", {"model": "m", "embed_model": "e", "label_model": "l"}, 8080, d)
+        inst = setup.write_instance_start_script(
+            os.path.join(d, "8081"), d, 8081, "ollama", "m",
+            "e", "ollama", "l", "ollama", "1", "0")
+        for p in (fresh, inst):
+            body = self._body(p)
+            self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", body)
+            self.assertNotIn("export MNEME_INJECT_SYSTEM=", body)
 
 
 if __name__ == "__main__":

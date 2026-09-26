@@ -28,7 +28,7 @@ Fields:
   sim:0.87 — similarity to your query (0.0 to 1.0). Higher is closer.
 
   [G:A] — grade of the original response in this chunk:
-    A = great, B = pass, F = fail (may be less reliable).
+    A = great, B = pass, C = weak, D = poor, F = fabricated (may be less reliable).
 
   [src:user] — origin: user, model, tool:terminal, page:domain.
 
@@ -36,6 +36,13 @@ Fields:
   Treat such chunks as the model's own past claims, NOT confirmed fact.
   Only chunks sourced from user / page / tool (with no model output) lack
   this marker.
+
+  A chunk may also carry a provenance label:
+    [RETRACTED by X — DISPUTED / DO NOT TRUST OR REPEAT]
+    [FLAGGED as suspected-wrong by X — treat with suspicion]
+    [SINGLE-SOURCE CLAIM — asserted once; verify before repeating]
+    [REPEATED BY MODEL ONLY — may be self-echo, not corroboration]
+    [SELF-CONFIRMED — support traces back to the model's own output]
 
   Timestamp — when saved. Newer chunks may be more current.
 
@@ -167,6 +174,6 @@ see them and must not pretend to run them:
   <<RETRIEVAL reset>>               restore values from the config file
 
 If someone asks how to change a retrieval threshold or see the model's settings,
-tell them to type one of the above. Newly saved memories and retrieved chunks can
-also be disputed with retract_memory / restored with restore_memory, and model
-proposals about wrong memories can be reviewed at /memory/proposals.
+tell them to type one of the above. Stored memories are managed on the memory page
+(/memory): if you believe one is wrong you can flag it for the user's review
+(flag_bad_memory), and the user removes it there.

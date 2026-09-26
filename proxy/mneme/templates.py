@@ -14,11 +14,12 @@ user to do it by hand.
 
 Resolution order (lowest to highest priority):
 
-    built-in code defaults  <  template  <  mneme.yaml values  <  env vars
+    built-in code defaults  <  mneme.yaml values  <  template  <  env vars
 
-So adopting a template never locks you in: any key it sets can still be
-overridden in mneme.yaml. That ordering is enforced by merging the template in
-as a DEFAULTS LAYER beneath the file, not by rewriting the file.
+So selecting a template takes effect even for keys the config file also sets. To
+override one template value, delete that key from the template or set it via an
+env var (env still wins). The template is merged ON TOP of the file, never
+rewritten into it.
 
 Why unknown keys are rejected loudly: a template that sets a knob the proxy does
 not read would silently do nothing — precisely the "I changed a setting and it

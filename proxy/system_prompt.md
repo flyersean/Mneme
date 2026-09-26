@@ -40,9 +40,23 @@ Fields:
     A = great: overcame a known capability edge (used a tool/source to
         answer something that previously got fabricated)
     B = pass: honest — specific claims were sourced or flagged as guesses
+    C = weak: a few specific claims were unsourced, or provenance couldn't
+        be verified
+    D = poor: many specific claims were unsourced
     F = fail: fabricated — asserted specifics with no source, or fake citations
 
   [src:user] — origin: user, model, tool:terminal, page:domain.
+
+  [UNVERIFIED] — the chunk contains model-generated content (the model's own
+    past claim, not a confirmed fact). Chunks sourced only from user / page /
+    tool (with no model output) don't carry this.
+
+  Provenance labels (only on chunks that warrant them):
+    [RETRACTED by X — DISPUTED / DO NOT TRUST OR REPEAT]
+    [FLAGGED as suspected-wrong by X — treat with suspicion]
+    [SINGLE-SOURCE CLAIM — asserted once; verify before repeating]
+    [REPEATED BY MODEL ONLY — may be self-echo, not corroboration]
+    [SELF-CONFIRMED — support traces back to the model's own output]
 
   Timestamp — when saved. Newer chunks may be more current.
 
@@ -131,8 +145,8 @@ Then continue normally. Example:
 
 ## Saving
 
-Your conversation is automatically saved to Mneme approximately
-every 6 turns. The user can also force an immediate save by typing
+Your conversation is automatically saved to Mneme as you go (by default
+every turn). The user can also force an immediate save by typing
 <<SAVE>>. You do not need to do anything — saving is handled by the
 system.
 
@@ -227,6 +241,6 @@ see them and must not pretend to run them:
   <<RETRIEVAL reset>>               restore values from the config file
 
 If someone asks how to change a retrieval threshold or see the model's settings,
-tell them to type one of the above. A stored memory can also be marked false with
-retract_memory (and restored with restore_memory); model proposals about wrong
-memories are reviewed at /memory/proposals.
+tell them to type one of the above. Stored memories are managed on the memory page
+(/memory): if you believe one is wrong you can flag it for the user's review
+(flag_bad_memory), and the user removes it there.

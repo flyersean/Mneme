@@ -1231,7 +1231,7 @@ def write_start_script(backend, models, port, instance_dir):
             f'  export $(grep -v "^#" "{KEY_FILE}" | xargs)',
             "fi",
             'export MNEME_BACKEND="openrouter"',
-            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
+            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM",
         ]
     else:
         lines += [
@@ -1239,7 +1239,7 @@ def write_start_script(backend, models, port, instance_dir):
             "# Models are read from this instance's mneme.yaml (top-level model:) —",
             "# clearing inherited values keeps the config authoritative and stops a",
             "# stale env var from locking an old model in.",
-            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
+            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM",
         ]
     lines += [
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
@@ -1327,7 +1327,7 @@ def start_proxy(backend, models, port, instance_dir):
     # inherited model env vars so a stale shell (or an earlier proxy's export)
     # can't lock this proxy onto an old model — the config's top-level model:/
     # embed_model:/label_model: keys supply them instead.
-    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL"):
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
         env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
@@ -1533,7 +1533,7 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         f'export MNEME_BACKEND="{chat_backend}"',
         "# Models are read from this instance's mneme.yaml (top-level model:) —",
         "# clearing inherited values keeps the config authoritative.",
-        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
+        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM",
     ]
     # Aux backends: only set when they differ from this instance's chat backend,
     # so the embedder/labeler keep running where the DB originally set them up.
@@ -1545,7 +1545,6 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
         f'export MNEME_PORT="{port}"',
         f'export MNEME_CONFIG="{os.path.join(instance_dir, "mneme.yaml")}"',
-        f'export MNEME_INJECT_SYSTEM="{inject}"',
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
     ]
@@ -1572,7 +1571,7 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
     # Same as start_proxy: the instance's mneme.yaml is authoritative for model
     # identity — clear inherited model env vars so a stale value can't lock this
     # instance onto an old model.
-    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL"):
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
         env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
@@ -1582,7 +1581,6 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
         env["MNEME_EMBED_BACKEND"] = embed_backend
     if label_backend and label_backend != chat_backend:
         env["MNEME_LABEL_BACKEND"] = label_backend
-    env["MNEME_INJECT_SYSTEM"] = inject
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if chat_backend == "openrouter":
         env["OPENROUTER_API_KEY"] = load_saved_key()

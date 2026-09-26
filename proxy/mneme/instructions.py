@@ -92,7 +92,7 @@ DEFAULT_INSTRUCTIONS = {
         "  - \"DECISION: reuse_tool\" plus \"TOOL: <name>\" (if a listed built tool already solves this)\n"
         "  - \"DECISION: build_tool\" plus a \"PLAN:\" (the tool/script that would solve this, and how to build and test it)\n"
         "(\"build a tool\" means write a script you can run via bash — you cannot add or modify the fixed "
-        "harness tools: read, bash, edit, write, search_memory, web_search, web_scrape.)"
+        "harness tools: bash, write, search_memory, web_search, fetch_url, read_file.)"
     ),
     "overcome_reuse": (
         "\n=== REUSE MODE ===\n"
