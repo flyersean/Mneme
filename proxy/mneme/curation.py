@@ -671,7 +671,6 @@ def detect_self_confirmation(db, chunk_id: str, source: str = "") -> dict:
         parent = _get_chunk(db, cid)
         if not parent:
             continue
-        p_src = (parent.get("retracted") or "")
         parent_is_model = True  # a parent chunk is model-derived unless proven otherwise
         try:
             prow = db.execute("SELECT source, trust FROM chunks WHERE chunk_id=?", (cid,)).fetchone()

@@ -62,7 +62,7 @@ _FAILURE_MARKERS = (
     "503 service unavailable",
     # exact strings the Pi web extensions emit when they throw (so a real
     # thrown error is caught, not just a clean "no results"/"blocked" reply)
-    "web_search failed", "web_scrape failed", "fetch failed",
+    "web_search failed", "fetch failed",
     "getaddrinfo", "enotfound", "eai_again", "econnrefused", "econnreset",
     "no text content found",
 )

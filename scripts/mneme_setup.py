@@ -373,6 +373,9 @@ def ensure_ollama():
             if run("curl -s --max-time 2 http://localhost:11434 >/dev/null", timeout=5).returncode == 0:
                 break
             time.sleep(1)
+        if run("curl -s --max-time 2 http://localhost:11434 >/dev/null", timeout=5).returncode != 0:
+            print("  ⚠ ollama serve did not come up within 20s — see /tmp/ollama.log")
+            return False
     return True
 
 
@@ -627,9 +630,12 @@ def _derived_model_name(base_model, ctx_size):
     """Deterministic derived-model name keyed on the base model + context window
     (NOT the port). Instances sharing a base model + context then share one
     derived name, so Ollama keeps a single resident copy of the weights instead
-    of one per port. ':' '/' '.' are sanitized to '-' for a valid name."""
+    of one per port. ':' '/' '.' are sanitized to '-'; a short hash of the RAW
+    base model is included so two distinct models that sanitize identically
+    (e.g. org/Foo.Bar vs org/Foo/Bar) never collide."""
     frag = re.sub(r"[^a-zA-Z0-9]+", "-", base_model).strip("-").lower()
-    return _cap_model_name(f"mneme-chat-{frag}-{int(ctx_size) // 1000}k")
+    h = hashlib.sha1((base_model or "").encode("utf-8")).hexdigest()[:6]
+    return _cap_model_name(f"mneme-chat-{frag}-{h}-{int(ctx_size) // 1000}k")
 
 
 def create_context_modelfile(base_model, ctx_size, name=None):
@@ -1063,10 +1069,12 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
     # PyYAML module for the rest of this function, which is a landmine for any
     # later edit that needs yaml.safe_load/dump here.
     cfg_text = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template, models.get("embed_model", ""))
+    # json.dumps() escaping is YAML-compatible inside double-quoted scalars, so a
+    # custom model id containing a quote/backslash can't produce malformed YAML.
     cfg_text = (cfg_text.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
-                .replace("@@MAIN@@", models.get("model", ""))
-                .replace("@@EMBED@@", models.get("embed_model", ""))
-                .replace("@@LABEL@@", models.get("label_model", "")))
+                .replace("@@MAIN@@", json.dumps(models.get("model", ""))[1:-1])
+                .replace("@@EMBED@@", json.dumps(models.get("embed_model", ""))[1:-1])
+                .replace("@@LABEL@@", json.dumps(models.get("label_model", ""))[1:-1]))
     path = os.path.join(instance_dir, "mneme.yaml")
     # Write atomically (temp + fsync + rename) so a proxy launched right after
     # this can never read a half-written config. A partial config load silently
@@ -1265,13 +1273,19 @@ def write_start_script(backend, models, port, instance_dir):
 
 
 def free_port(start=8080):
-    for p in range(start, 8100):
+    for p in range(start, 65536):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         if s.connect_ex(("127.0.0.1", p)) != 0:
             s.close()
             return p
         s.close()
-    return 8080
+    # Entire range busy (pathological): let the OS pick an ephemeral port rather
+    # than returning the busy 8080 and guaranteeing a bind conflict.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def _pid_on_port(port):

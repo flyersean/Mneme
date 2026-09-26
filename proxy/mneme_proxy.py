@@ -5856,8 +5856,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _REDUNDANCY_LIMIT = 4  # identical tool-call signature this many rounds in a row = stuck loop
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
-    # Curation tools (retract_memory / restore_memory) execute SERVER-side like the
-    # read-only registry tools — they must be in this set or their calls fall into
+    # Curation tools (flag_bad_memory / clear_bad_memory_flag / remove_memory) execute
+    # SERVER-side like the read-only registry tools — they must be in this set or their
+    # calls fall into
     # `other_calls` and get passed through to the client instead of run, which
     # showed up as an empty answer plus "passing tool call through to client".
     _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_curation_tools()}
