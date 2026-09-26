@@ -1,7 +1,18 @@
 # Setup wizard: add-proxy / reconfigure leaves proxies on a stale model
 
-Status: bug — stress-test next session (with a connected pod)
-Date: 2026-09-25
+Status: FIXED in code (commit 3e11d53, pushed) — live verification pending on a pod
+Date: 2026-09-25 (fixed 2026-09-26)
+
+## Fix (shipped)
+- Config now carries TOP-LEVEL `model:` / `embed_model:` / `label_model:` keys
+  (authoritative for BOTH backends; Ollama no longer env-only).
+- Generated start scripts + start_proxy()/start_instance() CLEAR inherited
+  model env vars instead of exporting them, so the config wins.
+- _resolve_provider() falls back to providers.openrouter.model for Ollama when
+  the top-level key is absent (pre-upgrade config back-compat).
+- 6 regression tests (test_generated_config +14, test_config_load +9).
+- Remaining live-verify: add-proxy / reconfigure on a real pod and confirm the
+  model actually changes (config -> env -> MODEL, and old process is dead).
 
 ## Symptom (user report)
 After several "Add a proxy" runs and "Reconfigure this install" runs, some
