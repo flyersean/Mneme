@@ -1,7 +1,7 @@
 # Multi-proxy overview dashboard + reverse proxy
 
-Status: idea
-Date: 2026-09-24
+Status: built (Option A link-list — /overview hub + /ollama panel + start/stop)
+Date: 2026-09-24 (built 2026-09-26)
 
 ## Problem
 
