@@ -184,6 +184,51 @@ class TestConfigLoadRetry(unittest.TestCase):
             else:
                 os.environ["MNEME_MAX_SERVER_ROUNDS"] = saved
 
+    def test_load_config_sets_model_from_top_level_key(self):
+        """The top-level `model:` key must flow to MNEME_MODEL (and embed/label to
+        their env vars) when the environment is clean — so the config, not a stale
+        start-script export, is authoritative for model identity."""
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        data = {"model": "new-model", "embed_model": "new-embed", "label_model": "new-label"}
+        saved = {k: os.environ.get(k) for k in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL")}
+        for k in saved:
+            os.environ.pop(k, None)  # start script now unsets these; simulate it
+        try:
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data):
+                mp.load_config()
+            self.assertEqual(os.environ.get("MNEME_MODEL"), "new-model")
+            self.assertEqual(os.environ.get("EMBED_MODEL"), "new-embed")
+            self.assertEqual(os.environ.get("LABEL_MODEL"), "new-label")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_ollama_falls_back_to_provider_model(self):
+        """Older configs stored the model under providers.openrouter.model (the
+        wizard wrote it there for both backends). For Ollama, when the top-level
+        `model:` key is absent, the model must still resolve from that provider
+        block instead of the built-in default."""
+        cfg = os.path.join(tempfile.mkdtemp(), "mneme.yaml")
+        data = {"providers": {"openrouter": {"model": "old-model"}}}
+        saved = {k: os.environ.get(k) for k in ("MNEME_MODEL", "MNEME_BACKEND")}
+        os.environ.pop("MNEME_MODEL", None)
+        os.environ["MNEME_BACKEND"] = "ollama"
+        try:
+            with mock.patch.object(mp, "_find_config_path", return_value=cfg), \
+                 mock.patch.object(mp, "_parse_config_file", return_value=data):
+                mp.load_config()
+            self.assertEqual(os.environ.get("MNEME_MODEL"), "old-model")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
 
 if __name__ == "__main__":
     unittest.main()

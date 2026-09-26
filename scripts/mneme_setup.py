@@ -904,6 +904,16 @@ backend:
   provider: @@BPROV@@      # which `providers:` entry to use (ignored when type=ollama)
   ollama_url: http://localhost:11434   # used only when type=ollama
 
+# The chat / embed / label models — authoritative for BOTH backends. The proxy
+# reads these directly (mapped to MNEME_MODEL / EMBED_MODEL / LABEL_MODEL), so
+# editing them here is enough: the generated start script clears the inherited
+# model env vars instead of exporting them, letting these keys win. This is the
+# single source of truth for model identity; the providers.openrouter.* copies
+# below remain for the OpenRouter request path.
+model: "@@MAIN@@"
+embed_model: "@@EMBED@@"
+label_model: "@@LABEL@@"
+
 providers:
   openrouter:
     base_url: {OR_BASE}
@@ -1214,13 +1224,15 @@ def write_start_script(backend, models, port, instance_dir):
             f'  export $(grep -v "^#" "{KEY_FILE}" | xargs)',
             "fi",
             'export MNEME_BACKEND="openrouter"',
+            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
         ]
     else:
         lines += [
             'export MNEME_BACKEND="ollama"',
-            f'export MNEME_MODEL="{models.get("model", "")}"',
-            f'export EMBED_MODEL="{models.get("embed_model", "")}"',
-            f'export LABEL_MODEL="{models.get("label_model", "")}"',
+            "# Models are read from this instance's mneme.yaml (top-level model:) —",
+            "# clearing inherited values keeps the config authoritative and stops a",
+            "# stale env var from locking an old model in.",
+            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
         ]
     lines += [
         f'export MNEME_CHUNK_DIR="{instance_dir}"',
@@ -1304,6 +1316,12 @@ def start_proxy(backend, models, port, instance_dir):
         print(f"  ✗ port {port} still in use — aborting start", flush=True)
         return False
     env = os.environ.copy()
+    # The instance's mneme.yaml is authoritative for model identity. Clear any
+    # inherited model env vars so a stale shell (or an earlier proxy's export)
+    # can't lock this proxy onto an old model — the config's top-level model:/
+    # embed_model:/label_model: keys supply them instead.
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL"):
+        env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
     env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
@@ -1312,14 +1330,7 @@ def start_proxy(backend, models, port, instance_dir):
         env["OPENROUTER_API_KEY"] = load_saved_key()
         env["MNEME_BACKEND"] = "openrouter"
     else:
-        # Ollama models are read from env vars (not the config), so the choices
-        # the user just made MUST be exported here — otherwise the proxy falls
-        # back to its code defaults (e.g. label=qwen2.5:1.5b) and silently uses
-        # models the user never picked. This was the "labeler 404" bug.
         env["MNEME_BACKEND"] = "ollama"
-        env["MNEME_MODEL"] = models.get("model", "")
-        env["EMBED_MODEL"] = models.get("embed_model", "")
-        env["LABEL_MODEL"] = models.get("label_model", "")
     log = None  # the proxy now owns its own per-port log ($CHUNK_DIR/proxy-<port>.log)
     subprocess.Popen([sys.executable, "-uB", "proxy/mneme_proxy.py"],
                      cwd=REPO_ROOT, env=env, start_new_session=True)
@@ -1511,9 +1522,9 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         ]
     lines += [
         f'export MNEME_BACKEND="{chat_backend}"',
-        f'export MNEME_MODEL="{chat_model}"',
-        f'export EMBED_MODEL="{embed_model}"',
-        f'export LABEL_MODEL="{label_model}"',
+        "# Models are read from this instance's mneme.yaml (top-level model:) —",
+        "# clearing inherited values keeps the config authoritative.",
+        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL",
     ]
     # Aux backends: only set when they differ from this instance's chat backend,
     # so the embedder/labeler keep running where the DB originally set them up.
@@ -1549,13 +1560,15 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
         print(f"  ✗ port {port} still in use — aborting start", flush=True)
         return False
     env = os.environ.copy()
+    # Same as start_proxy: the instance's mneme.yaml is authoritative for model
+    # identity — clear inherited model env vars so a stale value can't lock this
+    # instance onto an old model.
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL"):
+        env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
     env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["MNEME_BACKEND"] = chat_backend
-    env["MNEME_MODEL"] = chat_model
-    env["EMBED_MODEL"] = embed_model
-    env["LABEL_MODEL"] = label_model
     if embed_backend and embed_backend != chat_backend:
         env["MNEME_EMBED_BACKEND"] = embed_backend
     if label_backend and label_backend != chat_backend:

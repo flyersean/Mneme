@@ -74,6 +74,17 @@ class TestGeneratedConfig(unittest.TestCase):
         self.assertIn("model_template", data, "generated config should advertise the key")
         self.assertIn("model_template", mp._CONFIG_PASSTHROUGH_KEYS)
 
+    def test_model_keys_authoritative_at_top_level(self):
+        """Model identity must live at the TOP level of the config (not only under
+        providers.openrouter.*): Ollama has no provider, so it reads only the
+        top-level model:/embed_model:/label_model: keys (mapped to MNEME_MODEL /
+        EMBED_MODEL / LABEL_MODEL). This is what makes the config — not a stale
+        start-script export — authoritative."""
+        data = _generated()
+        self.assertEqual(data.get("model"), "test-model")
+        self.assertEqual(data.get("embed_model"), "test-embed")
+        self.assertEqual(data.get("label_model"), "test-label")
+
 
 class TestModelNameLength(unittest.TestCase):
     """Ollama rejects model names longer than 80 chars ("invalid model name").
@@ -131,6 +142,42 @@ class TestStartScript(unittest.TestCase):
             "test-embed", "ollama", "test-label", "ollama", "1", "0")
         self.assertTrue(self._has_port_free(p),
                         "start_proxy_<port>.sh must free the port before starting")
+
+    def _body(self, path):
+        with open(path) as f:
+            return f.read()
+
+    def test_main_start_script_unsets_models_instead_of_exporting(self):
+        """The start script must CLEAR inherited model env vars, not export them,
+        so the config's top-level model:/embed_model:/label_model: keys are
+        authoritative. Exporting lets a stale env lock the proxy onto an old
+        model (the add/reconfigure stale-model bug)."""
+        d = tempfile.mkdtemp()
+        p = setup.write_start_script(
+            "ollama", {"model": "test-model", "embed_model": "test-embed",
+                       "label_model": "test-label"}, 8080, d)
+        body = self._body(p)
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", body)
+        self.assertNotIn("export MNEME_MODEL=", body)
+
+    def test_openrouter_start_script_unsets_models(self):
+        """OpenRouter's start script must also clear inherited model vars (it
+        previously left them unset, so a stale shell env leaked through and
+        overrode providers.openrouter.model)."""
+        d = tempfile.mkdtemp()
+        p = setup.write_start_script(
+            "openrouter", {"model": "test-model", "embed_model": "test-embed",
+                           "label_model": "test-label"}, 8080, d)
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", self._body(p))
+
+    def test_instance_start_script_unsets_models(self):
+        d = tempfile.mkdtemp()
+        p = setup.write_instance_start_script(
+            os.path.join(d, "8081"), d, 8081, "ollama", "test-model",
+            "test-embed", "ollama", "test-label", "ollama", "1", "0")
+        body = self._body(p)
+        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL", body)
+        self.assertNotIn("export MNEME_MODEL=", body)
 
 
 if __name__ == "__main__":

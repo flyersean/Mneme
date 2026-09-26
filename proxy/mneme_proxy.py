@@ -278,6 +278,14 @@ def _resolve_provider():
     global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
+        # Ollama: the model is authoritative under the top-level `model:` key
+        # (read by _apply_config). Older configs only stored it under
+        # providers.<name>.model — fall back to that so a pre-upgrade config
+        # still resolves its model instead of the built-in default.
+        if os.environ.get("MNEME_MODEL") is None:
+            _prov = (CONFIG_DATA.get("providers") or {}).get("openrouter") or {}
+            if _prov.get("model"):
+                os.environ["MNEME_MODEL"] = _config_scalar(_prov["model"])
         return
     name = os.environ.get("MNEME_PROVIDER", "openrouter")
     prov = (CONFIG_DATA.get("providers") or {}).get(name) or {}

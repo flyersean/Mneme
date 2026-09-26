@@ -935,7 +935,7 @@ They cover:
 
 86 tests in `tests/test_tool_loop.py`.
 
-The full suite is **372 tests** across 19 files. Beyond the tool loop:
+The full suite is **378 tests** across 19 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -948,9 +948,9 @@ The full suite is **372 tests** across 19 files. Beyond the tool loop:
 | `test_trust.py` | 15 | provenance/trust grading |
 | `test_model_config.py` | 11 | per-model overrides, sampler option mapping |
 | `test_logfile.py` | 7 | log routing |
-| `test_config_load.py` | 7 | config precedence |
+| `test_config_load.py` | 9 | config precedence, model identity |
 | `test_mcp_client.py` | 5 | MCP connect/list/call/remove (needs `mcp`) |
-| `test_generated_config.py` | 10 | every wizard-emitted key is valid |
+| `test_generated_config.py` | 14 | every wizard-emitted key is valid, model keys + start-script unset |
 | `test_native_tools.py` | 4 | bash/write relative-path consistency |
 | `test_swarm_skip_throttle.py` | 4 | swarm `skip_if_empty` / `every` |
 | `test_hot_reload_lock.py` | 3 | config/prompt lock |
@@ -1125,7 +1125,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~348 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~354 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
