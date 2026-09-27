@@ -937,7 +937,7 @@ They cover:
 
 88 tests in `tests/test_tool_loop.py`.
 
-The full suite is **385 tests** across 21 files. Beyond the tool loop:
+The full suite is **386 tests** across 21 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -955,7 +955,7 @@ The full suite is **385 tests** across 21 files. Beyond the tool loop:
 | `test_generated_config.py` | 17 | every wizard-emitted key is valid, model keys + start-script unset, per-proxy Modelfile |
 | `test_native_tools.py` | 4 | bash/write relative-path consistency |
 | `test_overview.py` | 4 | overview + Ollama control-panel routes |
-| `test_gateway.py` | 6 | gateway reverse-proxy routes, instance list, HTML prefix shim |
+| `test_gateway.py` | 7 | gateway reverse-proxy routes, instance list, HTML prefix shim + Overview breadcrumb |
 | `test_swarm_skip_throttle.py` | 4 | swarm `skip_if_empty` / `every` |
 | `test_hot_reload_lock.py` | 3 | config/prompt lock |
 | `test_mcp_endpoints.py` | 3 | MCP hot-add endpoints |
@@ -1147,7 +1147,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~361 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~362 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
