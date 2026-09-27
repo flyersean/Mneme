@@ -137,11 +137,13 @@ def _list_instances():
     return out
 
 
-# ── HTML shim: keep an instance's root-relative URLs under its /<port>/ prefix ─
-def _shim_script(port):
+# ── HTML shim: keep an instance's root-relative URLs under its /<port>/ prefix,
+#    and add the gateway "← Overview" link + a port label into the page. ─────
+def _shim_script(port, host_url=""):
     p = str(port)
+    overview_href = host_url or "/"
     return (
-        "<script>(function(){var prefix='/" + p + "';"
+        "<script>(function(){var port='" + p + "',prefix='/" + p + "';"
         "function fix(u){if(typeof u!=='string'||!u)return u;"
         "if(u.charAt(0)!=='/')return u;if(u.indexOf('//')===0)return u;"
         "if(u===prefix||u.indexOf(prefix+'/')===0)return u;"
@@ -149,7 +151,6 @@ def _shim_script(port):
         "function rewrite(){var els=document.querySelectorAll('a[href],form[action],script[src],link[href],img[src]');"
         "for(var i=0;i<els.length;i++){var el=els[i];['href','action','src'].forEach(function(a){"
         "var v=el.getAttribute(a);if(v){var f=fix(v);if(f!==v)el.setAttribute(a,f);}});}}"
-        "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',rewrite);else rewrite();"
         "var of=window.fetch;if(of)window.fetch=function(u,o){"
         "if(typeof u==='string')u=fix(u);"
         "else if(u&&u.url){var c=Object.create(u);c.url=fix(u.url);u=c;}return of(u,o);};"
@@ -158,43 +159,29 @@ def _shim_script(port):
         "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;"
         "if(!a)return;var h=a.getAttribute('href');if(!h)return;var f=fix(h);"
         "if(f!==h){e.preventDefault();window.location=f;}},true);"
+        "function decorate(){"
+        "var nav=document.querySelector('.mneme-nav');"
+        "if(nav){var oa=document.createElement('a');oa.href='" + overview_href + "';oa.textContent='← Overview';nav.insertBefore(oa,nav.firstChild);}"
+        "var h1=document.querySelector('h1');"
+        "if(h1){var s=document.createElement('span');s.textContent=' · port ' + port;"
+        "s.style.cssText='color:#6b7280;font-weight:400;font-size:0.72em';h1.appendChild(s);}"
+        "}"
+        "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){rewrite();decorate();});else{rewrite();decorate();}"
         "})();</script>"
-    )
-
-
-def _overview_bar(host_url):
-    # A breadcrumb back to the gateway's Overview. Uses the FULL URL so the
-    # prefix shim below (which only rewrites root-relative "/…" links) leaves
-    # it alone — it must NOT be prefixed with /<port>/.
-    href = host_url or "/"
-    return (
-        '<div class="mneme-gw-nav" style="padding:6px 24px;border-bottom:1px solid #e5e7eb;background:#fff">'
-        '<a href="' + href + '" style="color:#2563eb;text-decoration:none;font-size:13px">← Overview</a>'
-        '</div>'
     )
 
 
 def _inject_shim(body_bytes, port, host_url=""):
     html = body_bytes.decode("utf-8", "replace")
-    shim = _shim_script(port)
-    overview = _overview_bar(host_url)
+    shim = _shim_script(port, host_url)
     # inject the prefix shim into <head> (or right after <html>/at the start)
     m = re.search(r"<head[^>]*>", html, re.IGNORECASE)
     if m:
-        html = html[:m.end()] + shim + html[m.end():]
-    else:
-        m = re.search(r"<html[^>]*>", html, re.IGNORECASE)
-        if m:
-            html = html[:m.end()] + shim + html[m.end():]
-        else:
-            html = shim + html
-    # inject the "← Overview" breadcrumb right after <body>
-    m = re.search(r"<body[^>]*>", html, re.IGNORECASE)
+        return (html[:m.end()] + shim + html[m.end():]).encode("utf-8")
+    m = re.search(r"<html[^>]*>", html, re.IGNORECASE)
     if m:
-        html = html[:m.end()] + overview + html[m.end():]
-    else:
-        html = overview + html
-    return html.encode("utf-8")
+        return (html[:m.end()] + shim + html[m.end():]).encode("utf-8")
+    return (shim + html).encode("utf-8")
 
 
 # ── routes ──────────────────────────────────────────────────────────────────

@@ -65,14 +65,14 @@ class TestGatewayShim(unittest.TestCase):
         self.assertIn("window.fetch", shim)
         self.assertIn("prefix='/8080'", shim)
 
-    def test_overview_bar_injected_after_body(self):
-        html = b"<html><head></head><body><h1>x</h1></body></html>"
-        out = gw._inject_shim(html, 8080, "http://localhost:8000/").decode()
-        self.assertIn("← Overview", out)
-        # the overview link must carry the FULL gateway URL, not the /<port>/ prefix
-        self.assertIn('href="http://localhost:8000/"', out)
-        # it must appear right after <body>, before the page's own content
-        self.assertLess(out.index("← Overview"), out.index("<h1>x</h1>"))
+    def test_shim_decorates_overview_and_port(self):
+        shim = gw._shim_script(8080, "http://localhost:8000/")
+        # the shim must add an "← Overview" link (pointing at the full gateway
+        # URL, not the /<port>/ prefix) and a "port" badge, at runtime via JS
+        self.assertIn("← Overview", shim)
+        self.assertIn("http://localhost:8000/", shim)
+        self.assertIn("· port", shim)
+        self.assertIn("querySelector('.mneme-nav')", shim)
 
 
 if __name__ == "__main__":

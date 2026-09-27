@@ -22,6 +22,8 @@
   .model { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
   .links a { margin-right:9px; color:var(--accent); text-decoration:none; font-size:13px; white-space:nowrap; }
   .links a:hover { text-decoration:underline; }
+  .port { color:var(--accent); text-decoration:none; font-weight:600; }
+  .port:hover { text-decoration:underline; }
   button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button.start { color:var(--green); }
@@ -41,34 +43,31 @@
   <p class="hint">Overview of every proxy on this pod. Click through to any instance's pages — the gateway routes <code>/&lt;port&gt;/…</code> to that instance.</p>
   <table>
     <thead>
-      <tr><th>Port</th><th>Model</th><th>Backend</th><th>Status</th><th>Pages</th><th>Actions</th></tr>
+      <tr><th>Port</th><th>Model</th><th>Backend</th><th>Status</th><th>Actions</th></tr>
     </thead>
-    <tbody id="rows"><tr><td colspan="6">Loading…</td></tr></tbody>
+    <tbody id="rows"><tr><td colspan="5">Loading…</td></tr></tbody>
   </table>
 </main>
 <script>
-const PAGES = [['Dashboard','/'],['Chat','/chat'],['Memory','/memory'],['Instructions','/instructions'],['Templates','/templates'],['Ollama','/ollama']];
-
 async function load() {
   const rows = document.getElementById('rows');
   try {
     const r = await fetch('/gateway/instances');
     const j = await r.json();
     const list = j.instances || [];
-    if (!list.length) { rows.innerHTML = '<tr><td colspan="6">No instances found.</td></tr>'; return; }
+    if (!list.length) { rows.innerHTML = '<tr><td colspan="5">No instances found.</td></tr>'; return; }
     rows.innerHTML = '';
     for (const it of list) {
       const base = it.base || ('/' + it.port);
-      const links = PAGES.map(([label, path]) => `<a href="${base}${path}">${label}</a>`).join('');
       const badge = it.running ? '<span class="badge up">running</span>' : '<span class="badge down">stopped</span>';
       const actions = it.running
         ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
         : `<button class="start" onclick="act('start',${it.port})">Start</button>`;
       rows.insertAdjacentHTML('beforeend',
-        `<tr><td>${it.port}</td><td class="model">${it.model}</td><td>${it.backend}</td><td>${badge}</td><td class="links">${links}</td><td>${actions}</td></tr>`);
+        `<tr><td><a href="${base}/" class="port">${it.port}</a></td><td class="model">${it.model}</td><td>${it.backend}</td><td>${badge}</td><td>${actions}</td></tr>`);
     }
   } catch (e) {
-    rows.innerHTML = `<tr><td colspan="6">Error: ${e.message}</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="5">Error: ${e.message}</td></tr>`;
   }
 }
 
