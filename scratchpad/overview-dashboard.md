@@ -1,7 +1,7 @@
 # Multi-proxy overview dashboard + reverse proxy
 
-Status: built (Option A link-list — /overview hub + /ollama panel + start/stop)
-Date: 2026-09-24 (built 2026-09-26)
+Status: built (Option A link-list AND Option B reverse proxy — proxy/gateway.py)
+Date: 2026-09-24 (A built 2026-09-26; B built 2026-09-26)
 
 ## Problem
 
@@ -70,6 +70,27 @@ Stacked SSH forwards collapse N tunnels into ONE command/process:
 
 Sufficient if the harness holds N base URLs (one per model). Only the reverse
 proxy (B) collapses N ports into one URL.
+
+## Reserved-port mapping (RunPod — discovered 2026-09-26)
+
+RunPod's OWN nginx owns the reserved ports — they are NOT free to bind. It
+listens on 0.0.0.0:<reserved> and proxies each to an internal localhost port:
+
+    9091 -> localhost:9090   (invokeai)
+    3001 -> localhost:3000   (sd/webui/comfy)
+    7861 -> localhost:7860   (oobabooga)
+    8081 -> localhost:8080
+    8001 -> localhost:8000
+    7270 -> localhost:7271   ("rp" in hex ascii)
+
+So the gateway binds the INTERNAL port (8000) and is exposed at the reserved
+8001 (https://<pod>-8001.proxy.runpod.net).
+
+CRITICAL: an instance on the internal port 8080 is therefore already exposed
+via the reserved 8081 — no auth. Keep instance ports OFF the mapped internal
+ports (8080, 8000, 9090, 3000, 7860, 7271) or they leak past the gateway. This
+is exactly why the gateway is the auth choke-point: instances must not sit on
+RunPod-forwarded ports.
 
 ## Gotchas
 

@@ -937,7 +937,7 @@ They cover:
 
 88 tests in `tests/test_tool_loop.py`.
 
-The full suite is **379 tests** across 20 files. Beyond the tool loop:
+The full suite is **385 tests** across 21 files. Beyond the tool loop:
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -955,6 +955,7 @@ The full suite is **379 tests** across 20 files. Beyond the tool loop:
 | `test_generated_config.py` | 17 | every wizard-emitted key is valid, model keys + start-script unset, per-proxy Modelfile |
 | `test_native_tools.py` | 4 | bash/write relative-path consistency |
 | `test_overview.py` | 4 | overview + Ollama control-panel routes |
+| `test_gateway.py` | 6 | gateway reverse-proxy routes, instance list, HTML prefix shim |
 | `test_swarm_skip_throttle.py` | 4 | swarm `skip_if_empty` / `every` |
 | `test_hot_reload_lock.py` | 3 | config/prompt lock |
 | `test_mcp_endpoints.py` | 3 | MCP hot-add endpoints |
@@ -966,6 +967,24 @@ The full suite is **379 tests** across 20 files. Beyond the tool loop:
 tests are skipped/failed without it.
 
 The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
+
+## Gateway (reverse proxy)
+
+`proxy/gateway.py` is an optional single reverse proxy that fronts every proxy
+instance on one port. It serves a dashboard at `/` and reverse-proxies
+`/<port>/…` → `127.0.0.1:<port>/…` for both the web UI and `/v1`, with SSE
+streaming passed through unbuffered. HTML responses get a small shim injected so
+each instance's root-relative links/fetches stay under their `/<port>/` prefix.
+
+It is the future auth choke-point: set `MNEME_GATEWAY_TOKEN` and every request
+must carry that token (`Authorization: Bearer …`, `?token=…`, or a `mneme_token`
+cookie); the instances themselves stay 127.0.0.1 / no-auth.
+
+Run with `scripts/start_gateway.sh` (or `python3 proxy/gateway.py`). On RunPod
+the reserved ports are owned by RunPod's nginx, which maps 8001 → localhost:8000,
+so the gateway binds 8000 and is reachable at the reserved 8001. Keep instance
+ports off the RunPod-forwarded internal ports (8080, 8000, 9090, 3000, 7860,
+7271) so they don't leak past the gateway.
 
 ## Architecture
 
@@ -1128,7 +1147,7 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 | --- | --- |
 | `proxy/` | The proxy itself — `mneme_proxy.py` plus the `mneme/` modules (tools, curation, templates, chat commands) |
 | `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `run_openrouter.sh` |
-| `tests/` | The deterministic suite (~355 tests) — see [Testing](#testing) |
+| `tests/` | The deterministic suite (~361 tests) — see [Testing](#testing) |
 | `extensions/` | Separate HTTP clients: `swarm/` (the reference example) and `pi/` — see [Extensions](#extensions) |
 | `docs/` | Design and model notes: `model-notes.md` (which models misbehave and why), `strategy-retrieval-spec.md`, `provenance-and-chunk-lifecycle.md` (what shipped for provenance + the flags, and what deliberately did not), per-model write-ups |
 | `experiments/` | Standalone probes used to develop the provenance work — not part of the runtime; kept so the measurements are reproducible |
