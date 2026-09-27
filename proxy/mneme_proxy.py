@@ -5694,7 +5694,19 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Phase 4: learn explicit user-preference signals before building context,
     # so newly-stored preferences are injected this same turn.
     _store_preferences(_detect_preferences(user_msg))
-    
+
+    # Flush staged turns from PRIOR requests BEFORE building context, so a fact
+    # saved on the previous turn is retrievable this same turn. The archive was
+    # previously deferred (backgrounded) to the END of the request, which added a
+    # one-turn recall delay: "remember X" then immediately "what's X?" missed the
+    # just-saved chunk because it wasn't embedded/indexed in FAISS yet.
+    # Synchronous now so the retrieval below sees the freshly-archived chunks.
+    if staging.should_flush():
+        try:
+            archive_staging(list(_last_injected_ids))
+        except Exception as e:
+            _log_error("process_chat:pre_context_flush", e)
+
     # Build injected memory (chunks + budget; the fixed system prompt is added to
     # the system message below via _system_prompt_block() so it stays cacheable).
     context, ptype = build_context(user_msg)
@@ -6317,10 +6329,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     # Flush BEFORE adding this turn — the idle check compares against the
     # previous turn's last_activity, which staging.add() would otherwise reset
-    # (making the idle condition dead code).
-    if staging.should_flush():
-        _enqueue(archive_staging, list(_last_injected_ids))
-
+    # (making the idle condition dead code). NOTE: the actual archive flush now
+    # happens synchronously at the TOP of process_chat (before build_context),
+    # so this turn's data is only staged here, not flushed.
     _user_src = "input" if _looks_like_read_dir(user_msg) else "user"
     _img_refs = _ingest_images(_raw_last_user)
     staging.add("user", user_msg, source=_user_src, session=session_id, images=_img_refs)
@@ -6744,8 +6755,7 @@ if FLASK_OK:
     def admin_reload():
         return _cors_response({"ok": _force_config_reload()})
 
-    # ── Overview: one hub linking every proxy instance + the Ollama panel ──
-    _OVERVIEW_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "overview.html")
+    # ── Dashboard: one hub with the full nav menu + proxy overview + status ──
     _OLLAMA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "ollama.html")
 
     def _pid_on_port(port):
@@ -6792,7 +6802,9 @@ if FLASK_OK:
 
     @app.route("/overview", methods=["GET"])
     def overview_ui():
-        return _serve_html(_OVERVIEW_HTML_PATH, "OVERVIEW-UI")
+        # The dashboard at "/" is now the single hub (full nav + proxy overview).
+        # Keep /overview serving it so old bookmarks still land on the dashboard.
+        return _serve_html(_DASHBOARD_HTML_PATH, "DASHBOARD-UI")
 
     @app.route("/overview/instances", methods=["GET"])
     def overview_instances():

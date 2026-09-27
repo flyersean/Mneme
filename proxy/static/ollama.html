@@ -11,8 +11,10 @@
   header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   h1 { margin:0; font-size:20px; font-weight:650; }
   .toolbar { display:flex; gap:10px; align-items:center; }
-  a.back { color:var(--accent); text-decoration:none; font-size:14px; }
-  a.back:hover { text-decoration:underline; }
+  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line)}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
   main { padding:24px 28px; max-width:1100px; margin:0 auto; }
   .pull { display:flex; gap:8px; margin-bottom:20px; }
   input { font:inherit; font-size:14px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; flex:1; }
@@ -35,10 +37,12 @@
 <header>
   <h1>Mneme — Ollama</h1>
   <div class="toolbar">
-    <a class="back" href="/overview">← Overview</a>
     <button onclick="load()">Refresh</button>
   </div>
 </header>
+<nav class="mneme-nav">
+  <a href="/">← Dashboard</a>
+</nav>
 <main>
   <div class="pull">
     <input id="pullName" placeholder="Model to pull (e.g. qwen2.5:1.5b or hf.co/...)">

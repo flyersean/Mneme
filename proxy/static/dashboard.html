@@ -3,65 +3,122 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mneme</title>
+<title>Mneme — Dashboard</title>
 <style>
-  :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --accent-soft:#eff6ff; }
+  :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --green:#16a34a; --red:#dc2626; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
-  header { padding:20px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   h1 { margin:0; font-size:20px; font-weight:650; }
-  main { padding:24px 28px; max-width:960px; margin:0 auto; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; }
-  a.card { display:block; text-decoration:none; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; transition:border-color .12s; }
-  a.card:hover { border-color:var(--accent); }
-  a.card h2 { margin:0 0 6px; font-size:16px; font-weight:600; }
-  a.card p { margin:0; color:var(--muted); font-size:13px; line-height:1.4; }
+  .toolbar { display:flex; gap:10px; align-items:center; }
+  main { padding:24px 28px; max-width:1180px; margin:0 auto; }
+
+  /* ── Nav bar (shared by every page; only the Dashboard shows the full menu) ── */
+  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
   section { margin-top:28px; }
-  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  h2 { margin:0 0 6px; font-size:15px; font-weight:650; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 14px; }
+
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .badge.up { background:#ecfdf5; color:var(--green); border:1px solid #bbf7d0; }
+  .badge.down { background:#fef2f2; color:var(--red); border:1px solid #fecaca; }
+  .model { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
+  .self-tag { color:var(--muted); font-size:11px; }
+  .links a { margin-right:9px; color:var(--accent); text-decoration:none; font-size:13px; white-space:nowrap; }
+  .links a:hover { text-decoration:underline; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.start { color:var(--green); }
+  button.start:hover { border-color:var(--green); }
+  button.stop { color:var(--red); margin-left:6px; }
+  button.stop:hover { border-color:var(--red); }
+
   .status { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
   .row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); font-size:14px; }
   .row:last-child { border-bottom:none; }
   .row .k { color:var(--muted); }
   .row .v { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
-  button { font:inherit; font-size:14px; padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); cursor:pointer; }
-  button:hover { border-color:var(--accent); }
   #reloadMsg { margin-left:10px; font-size:13px; color:var(--muted); }
-  .actions { display:flex; gap:10px; align-items:center; }
-</style>
-<style>
-.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
-.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
-.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
-.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
 </style>
 </head>
 <body>
 <header>
-  <h1>Mneme</h1>
-  <div class="actions">
+  <h1>Mneme — Dashboard</h1>
+  <div class="toolbar">
+    <button onclick="loadInstances()">Refresh</button>
     <button id="reloadBtn">Reload config</button>
     <span id="reloadMsg"></span>
   </div>
 </header>
 <nav class="mneme-nav">
-  <a href="/overview">← Overview</a>
+  <a href="/" class="active">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+  <a href="/ollama">Ollama</a>
 </nav>
 <main>
   <section>
-    <h3>Pages</h3>
-    <div class="grid">
-      <a class="card" href="/chat"><h2>Chat</h2><p>Talk to the model.</p></a>
-      <a class="card" href="/memory"><h2>Memory</h2><p>Review, retract and manage chunks.</p></a>
-      <a class="card" href="/instructions"><h2>Instructions</h2><p>Edit the injected prompts.</p></a>
-      <a class="card" href="/templates"><h2>Templates</h2><p>Manage model templates &amp; Modelfiles.</p></a>
-    </div>
+    <h2>Proxies</h2>
+    <p class="hint">Every proxy instance on this pod, with links to each one's pages. Each proxy binds 127.0.0.1 — reach it through its own SSH tunnel (or a stacked <code>-L</code> forward).</p>
+    <table>
+      <thead>
+        <tr><th>Port</th><th>Model</th><th>Backend</th><th>Status</th><th>Pages</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="6">Loading…</td></tr></tbody>
+    </table>
   </section>
   <section>
-    <h3>Status</h3>
+    <h2>This proxy</h2>
     <div class="status" id="status">Loading…</div>
   </section>
 </main>
 <script>
+const PAGES = [['Dashboard','/'],['Chat','/chat'],['Memory','/memory'],['Instructions','/instructions'],['Templates','/templates']];
+
+async function loadInstances() {
+  const rows = document.getElementById('rows');
+  try {
+    const r = await fetch('/overview/instances');
+    const j = await r.json();
+    const list = j.instances || [];
+    if (!list.length) { rows.innerHTML = '<tr><td colspan="6">No instances found.</td></tr>'; return; }
+    rows.innerHTML = '';
+    for (const it of list) {
+      const base = location.protocol + '//' + location.hostname + ':' + it.port;
+      const links = PAGES.map(([label, path]) => `<a href="${base}${path}">${label}</a>`).join('');
+      const badge = it.running ? '<span class="badge up">running</span>' : '<span class="badge down">stopped</span>';
+      const selfTag = it.self ? '<span class="self-tag">(this proxy)</span>' : '';
+      const actions = it.self
+        ? '<span class="self-tag">—</span>'
+        : (it.running
+            ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
+            : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
+      rows.insertAdjacentHTML('beforeend',
+        `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td>${badge}</td><td class="links">${links}</td><td>${actions}</td></tr>`);
+    }
+  } catch (e) {
+    rows.innerHTML = `<tr><td colspan="6">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function act(action, port) {
+  try {
+    const r = await fetch('/overview/' + action, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({port})});
+    const j = await r.json();
+    if (j.error) { alert(j.error); }
+    setTimeout(loadInstances, 800);
+  } catch (e) { alert(e.message); }
+}
+
 async function loadStatus() {
   try {
     const r = await fetch('/dashboard/status');
@@ -84,6 +141,7 @@ async function loadStatus() {
     document.getElementById('status').textContent = 'Could not load status: ' + e;
   }
 }
+
 document.getElementById('reloadBtn').addEventListener('click', async () => {
   const msg = document.getElementById('reloadMsg');
   msg.textContent = 'reloading…';
@@ -94,6 +152,8 @@ document.getElementById('reloadBtn').addEventListener('click', async () => {
     if (j.ok) loadStatus();
   } catch (e) { msg.textContent = 'error: ' + e; }
 });
+
+loadInstances();
 loadStatus();
 </script>
 </body>
