@@ -5359,7 +5359,15 @@ def _execute_search_tool_calls(search_calls):
     for tc in search_calls:
         fn = tc.get("function", {})
         q = (fn.get("arguments", {}).get("query", "") or "").strip()
-        k = fn.get("arguments", {}).get("top_k", 5)
+        # The model's tool-call args are untrusted — a sloppy model emits top_k
+        # as "5" (string) not 5, which would crash _keyword_search/route_query on
+        # `len(results) >= top_k`. Coerce at the boundary and clamp to sane bounds.
+        _raw_k = fn.get("arguments", {}).get("top_k", 5)
+        try:
+            k = int(_raw_k)
+        except (TypeError, ValueError):
+            k = 5
+        k = max(1, min(k, 100))
         print(f"  [SEARCH-TOOL] model searching: '{q[:80]}' top_k={k}", flush=True)
         if not q:
             # Reasoning model emitted search_memory with no query — don't

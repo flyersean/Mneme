@@ -368,6 +368,28 @@ def test_narration_with_tool_calls_is_not_dropped():
     assert not model.queue, f"scripted model had leftover responses: {model.queue!r}"
 
 
+@test
+def test_search_top_k_coerced_from_string():
+    """Regression: a sloppy model emits top_k as "5" (string) — the search tool
+    must coerce it to an int instead of crashing _keyword_search/route_query on
+    `len(results) >= top_k`."""
+    seen = {}
+    def _rec(q, top_k=3, with_scores=False, q_vec=None, floor=None):
+        seen["top_k"] = top_k
+        return []
+    mp.route_query = _rec
+
+    # route_query returns [] so the code falls back to the REAL _keyword_search
+    # (which would TypeError on `len(results) >= top_k` if top_k were still the
+    # string "5"). The coercion happens at the tool-call boundary, before either
+    # is reached.
+    result_text, trace = mp._execute_search_tool_calls(
+        _search_call("mneme", top_k="5")["tool_calls"])
+
+    assert isinstance(seen["top_k"], int), f"top_k should be coerced to int, got {seen['top_k']!r}"
+    assert seen["top_k"] == 5
+
+
 
 
 
