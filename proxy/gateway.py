@@ -162,16 +162,39 @@ def _shim_script(port):
     )
 
 
-def _inject_shim(body_bytes, port):
+def _overview_bar(host_url):
+    # A breadcrumb back to the gateway's Overview. Uses the FULL URL so the
+    # prefix shim below (which only rewrites root-relative "/…" links) leaves
+    # it alone — it must NOT be prefixed with /<port>/.
+    href = host_url or "/"
+    return (
+        '<div class="mneme-gw-nav" style="padding:6px 24px;border-bottom:1px solid #e5e7eb;background:#fff">'
+        '<a href="' + href + '" style="color:#2563eb;text-decoration:none;font-size:13px">← Overview</a>'
+        '</div>'
+    )
+
+
+def _inject_shim(body_bytes, port, host_url=""):
     html = body_bytes.decode("utf-8", "replace")
     shim = _shim_script(port)
+    overview = _overview_bar(host_url)
+    # inject the prefix shim into <head> (or right after <html>/at the start)
     m = re.search(r"<head[^>]*>", html, re.IGNORECASE)
     if m:
-        return (html[:m.end()] + shim + html[m.end():]).encode("utf-8")
-    m = re.search(r"<html[^>]*>", html, re.IGNORECASE)
+        html = html[:m.end()] + shim + html[m.end():]
+    else:
+        m = re.search(r"<html[^>]*>", html, re.IGNORECASE)
+        if m:
+            html = html[:m.end()] + shim + html[m.end():]
+        else:
+            html = shim + html
+    # inject the "← Overview" breadcrumb right after <body>
+    m = re.search(r"<body[^>]*>", html, re.IGNORECASE)
     if m:
-        return (html[:m.end()] + shim + html[m.end():]).encode("utf-8")
-    return (shim + html).encode("utf-8")
+        html = html[:m.end()] + overview + html[m.end():]
+    else:
+        html = overview + html
+    return html.encode("utf-8")
 
 
 # ── routes ──────────────────────────────────────────────────────────────────
@@ -283,9 +306,9 @@ def _forward(port, path):
 
     ctype = resp.headers.get("Content-Type", "")
     if "text/html" in ctype:
-        # Full page: inject the prefix shim and return it as one body.
-        return Response(_inject_shim(resp.content, port), status=resp.status_code,
-                        headers=rheaders)
+        # Full page: inject the prefix shim + "← Overview" breadcrumb.
+        return Response(_inject_shim(resp.content, port, request.host_url),
+                        status=resp.status_code, headers=rheaders)
 
     def generate():
         try:
