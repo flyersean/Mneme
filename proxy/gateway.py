@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Mneme Gateway — one reverse proxy in front of every Mneme proxy instance.
 
-Binds ONE port (default 8001) and gives a single connection to the whole pod:
+Binds ONE port (default 8000) and gives a single connection to the whole pod.
+On RunPod, bind the INTERNAL port: RunPod's nginx owns the reserved ports and
+forwards 8001 -> localhost:8000, so the gateway binds 8000 and is reachable at
+the reserved 8001 (https://<pod>-8001.proxy.runpod.net).
 
   - ``/``                  gateway dashboard (every instance listed, links go
                            through the gateway as ``/<port>/…``)
@@ -18,7 +21,7 @@ a single token check here (see ``_authorize``) gates everything. Set
 ``MNEME_GATEWAY_TOKEN`` to require a Bearer token / ``?token=`` / ``mneme_token``
 cookie on every request (off when unset).
 
-Config (env): MNEME_GATEWAY_HOST (127.0.0.1), MNEME_GATEWAY_PORT (8001),
+Config (env): MNEME_GATEWAY_HOST (127.0.0.1), MNEME_GATEWAY_PORT (8000),
 MNEME_CHUNK_DIR (shared dir holding instances/), MNEME_GATEWAY_TOKEN ("").
 """
 
@@ -38,7 +41,7 @@ except ImportError:
     sys.exit(1)
 
 GATEWAY_HOST = os.environ.get("MNEME_GATEWAY_HOST", "127.0.0.1")
-GATEWAY_PORT = int(os.environ.get("MNEME_GATEWAY_PORT", "8001"))
+GATEWAY_PORT = int(os.environ.get("MNEME_GATEWAY_PORT", "8000"))
 CHUNK_DIR = os.path.abspath(os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks"))
 GATEWAY_TOKEN = os.environ.get("MNEME_GATEWAY_TOKEN", "").strip()
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
