@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Mneme Connect — standalone SSH tunnel to a pod running Mneme.
+"""Mneme Connect — one SSH tunnel to the Mneme gateway (every proxy).
 
-Establishes a stay-alive SSH tunnel from this machine to a pod, then shows you
-the local URLs to use. No agent setup, no Pi/Hermes config — just the tunnel.
+Establishes a stay-alive SSH tunnel from this machine to the pod's GATEWAY
+(default port 8000), then shows you the local URL. Every proxy on the pod is
+reachable through that ONE URL as ``/<port>/…`` — no tunnel per instance.
 
 Usage (install & run):
-    curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+    curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 
     # or, to keep it around:
-    curl -sSL -o ~/.local/bin/mneme-connect https://raw.githubusercontent.com/flyersean/Mneme/unified_mneme/scripts/mneme_connect.py && chmod +x ~/.local/bin/mneme-connect
+    curl -sSL -o ~/.local/bin/mneme-connect https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && chmod +x ~/.local/bin/mneme-connect
+
+The gateway port on the pod is read from MNEME_GATEWAY_PORT (default 8000).
 
 Stdlib-only (no pip installs). Requires `ssh` on this machine and the pod's SSH
 key already set up.
@@ -22,6 +25,8 @@ import shutil
 import urllib.request
 import urllib.error
 
+GATEWAY_PORT = os.environ.get("MNEME_GATEWAY_PORT", "8000")
+
 
 def banner():
     print("""
@@ -32,7 +37,7 @@ def banner():
   ██║ ╚═╝ ██║██║ ╚████║███████╗██║ ╚═╝ ██║███████╗
   ╚═╝     ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝╚══════╝\033[0m
 
-  Connect to Mneme on a remote pod
+  Connect to the Mneme gateway on a remote pod
 """)
 
 
@@ -50,17 +55,17 @@ def main():
         sys.exit(1)
     pod_port = input("  SSH port [22140]: ").strip() or "22140"
     ssh_user = input("  SSH user [root]: ").strip() or "root"
-    local_port = input("  Local port for the tunnel [8080]: ").strip() or "8080"
+    local_port = input(f"  Local port for the gateway tunnel [{GATEWAY_PORT}]: ").strip() or GATEWAY_PORT
 
-    # ── Build the stay-alive tunnel ──
-    print(f"\n  Opening stay-alive tunnel:  localhost:{local_port} → {ssh_user}@{pod_ip}:{pod_port} (pod's :8080)")
+    # ── Build the stay-alive tunnel (to the GATEWAY, not an instance) ──
+    print(f"\n  Opening stay-alive tunnel:  localhost:{local_port} → {ssh_user}@{pod_ip}:{pod_port} (pod's gateway :{GATEWAY_PORT})")
     print("  Keep this window open — the tunnel stays up until you press Ctrl+C.\n")
 
     err_log = "/tmp/mneme_connect_ssh.log"
     errf = open(err_log, "w")
     cmd = [
         ssh, "-N",
-        "-L", f"{local_port}:localhost:8080",
+        "-L", f"{local_port}:localhost:{GATEWAY_PORT}",
         "-p", pod_port, f"{ssh_user}@{pod_ip}",
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ExitOnForwardFailure=yes",
@@ -86,7 +91,7 @@ def main():
     print()
 
     if not ok:
-        print("  ✗ Tunnel failed (or the proxy isn't up on the pod).")
+        print("  ✗ Tunnel failed (or the gateway isn't up on the pod).")
         tail = ""
         try:
             with open(err_log) as f:
@@ -95,19 +100,20 @@ def main():
             pass
         if tail.strip():
             print("  SSH said:\n" + tail)
-        print(f"  Check the pod address, SSH port, and that the proxy is running on the pod at :8080.")
+        print(f"  Check the pod address, SSH port, and that the gateway is running")
+        print(f"  on the pod (scripts/start_gateway.sh, port {GATEWAY_PORT}).")
         proc.terminate()
         sys.exit(1)
 
     # ── Show the connection settings ──
     print("  ✓ Connected.\n")
-    print("  ── Use these on THIS machine ──")
-    print(f"  OpenAI API base:   http://localhost:{local_port}/v1")
-    print(f"  Chat app:          http://localhost:{local_port}/")
-    print(f"  Prompt editor:     http://localhost:{local_port}/instructions")
+    print("  ── One connection, every proxy ──")
+    print(f"  Gateway dashboard:  http://localhost:{local_port}/")
+    print(f"  A proxy instance:   http://localhost:{local_port}/<port>/   (e.g. /8080/chat, /8083/memory)")
     print()
-    print("  Open either URL in your browser, or point any OpenAI-compatible")
-    print("  client (Pi, Hermes, Open WebUI, ...) at the API base URL above.")
+    print("  Open the dashboard in your browser. The gateway lists every proxy and")
+    print("  routes /<port>/… to that instance, so all of them are reachable through")
+    print("  this one URL — no separate tunnel per port.")
     print("\n  Press Ctrl+C to close the tunnel.")
 
     # ── Stay alive ──
