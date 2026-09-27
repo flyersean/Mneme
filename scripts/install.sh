@@ -13,7 +13,7 @@
 #    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 #
 #  Pass the branch explicitly when it's not unified_mneme:
-#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
+#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash
 #
 #  Safe to re-run — every step checks first and only fills in what's missing.
 # ============================================================================

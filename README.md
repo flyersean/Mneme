@@ -66,7 +66,7 @@ your **laptop** to reach a remote proxy.
 ### 1. Install (on the host)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash
 ```
 
 **What the installer touches.** It is more than a `pip install`, so here is the
@@ -99,13 +99,13 @@ cd Mneme && ./scripts/install.sh
 ### 2. Configure (on the host)
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_setup.py && MNEME_BRANCH=agent-harness python3 /tmp/setup.py
 ```
 
 ### 3. Connect (on your laptop — only for a remote pod)
 
 ```bash
-curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/` (links to chat, memory, prompts, templates), chat UI at `/chat`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.

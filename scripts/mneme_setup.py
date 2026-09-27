@@ -134,7 +134,7 @@ def find_repo():
         if c and os.path.exists(os.path.join(c, "proxy", "mneme_proxy.py")):
             return c
     print("\n  Mneme proxy code not found. Run the installer first:")
-    print("    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash")
+    print("    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash")
     print("  ...or enter the repo path below (blank to git-clone it now).")
     path = input("  Repo path [clone]: ").strip()
     if path:
