@@ -34,13 +34,15 @@ from mneme.harness.ledger import (
     ACTIVE_STATES, TERMINAL_STATES, InvalidTransition, Ledger, LedgerError, process_owner,
 )
 from mneme.harness.workspace import RunWorkspace
+from mneme.harness import verify as _verify
+from mneme.harness.planning import PlanResult
 
 DEFAULT_BUDGET = {
     "max_steps": 100,        # hard safety cap on steps per run
     "max_failures": 3,       # failed steps before the run fails
     "max_model_calls": None,
     "max_tool_calls": None,
-    "max_replans": None,     # recorded now, enforced once planning exists (Phase 2)
+    "max_replans": 2,        # planner re-entries after a dead end (needs a planner)
     "max_runtime": None,     # seconds of execution, summed across resumes
     "max_cost": None,        # executor-reported cost units
 }
@@ -68,6 +70,7 @@ class StepResult:
     tool_calls: List[dict] = field(default_factory=list)  # {tool, args, result, status, elapsed_ms}
     cost: float = 0.0
     meta: Dict = field(default_factory=dict)
+    replan: str = ""             # non-empty = the step asks the harness to replan (reason)
 
 
 @dataclass
@@ -100,6 +103,20 @@ class StepContext:
 Executor = Callable[[StepContext], StepResult]
 
 
+@dataclass
+class PlanContext:
+    engine: "RunEngine"
+    run: dict
+    mode: str                    # "initial" | "replan"
+    reason: str                  # why we are (re)planning
+    tasks: List[dict]            # the run's tasks so far (with status/result/error)
+    budget_remaining: Dict
+    workspace: Optional[RunWorkspace]
+
+
+Planner = Callable[[PlanContext], PlanResult]
+
+
 def merge_budget(budget: Optional[dict]) -> dict:
     out = dict(DEFAULT_BUDGET)
     for k, v in (budget or {}).items():
@@ -117,11 +134,13 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 
 class RunEngine:
-    def __init__(self, ledger: Ledger, executor: Executor, *, runs_root: Optional[str] = None,
+    def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
+                 runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
         self.ledger = ledger
         self.executor = executor
+        self.planner = planner
         self.runs_root = runs_root
         self.lease_seconds = float(lease_seconds)
         self.owner = process_owner(owner_tag)
@@ -132,8 +151,15 @@ class RunEngine:
     # ── creation ─────────────────────────────────────────────────────────
 
     def create(self, goal: str, tasks: Optional[List] = None, *, budget: Optional[dict] = None,
-               start: bool = False, **kw) -> dict:
-        run = self.ledger.create_run(goal, tasks, budget=merge_budget(budget), **kw)
+               start: bool = False, plan: Optional[bool] = None, **kw) -> dict:
+        """plan=None: let the planner produce tasks when none are given (if a planner
+        is configured); plan=True forces planning; plan=False never plans."""
+        defer = (not tasks and self.planner is not None) if plan is None else bool(plan)
+        if defer and self.planner is None:
+            raise LedgerError("plan requested but this engine has no planner")
+        if defer and tasks:
+            raise LedgerError("give either tasks or plan=true, not both")
+        run = self.ledger.create_run(goal, tasks, budget=merge_budget(budget), defer_plan=defer, **kw)
         ws = self.workspace(run["run_id"])
         if ws is not None:
             ws.ensure()
@@ -243,6 +269,10 @@ class RunEngine:
             if control == "cancel":
                 return self._finish_cancel(run_id)
 
+            if (run.get("plan") or {}).get("source") == "pending":
+                self._plan(run_id, "initial", "new run")
+                continue
+
             tasks = self.ledger.list_tasks(run_id)
             task = next((t for t in tasks if t["status"] in ("pending", "running")), None)
             if task is None:
@@ -282,20 +312,28 @@ class RunEngine:
             result = StepResult(ok=False, error=f"{type(e).__name__}: {e}", model_calls=0,
                                 meta={"traceback": traceback.format_exc()[-2000:]})
 
-        for tc in result.tool_calls or []:
-            self.ledger.record_tool_call(
-                run_id, str(tc.get("tool") or "?"), tc.get("args") or {},
-                result=str(tc.get("result") or "")[:_RESULT_PREVIEW], status=tc.get("status") or "",
-                elapsed_ms=int(tc.get("elapsed_ms") or 0), task_id=task["task_id"], step_id=step["step_id"])
+        # Verification: the step says the task is done — the harness checks.
+        if result.ok and result.done:
+            checks = (task.get("meta") or {}).get("verify") or []
+            if checks:
+                passed, detail = self._verify(run_id, task, step, result.output or "", checks)
+                result.meta = {**(result.meta or {}), "verification": detail}
+                if not passed:
+                    result.ok = False
+                    result.error = "verification failed: " + _verify.summarize_failures(detail)
 
-        usage = {**_USAGE_ZERO, **(self.ledger.require_run(run_id).get("usage") or {})}
-        usage["steps"] += 1
-        usage["model_calls"] += int(result.model_calls or 0)
-        usage["tool_calls"] += len(result.tool_calls or [])
-        usage["cost"] = round(usage["cost"] + float(result.cost or 0.0), 6)
-        if not result.ok:
-            usage["failures"] += 1
-        self.ledger.update_run(run_id, usage=usage)
+        if (result.meta or {}).get("interrupted"):
+            # Stopped mid-step by pause/cancel: not a success, not a failure. The task
+            # re-runs on resume; the loop top applies the pending control request.
+            self._account(run_id, task, step, result)
+            self.ledger.finish_step(step["step_id"], "interrupted", output=result.output or "",
+                                    error=result.error or "", meta=result.meta)
+            self.ledger.update_task(task["task_id"], status="pending", event="task_interrupted",
+                                    data={"title": task["title"]})
+            self.checkpoint(run_id, reason="interrupted")
+            return
+
+        usage = self._account(run_id, task, step, result)
         self.ledger.finish_step(step["step_id"], "completed" if result.ok else "failed",
                                 output=result.output or "", error=result.error or "", meta=result.meta)
 
@@ -303,6 +341,10 @@ class RunEngine:
             self.ledger.update_task(task["task_id"], status="completed", result=result.output or "",
                                     error="", finished_at=_now(), event="task_completed",
                                     data={"title": task["title"]})
+            if result.replan and self._can_replan(run_id):
+                self.checkpoint(run_id, reason="step")
+                self._plan(run_id, "replan", f"requested by task {task['title']!r}: {result.replan}")
+                return
         elif result.ok:
             self.ledger.emit(run_id, "task_continued", {"title": task["title"]},
                              task_id=task["task_id"], step_id=step["step_id"])
@@ -316,10 +358,117 @@ class RunEngine:
                       "will_retry": not final})
             if final:
                 self.checkpoint(run_id, reason="task_failed")
+                if self._can_replan(run_id):
+                    self._plan(run_id, "replan",
+                               f"task {task['title']!r} failed: {(result.error or '')[:300]}")
+                    return
                 self.ledger.transition(run_id, "failed", error=result.error or "task failed",
                                        data={"reason": "task_failed", "task_id": task["task_id"]})
                 return
         self.checkpoint(run_id, reason="step")
+
+    def _account(self, run_id: str, task: dict, step: dict, result) -> dict:
+        """Record a step's tool calls and add its cost to the run's usage."""
+        for tc in result.tool_calls or []:
+            self.ledger.record_tool_call(
+                run_id, str(tc.get("tool") or "?"), tc.get("args") or {},
+                result=str(tc.get("result") or "")[:_RESULT_PREVIEW], status=tc.get("status") or "",
+                elapsed_ms=int(tc.get("elapsed_ms") or 0), task_id=task.get("task_id", ""),
+                step_id=step["step_id"])
+        usage = {**_USAGE_ZERO, **(self.ledger.require_run(run_id).get("usage") or {})}
+        usage["steps"] += 1
+        usage["model_calls"] += int(result.model_calls or 0)
+        usage["tool_calls"] += len(result.tool_calls or [])
+        usage["cost"] = round(usage["cost"] + float(getattr(result, "cost", 0.0) or 0.0), 6)
+        if not result.ok and isinstance(result, StepResult) and not (result.meta or {}).get("interrupted"):
+            usage["failures"] += 1
+        self.ledger.update_run(run_id, usage=usage)
+        return usage
+
+    # ── verification ─────────────────────────────────────────────────────
+
+    def _verify(self, run_id: str, task: dict, step: dict, output: str, checks: List[dict]):
+        ws = self.workspace(run_id)
+        base = ws.ensure().dir("workspace") if ws else None
+        self.ledger.transition(run_id, "verifying", event="verification_started",
+                               data={"task_id": task["task_id"], "checks": len(checks)})
+        passed, detail = _verify.run_checks(checks, output, base)
+        self.ledger.emit(run_id, "verification_passed" if passed else "verification_failed",
+                         {"results": detail}, task_id=task["task_id"], step_id=step["step_id"])
+        self.ledger.transition(run_id, "running", event="verification_finished",
+                               data={"passed": passed})
+        return passed, detail
+
+    # ── planning ─────────────────────────────────────────────────────────
+
+    def _can_replan(self, run_id: str) -> bool:
+        if self.planner is None:
+            return False
+        run = self.ledger.require_run(run_id)
+        limit = (run.get("budget") or {}).get("max_replans")
+        used = (run.get("usage") or {}).get("replans", 0)
+        if limit is not None and used >= limit:
+            self.ledger.emit(run_id, "replan_refused", {"reason": "max_replans", "used": used})
+            return False
+        return True
+
+    def _plan(self, run_id: str, mode: str, reason: str) -> None:
+        """Ask the planner for tasks. Initial planning falls back to one task = the
+        goal if the planner fails; a replan that yields nothing fails the run."""
+        run = self.ledger.require_run(run_id)
+        if mode == "replan":
+            self.ledger.emit(run_id, "replan_requested", {"reason": reason})
+        self.ledger.transition(run_id, "planning", event="planning_started",
+                               data={"mode": mode, "reason": reason})
+        tasks = self.ledger.list_tasks(run_id)
+        step = self.ledger.start_step(run_id, "", kind="plan", input={"mode": mode, "reason": reason})
+        usage = {**_USAGE_ZERO, **(run.get("usage") or {})}
+        pctx = PlanContext(engine=self, run=run, mode=mode, reason=reason, tasks=tasks,
+                           budget_remaining=self._remaining(run.get("budget") or {}, usage),
+                           workspace=self.workspace(run_id))
+        try:
+            res = self.planner(pctx)
+            if not isinstance(res, PlanResult):
+                raise TypeError(f"planner returned {type(res).__name__}, expected PlanResult")
+        except Exception as e:
+            res = PlanResult(ok=False, error=f"{type(e).__name__}: {e}", model_calls=0)
+        try:
+            specs = Ledger.normalize_task_specs(res.tasks) if (res.ok and res.tasks) else []
+        except LedgerError as e:
+            res.ok, res.error, specs = False, f"invalid plan: {e}", []
+        self._account(run_id, {}, step, res)
+        self.ledger.finish_step(step["step_id"], "completed" if specs else "failed",
+                                output=res.output or "", error=res.error or ("" if specs else "no tasks in plan"),
+                                meta=res.meta)
+        source = "planner"
+        if not specs:
+            if mode == "replan":
+                self.ledger.transition(run_id, "failed", error=f"replan produced no tasks ({res.error or 'empty plan'})",
+                                       data={"reason": "replan_failed"})
+                return
+            specs = [{"title": run["goal"][:200], "instructions": run["goal"]}]
+            source = "fallback"
+            self.ledger.emit(run_id, "plan_fallback", {"error": res.error or "no PLAN: lines"})
+        if mode == "replan":
+            for t in tasks:
+                if t["status"] in ("pending", "running"):
+                    self.ledger.update_task(t["task_id"], status="skipped", event="task_superseded",
+                                            data={"reason": reason})
+        for spec in specs:
+            self.ledger.add_task(run_id, spec["title"], spec.get("instructions", ""), meta=spec.get("meta"))
+        prev = run.get("plan") or {}
+        plan = {"version": int(prev.get("version", 0)) + 1, "source": source, "mode": mode,
+                "reason": reason, "tasks": [t["title"] for t in self.ledger.list_tasks(run_id)
+                                            if t["status"] not in ("skipped", "cancelled")]}
+        usage = {**_USAGE_ZERO, **(self.ledger.require_run(run_id).get("usage") or {})}
+        if mode == "replan":
+            usage["replans"] += 1
+            usage["failures"] = 0  # the new plan gets a fresh failure budget; max_steps still bounds the run
+        self.ledger.update_run(run_id, plan=plan, usage=usage)
+        self.ledger.emit(run_id, "plan_created", plan)
+        self.ledger.transition(run_id, "running", event="planning_finished",
+                               data={"tasks": len(specs), "version": plan["version"]})
+        self.checkpoint(run_id, reason="plan")
 
     def _finish_complete(self, run_id: str, tasks: List[dict]) -> dict:
         done = [t for t in tasks if t["status"] == "completed"]
@@ -343,8 +492,8 @@ class RunEngine:
     @staticmethod
     def _budget_exceeded(budget: dict, usage: dict) -> Optional[str]:
         for key, ukey in _BUDGET_TO_USAGE.items():
-            if key == "max_failures":
-                continue  # enforced at failure time (it decides retry vs fail)
+            if key in ("max_failures", "max_replans"):
+                continue  # enforced where they apply (retry-vs-fail, replan-vs-fail)
             limit = budget.get(key)
             if limit is not None and usage.get(ukey, 0) >= limit:
                 return key

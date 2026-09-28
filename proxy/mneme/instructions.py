@@ -181,13 +181,37 @@ DEFAULT_INSTRUCTIONS = {
         "\n"
         "Run goal: {{goal}}\n"
         "Current task ({{task_position}}): {{task_title}}\n"
+        "Run workspace (put files you create here; use absolute paths): {{workspace}}\n"
         "{{completed}}"
         "{{retry_note}}"
+        "{{verify_note}}"
         "Remaining budget: {{budget}}\n"
         "\n"
         "When the task is done, reply with its result directly. If you could not finish it, "
         "say plainly what blocked you — an honest failure is recorded and retried; a claimed "
-        "success that did not happen is worse."
+        "success that did not happen is worse. If you find the remaining plan is wrong, add "
+        "one line: REPLAN: <why>."
+    ),
+    "harness_plan": (
+        "=== MNEME HARNESS — PLANNING ===\n"
+        "Break the goal into a short, ordered list of concrete tasks. The harness runs them "
+        "one at a time; each task gets its own turn with your tools, and the results of "
+        "earlier tasks are passed to later ones. Do NOT do the work now — only plan it.\n"
+        "\n"
+        "Think in plain language first if it helps. Then write each task on its own line "
+        "starting with PLAN: . Where you can, follow a task with a line starting VERIFY: "
+        "giving a shell command that exits 0 only if the task really succeeded (it runs in "
+        "the run workspace: {{workspace}}). Use as few tasks as the goal needs (1 to "
+        "{{max_tasks}}).\n"
+        "\n"
+        "Goal: {{goal}}\n"
+        "{{context}}"
+        "Remaining budget: {{budget}}\n"
+        "\n"
+        "Example:\n"
+        "PLAN: Find the latest stable Python version on python.org\n"
+        "PLAN: Write that version number to {{workspace}}/notes.txt\n"
+        "VERIFY: grep -Eq '^3\\.[0-9]+' notes.txt"
     ),
     "meta_principles_header": "\n=== META-PRINCIPLES (always apply) ===\n",
     "user_preferences_header": "\n=== USER PREFERENCES (learned from explicit requests — honor these) ===",
@@ -222,7 +246,8 @@ INSTRUCTION_META = {
     "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
     "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
-    "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{completed}} {{retry_note}} {{budget}}", "harness.chat_executor"),
+    "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{budget}}", "harness.chat_executor"),
+    "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{context}} {{budget}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
     "system_directives_header": ("saved strategies are injected", "", "build_context"),

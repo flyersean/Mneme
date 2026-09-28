@@ -1088,6 +1088,24 @@ _bg_start_lock = threading.Lock()
 # abort, so a runaway "thinking" turn can be stopped without restarting the
 # proxy. Cleared at the start of each chat request.
 _cancel_event = threading.Event()
+# Per-thread cancel scope. A harness step runs process_chat with its OWN event
+# (set by the run's pause/cancel), so the chat UI's Stop button (the global
+# event) no longer stops a harness step, and a run's pause/cancel no longer
+# stops a chat turn. Threads without a scope use the global event as before.
+_cancel_local = threading.local()
+
+
+def _turn_cancel_event() -> threading.Event:
+    return getattr(_cancel_local, "event", None) or _cancel_event
+
+
+def _scoped_process_chat(messages, cancel_event=None, **kw):
+    """process_chat with a private cancel event for this thread (harness steps)."""
+    _cancel_local.event = cancel_event or threading.Event()
+    try:
+        return process_chat(messages, **kw)
+    finally:
+        _cancel_local.event = None
 
 def _bg_worker():
     while True:
@@ -2195,7 +2213,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
-            if _cancel_event.is_set():
+            if _turn_cancel_event().is_set():
                 print("  [CANCEL] user stopped the turn — aborting OpenRouter stream", flush=True)
                 finish_reason = "cancelled"
                 break
@@ -2506,7 +2524,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
-            if _cancel_event.is_set():
+            if _turn_cancel_event().is_set():
                 # User hit "Stop" — abort and return whatever we have so far.
                 print("  [CANCEL] user stopped the turn — aborting Ollama stream", flush=True)
                 done_reason = "cancelled"
@@ -5958,7 +5976,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _repeat_streak = 0
 
     for _round in range(_MAX_SERVER_ROUNDS):
-        if _cancel_event.is_set():
+        if _turn_cancel_event().is_set():
             # User hit "Stop" between rounds — end the turn immediately.
             result["done_reason"] = "cancelled"
             break
@@ -6730,10 +6748,12 @@ def _init_harness():
         return
     try:
         from mneme.harness import Ledger, RunEngine
-        from mneme.harness.chat_executor import make_chat_executor
+        from mneme.harness.chat_executor import make_chat_executor, make_chat_planner
         _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
         _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
-        HARNESS = RunEngine(Ledger(_hdb), make_chat_executor(process_chat), runs_root=_hruns,
+        _hlock = threading.Lock()  # one process_chat at a time across plan + task steps
+        HARNESS = RunEngine(Ledger(_hdb), make_chat_executor(_scoped_process_chat, lock=_hlock),
+                            planner=make_chat_planner(_scoped_process_chat, lock=_hlock), runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
         _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")
         print(f"  [HARNESS] enabled db={_hdb} runs={_hruns}"

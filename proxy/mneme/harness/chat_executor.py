@@ -20,9 +20,11 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from mneme.harness.engine import StepContext, StepResult
+from mneme.harness.engine import PlanContext, StepContext, StepResult
+from mneme.harness.planning import MAX_TASKS, PlanResult, find_replan, parse_plan
 
 _OBS_CHARS = 600
+_WATCH_INTERVAL = 0.5
 _FAIL_DONE_REASONS = {"cancelled", "error", "timeout"}
 
 
@@ -43,6 +45,13 @@ def _budget_line(remaining: dict) -> str:
     return ", ".join(parts) or "unlimited"
 
 
+def _workspace_dir(ws) -> str:
+    try:
+        return ws.ensure().dir("workspace") if ws is not None else "(none — use the tools directory)"
+    except OSError:
+        return "(unavailable)"
+
+
 def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] = None) -> list:
     if _load_instruction is None:
         from mneme.instructions import _load_instruction
@@ -61,8 +70,16 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
     if ctx.attempt > 1 and ctx.task.get("error"):
         retry_note = (f"This is attempt {ctx.attempt}. The previous attempt failed: "
                       f"{ctx.task['error'][:400]}\nTry a different approach.\n")
+    checks = (ctx.task.get("meta") or {}).get("verify") or []
+    verify_note = ""
+    if checks:
+        what = [c.get("command") or f"{c['type']} {c.get('path') or c.get('text') or c.get('pattern')}"
+                for c in checks]
+        verify_note = ("The harness will verify this task afterwards with: "
+                       + "; ".join(what)[:400] + "\n")
     system = _load_instruction("harness_task_context", vars={
         "goal": ctx.run["goal"], "task_position": position, "task_title": ctx.task["title"],
+        "workspace": _workspace_dir(ctx.workspace), "verify_note": verify_note,
         "completed": completed, "retry_note": retry_note,
         "budget": _budget_line(ctx.budget_remaining),
     })
@@ -76,8 +93,25 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
 
     def execute(ctx: StepContext) -> StepResult:
         messages = build_task_messages(ctx, _load_instruction)
+        stop = threading.Event()     # this step's private cancel event (see _scoped_process_chat)
+        done = threading.Event()
+
+        def watch():                 # turn a pause/cancel request into a mid-step interrupt
+            while not done.wait(_WATCH_INTERVAL):
+                try:
+                    if ctx.should_stop():
+                        stop.set()
+                        return
+                except Exception:
+                    return
+        watcher = threading.Thread(target=watch, name="mneme-step-watch", daemon=True)
         with lock:
-            r = process_chat(messages, session_id=f"run:{ctx.run['run_id']}", tools=None) or {}
+            watcher.start()
+            try:
+                r = process_chat(messages, session_id=f"run:{ctx.run['run_id']}", tools=None,
+                                 cancel_event=stop) or {}
+            finally:
+                done.set()
         content = (r.get("content") or "").strip()
         grade = r.get("_grade", "C")
         done_reason = r.get("done_reason") or ""
@@ -91,6 +125,10 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
         meta = {"grade": grade, "done_reason": done_reason,
                 "problem_type": r.get("problem_type", ""),
                 "context_injected": bool(r.get("context_injected"))}
+        if stop.is_set():
+            return StepResult(output=content, ok=False, model_calls=1, tool_calls=calls,
+                              meta={**meta, "interrupted": True},
+                              error="interrupted by a pause/cancel request")
         unexecuted = [((tc.get("function") or {}).get("name") or "?") for tc in (r.get("tool_calls") or [])]
         if unexecuted:
             return StepResult(output=content, ok=False, model_calls=1, tool_calls=calls, meta=meta,
@@ -104,6 +142,65 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
         if grade == "F":
             return StepResult(output=content, ok=False, model_calls=1, tool_calls=calls, meta=meta,
                               error="turn graded F (failed/fabricated): " + content[:200])
-        return StepResult(output=content, ok=True, model_calls=1, tool_calls=calls, meta=meta)
+        return StepResult(output=content, ok=True, model_calls=1, tool_calls=calls, meta=meta,
+                          replan=find_replan(content))
 
     return execute
+
+
+def _plan_context(pctx: PlanContext) -> str:
+    if pctx.mode != "replan":
+        return ""
+    lines = [f"This is a REPLAN. Reason: {pctx.reason}"]
+    done = [t for t in pctx.tasks if t["status"] == "completed"]
+    failed = [t for t in pctx.tasks if t["status"] == "failed"]
+    left = [t for t in pctx.tasks if t["status"] in ("pending", "running")]
+    if done:
+        lines.append("Completed (do NOT repeat):")
+        lines += [f"  - {t['title']} — {' '.join((t['result'] or '').split())[:_OBS_CHARS]}" for t in done]
+    if failed:
+        lines.append("Failed:")
+        lines += [f"  - {t['title']} — {(t['error'] or '')[:300]}" for t in failed]
+    if left:
+        lines.append("Not yet done (your new plan replaces these):")
+        lines += [f"  - {t['title']}" for t in left]
+    lines.append("Plan ONLY the remaining work, using a different approach where something failed.")
+    return "\n".join(lines) + "\n"
+
+
+def build_plan_messages(pctx: PlanContext, _load_instruction: Optional[Callable] = None) -> list:
+    if _load_instruction is None:
+        from mneme.instructions import _load_instruction
+    system = _load_instruction("harness_plan", vars={
+        "goal": pctx.run["goal"], "workspace": _workspace_dir(pctx.workspace),
+        "max_tasks": str(MAX_TASKS), "context": _plan_context(pctx),
+        "budget": _budget_line(pctx.budget_remaining),
+    })
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": f"Plan this goal: {pctx.run['goal']}"}]
+
+
+def make_chat_planner(process_chat: Callable, *, lock: Optional[threading.Lock] = None,
+                      _load_instruction: Optional[Callable] = None) -> Callable[[PlanContext], PlanResult]:
+    """Planner that asks the model (through process_chat) for PLAN:/VERIFY: lines.
+    Share the executor's lock so planning and task steps never overlap."""
+    lock = lock or threading.Lock()
+
+    def plan(pctx: PlanContext) -> PlanResult:
+        messages = build_plan_messages(pctx, _load_instruction)
+        with lock:
+            r = process_chat(messages, session_id=f"run:{pctx.run['run_id']}", tools=None,
+                             cancel_event=threading.Event()) or {}
+        content = (r.get("content") or "").strip()
+        calls = [{"tool": t.get("tool", "?"), "args": t.get("args") or {},
+                  "result": t.get("result") or "", "elapsed_ms": t.get("elapsed_ms") or 0,
+                  "status": _classify(t.get("result") or "", bool(t.get("blocked")))}
+                 for t in (r.get("tool_trace") or [])]
+        tasks = parse_plan(content)
+        meta = {"grade": r.get("_grade", "C"), "done_reason": r.get("done_reason") or ""}
+        if not tasks:
+            return PlanResult(ok=False, error="no PLAN: lines in the model's reply", output=content,
+                              tool_calls=calls, meta=meta)
+        return PlanResult(tasks=tasks, output=content, tool_calls=calls, meta=meta)
+
+    return plan

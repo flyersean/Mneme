@@ -910,10 +910,23 @@ curl -s localhost:8080/runs -H 'Content-Type: application/json' -d '{
 
 curl -s localhost:8080/runs/<run_id>            # status, tasks, steps, tool calls, artifacts
 curl -s localhost:8080/runs/<run_id>/events     # what happened, in order
-curl -s -X POST localhost:8080/runs/<run_id>/pause   # takes effect at the next step boundary
+curl -s -X POST localhost:8080/runs/<run_id>/pause   # interrupts the running step; resume re-runs it
 curl -s -X POST localhost:8080/runs/<run_id>/resume
 ```
 
+- **Planning.** Leave out `tasks` and the model plans first: it reasons in plain
+  language and marks tasks with `PLAN:` lines (optionally followed by
+  `VERIFY: <shell command>`). If a task dead-ends — or the model writes
+  `REPLAN: <why>` — the harness replans the remaining work (bounded by `max_replans`).
+  `"plan": false` skips planning (one task = the goal).
+- **Verification.** Give a task `"verify"` checks and the harness checks the work
+  itself after the model says it's done — a claim without the result is a failure:
+  `{"title": "Write notes.txt", "verify": [{"type": "file_contains", "path": "notes.txt", "text": "3.13"}]}`
+  (types: `command`, `file_exists`, `file_contains`, `output_contains`, `output_matches`;
+  paths and commands run in the run's `workspace/`).
+- **Pause/cancel interrupt a running step** within about a second; an interrupted
+  step re-runs on resume and doesn't count as a failure. The chat page's Stop button
+  only stops chat turns, not runs.
 - **Survives restarts.** A checkpoint is written after every step. A run interrupted
   by a crash comes back `paused` with a `run_interrupted` event; resume it and it
   continues from the interrupted task (completed tasks never re-run). Set

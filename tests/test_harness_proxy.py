@@ -26,7 +26,7 @@ os.environ["LABEL_MODEL"] = "test-label"
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "proxy"))
 import mneme_proxy as mp  # noqa: E402
-from mneme.harness.chat_executor import make_chat_executor  # noqa: E402
+from mneme.harness.chat_executor import make_chat_executor, make_chat_planner  # noqa: E402
 
 
 class FakeChat:
@@ -59,7 +59,9 @@ class TestHarnessProxy(unittest.TestCase):
     def setUpClass(cls):
         assert mp.HARNESS is not None, "harness failed to initialize in the proxy"
         cls.fake = FakeChat()
+        assert mp.HARNESS.planner is not None, "proxy should wire a planner"
         mp.HARNESS.executor = make_chat_executor(cls.fake)
+        mp.HARNESS.planner = make_chat_planner(cls.fake)
         cls.c = mp.app.test_client()
 
     def setUp(self):
@@ -105,7 +107,8 @@ class TestHarnessProxy(unittest.TestCase):
             {"content": "x", "_grade": "B", "done_reason": "stop",
              "tool_calls": [{"function": {"name": "client_tool"}}]},               # unexecutable
         ]
-        rid = self.c.post("/runs", json={"goal": "g", "budget": {"max_failures": 3}}).get_json()["run"]["run_id"]
+        rid = self.c.post("/runs", json={"goal": "g", "plan": False,
+                                         "budget": {"max_failures": 3}}).get_json()["run"]["run_id"]
         run = wait_status(self.c, rid, {"failed", "completed"})
         self.assertEqual(run["status"], "failed")
         errs = [s["error"] for s in self.c.get(f"/runs/{rid}").get_json()["steps"]]
@@ -114,6 +117,36 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertIn("client_tool", errs[2])
         self.c.post(f"/runs/{rid}/retry")
         self.assertEqual(wait_status(self.c, rid, {"completed"})["attempt"], 2)
+
+    def test_planned_run_via_http(self):
+        # Proxy wiring: no tasks -> the model plans (PLAN:/VERIFY: lines), harness executes + verifies.
+        ws_holder = {}
+
+        def plan_reply(messages, session_id="default", tools=None, **kw):
+            sys_txt = messages[0]["content"]
+            ws = sys_txt.split("run workspace: ")[1].split(")")[0]
+            ws_holder["ws"] = ws
+            return {"content": f"Two steps.\nPLAN: write the file\nVERIFY: test -f {ws}/out.txt\nPLAN: report",
+                    "_grade": "B", "done_reason": "stop"}
+
+        def write_reply(messages, **kw):
+            open(os.path.join(ws_holder["ws"], "out.txt"), "w").write("ok")
+            return {"content": "wrote it", "_grade": "B", "done_reason": "stop"}
+        orig_call = FakeChat.__call__
+        seq = [plan_reply, write_reply]
+        FakeChat.__call__ = lambda s, m, **kw: (seq.pop(0)(m, **kw) if seq else orig_call(s, m, **kw))
+        try:
+            rid = self.c.post("/runs", json={"goal": "make out.txt"}).get_json()["run"]["run_id"]
+            run = wait_status(self.c, rid, {"completed", "failed"})
+        finally:
+            FakeChat.__call__ = orig_call
+        self.assertEqual(run["status"], "completed", run.get("error"))
+        self.assertEqual(run["plan"]["source"], "planner", self.c.get(f"/runs/{rid}?events=1").get_json()["steps"][0])
+        d = self.c.get(f"/runs/{rid}?events=1").get_json()
+        self.assertEqual([t["title"] for t in d["tasks"]], ["write the file", "report"])
+        types = [e["type"] for e in d["events"]]
+        self.assertIn("verification_passed", types)
+        self.assertEqual(d["steps"][0]["kind"], "plan")
 
     def test_errors(self):
         self.assertEqual(self.c.get("/runs/run_nope").status_code, 404)

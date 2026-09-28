@@ -351,7 +351,9 @@ class Ledger:
                    profile: str = "", model: str = "", session_id: str = "",
                    parent_run_id: str = "", permissions: Optional[dict] = None,
                    meta: Optional[dict] = None, workspace: str = "",
-                   created_by: str = "user") -> dict:
+                   created_by: str = "user", defer_plan: bool = False) -> dict:
+        """Create a run. With defer_plan the run starts with NO tasks and a
+        pending plan; the engine's planner produces the tasks on first execution."""
         goal = (goal or "").strip()
         if not goal:
             raise LedgerError("a run needs a goal")
@@ -369,6 +371,9 @@ class Ledger:
         self.emit(run_id, "run_created", {"goal": goal, "budget": budget or {},
                                           "profile": profile, "parent_run_id": parent_run_id},
                   actor=created_by)
+        if defer_plan:
+            self.update_run(run_id, plan={"version": 0, "source": "pending", "tasks": []})
+            return self.get_run(run_id)
         specs = self._normalize_tasks(goal, tasks)
         for i, spec in enumerate(specs):
             self.add_task(run_id, spec["title"], spec.get("instructions", ""), seq=i,
@@ -383,6 +388,13 @@ class Ledger:
     def _normalize_tasks(goal: str, tasks: Optional[List]) -> List[dict]:
         if not tasks:
             return [{"title": goal[:200], "instructions": goal}]
+        return Ledger.normalize_task_specs(tasks)
+
+    @staticmethod
+    def normalize_task_specs(tasks: List) -> List[dict]:
+        """Validate task specs: strings, or {title|instructions, instructions?, verify?, meta?}.
+        A `verify` spec is validated and stored as meta['verify']."""
+        from mneme.harness.verify import VerifySpecError, normalize as _norm_verify
         out = []
         for t in tasks:
             if isinstance(t, str):
@@ -393,9 +405,15 @@ class Ledger:
                 title = str(t.get("title") or t.get("instructions") or "").strip()
                 if not title:
                     raise LedgerError(f"task needs a title or instructions: {t!r}")
+                meta = dict(t.get("meta") or {})
+                if t.get("verify") is not None:
+                    try:
+                        meta["verify"] = _norm_verify(t["verify"])
+                    except VerifySpecError as e:
+                        raise LedgerError(f"task {title[:60]!r}: {e}")
                 out.append({"title": title[:200],
                             "instructions": str(t.get("instructions") or title),
-                            "meta": t.get("meta") or {}})
+                            "meta": meta})
             else:
                 raise LedgerError(f"task must be a string or an object, got {type(t).__name__}")
         if not out:

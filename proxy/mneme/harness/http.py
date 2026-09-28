@@ -60,6 +60,7 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
                 parent_run_id=str(data.get("parent_run_id") or ""), meta=data.get("meta") or {},
                 created_by=str(data.get("created_by") or "user"),
                 start=bool(data.get("start", True)),
+                plan=(None if data.get("plan") is None else bool(data.get("plan"))),
             )
             return respond({"run": run}, 201)
         return _guard(go)
