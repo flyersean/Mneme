@@ -186,6 +186,23 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertEqual(out["tool_trace"], [])                      # bash was NOT executed
         self.assertEqual([tc["function"]["name"] for tc in out["tool_calls"]], ["bash"])  # -> step failure
 
+    def test_evolution_api_instruction_roundtrip(self):
+        from mneme.instructions import list_instructions
+        cur = lambda: next(i["content"] for i in list_instructions() if i["name"] == "harness_judge")
+        before = cur()
+        r = self.c.post("/evolution", json={"kind": "instruction", "target": "harness_judge",
+                                            "content": before + "\nBe terse.", "reason": "shorter verdicts"})
+        pid = r.get_json()["proposal"]["proposal_id"]
+        self.assertEqual(r.get_json()["proposal"]["status"], "proposed")    # L3: waits for approval
+        self.assertEqual(cur(), before)
+        self.assertEqual(self.c.post(f"/evolution/{pid}/approve").get_json()["proposal"]["status"], "applied")
+        self.assertTrue(cur().endswith("Be terse."))
+        self.assertEqual(self.c.post(f"/evolution/{pid}/rollback").get_json()["proposal"]["status"], "rolled_back")
+        self.assertEqual(cur(), before)
+        k = self.c.post("/evolution", json={"kind": "knowledge", "target": "t", "content": "note"}).get_json()
+        self.assertEqual(k["proposal"]["status"], "applied")
+        self.assertEqual(self.c.post("/evolution", json={"kind": "bogus", "target": "t", "content": "x"}).status_code, 400)
+
     def test_errors(self):
         self.assertEqual(self.c.get("/runs/run_nope").status_code, 404)
         self.assertEqual(self.c.post("/runs/run_nope/pause").status_code, 404)

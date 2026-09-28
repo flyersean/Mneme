@@ -198,6 +198,72 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
             return err
         return _guard(lambda: respond({"skill": reg.restore_version(name, int(_body().get("version") or 0))}))
 
+    # ── evolution (Phase 6) ──
+    def _evo():
+        eng, err = _engine()
+        if err:
+            return None, err
+        if getattr(eng, "evolution", None) is None:
+            return None, respond({"error": "self-improvement is not configured"}, 503)
+        return eng.evolution, None
+
+    @app.route("/evolution", methods=["GET"])
+    def harness_evolution_list():
+        evo, err = _evo()
+        if err:
+            return err
+        a = request.args
+        if a.get("kind") and a.get("target"):
+            return respond({"proposals": evo.changes_to(a["kind"], a["target"])})
+        return respond({"proposals": evo.list(status=a.get("status"), kind=a.get("kind"),
+                                              limit=int(a.get("limit", 100)))})
+
+    @app.route("/evolution", methods=["POST"])
+    def harness_evolution_propose():
+        evo, err = _evo()
+        if err:
+            return err
+        d = _body()
+        content = d.get("content")
+        if isinstance(content, (dict, list)):
+            import json as _json
+            content = _json.dumps(content)
+        return _guard(lambda: respond({"proposal": evo.propose(
+            str(d.get("kind") or ""), str(d.get("target") or ""), content,
+            reason=str(d.get("reason") or ""), evidence=d.get("evidence") or [], tests=d.get("tests"),
+            created_by=str(d.get("created_by") or "user"), level=d.get("level"))}, 201))
+
+    @app.route("/evolution/<pid>", methods=["GET"])
+    def harness_evolution_detail(pid):
+        evo, err = _evo()
+        if err:
+            return err
+        p = evo.get(pid)
+        if p is None:
+            return respond({"error": f"no such proposal: {pid}"}, 404)
+        return respond({"proposal": p, "log": evo.history(pid)})
+
+    def _evo_action(pid, action):
+        evo, err = _evo()
+        if err:
+            return err
+        d = _body()
+        actor = str(d.get("actor") or "user")
+
+        def go():
+            if action == "test":
+                return respond({"proposal": evo.test(pid, actor=actor)})
+            if action == "approve":
+                return respond({"proposal": evo.approve(pid, actor=actor)})
+            if action == "reject":
+                return respond({"proposal": evo.reject(pid, actor=actor, reason=str(d.get("reason") or ""))})
+            return respond({"proposal": evo.rollback(pid, actor=actor)})
+        return _guard(go)
+
+    for _a in ("test", "approve", "reject", "rollback"):
+        app.add_url_rule(f"/evolution/<pid>/{_a}", f"harness_evolution_{_a}",
+                         (lambda a: lambda pid: _evo_action(pid, a))(_a), methods=["POST"])
+
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):
         eng, err = _engine()

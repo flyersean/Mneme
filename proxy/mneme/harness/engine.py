@@ -136,7 +136,8 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
-                 capabilities=None, skills=None, judge=None, runs_root: Optional[str] = None,
+                 capabilities=None, skills=None, judge=None, evolution=None,
+                 runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
         self.ledger = ledger
@@ -146,8 +147,12 @@ class RunEngine:
         self.skills = skills                 # SkillRegistry (Phase 3) — optional
         self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
+        self.evolution = evolution            # Evolution (Phase 6) — optional
         if skills is not None:
             self.on_finish.append(_record_skill_outcomes)
+        if evolution is not None:
+            from mneme.harness.evolution import observe_run
+            self.on_finish.append(observe_run)
         self.runs_root = runs_root
         self.lease_seconds = float(lease_seconds)
         self.owner = process_owner(owner_tag)

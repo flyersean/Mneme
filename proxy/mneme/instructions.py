@@ -223,6 +223,15 @@ DEFAULT_INSTRUCTIONS = {
         "WORK:\n{{output}}\n\n"
         "Reply with PASS or FAIL on the first line, then one sentence explaining why."
     ),
+    "harness_reflect": (
+        "A task run just ended. Look at what happened and extract what is worth keeping "
+        "so the NEXT attempt at similar work goes better.\n\n"
+        "Goal: {{goal}}\nOutcome: {{outcome}}\nTasks:\n{{tasks}}\n\n"
+        "Write at most 3 lines starting with LESSON: — each a specific, reusable rule "
+        "grounded in what actually happened (not generic advice). If a reusable procedure "
+        "emerged, add one line: SKILL: <short-name> :: <one-line description> :: <the procedure>. "
+        "If nothing is worth keeping, write: LESSON: none"
+    ),
     "meta_principles_header": "\n=== META-PRINCIPLES (always apply) ===\n",
     "user_preferences_header": "\n=== USER PREFERENCES (learned from explicit requests — honor these) ===",
     "system_directives_header": "=== SYSTEM DIRECTIVES (learned from past experience) ===",
@@ -259,6 +268,7 @@ INSTRUCTION_META = {
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
     "harness_judge": ("a harness task has an llm_judge verify check", "{{criteria}} {{output}}", "_harness_judge"),
+    "harness_reflect": ("a harness run failed or needed recovery (harness.reflect: true)", "{{goal}} {{outcome}} {{tasks}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
     "system_directives_header": ("saved strategies are injected", "", "build_context"),

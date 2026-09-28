@@ -21,7 +21,7 @@ import threading
 from typing import Callable, Optional
 
 from mneme.harness.engine import PlanContext, StepContext, StepResult
-from mneme.harness.planning import MAX_TASKS, PlanResult, find_replan, parse_plan
+from mneme.harness.planning import MAX_TASKS, PlanResult, find_replan, parse_plan, parse_reflection
 
 _OBS_CHARS = 600
 _WATCH_INTERVAL = 0.5
@@ -222,3 +222,44 @@ def make_chat_planner(process_chat: Callable, *, lock: Optional[threading.Lock] 
         return PlanResult(tasks=tasks, output=content, tool_calls=calls, meta=meta)
 
     return plan
+
+
+def make_chat_reflector(process_chat: Callable, *, lock: Optional[threading.Lock] = None,
+                        _load_instruction: Optional[Callable] = None) -> Callable:
+    """on_finish hook: one reflection turn after a run that failed or needed
+    recovery. LESSON: lines become L1 knowledge; SKILL: lines become L2 skill
+    proposals (auto-applied, versioned). Costs one model call per such run."""
+    lock = lock or threading.Lock()
+    if _load_instruction is None:
+        from mneme.instructions import _load_instruction
+
+    def reflect(engine, run: dict) -> None:
+        evo = getattr(engine, "evolution", None)
+        if evo is None:
+            return
+        failures = engine.ledger.events(run["run_id"], types=["task_failed", "verification_failed"])
+        if run["status"] == "completed" and not failures:
+            return
+        tasks = engine.ledger.list_tasks(run["run_id"])
+        summary = "\n".join(f"- [{t['status']}] {t['title']}" + (f" — {t['error'][:200]}" if t["error"] else "")
+                            for t in tasks)
+        prompt = _load_instruction("harness_reflect", vars={
+            "goal": run["goal"], "outcome": run["status"] + (f": {run['error'][:300]}" if run.get("error") else ""),
+            "tasks": summary})
+        with lock:
+            r = process_chat([{"role": "user", "content": prompt}], session_id=f"run:{run['run_id']}",
+                             tools=None, cancel_event=threading.Event(), tool_grant=set()) or {}
+        lessons, skills = parse_reflection(r.get("content") or "")
+        for text in lessons:
+            evo.propose("knowledge", f"lesson:{run['run_id']}", text, reason="reflection",
+                        evidence=[run["run_id"]], created_by=f"run:{run['run_id']}")
+        if "skill" in evo.appliers:
+            import json as _json
+            for sk in skills:
+                cur = engine.skills.get(sk["name"]) if getattr(engine, "skills", None) else None
+                body = (cur["body"] + "\n\n" if cur and cur.get("body") else "") + sk["body"]
+                evo.propose("skill", sk["name"], _json.dumps({"description": sk["description"], "body": body}),
+                            reason="reflection", evidence=[run["run_id"]], created_by=f"run:{run['run_id']}")
+        engine.ledger.emit(run["run_id"], "reflected", {"lessons": len(lessons), "skills": len(skills)})
+
+    return reflect

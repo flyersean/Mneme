@@ -194,6 +194,8 @@ _CONFIG_ENV_MAP = {
     "harness.runs_dir": "MNEME_RUNS_DIR",
     "harness.auto_resume": "MNEME_HARNESS_AUTO_RESUME",
     "harness.lease_seconds": "MNEME_HARNESS_LEASE",
+    "harness.reflect": "MNEME_HARNESS_REFLECT",
+    "harness.auto_apply_level": "MNEME_HARNESS_AUTO_APPLY_LEVEL",
     "logging.max_entries": "MNEME_MAX_LOG_ENTRIES",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
@@ -6784,7 +6786,8 @@ def _init_harness():
         return
     try:
         from mneme.harness import Ledger, RunEngine
-        from mneme.harness.chat_executor import make_chat_executor, make_chat_planner
+        from mneme.harness.chat_executor import make_chat_executor, make_chat_planner, make_chat_reflector
+        from mneme.harness import evolution as _evo
         _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
         _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
         from mneme.harness.skills import SkillRegistry
@@ -6794,12 +6797,25 @@ def _init_harness():
         # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
                                                 os.path.join(DB_DIR, "skills")])
+        _evolution = _evo.Evolution(_hledger, appliers={
+            # L1 notes also go into memory, so the lesson is retrievable next time.
+            "knowledge": _evo.KnowledgeApplier(sink=lambda target, text: _stage_content(
+                f"[harness {target}] {text}", "harness")),
+            "skill": _evo.SkillApplier(_skills),
+            "instruction": _evo.CallableApplier(
+                read=lambda n: next((i["content"] for i in list_instructions() if i["name"] == n), None),
+                write=save_instruction),
+            "code": _evo.CodeApplier(REPO_ROOT, os.path.join(DB_DIR, "evolve")),
+        }, auto_apply_max_level=int(os.environ.get("MNEME_HARNESS_AUTO_APPLY_LEVEL", "2")))
         _caps = CapabilityContext(_skills, tool_names=lambda: [
             (t.get("function") or {}).get("name", "") for t in mntools.assemble_tools(None)])
         HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
-                            capabilities=_caps, skills=_skills, judge=_harness_judge, runs_root=_hruns,
+                            capabilities=_caps, skills=_skills, judge=_harness_judge,
+                            evolution=_evolution, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
+        if os.environ.get("MNEME_HARNESS_REFLECT", "0") == "1":
+            HARNESS.on_finish.append(make_chat_reflector(_scoped_process_chat, lock=_hlock))
         _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")
         print(f"  [HARNESS] enabled db={_hdb} runs={_hruns}"
               + (f" recovered={len(_rec)}" if _rec else ""), flush=True)

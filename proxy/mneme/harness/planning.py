@@ -60,6 +60,23 @@ def parse_plan(text: str, max_tasks: int = MAX_TASKS) -> List[dict]:
     return tasks[:max_tasks]
 
 
+_LESSON_LINE = re.compile(_PREFIX + r"LESSON\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.+?)\s*$", re.I | re.M)
+_SKILL_LINE = re.compile(_PREFIX + r"SKILL\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.+?)\s*$", re.I | re.M)
+
+
+def parse_reflection(text: str):
+    """LESSON: <text>  and  SKILL: <name> :: <description> :: <procedure>  lines."""
+    lessons = [m.group(1).strip() for m in _LESSON_LINE.finditer(text or "") if m.group(1).strip()]
+    skills = []
+    for m in _SKILL_LINE.finditer(text or ""):
+        parts = [p.strip() for p in m.group(1).split("::")]
+        if len(parts) >= 3 and parts[0] and parts[1]:
+            name = re.sub(r"[^a-z0-9_.-]+", "-", parts[0].lower()).strip("-")[:64]
+            if name:
+                skills.append({"name": name, "description": parts[1], "body": "::".join(parts[2:])})
+    return lessons[:5], skills[:2]
+
+
 def find_replan(text: str) -> str:
     m = _REPLAN_LINE.search(text or "")
     return m.group(1).strip() if m else ""
