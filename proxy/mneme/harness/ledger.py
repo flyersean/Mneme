@@ -406,6 +406,8 @@ class Ledger:
                 if not title:
                     raise LedgerError(f"task needs a title or instructions: {t!r}")
                 meta = dict(t.get("meta") or {})
+                if t.get("requires_approval"):
+                    meta["requires_approval"] = True
                 if t.get("verify") is not None:
                     try:
                         meta["verify"] = _norm_verify(t["verify"])
@@ -617,6 +619,13 @@ class Ledger:
         self.emit(step["run_id"], event or f"step_{status}",
                   {"error": error} if error else {}, task_id=step["task_id"], step_id=step_id)
         return self.get_step(step_id)
+
+    def update_step_meta(self, step_id: str, extra: dict) -> None:
+        step = self.get_step(step_id)
+        if step is None:
+            raise LedgerError(f"no such step: {step_id}")
+        self._write("UPDATE steps SET meta=? WHERE step_id=?",
+                    (self._enc({**(step.get("meta") or {}), **extra}), step_id))
 
     def get_step(self, step_id: str) -> Optional[dict]:
         return self._decode("steps", self._one("SELECT * FROM steps WHERE step_id=?", (step_id,)))

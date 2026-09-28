@@ -6767,6 +6767,16 @@ def _reset_memory():
 HARNESS = None
 
 
+def _harness_judge(criteria: str, output: str):
+    """llm_judge verify check: a short PASS/FAIL verdict from the configured model."""
+    prompt = _load_instruction("harness_judge", vars={"criteria": (criteria or "")[:1500],
+                                                     "output": (output or "")[:6000]})
+    r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+    text = (r.get("content") or "").strip()
+    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
+    return bool(m and m.group(1) == "PASS"), (text[:300] or "no verdict")
+
+
 def _init_harness():
     global HARNESS
     if os.environ.get("MNEME_HARNESS", "1") != "1":
@@ -6788,7 +6798,7 @@ def _init_harness():
             (t.get("function") or {}).get("name", "") for t in mntools.assemble_tools(None)])
         HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
-                            capabilities=_caps, skills=_skills, runs_root=_hruns,
+                            capabilities=_caps, skills=_skills, judge=_harness_judge, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
         _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")
         print(f"  [HARNESS] enabled db={_hdb} runs={_hruns}"

@@ -29,6 +29,7 @@ CHECK_TYPES = {
     "file_contains": ("path", "text"),
     "output_contains": ("text",),
     "output_matches": ("pattern",),
+    "llm_judge": ("criteria",),   # model-judged; supplements, never replaces, deterministic checks
 }
 _DEFAULT_TIMEOUT = 60
 _DETAIL = 500
@@ -69,9 +70,14 @@ def _resolve(base: str, path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(base, path)
 
 
-def run_check(check: dict, output: str, base_dir: str) -> Tuple[bool, str]:
+def run_check(check: dict, output: str, base_dir: str, judge=None) -> Tuple[bool, str]:
     kind = check["type"]
     try:
+        if kind == "llm_judge":
+            if judge is None:
+                return False, "no judge configured for llm_judge"
+            ok, why = judge(check["criteria"], output or "")
+            return bool(ok), f"judge: {why}"[:_DETAIL]
         if kind == "command":
             p = subprocess.run(check["command"], shell=True, cwd=base_dir, capture_output=True,
                                text=True, timeout=float(check.get("timeout") or _DEFAULT_TIMEOUT))
@@ -101,12 +107,19 @@ def run_check(check: dict, output: str, base_dir: str) -> Tuple[bool, str]:
     return False, f"unknown check {kind}"
 
 
-def run_checks(checks: List[dict], output: str, base_dir: Optional[str]) -> Tuple[bool, List[dict]]:
+def run_checks(checks: List[dict], output: str, base_dir: Optional[str],
+               judge=None) -> Tuple[bool, List[dict]]:
+    """Deterministic checks run first; an llm_judge check only runs if they all pass
+    (a judge must never rescue work that failed an objective check)."""
     base = base_dir or os.getcwd()
     os.makedirs(base, exist_ok=True)
     results = []
-    for c in checks:
-        ok, detail = run_check(c, output, base)
+    ordered = sorted(checks, key=lambda c: c["type"] == "llm_judge")
+    for c in ordered:
+        if c["type"] == "llm_judge" and not all(r["passed"] for r in results):
+            results.append({"check": c, "passed": False, "detail": "skipped: a deterministic check failed"})
+            continue
+        ok, detail = run_check(c, output, base, judge)
         results.append({"check": c, "passed": ok, "detail": detail})
     return all(r["passed"] for r in results), results
 
@@ -116,6 +129,6 @@ def summarize_failures(results: List[dict]) -> str:
     parts = []
     for r in bad:
         c = r["check"]
-        what = c.get("command") or c.get("path") or c.get("text") or c.get("pattern") or ""
+        what = c.get("command") or c.get("path") or c.get("text") or c.get("pattern") or c.get("criteria") or ""
         parts.append(f"{c['type']}({what}) — {r['detail']}")
     return "; ".join(parts)

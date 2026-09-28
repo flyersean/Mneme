@@ -36,6 +36,7 @@ from mneme.harness.ledger import (
 from mneme.harness.workspace import RunWorkspace
 from mneme.harness import verify as _verify
 from mneme.harness.planning import PlanResult
+from mneme.harness.failures import classify as _classify_failure
 
 DEFAULT_BUDGET = {
     "max_steps": 100,        # hard safety cap on steps per run
@@ -135,7 +136,7 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
-                 capabilities=None, skills=None, runs_root: Optional[str] = None,
+                 capabilities=None, skills=None, judge=None, runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
         self.ledger = ledger
@@ -143,6 +144,7 @@ class RunEngine:
         self.planner = planner
         self.capabilities = capabilities     # CapabilityContext (Phase 4) — optional
         self.skills = skills                 # SkillRegistry (Phase 3) — optional
+        self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         if skills is not None:
             self.on_finish.append(_record_skill_outcomes)
@@ -164,6 +166,13 @@ class RunEngine:
             raise LedgerError("plan requested but this engine has no planner")
         if defer and tasks:
             raise LedgerError("give either tasks or plan=true, not both")
+        perms = kw.get("permissions") or {}
+        if perms.get("grant") is not None:
+            from mneme.harness.capabilities import normalize_grant
+            try:
+                kw["permissions"] = {**perms, "grant": sorted(normalize_grant(perms["grant"]))}
+            except ValueError as e:
+                raise LedgerError(str(e))
         run = self.ledger.create_run(goal, tasks, budget=merge_budget(budget), defer_plan=defer, **kw)
         ws = self.workspace(run["run_id"])
         if ws is not None:
@@ -274,8 +283,17 @@ class RunEngine:
             if control == "cancel":
                 return self._finish_cancel(run_id)
 
-            if (run.get("plan") or {}).get("source") == "pending":
+            plan_state = run.get("plan") or {}
+            if plan_state.get("source") == "pending":
                 self._plan(run_id, "initial", "new run")
+                continue
+            if plan_state.get("pending_replan"):
+                reason = plan_state["pending_replan"]
+                self.ledger.update_run(run_id, plan={k: v for k, v in plan_state.items() if k != "pending_replan"})
+                if self._can_replan(run_id):
+                    self._plan(run_id, "replan", reason)
+                else:
+                    self._end(run_id, "failed", error=reason, data={"reason": "rejected"})
                 continue
 
             tasks = self.ledger.list_tasks(run_id)
@@ -289,6 +307,10 @@ class RunEngine:
                 self.checkpoint(run_id, reason="budget_exceeded")
                 return self._end(run_id, "failed", error=f"budget exceeded: {exceeded}",
                                               data={"reason": "budget_exceeded", "budget": exceeded})
+
+            if self._needs_approval(run, task):
+                self._request_approval(run_id, task)
+                return self.ledger.get_run(run_id)
 
             self._run_one_step(run, task, tasks, usage)
 
@@ -354,13 +376,15 @@ class RunEngine:
             self.ledger.emit(run_id, "task_continued", {"title": task["title"]},
                              task_id=task["task_id"], step_id=step["step_id"])
         else:
+            category = _classify_failure(result.error, result.meta)
+            self.ledger.update_step_meta(step["step_id"], {"failure_category": category})
             max_f = (run.get("budget") or {}).get("max_failures")
             final = (not result.retryable) or (max_f is not None and usage["failures"] >= max_f)
             self.ledger.update_task(
                 task["task_id"], status="failed" if final else "pending", error=result.error or "",
                 finished_at=_now() if final else "", event="task_failed",
                 data={"title": task["title"], "error": result.error, "attempt": task["attempts"],
-                      "will_retry": not final})
+                      "will_retry": not final, "category": category})
             if final:
                 self.checkpoint(run_id, reason="task_failed")
                 if self._can_replan(run_id):
@@ -397,7 +421,7 @@ class RunEngine:
         base = ws.ensure().dir("workspace") if ws else None
         self.ledger.transition(run_id, "verifying", event="verification_started",
                                data={"task_id": task["task_id"], "checks": len(checks)})
-        passed, detail = _verify.run_checks(checks, output, base)
+        passed, detail = _verify.run_checks(checks, output, base, judge=self.judge)
         self.ledger.emit(run_id, "verification_passed" if passed else "verification_failed",
                          {"results": detail}, task_id=task["task_id"], step_id=step["step_id"])
         self.ledger.transition(run_id, "running", event="verification_finished",
@@ -579,6 +603,58 @@ class RunEngine:
                                     error=s.get("error", ""))
         self.ledger.emit(run_id, "checkpoint_restored", {"checkpoint_id": checkpoint_id, "seq": cp["seq"]})
         return cp
+
+    # ── approvals ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _needs_approval(run: dict, task: dict) -> bool:
+        meta = task.get("meta") or {}
+        if meta.get("approved"):
+            return False
+        return bool(meta.get("requires_approval") or (run.get("meta") or {}).get("approve_each_task"))
+
+    def _request_approval(self, run_id: str, task: dict) -> None:
+        import json as _json
+        req = {"task_id": task["task_id"], "title": task["title"],
+               "instructions": task.get("instructions", ""), "requested_at": _now()}
+        self.checkpoint(run_id, reason="awaiting_approval")
+        self.ledger.transition(run_id, "awaiting_approval", event="approval_requested",
+                               data=req, approval_state=_json.dumps(req))
+        self._log(f"run {run_id} awaiting approval for task {task['title']!r}")
+
+    def _pending_approval(self, run_id: str) -> dict:
+        import json as _json
+        run = self.ledger.require_run(run_id)
+        if run["status"] != "awaiting_approval":
+            raise InvalidTransition(f"run {run_id} is {run['status']}, not awaiting_approval")
+        try:
+            return _json.loads(run.get("approval_state") or "{}")
+        except ValueError:
+            return {}
+
+    def approve(self, run_id: str, actor: str = "user", note: str = "", background: bool = True) -> dict:
+        req = self._pending_approval(run_id)
+        task = self.ledger.get_task(req.get("task_id", ""))
+        if task is None:
+            raise LedgerError(f"run {run_id}: approval refers to an unknown task")
+        self.ledger.update_task(task["task_id"], meta={**(task.get("meta") or {}), "approved": True,
+                                                       "approved_by": actor},
+                                event="approval_granted", data={"actor": actor, "note": note})
+        self.ledger.update_run(run_id, approval_state="")
+        return self.resume(run_id, background=background, actor=actor)
+
+    def reject(self, run_id: str, actor: str = "user", reason: str = "", background: bool = True) -> dict:
+        req = self._pending_approval(run_id)
+        task = self.ledger.get_task(req.get("task_id", ""))
+        why = f"rejected by {actor}" + (f": {reason}" if reason else "")
+        if task is not None:
+            self.ledger.update_task(task["task_id"], status="failed", error=why, finished_at=_now(),
+                                    event="approval_rejected", data={"actor": actor, "reason": reason})
+        run = self.ledger.require_run(run_id)
+        plan = dict(run.get("plan") or {})
+        plan["pending_replan"] = f"task {req.get('title', '?')!r} was {why}"
+        self.ledger.update_run(run_id, approval_state="", plan=plan)
+        return self.resume(run_id, background=background, actor=actor)
 
     # ── control ──────────────────────────────────────────────────────────
 

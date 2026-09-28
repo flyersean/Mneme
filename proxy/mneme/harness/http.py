@@ -58,6 +58,7 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
                 data.get("goal") or "", tasks, budget=data.get("budget") or {},
                 profile=str(data.get("profile") or ""), session_id=str(data.get("session_id") or ""),
                 parent_run_id=str(data.get("parent_run_id") or ""), meta=data.get("meta") or {},
+                permissions=data.get("permissions") or {},
                 created_by=str(data.get("created_by") or "user"),
                 start=bool(data.get("start", True)),
                 plan=(None if data.get("plan") is None else bool(data.get("plan"))),
@@ -135,13 +136,17 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
                 run = eng.resume(run_id, checkpoint_id=data.get("checkpoint_id") or None, actor=actor)
             elif action == "retry":
                 run = eng.retry(run_id, actor=actor)
+            elif action == "approve":
+                run = eng.approve(run_id, actor=actor, note=str(data.get("note") or ""))
+            elif action == "reject":
+                run = eng.reject(run_id, actor=actor, reason=str(data.get("reason") or ""))
             else:  # checkpoint
                 eng.ledger.require_run(run_id)
                 return respond({"checkpoint": eng.checkpoint(run_id, reason=str(data.get("reason") or "manual"))})
             return respond({"run": run})
         return _guard(go)
 
-    for _action in ("pause", "cancel", "resume", "retry", "checkpoint"):
+    for _action in ("pause", "cancel", "resume", "retry", "checkpoint", "approve", "reject"):
         app.add_url_rule(f"/runs/<run_id>/{_action}", f"harness_run_ctl_{_action}",
                          (lambda a: lambda run_id: _control(run_id, a))(_action), methods=["POST"])
 
