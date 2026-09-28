@@ -887,6 +887,42 @@ Two hard rules apply:
 | GET | `/memory/sources` | Distinct source/model/grade/trust values (populates the page's filters) |
 | GET | `/memory/log` | Audit log of every curation action, who, and why |
 | GET | `/memory/lineage/<id>` | What was built on top of this chunk |
+| POST | `/runs` | Create a durable agent run — `{"goal", "tasks"?, "budget"?, "start"?}` (see below) |
+| GET | `/runs`, `/runs/<id>` | List runs (`?status=`) / full run detail (`?events=1`) |
+| GET | `/runs/<id>/events` | Append-only event stream (`?after=<event_id>`, `?types=`) |
+| POST | `/runs/<id>/pause`, `/resume`, `/cancel`, `/retry`, `/checkpoint` | Run control (`resume` takes `{"checkpoint_id"?}`) |
+
+## Agent harness (runs)
+
+A **run** is one execution of a goal that outlives a single chat turn. The harness —
+not the model — owns its state: tasks, steps, tool calls, artifacts, checkpoints and
+an append-only event log live in `harness.db` beside the shared memory DB. Each step
+is one ordinary Mneme turn (memory, tools, grading), so a run gets everything a chat
+does. A step only counts as done when the harness sees it succeed (not graded F, not
+empty, no unexecutable tool calls) — the model saying "done" is not enough.
+
+```bash
+# create + start a run with two tasks and a budget
+curl -s localhost:8080/runs -H 'Content-Type: application/json' -d '{
+  "goal": "Find the latest Python release and write it to notes.txt",
+  "tasks": ["Find the latest stable Python version", "Write it to notes.txt"],
+  "budget": {"max_steps": 10, "max_failures": 2}}'
+
+curl -s localhost:8080/runs/<run_id>            # status, tasks, steps, tool calls, artifacts
+curl -s localhost:8080/runs/<run_id>/events     # what happened, in order
+curl -s -X POST localhost:8080/runs/<run_id>/pause   # takes effect at the next step boundary
+curl -s -X POST localhost:8080/runs/<run_id>/resume
+```
+
+- **Survives restarts.** A checkpoint is written after every step. A run interrupted
+  by a crash comes back `paused` with a `run_interrupted` event; resume it and it
+  continues from the interrupted task (completed tasks never re-run). Set
+  `harness.auto_resume: true` to resume automatically.
+- **Budgets** (`max_steps`, `max_failures`, `max_model_calls`, `max_tool_calls`,
+  `max_runtime`, `max_cost`) are enforced by the harness before every step.
+- **Retry** a failed/cancelled run with `POST /runs/<id>/retry` — completed tasks are kept.
+- Workspaces: `<db dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}`.
+- Design and roadmap: [`docs/harness/`](docs/harness/) (audit, ADRs, handoff).
 
 ## Testing
 

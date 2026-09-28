@@ -194,6 +194,7 @@ models:                              # per-model overrides; keyed by EXACT model
 | `caps` | `max_history_messages` 32, `db_msg_cap` 8000, `compress_threshold` 500, `compress_max_tok` 2048, `max_tool_forward` 12000, `tool_followup_tokens` 10000, `chunk_size` 4000 |
 | `tools` | `native` auto, `search_memory` true, `list_tools` true, `read_tool` true, `read_file` true, `fetch_url` true, `web_search` true — per-tool on/off (false hides the tool from the model) |
 | `models.<name>` | `temperature`, `top_p`, `top_k`, `num_ctx`, `max_tokens`, `reasoning_field`, `quirks` [] |
+| `harness` | `enabled` true, `db_path` <db dir>/harness.db, `runs_dir` <db dir>/runs, `auto_resume` false, `lease_seconds` 120 |
 
 **Critical rules:**
 - `retrieval.inject_min_similarity` is **embedder-dependent**. Every embedding model has its
@@ -247,6 +248,13 @@ IGNORED — the proxy does not silently override its own config.
 | POST | `/mode/think` | Novelty thinking mode |
 | POST | `/mode/learn` | Learning mode |
 | GET/POST | `/preferences` | User preferences |
+| POST | `/runs` | Create a durable harness run `{"goal", "tasks"?, "budget"?, "start"?}` |
+| GET | `/runs`, `/runs/<id>`, `/runs/<id>/events` | Run list / detail / append-only event stream |
+| POST | `/runs/<id>/{pause,resume,cancel,retry,checkpoint}` | Run control |
+
+The agent harness (`proxy/mneme/harness/`) is **core**, not an extension — see
+`docs/harness/`. Extensions may drive it over the `/runs` HTTP API like any other
+endpoint.
 
 ---
 

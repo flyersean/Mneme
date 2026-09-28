@@ -284,6 +284,24 @@ mcp_servers:
   # - name: my-tool
   #   url: http://localhost:9001/mcp
 
+# Agent harness — durable runs (goal → tasks → steps) that survive restarts.
+# Each step is one normal Mneme turn (memory + tools + grading); the harness keeps
+# the state, checkpoints after every step, and enforces per-run budgets.
+# API: POST /runs, GET /runs/<id>, POST /runs/<id>/{pause,resume,cancel,retry}.
+harness:
+  enabled: true
+  # Ledger file. Default <dir of storage.db_path>/harness.db — beside the SHARED
+  # memory DB, so every proxy sharing that DB sees every run.
+  # db_path: ~/mneme/chunks/harness.db
+  # Per-run workspaces: <runs_dir>/<run_id>/{input,workspace,artifacts,logs,checkpoints}
+  # runs_dir: ~/mneme/chunks/runs
+  # Runs interrupted by a crash/restart come back PAUSED. true = resume them
+  # automatically at startup (the interrupted step re-runs — tool side effects
+  # like bash/write may repeat, which is why this is off by default).
+  auto_resume: false
+  # Seconds without a heartbeat before another process may take over a run.
+  lease_seconds: 120
+
 # Runtime behavior.
 runtime:
   # Hot-reload master switch. true (default) = config + prompts + swarm_config are
