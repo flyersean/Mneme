@@ -6792,12 +6792,17 @@ def _init_harness():
         _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
         from mneme.harness.skills import SkillRegistry
         from mneme.harness.context import CapabilityContext
+        from mneme.harness.profiles import ProfileStore
         _hlock = threading.Lock()  # one process_chat at a time across plan + task steps
         _hledger = Ledger(_hdb)
         # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
                                                 os.path.join(DB_DIR, "skills")])
+        _profiles = ProfileStore(_hledger)
         _evolution = _evo.Evolution(_hledger, appliers={
+            "profile": _evo.CallableApplier(
+                read=lambda n: (lambda p: json.dumps(p["spec"]) if p else None)(_profiles.get(n)),
+                write=lambda n, c: _profiles.upsert(n, json.loads(c), actor="evolution")),
             # L1 notes also go into memory, so the lesson is retrievable next time.
             "knowledge": _evo.KnowledgeApplier(sink=lambda target, text: _stage_content(
                 f"[harness {target}] {text}", "harness")),
@@ -6812,7 +6817,7 @@ def _init_harness():
         HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
-                            evolution=_evolution, runs_root=_hruns,
+                            evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
         if os.environ.get("MNEME_HARNESS_REFLECT", "0") == "1":
             HARNESS.on_finish.append(make_chat_reflector(_scoped_process_chat, lock=_hlock))

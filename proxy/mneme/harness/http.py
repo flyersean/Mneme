@@ -264,6 +264,38 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
         app.add_url_rule(f"/evolution/<pid>/{_a}", f"harness_evolution_{_a}",
                          (lambda a: lambda pid: _evo_action(pid, a))(_a), methods=["POST"])
 
+    # ── profiles (Phase 7) ──
+    @app.route("/profiles", methods=["GET"])
+    def harness_profiles_list():
+        eng, err = _engine()
+        if err:
+            return err
+        if eng.profiles is None:
+            return respond({"error": "profiles not configured"}, 503)
+        return respond({"profiles": eng.profiles.list()})
+
+    @app.route("/profiles", methods=["POST"])
+    def harness_profiles_upsert():
+        eng, err = _engine()
+        if err:
+            return err
+        if eng.profiles is None:
+            return respond({"error": "profiles not configured"}, 503)
+        d = _body()
+        return _guard(lambda: respond({"profile": eng.profiles.upsert(
+            d.get("name") or "", d.get("spec") or {}, actor=str(d.get("actor") or "user"),
+            reason=str(d.get("reason") or ""))}, 201))
+
+    @app.route("/profiles/<name>", methods=["GET"])
+    def harness_profile_detail(name):
+        eng, err = _engine()
+        if err:
+            return err
+        p = eng.profiles.get(name) if eng.profiles else None
+        if p is None:
+            return respond({"error": f"no such profile: {name}"}, 404)
+        return respond({"profile": p, "history": eng.profiles.history(name)})
+
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):
         eng, err = _engine()

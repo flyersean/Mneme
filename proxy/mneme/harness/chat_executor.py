@@ -60,6 +60,13 @@ def capability_text(engine, run: dict, query: str, brief: bool = False):
     return text, chosen
 
 
+def _artifacts_note(ws) -> str:
+    try:
+        return f" (final deliverables for the user go in {ws.dir('artifacts')})" if ws is not None else ""
+    except Exception:
+        return ""
+
+
 def _workspace_dir(ws) -> str:
     try:
         return ws.ensure().dir("workspace") if ws is not None else "(none — use the tools directory)"
@@ -94,7 +101,7 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
                        + "; ".join(what)[:400] + "\n")
     system = _load_instruction("harness_task_context", vars={
         "goal": ctx.run["goal"], "task_position": position, "task_title": ctx.task["title"],
-        "workspace": _workspace_dir(ctx.workspace), "verify_note": verify_note,
+        "workspace": _workspace_dir(ctx.workspace) + _artifacts_note(ctx.workspace), "verify_note": verify_note,
         "capabilities": capability_text(ctx.engine, ctx.run, ctx.task.get("instructions") or ctx.task["title"])[0],
         "completed": completed, "retry_note": retry_note,
         "budget": _budget_line(ctx.budget_remaining),

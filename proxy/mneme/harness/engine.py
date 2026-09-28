@@ -136,7 +136,7 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
-                 capabilities=None, skills=None, judge=None, evolution=None,
+                 capabilities=None, skills=None, judge=None, evolution=None, profiles=None,
                  runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
@@ -148,6 +148,8 @@ class RunEngine:
         self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         self.evolution = evolution            # Evolution (Phase 6) — optional
+        self.profiles = profiles              # ProfileStore (Phase 7) — optional
+        self.on_finish.append(_capture_artifacts)
         if skills is not None:
             self.on_finish.append(_record_skill_outcomes)
         if evolution is not None:
@@ -165,7 +167,15 @@ class RunEngine:
     def create(self, goal: str, tasks: Optional[List] = None, *, budget: Optional[dict] = None,
                start: bool = False, plan: Optional[bool] = None, **kw) -> dict:
         """plan=None: let the planner produce tasks when none are given (if a planner
-        is configured); plan=True forces planning; plan=False never plans."""
+        is configured); plan=True forces planning; plan=False never plans.
+        profile=<name> merges that profile's budget/grant/skills/approval defaults
+        UNDER the explicit arguments."""
+        if kw.get("profile"):
+            if self.profiles is None:
+                raise LedgerError("profiles are not configured on this harness")
+            budget, kw["permissions"], kw["meta"], plan = self.profiles.apply_to(
+                kw["profile"], budget=budget, permissions=kw.get("permissions"),
+                meta=kw.get("meta"), plan=plan)
         defer = (not tasks and self.planner is not None) if plan is None else bool(plan)
         if defer and self.planner is None:
             raise LedgerError("plan requested but this engine has no planner")
@@ -777,3 +787,23 @@ def _record_skill_outcomes(engine: "RunEngine", run: dict) -> None:
         engine.skills.record_outcome(used, run["status"] == "completed")
         engine.ledger.emit(run["run_id"], "skills_recorded", {"skills": sorted(used),
                                                                "success": run["status"] == "completed"})
+
+
+def _capture_artifacts(engine: "RunEngine", run: dict) -> None:
+    """on_finish hook: register every file in the run's artifacts/ dir not yet recorded."""
+    ws = engine.workspace(run["run_id"])
+    if ws is None:
+        return
+    import os as _os
+    base = ws.dir("artifacts")
+    if not _os.path.isdir(base):
+        return
+    known = {a["path"] for a in engine.ledger.list_artifacts(run["run_id"])}
+    for root, dirs, files in _os.walk(base):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in sorted(files):
+            p = _os.path.abspath(_os.path.join(root, f))
+            if f.startswith(".") or p in known:
+                continue
+            engine.ledger.add_artifact(run["run_id"], p, description="captured from artifacts/",
+                                       provenance={"captured": "auto", "run_status": run["status"]})
