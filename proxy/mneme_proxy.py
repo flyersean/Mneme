@@ -5629,6 +5629,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         print("  [SETTINGS] reported current effective settings", flush=True)
         return {"content": report, "tool_calls": [], "eval_count": 0, "done_reason": "settings"}
 
+    # ── Harness control commands: /status, /runs, /approve ... (user-typed, never the model) ──
+    if full_user_msg.strip().startswith("/"):
+        _hreply = _harness_command(full_user_msg.strip())
+        if _hreply is not None:
+            print(f"  [HARNESS-CMD] {full_user_msg.strip()[:60]}", flush=True)
+            return {"content": _hreply, "tool_calls": [], "eval_count": 0, "done_reason": "command"}
+
     # ── Retrieval threshold: <<RETRIEVAL ...>> ──
     # <<RETRIEVAL>>            -> show the retrieval section
     # <<RETRIEVAL k=v [k=v]>>  -> set keys (written to mneme.yaml, hot-reloaded)
@@ -6779,6 +6786,47 @@ def _harness_judge(criteria: str, output: str):
     return bool(m and m.group(1) == "PASS"), (text[:300] or "no verdict")
 
 
+def _harness_extras() -> dict:
+    """Proxy-side data sources for harness commands (/strategies, /memory, /config, ...)."""
+    def strategies(_arg=""):
+        rows = db.execute("SELECT strategy_id, version, outcome, use_count, strategy_text FROM strategies "
+                          "WHERE retired=0 ORDER BY created_at DESC LIMIT 15").fetchall()
+        return "\n".join(f"  {r[0]} v{r[1]} [{r[2]}] used {r[3]}x — {r[4][:90]}" for r in rows) or "no strategies"
+
+    def search(q=""):
+        if not q:
+            return "usage: /search <query>"
+        hits = route_query(q, top_k=5, with_scores=True) or []
+        out = []
+        for h in hits:
+            a, b = (h if isinstance(h, (list, tuple)) else (h, None))[:2]
+            cid, score = (b, a) if isinstance(a, float) else (a, b)
+            ch = load_chunk(cid) or {}
+            out.append(f"  {cid}" + (f" sim {score:.2f}" if isinstance(score, float) else "")
+                       + f" — {ch.get('topic_label', '')[:80]}")
+        return "\n".join(out) or "no matching memory"
+
+    return {
+        "tools": lambda: [(t.get("function") or {}).get("name", "") for t in mntools.assemble_tools(None)],
+        "strategies": strategies,
+        "search": search,
+        "config": lambda _a="": _chatcmd.format_settings(_settings_snapshot()),
+        "models": lambda _a="": f"model={MODEL} backend={MNEME_BACKEND} embed={EMBED_MODEL} label={LABEL_MODEL}",
+    }
+
+
+def _harness_command(text: str):
+    """A /command typed in chat -> harness reply, or None (not a command / inside a run step)."""
+    if HARNESS is None or getattr(_cancel_local, "event", None) is not None:
+        return None
+    from mneme.harness.commands import handle
+    try:
+        return handle(text, HARNESS, extras=_harness_extras())
+    except Exception as e:
+        _log_error("harness:command", e)
+        return f"command failed: {type(e).__name__}: {e}"
+
+
 def _init_harness():
     global HARNESS
     if os.environ.get("MNEME_HARNESS", "1") != "1":
@@ -6873,7 +6921,8 @@ if FLASK_OK:
             return _cors_response({"error": str(e)}, status=500)
 
     from mneme.harness import http as _harness_http
-    _harness_http.register(app, lambda: HARNESS, _cors_response)
+    _harness_http.register(app, lambda: HARNESS, _cors_response, extras=_harness_extras,
+                           static_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 
     @app.route("/strategies/<strategy_id>/history", methods=["GET"])
     def strategy_history(strategy_id):

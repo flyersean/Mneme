@@ -671,6 +671,20 @@ class RunEngine:
         self.ledger.update_run(run_id, approval_state="", plan=plan)
         return self.resume(run_id, background=background, actor=actor)
 
+    def request_replan(self, run_id: str, reason: str = "", actor: str = "user") -> dict:
+        """Ask for a replan of the remaining work (applied at the next step boundary)."""
+        run = self.ledger.require_run(run_id)
+        if run["status"] in TERMINAL_STATES:
+            raise InvalidTransition(f"run {run_id} is {run['status']} — nothing to replan")
+        if self.planner is None:
+            raise LedgerError("this harness has no planner")
+        plan = dict(run.get("plan") or {})
+        plan["pending_replan"] = f"requested by {actor}: {reason or 'no reason given'}"
+        self.ledger.update_run(run_id, plan=plan)
+        if self._executing_now(run) or run["status"] == "awaiting_approval":
+            return self.ledger.get_run(run_id)
+        return self.resume(run_id, actor=actor)
+
     # ── control ──────────────────────────────────────────────────────────
 
     def _executing_now(self, run: dict) -> bool:

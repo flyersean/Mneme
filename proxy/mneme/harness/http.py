@@ -22,8 +22,10 @@ from typing import Callable, Optional
 from mneme.harness.ledger import InvalidTransition, LedgerError
 
 
-def register(app, get_engine: Callable[[], Optional[object]], respond: Callable):
+def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
+             extras: Optional[Callable[[], dict]] = None, static_dir: Optional[str] = None):
     from flask import request
+    import os as _os
 
     def _engine():
         eng = get_engine()
@@ -295,6 +297,38 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
         if p is None:
             return respond({"error": f"no such profile: {name}"}, 404)
         return respond({"profile": p, "history": eng.profiles.history(name)})
+
+    # ── control plane (Phase 8) ──
+    @app.route("/harness/command", methods=["POST"])
+    def harness_command():
+        eng, err = _engine()
+        if err:
+            return err
+        from mneme.harness.commands import handle
+        d = _body()
+        text = str(d.get("text") or "")
+        reply = handle(text if text.startswith("/") else "/" + text, eng,
+                       extras=(extras() if extras else None), actor=str(d.get("actor") or "user"))
+        if reply is None:
+            return respond({"error": "unknown command — try /help"}, 400)
+        return respond({"reply": reply})
+
+    @app.route("/harness/metrics", methods=["GET"])
+    def harness_metrics():
+        eng, err = _engine()
+        if err:
+            return err
+        from mneme.harness.metrics import compute
+        return respond(compute(eng.ledger, eng.skills, eng.evolution))
+
+    @app.route("/runs/ui", methods=["GET"])
+    def harness_runs_ui():
+        path = _os.path.join(static_dir or "", "runs.html")
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except OSError:
+            return respond({"error": "runs UI not found"}, 404)
 
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):

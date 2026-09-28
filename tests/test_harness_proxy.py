@@ -203,6 +203,32 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertEqual(k["proposal"]["status"], "applied")
         self.assertEqual(self.c.post("/evolution", json={"kind": "bogus", "target": "t", "content": "x"}).status_code, 400)
 
+    def test_control_plane(self):
+        # /commands typed in chat are answered by the harness without calling the model
+        orig = mp.query_model
+        mp.query_model = lambda *a, **k: (_ for _ in ()).throw(AssertionError("model must not be called"))
+        try:
+            out = mp.process_chat([{"role": "user", "content": "/help"}])
+        finally:
+            mp.query_model = orig
+        self.assertEqual(out["done_reason"], "command")
+        self.assertIn("/approve", out["content"])
+        r = self.c.post("/harness/command", json={"text": "/profiles"})
+        self.assertIn("researcher", r.get_json()["reply"])
+        self.assertIn("model=", self.c.post("/harness/command", json={"text": "models"}).get_json()["reply"])
+        self.assertEqual(self.c.post("/harness/command", json={"text": "/nope"}).status_code, 400)
+        self.assertIn("runs", self.c.get("/harness/metrics").get_json())
+        ui = self.c.get("/runs/ui")
+        self.assertEqual(ui.status_code, 200)
+        self.assertIn(b"System evolution", ui.data)
+        # inside a harness step, a task that starts with "/" is NOT treated as a command
+        import threading
+        mp._cancel_local.event = threading.Event()
+        try:
+            self.assertIsNone(mp._harness_command("/help"))
+        finally:
+            mp._cancel_local.event = None
+
     def test_errors(self):
         self.assertEqual(self.c.get("/runs/run_nope").status_code, 404)
         self.assertEqual(self.c.post("/runs/run_nope/pause").status_code, 404)

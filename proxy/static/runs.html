@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Runs</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --green:#16a34a; --red:#dc2626; --amber:#b45309; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; font-weight:650; }
+  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main { padding:20px 28px; max-width:1280px; margin:0 auto; }
+  .tabs { display:flex; gap:6px; margin-bottom:16px; }
+  .tabs button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  h2 { margin:0 0 8px; font-size:15px; font-weight:650; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  tr.click { cursor:pointer; } tr.click:hover { background:var(--panel); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:var(--panel); border:1px solid var(--line); }
+  .s-completed,.s-applied,.s-passed { color:var(--green); } .s-failed,.s-rolled_back,.s-test_failed,.s-rejected { color:var(--red); }
+  .s-awaiting_approval,.s-proposed,.s-paused,.s-branch_ready { color:var(--amber); } .s-running,.s-planning,.s-verifying { color:var(--accent); }
+  button { font:inherit; font-size:12px; padding:4px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  .grid { display:grid; grid-template-columns: 1fr 1.25fr; gap:20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .events { max-height:360px; overflow:auto; }
+  input, textarea { font:inherit; font-size:13px; padding:6px 8px; border:1px solid var(--line); border-radius:7px; width:100%; }
+  pre { white-space:pre-wrap; font-size:12px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px; max-height:320px; overflow:auto; }
+  .row { display:flex; gap:8px; align-items:center; margin:8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mneme — Runs</h1>
+  <div class="row" style="margin:0"><button onclick="refresh()">Refresh</button><span id="msg" class="hint" style="margin:0"></span></div>
+</header>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+  <a href="/ollama">Ollama</a>
+  <a href="/runs/ui" class="active">Runs</a>
+</nav>
+<main>
+  <div class="tabs">
+    <button data-tab="runs" class="on">Runs</button>
+    <button data-tab="skills">Skills</button>
+    <button data-tab="evolution">System evolution</button>
+    <button data-tab="profiles">Profiles</button>
+    <button data-tab="metrics">Metrics</button>
+    <button data-tab="command">Command</button>
+  </div>
+
+  <section id="tab-runs">
+    <div class="panel" style="margin-bottom:16px">
+      <h2>New run</h2>
+      <div class="row"><input id="goal" placeholder="Goal — the model plans the tasks"><input id="profile" placeholder="profile (optional)" style="max-width:180px"><button onclick="createRun()">Start</button></div>
+    </div>
+    <div class="grid">
+      <div><h2>Runs</h2><table><thead><tr><th>Status</th><th>Goal</th><th>Created</th></tr></thead><tbody id="runs"></tbody></table></div>
+      <div id="detail" class="panel"><p class="hint">Select a run.</p></div>
+    </div>
+  </section>
+
+  <section id="tab-skills" hidden>
+    <h2>Skills</h2><p class="hint">Versioned, reusable procedures. Click one for its history.</p>
+    <table><thead><tr><th>Skill</th><th>Version</th><th>Uses / success</th><th>Source</th><th>Description</th></tr></thead><tbody id="skills"></tbody></table>
+    <div id="skillDetail"></div>
+  </section>
+
+  <section id="tab-evolution" hidden>
+    <h2>System evolution</h2><p class="hint">What changed, why, who changed it, the evidence, and whether it was tested.</p>
+    <table><thead><tr><th>Status</th><th>Level</th><th>Kind : target</th><th>Reason</th><th>By</th><th>Evidence</th><th></th></tr></thead><tbody id="evo"></tbody></table>
+  </section>
+
+  <section id="tab-profiles" hidden>
+    <h2>Profiles</h2><table><thead><tr><th>Name</th><th>Version</th><th>Spec</th></tr></thead><tbody id="profiles"></tbody></table>
+  </section>
+
+  <section id="tab-metrics" hidden><h2>Metrics</h2><pre id="metrics"></pre></section>
+
+  <section id="tab-command" hidden>
+    <h2>Harness command</h2><p class="hint">Same commands as typing <span class="mono">/help</span> in chat.</p>
+    <div class="row"><input id="cmd" placeholder="/status last" onkeydown="if(event.key==='Enter')runCmd()"><button onclick="runCmd()">Run</button></div>
+    <pre id="cmdOut"></pre>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const badge = (s) => `<span class="badge s-${esc(s)}">${esc(s)}</span>`;
+let current = null;
+async function api(path, opts) {
+  const r = await fetch(path, opts && opts.body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(opts.body)} : opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("msg").textContent = j.error || ("HTTP " + r.status); throw new Error(j.error); }
+  $("msg").textContent = ""; return j;
+}
+const post = (path, body) => api(path, {body: body || {}});
+
+async function loadRuns() {
+  const {runs} = await api("/runs?limit=100");
+  $("runs").innerHTML = runs.map(r => `<tr class="click" onclick="showRun('${r.run_id}')"><td>${badge(r.status)}</td><td>${esc(r.goal.slice(0,90))}<div class="mono">${r.run_id}</div></td><td class="mono">${esc(r.created_at.slice(0,19))}</td></tr>`).join("") || `<tr><td colspan=3 class="hint">No runs yet.</td></tr>`;
+}
+async function showRun(id) {
+  current = id;
+  const d = await api(`/runs/${id}?events=1`);
+  const r = d.run, u = r.usage || {};
+  const act = (a) => `<button onclick="control('${a}')">${a}</button>`;
+  const actions = {created:["pause","cancel"], running:["pause","cancel"], planning:["pause","cancel"], verifying:["pause","cancel"],
+                   paused:["resume","cancel"], awaiting_approval:["approve","reject","cancel"], failed:["retry"], cancelled:["retry"]}[r.status] || [];
+  $("detail").innerHTML = `
+    <h2>${esc(r.goal)}</h2>
+    <div class="row">${badge(r.status)} <span class="mono">${r.run_id}</span>${r.profile ? ` · profile <b>${esc(r.profile)}</b>` : ""}</div>
+    <div class="row">${actions.map(act).join(" ")}</div>
+    ${r.status === "awaiting_approval" ? `<p><b>Waiting for approval:</b> ${esc(JSON.parse(r.approval_state || "{}").title)}</p>` : ""}
+    ${r.error ? `<p class="s-failed">${esc(r.error)}</p>` : ""}
+    <p class="hint">plan v${(r.plan||{}).version ?? 0} (${esc((r.plan||{}).source)}) · steps ${u.steps||0} · model calls ${u.model_calls||0} · tool calls ${u.tool_calls||0} · replans ${u.replans||0} · failures ${u.failures||0} · runtime ${u.runtime_s||0}s</p>
+    <h2>Tasks</h2><table>${d.tasks.map(t => `<tr><td>${badge(t.status)}</td><td>${esc(t.title)}${t.error ? `<div class="s-failed">${esc(t.error.slice(0,200))}</div>` : ""}</td></tr>`).join("")}</table>
+    ${r.result ? `<h2 style="margin-top:12px">Result</h2><pre>${esc(r.result)}</pre>` : ""}
+    <h2 style="margin-top:12px">Artifacts</h2>${d.artifacts.map(a => `<div class="mono">${esc(a.path)} · ${a.size}B · ${esc(a.sha256.slice(0,12))}</div>`).join("") || `<p class="hint">none</p>`}
+    <h2 style="margin-top:12px">Tool calls (${d.tool_calls.length})</h2>${d.tool_calls.slice(-15).map(c => `<div class="mono">${badge(c.status || "?")} ${esc(c.tool)} ${esc(JSON.stringify(c.args).slice(0,120))}</div>`).join("")}
+    <h2 style="margin-top:12px">Events</h2><div class="events"><table>${(d.events||[]).slice().reverse().map(e => `<tr><td class="mono">${esc(e.created_at.slice(11,19))}</td><td>${esc(e.type)}</td><td class="mono">${esc(JSON.stringify(e.data).slice(0,160))}</td></tr>`).join("")}</table></div>`;
+}
+async function control(action) {
+  const body = {};
+  if (action === "reject") body.reason = prompt("Reason for rejecting?") || "";
+  await post(`/runs/${current}/${action}`, body);
+  setTimeout(() => { showRun(current); loadRuns(); }, 300);
+}
+async function createRun() {
+  const goal = $("goal").value.trim(); if (!goal) return;
+  const body = {goal}; if ($("profile").value.trim()) body.profile = $("profile").value.trim();
+  const {run} = await post("/runs", body);
+  $("goal").value = ""; await loadRuns(); showRun(run.run_id);
+}
+async function loadSkills() {
+  const {skills} = await api("/skills?all=1");
+  $("skills").innerHTML = skills.map(s => `<tr class="click" onclick="showSkill('${esc(s.name)}')"><td><b>${esc(s.name)}</b>${s.active ? "" : " (inactive)"}</td><td>v${s.version}</td><td>${s.uses} / ${s.successes}</td><td class="mono">${esc(s.source)}</td><td>${esc(s.description)}</td></tr>`).join("");
+}
+async function showSkill(name) {
+  const d = await api(`/skills/${encodeURIComponent(name)}`);
+  $("skillDetail").innerHTML = `<div class="panel" style="margin-top:14px"><h2>${esc(name)} — history</h2>${d.history.map(h => `<p><b>v${h.version}</b> by ${esc(h.actor)} ${esc(h.created_at.slice(0,19))} — ${esc(h.reason)} <button onclick="restoreSkill('${esc(name)}', ${h.version})">restore</button></p>`).join("")}<pre>${esc(d.skill.body)}</pre></div>`;
+}
+async function restoreSkill(name, v) { await post(`/skills/${encodeURIComponent(name)}/restore`, {version: v}); loadSkills(); showSkill(name); }
+async function loadEvo() {
+  const {proposals} = await api("/evolution?limit=200").catch(() => ({proposals: []}));
+  const acts = (p) => ({proposed:["test","approve","reject"], tested:["approve","reject"], test_failed:["reject"], branch_ready:["reject"], applied:["rollback"]}[p.status] || [])
+    .map(a => `<button onclick="evoAct('${p.proposal_id}','${a}')">${a}</button>`).join(" ");
+  $("evo").innerHTML = proposals.map(p => `<tr><td>${badge(p.status)}</td><td>L${p.level}</td><td class="mono">${esc(p.kind)} : ${esc(p.target)}</td><td>${esc(p.reason)}<details><summary class="hint">content</summary><pre>${esc(p.content)}</pre>${p.previous != null ? `<summary class="hint">previous</summary><pre>${esc(p.previous)}</pre>` : ""}</details></td><td class="mono">${esc(p.created_by)}${p.decided_by ? " → " + esc(p.decided_by) : ""}</td><td class="mono">${(p.evidence||[]).map(esc).join(" ")}</td><td>${acts(p)}</td></tr>`).join("") || `<tr><td colspan=7 class="hint">No proposals yet.</td></tr>`;
+}
+async function evoAct(id, a) { await post(`/evolution/${id}/${a}`); loadEvo(); }
+async function loadProfiles() {
+  const {profiles} = await api("/profiles");
+  $("profiles").innerHTML = profiles.map(p => `<tr><td><b>${esc(p.name)}</b></td><td>v${p.version}</td><td class="mono">${esc(JSON.stringify(p.spec))}</td></tr>`).join("");
+}
+async function loadMetrics() { $("metrics").textContent = JSON.stringify(await api("/harness/metrics"), null, 2); }
+async function runCmd() {
+  const text = $("cmd").value.trim(); if (!text) return;
+  try { $("cmdOut").textContent = (await post("/harness/command", {text})).reply; } catch (e) { $("cmdOut").textContent = e.message; }
+}
+const loaders = {runs: loadRuns, skills: loadSkills, evolution: loadEvo, profiles: loadProfiles, metrics: loadMetrics, command: () => {}};
+let tab = "runs";
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  tab = b.dataset.tab;
+  Object.keys(loaders).forEach(k => $("tab-" + k).hidden = k !== tab);
+  loaders[tab]();
+});
+function refresh() { loaders[tab](); if (tab === "runs" && current) showRun(current); }
+refresh();
+setInterval(() => { if (tab === "runs") refresh(); }, 5000);
+</script>
+</body>
+</html>
