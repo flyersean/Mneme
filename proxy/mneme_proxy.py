@@ -187,6 +187,12 @@ _CONFIG_ENV_MAP = {
     "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
+    # Agent harness (durable runs) — see docs/harness/.
+    "harness.enabled": "MNEME_HARNESS",
+    "harness.db_path": "MNEME_HARNESS_DB",
+    "harness.runs_dir": "MNEME_RUNS_DIR",
+    "harness.auto_resume": "MNEME_HARNESS_AUTO_RESUME",
+    "harness.lease_seconds": "MNEME_HARNESS_LEASE",
     "logging.max_entries": "MNEME_MAX_LOG_ENTRIES",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
@@ -6709,6 +6715,35 @@ def _reset_memory():
     print("  [RESET] memory wiped (chunks/strategies/tools/edges/faiss/staging)", flush=True)
 
 
+# ─── Agent harness (durable runs) ───────────────────────────────
+# Standalone package (mneme/harness) bound here like capability/tools. A failure
+# to start disables ONLY the harness — chat/memory keep working. Runs live in
+# their own ledger file beside the shared memory DB, so every proxy sharing the
+# DB directory sees every run. See docs/harness/.
+HARNESS = None
+
+
+def _init_harness():
+    global HARNESS
+    if os.environ.get("MNEME_HARNESS", "1") != "1":
+        print("  [HARNESS] disabled (harness.enabled: false)", flush=True)
+        return
+    try:
+        from mneme.harness import Ledger, RunEngine
+        from mneme.harness.chat_executor import make_chat_executor
+        _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
+        _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
+        HARNESS = RunEngine(Ledger(_hdb), make_chat_executor(process_chat), runs_root=_hruns,
+                            lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
+        _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")
+        print(f"  [HARNESS] enabled db={_hdb} runs={_hruns}"
+              + (f" recovered={len(_rec)}" if _rec else ""), flush=True)
+    except Exception as e:
+        _log_error("harness:init", e)
+        print(f"  [HARNESS][ERR] failed to start — harness disabled: {e}", flush=True)
+        HARNESS = None
+
+
 if FLASK_OK:
     app = Flask(__name__)
     CORS(app)
@@ -6750,6 +6785,9 @@ if FLASK_OK:
             return _cors_response(snap)
         except Exception as e:
             return _cors_response({"error": str(e)}, status=500)
+
+    from mneme.harness import http as _harness_http
+    _harness_http.register(app, lambda: HARNESS, _cors_response)
 
     @app.route("/admin/reload", methods=["POST"])
     def admin_reload():
@@ -7409,6 +7447,7 @@ if FLASK_OK:
                 "eval_count": result.get("eval_count", 0),
                 "eval_duration": result.get("eval_count", 0) * 1000000,
             })
+            return resp
     
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None, session_id="default", options=None, max_tokens=None):
@@ -8179,6 +8218,7 @@ BASELINE_NOISE = _clamp_noise_baseline(_raw_noise)
 print(f"  [STARTUP] Noise baseline: {BASELINE_NOISE:.4f} "
       f"(raw {_raw_noise:.4f}, clamp {INJECT_MIN_SIMILARITY - 0.15:.4f})", flush=True)
 _dump_config()
+_init_harness()
 print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
 

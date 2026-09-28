@@ -848,7 +848,7 @@ def test_instruction_sync_no_orphans_no_missing():
     call_re = _re.compile(r'_load_instruction\(\s*[\'"]([a-z_]+)[\'"]')
     used = set()
     paths = [os.path.join(_PROXY_DIR, "mneme_proxy.py")]
-    paths += _glob.glob(os.path.join(_PROXY_DIR, "mneme", "*.py"))
+    paths += _glob.glob(os.path.join(_PROXY_DIR, "mneme", "**", "*.py"), recursive=True)
     for p in paths:
         used.update(call_re.findall(open(p).read()))
     assert not (used - names), f"injection sites reference undefined instructions: {used - names}"

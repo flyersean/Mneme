@@ -173,6 +173,22 @@ DEFAULT_INSTRUCTIONS = {
         "a complete answer. If you are genuinely blocked, explain what you found and what "
         "is still missing — but only after you have actually tried again."
     ),
+    "harness_task_context": (
+        "=== MNEME HARNESS — RUN CONTEXT ===\n"
+        "You are working on one task of a larger run. The harness keeps the run's state "
+        "(plan, progress, results) — you do not need to remember it. Do the CURRENT task "
+        "only, using your tools as needed.\n"
+        "\n"
+        "Run goal: {{goal}}\n"
+        "Current task ({{task_position}}): {{task_title}}\n"
+        "{{completed}}"
+        "{{retry_note}}"
+        "Remaining budget: {{budget}}\n"
+        "\n"
+        "When the task is done, reply with its result directly. If you could not finish it, "
+        "say plainly what blocked you — an honest failure is recorded and retried; a claimed "
+        "success that did not happen is worse."
+    ),
     "meta_principles_header": "\n=== META-PRINCIPLES (always apply) ===\n",
     "user_preferences_header": "\n=== USER PREFERENCES (learned from explicit requests — honor these) ===",
     "system_directives_header": "=== SYSTEM DIRECTIVES (learned from past experience) ===",
@@ -206,6 +222,7 @@ INSTRUCTION_META = {
     "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
     "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
+    "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{completed}} {{retry_note}} {{budget}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
     "system_directives_header": ("saved strategies are injected", "", "build_context"),
