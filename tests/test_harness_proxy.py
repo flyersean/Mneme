@@ -148,6 +148,44 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertIn("verification_passed", types)
         self.assertEqual(d["steps"][0]["kind"], "plan")
 
+    def test_strategy_history_endpoint(self):
+        mp._save_strategy("ALWAYS check the exit code of a build step.", "A", abstract=False,
+                          problem_type="code", created_by="run:test")
+        sid = mp.db.execute("SELECT strategy_id FROM strategies ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+        h = self.c.get(f"/strategies/{sid}/history").get_json()
+        self.assertEqual(h["current"]["created_by"], "run:test")
+        self.assertEqual([x["event"] for x in h["history"]], ["saved"])
+
+    def test_skills_api_and_shipped_skill(self):
+        self.assertIn("swarm-creation", [s["name"] for s in self.c.get("/skills").get_json()["skills"]])
+        r = self.c.post("/skills", json={"name": "t-skill", "description": "test skill", "body": "v1"})
+        self.assertEqual(r.status_code, 201)
+        self.c.post("/skills", json={"name": "t-skill", "description": "test skill", "body": "v2"})
+        d = self.c.get("/skills/t-skill").get_json()
+        self.assertEqual((d["skill"]["version"], len(d["history"])), (2, 2))
+        self.assertEqual(self.c.post("/skills/t-skill/restore", json={"version": 1}).get_json()["skill"]["body"], "v1")
+        self.assertEqual(self.c.post("/skills", json={"name": "BAD NAME", "description": "x"}).status_code, 400)
+
+    def test_tool_grant_hides_and_blocks_tools(self):
+        seen = []
+
+        def qm(messages, tools=None, **kw):
+            seen.append({(t.get("function") or {}).get("name") for t in (tools or [])})
+            if len(seen) == 1:
+                return {"content": "", "done_reason": "stop", "eval_count": 1,
+                        "tool_calls": [{"id": "x", "function": {"name": "bash", "arguments": {"command": "echo hi"}}}]}
+            return {"content": "done [guess]", "done_reason": "stop", "eval_count": 1, "tool_calls": []}
+        orig = mp.query_model
+        mp.query_model = qm
+        try:
+            out = mp._scoped_process_chat([{"role": "user", "content": "run echo"}], tool_grant={"read-only"})
+        finally:
+            mp.query_model = orig
+        self.assertNotIn("bash", seen[0])
+        self.assertIn("read_file", seen[0])
+        self.assertEqual(out["tool_trace"], [])                      # bash was NOT executed
+        self.assertEqual([tc["function"]["name"] for tc in out["tool_calls"]], ["bash"])  # -> step failure
+
     def test_errors(self):
         self.assertEqual(self.c.get("/runs/run_nope").status_code, 404)
         self.assertEqual(self.c.post("/runs/run_nope/pause").status_code, 404)

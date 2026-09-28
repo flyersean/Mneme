@@ -45,6 +45,21 @@ def _budget_line(remaining: dict) -> str:
     return ", ".join(parts) or "unlimited"
 
 
+def run_grant(run: dict):
+    """The run's tool permission grant (None = unrestricted, same power as chat)."""
+    g = (run.get("permissions") or {}).get("grant")
+    return set(g) if g is not None else None
+
+
+def capability_text(engine, run: dict, query: str, brief: bool = False):
+    cap = getattr(engine, "capabilities", None)
+    if cap is None:
+        return "", []
+    pinned = (run.get("meta") or {}).get("skills") or []
+    text, chosen = cap.build(f"{query}\n{' '.join(pinned)}", grant=run_grant(run), brief=brief)
+    return text, chosen
+
+
 def _workspace_dir(ws) -> str:
     try:
         return ws.ensure().dir("workspace") if ws is not None else "(none — use the tools directory)"
@@ -80,6 +95,7 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
     system = _load_instruction("harness_task_context", vars={
         "goal": ctx.run["goal"], "task_position": position, "task_title": ctx.task["title"],
         "workspace": _workspace_dir(ctx.workspace), "verify_note": verify_note,
+        "capabilities": capability_text(ctx.engine, ctx.run, ctx.task.get("instructions") or ctx.task["title"])[0],
         "completed": completed, "retry_note": retry_note,
         "budget": _budget_line(ctx.budget_remaining),
     })
@@ -109,7 +125,7 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
             watcher.start()
             try:
                 r = process_chat(messages, session_id=f"run:{ctx.run['run_id']}", tools=None,
-                                 cancel_event=stop) or {}
+                                 cancel_event=stop, tool_grant=run_grant(ctx.run)) or {}
             finally:
                 done.set()
         content = (r.get("content") or "").strip()
@@ -123,6 +139,7 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
             "elapsed_ms": t.get("elapsed_ms") or 0,
         } for t in (r.get("tool_trace") or [])]
         meta = {"grade": grade, "done_reason": done_reason,
+                "skills": capability_text(ctx.engine, ctx.run, ctx.task.get("instructions") or ctx.task["title"])[1],
                 "problem_type": r.get("problem_type", ""),
                 "context_injected": bool(r.get("context_injected"))}
         if stop.is_set():
@@ -174,6 +191,7 @@ def build_plan_messages(pctx: PlanContext, _load_instruction: Optional[Callable]
     system = _load_instruction("harness_plan", vars={
         "goal": pctx.run["goal"], "workspace": _workspace_dir(pctx.workspace),
         "max_tasks": str(MAX_TASKS), "context": _plan_context(pctx),
+        "capabilities": capability_text(pctx.engine, pctx.run, pctx.run["goal"], brief=True)[0],
         "budget": _budget_line(pctx.budget_remaining),
     })
     return [{"role": "system", "content": system},
@@ -190,7 +208,7 @@ def make_chat_planner(process_chat: Callable, *, lock: Optional[threading.Lock] 
         messages = build_plan_messages(pctx, _load_instruction)
         with lock:
             r = process_chat(messages, session_id=f"run:{pctx.run['run_id']}", tools=None,
-                             cancel_event=threading.Event()) or {}
+                             cancel_event=threading.Event(), tool_grant=run_grant(pctx.run)) or {}
         content = (r.get("content") or "").strip()
         calls = [{"tool": t.get("tool", "?"), "args": t.get("args") or {},
                   "result": t.get("result") or "", "elapsed_ms": t.get("elapsed_ms") or 0,

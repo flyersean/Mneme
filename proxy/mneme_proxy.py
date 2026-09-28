@@ -91,6 +91,7 @@ import mneme.tools as mntools
 import mneme.curation as curation
 import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
+import mneme.strategy_history as _strat_hist
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -1099,13 +1100,25 @@ def _turn_cancel_event() -> threading.Event:
     return getattr(_cancel_local, "event", None) or _cancel_event
 
 
-def _scoped_process_chat(messages, cancel_event=None, **kw):
-    """process_chat with a private cancel event for this thread (harness steps)."""
+def _scoped_process_chat(messages, cancel_event=None, tool_grant=None, **kw):
+    """process_chat for a harness step: a private cancel event, and (optionally) a
+    permission grant — tools whose permission level is not granted are neither
+    offered to the model nor executed."""
     _cancel_local.event = cancel_event or threading.Event()
+    _cancel_local.tool_grant = set(tool_grant) if tool_grant is not None else None
     try:
         return process_chat(messages, **kw)
     finally:
         _cancel_local.event = None
+        _cancel_local.tool_grant = None
+
+
+def _turn_tool_ok(name: str) -> bool:
+    grant = getattr(_cancel_local, "tool_grant", None)
+    if grant is None:
+        return True
+    from mneme.harness.capabilities import allowed
+    return allowed(name, grant)
 
 def _bg_worker():
     while True:
@@ -1282,6 +1295,8 @@ db.commit()
 # Memory curation schema (retraction / recurrence / provenance / decision log).
 # Additive + idempotent, same style as the migrations above.
 curation.ensure_schema(db)
+# Strategy version history + provenance (harness Phase 3) — additive.
+_strat_hist.ensure_schema(db)
 # Backfill: mark failure-derived strategies as FAILURE so they inject under the
 # "do NOT do this" header rather than as success examples. Only matches the old
 # "FAILURE on:"/"TRUNCATED on:" text — new failures set outcome at insert time.
@@ -5696,7 +5711,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     # Full tool list = read-only server tools (search_memory/list_tools/read_tool)
     # + native bootstrap (bash/write, flag-gated) + client passthrough, deduped.
-    msg_tools = mntools.assemble_tools(tools)
+    msg_tools = [t for t in mntools.assemble_tools(tools)
+                 if _turn_tool_ok((t.get("function") or {}).get("name", ""))]
     # Convert OpenAI-format tool_calls to Ollama format in incoming messages
     for m in messages:
         for tc in m.get("tool_calls", []):
@@ -5907,6 +5923,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # showed up as an empty answer plus "passing tool call through to client".
     _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_curation_tools()}
     _mcp_names = mntools.mcp_tool_names() - _readonly_names - _native_names  # MCP tools (shadowed on name collision)
+    # Harness permission grant: an ungranted tool is not executed server-side even if
+    # the model names it anyway (it falls through to passthrough -> step failure).
+    _native_names = {n for n in _native_names if _turn_tool_ok(n)}
+    _readonly_names = {n for n in _readonly_names if _turn_tool_ok(n)}
+    _mcp_names = {n for n in _mcp_names if _turn_tool_ok(n)}
     _server_names = _readonly_names | _native_names | _mcp_names
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
@@ -6526,7 +6547,8 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
-def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk=""):
+def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk="",
+                   created_by="model", reason=""):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example.
     # abstract=False skips the model call for lessons that are already general
@@ -6565,6 +6587,8 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
     def _insert_strategy():
+        # Keep the version being replaced (INSERT OR REPLACE would erase it).
+        _strat_hist.snapshot(db, sid, "superseded", actor=created_by, reason=reason)
         db.execute("INSERT OR REPLACE INTO strategies "
                    "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
                    "version, parent_id, effective_grade, use_count, success_count, retired, "
@@ -6572,6 +6596,8 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
              new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
+        _strat_hist.set_provenance(db, sid, created_by=created_by, derived_from=parent or "")
+        _strat_hist.snapshot(db, sid, "saved", actor=created_by, reason=reason)
 
     _db_write_retry(_insert_strategy)
     # Linkage backfill: when a strategy is saved with no source_chunk (the turn's
@@ -6751,9 +6777,18 @@ def _init_harness():
         from mneme.harness.chat_executor import make_chat_executor, make_chat_planner
         _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
         _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
+        from mneme.harness.skills import SkillRegistry
+        from mneme.harness.context import CapabilityContext
         _hlock = threading.Lock()  # one process_chat at a time across plan + task steps
-        HARNESS = RunEngine(Ledger(_hdb), make_chat_executor(_scoped_process_chat, lock=_hlock),
-                            planner=make_chat_planner(_scoped_process_chat, lock=_hlock), runs_root=_hruns,
+        _hledger = Ledger(_hdb)
+        # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
+        _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
+                                                os.path.join(DB_DIR, "skills")])
+        _caps = CapabilityContext(_skills, tool_names=lambda: [
+            (t.get("function") or {}).get("name", "") for t in mntools.assemble_tools(None)])
+        HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
+                            planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
+                            capabilities=_caps, skills=_skills, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
         _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")
         print(f"  [HARNESS] enabled db={_hdb} runs={_hruns}"
@@ -6808,6 +6843,16 @@ if FLASK_OK:
 
     from mneme.harness import http as _harness_http
     _harness_http.register(app, lambda: HARNESS, _cors_response)
+
+    @app.route("/strategies/<strategy_id>/history", methods=["GET"])
+    def strategy_history(strategy_id):
+        row = db.execute("SELECT strategy_id, version, strategy_text, created_by, derived_from, "
+                         "validated_by, use_count, success_count, effective_grade, retired "
+                         "FROM strategies WHERE strategy_id=?", (strategy_id,)).fetchone()
+        cols = ("strategy_id", "version", "strategy_text", "created_by", "derived_from",
+                "validated_by", "use_count", "success_count", "effective_grade", "retired")
+        return _cors_response({"current": dict(zip(cols, row)) if row else None,
+                               "history": _strat_hist.history(db, strategy_id)})
 
     @app.route("/admin/reload", methods=["POST"])
     def admin_reload():
@@ -7349,6 +7394,7 @@ if FLASK_OK:
                     pass
                 new_version = existing_version + 1
                 with _db_lock:
+                    _strat_hist.snapshot(db, sid, "superseded", actor="model", reason="STRATEGY: tag")
                     db.execute("INSERT OR REPLACE INTO strategies "
                                "(strategy_id, problem_type, strategy_text, source_chunk, grade, "
                                "created_at, version, parent_id, effective_grade, use_count, "
@@ -7358,6 +7404,7 @@ if FLASK_OK:
                          datetime.now(timezone.utc).isoformat(),
                          new_version, sid if existing_version > 0 else "",
                          0.0, 0, 0, 0, "", 0, "SUCCESS"))
+                    _strat_hist.snapshot(db, sid, "saved", actor="model", reason="STRATEGY: tag")
                     db.commit()
                 print(f"  [STRATEGY] v{new_version} {st[:60]}...", flush=True)
                 # Add to FAISS for future dedup

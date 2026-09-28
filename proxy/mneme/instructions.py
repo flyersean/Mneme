@@ -185,6 +185,7 @@ DEFAULT_INSTRUCTIONS = {
         "{{completed}}"
         "{{retry_note}}"
         "{{verify_note}}"
+        "{{capabilities}}"
         "Remaining budget: {{budget}}\n"
         "\n"
         "When the task is done, reply with its result directly. If you could not finish it, "
@@ -205,6 +206,7 @@ DEFAULT_INSTRUCTIONS = {
         "{{max_tasks}}).\n"
         "\n"
         "Goal: {{goal}}\n"
+        "{{capabilities}}"
         "{{context}}"
         "Remaining budget: {{budget}}\n"
         "\n"
@@ -246,8 +248,8 @@ INSTRUCTION_META = {
     "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
     "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
-    "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{budget}}", "harness.chat_executor"),
-    "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{context}} {{budget}}", "harness.chat_executor"),
+    "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
+    "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
     "system_directives_header": ("saved strategies are injected", "", "build_context"),

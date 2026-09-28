@@ -145,6 +145,54 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable)
         app.add_url_rule(f"/runs/<run_id>/{_action}", f"harness_run_ctl_{_action}",
                          (lambda a: lambda run_id: _control(run_id, a))(_action), methods=["POST"])
 
+    # ── skills (Phase 3) ──
+    def _skills():
+        eng, err = _engine()
+        if err:
+            return None, err
+        if getattr(eng, "skills", None) is None:
+            return None, respond({"error": "no skill registry"}, 503)
+        return eng.skills, None
+
+    @app.route("/skills", methods=["GET"])
+    def harness_skills_list():
+        reg, err = _skills()
+        if err:
+            return err
+        q = request.args.get("q")
+        items = reg.select(q, k=int(request.args.get("k", 5)), min_score=0.0) if q else \
+            reg.list(include_inactive=request.args.get("all") == "1")
+        return respond({"skills": [{k: v for k, v in s.items() if k != "body"} for s in items]})
+
+    @app.route("/skills", methods=["POST"])
+    def harness_skills_upsert():
+        reg, err = _skills()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"skill": reg.upsert(
+            d.get("name") or "", d.get("description") or "", d.get("body") or "",
+            actor=str(d.get("actor") or "user"), reason=str(d.get("reason") or ""),
+            source=str(d.get("source") or "user"),
+            **{k: d[k] for k in ("tools", "requires", "strategies", "verify", "failure_modes", "tags") if k in d})}, 201))
+
+    @app.route("/skills/<name>", methods=["GET"])
+    def harness_skill_detail(name):
+        reg, err = _skills()
+        if err:
+            return err
+        sk = reg.get(name)
+        if sk is None:
+            return respond({"error": f"no such skill: {name}"}, 404)
+        return respond({"skill": sk, "history": reg.history(name)})
+
+    @app.route("/skills/<name>/restore", methods=["POST"])
+    def harness_skill_restore(name):
+        reg, err = _skills()
+        if err:
+            return err
+        return _guard(lambda: respond({"skill": reg.restore_version(name, int(_body().get("version") or 0))}))
+
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):
         eng, err = _engine()

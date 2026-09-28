@@ -135,12 +135,17 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
-                 runs_root: Optional[str] = None,
+                 capabilities=None, skills=None, runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
         self.ledger = ledger
         self.executor = executor
         self.planner = planner
+        self.capabilities = capabilities     # CapabilityContext (Phase 4) — optional
+        self.skills = skills                 # SkillRegistry (Phase 3) — optional
+        self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
+        if skills is not None:
+            self.on_finish.append(_record_skill_outcomes)
         self.runs_root = runs_root
         self.lease_seconds = float(lease_seconds)
         self.owner = process_owner(owner_tag)
@@ -282,7 +287,7 @@ class RunEngine:
             if exceeded:
                 self.ledger.emit(run_id, "budget_exceeded", {"budget": exceeded, "usage": usage})
                 self.checkpoint(run_id, reason="budget_exceeded")
-                return self.ledger.transition(run_id, "failed", error=f"budget exceeded: {exceeded}",
+                return self._end(run_id, "failed", error=f"budget exceeded: {exceeded}",
                                               data={"reason": "budget_exceeded", "budget": exceeded})
 
             self._run_one_step(run, task, tasks, usage)
@@ -362,7 +367,7 @@ class RunEngine:
                     self._plan(run_id, "replan",
                                f"task {task['title']!r} failed: {(result.error or '')[:300]}")
                     return
-                self.ledger.transition(run_id, "failed", error=result.error or "task failed",
+                self._end(run_id, "failed", error=result.error or "task failed",
                                        data={"reason": "task_failed", "task_id": task["task_id"]})
                 return
         self.checkpoint(run_id, reason="step")
@@ -443,7 +448,7 @@ class RunEngine:
         source = "planner"
         if not specs:
             if mode == "replan":
-                self.ledger.transition(run_id, "failed", error=f"replan produced no tasks ({res.error or 'empty plan'})",
+                self._end(run_id, "failed", error=f"replan produced no tasks ({res.error or 'empty plan'})",
                                        data={"reason": "replan_failed"})
                 return
             specs = [{"title": run["goal"][:200], "instructions": run["goal"]}]
@@ -476,8 +481,19 @@ class RunEngine:
         self.ledger.update_run(run_id, current_task_id="", current_step_id="")
         self.checkpoint(run_id, reason="complete")
         self._log(f"run {run_id} completed")
-        return self.ledger.transition(run_id, "completed", result=result,
-                                      data={"tasks_completed": len(done)})
+        return self._end(run_id, "completed", result=result, data={"tasks_completed": len(done)})
+
+    def _end(self, run_id: str, status: str, **kw) -> dict:
+        """Single choke point for completed/failed: transition, then run hooks
+        (skill stats, reflection, artifact capture). A hook never breaks a run."""
+        run = self.ledger.transition(run_id, status, **kw)
+        for hook in list(self.on_finish):
+            try:
+                hook(self, run)
+            except Exception as e:
+                self.ledger.emit(run_id, "hook_error", {"hook": getattr(hook, "__name__", "?"),
+                                                        "error": f"{type(e).__name__}: {e}"})
+        return run
 
     def _finish_cancel(self, run_id: str) -> dict:
         for t in self.ledger.list_tasks(run_id):
@@ -670,3 +686,13 @@ class RunEngine:
 def _now() -> str:
     from mneme.harness.ledger import now_iso
     return now_iso()
+
+
+def _record_skill_outcomes(engine: "RunEngine", run: dict) -> None:
+    used = set()
+    for st in engine.ledger.list_steps(run["run_id"]):
+        used.update((st.get("meta") or {}).get("skills") or [])
+    if used:
+        engine.skills.record_outcome(used, run["status"] == "completed")
+        engine.ledger.emit(run["run_id"], "skills_recorded", {"skills": sorted(used),
+                                                               "success": run["status"] == "completed"})
