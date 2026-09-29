@@ -536,6 +536,8 @@ class Ledger:
         out = []
         now = time.time()
         for run in self.list_runs(status=ACTIVE_STATES, limit=10_000):
+            if (run.get("meta") or {}).get("external"):
+                continue  # driven by an extension (e.g. the swarm) — never reclaimed/executed here
             owner = run.get("owner") or ""
             if owner and owner == exclude_owner:
                 continue

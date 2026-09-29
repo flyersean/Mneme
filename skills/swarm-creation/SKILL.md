@@ -61,6 +61,7 @@ If this skill and the code ever disagree, the code wins.
 | `timeout` | `600` | Default per-call request timeout, in seconds |
 | `max_steps` | `0` (no limit) | Cap on **total step executions**. Counts every step, including action-only steps and loop passes. Stops a runaway loop. |
 | `steps` | required | Ordered list of steps |
+| `harness` | off | `{port, goal?, required?}`: record the swarm as a durable harness run (events, artifacts, child runs per `parallel` sub-step). Resume with `--resume-run <run_id>`. See SWARM_REFERENCE §20. |
 
 ## 3. Step fields (every option)
 
@@ -224,9 +225,17 @@ steps:
 
 ## 7. Relation to the agent harness
 
-The swarm is currently independent of the harness's durable runs (`/runs`). Swarm
-progress (the step index) is not persisted, so a crash restarts the flow from the
-top; only the files on disk survive. When you need durability, keep the swarm's
-state in files it can resume from (an inbox or board pattern), or drive the work
-through `POST /runs` instead. The roadmap (Phase 10) moves the swarm onto parent
-and child runs.
+Add `harness: {port: <proxy port>}` to make the swarm durable:
+
+- The whole flow is recorded as an external harness run.
+- Each step becomes a `swarm_step_completed` event that says which step comes next.
+- Every output file is registered as an artifact.
+- Each `parallel:` sub-step becomes a child run.
+
+After a crash, a failure, or Ctrl-C, run the same command with
+`--resume-run <run_id>` and the flow continues at the recorded next step, without
+redoing earlier model calls.
+
+Recommend this for any long-running or recurring swarm. If the proxy can't be
+reached, the swarm warns and continues; set `required: true` to make it abort
+instead. Watch progress in the proxy's `/runs/ui`.

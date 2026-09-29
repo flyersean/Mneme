@@ -92,6 +92,7 @@ Top level:
 | `ollama_url` | base URL for `backend: ollama` steps (default `http://localhost:11434`) |
 | `timeout` | default per-call timeout in seconds (default 600) |
 | `max_steps` | safety cap on total step executions before stopping (default 0 = no limit) |
+| `harness` | `{port, goal?, required?}` — record the swarm as a durable Mneme harness run; resume with `--resume-run <run_id>` (see `SWARM_REFERENCE.md` §20) |
 
 Step fields:
 

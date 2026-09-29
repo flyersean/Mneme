@@ -246,6 +246,9 @@ class RunEngine:
         run = self.ledger.require_run(run_id)
         if run["status"] in TERMINAL_STATES:
             return run
+        if (run.get("meta") or {}).get("external"):
+            raise LedgerError(f"run {run_id} is driven externally ({run['meta']['external']}) — "
+                              "the harness records it but does not execute it")
         if not self.ledger.claim(run_id, self.owner, self.lease_seconds):
             raise LedgerError(f"run {run_id} is owned by another live process ({run.get('owner')})")
         hb_stop = threading.Event()
@@ -672,6 +675,23 @@ class RunEngine:
         self.ledger.update_run(run_id, approval_state="", plan=plan)
         return self.resume(run_id, background=background, actor=actor)
 
+    # ── external runs (driven by an extension over HTTP, e.g. the swarm) ──
+
+    @staticmethod
+    def _refuse_external(run: dict) -> None:
+        if (run.get("meta") or {}).get("external"):
+            raise InvalidTransition(f"run {run['run_id']} is driven by {run['meta']['external']} — "
+                                    "resume/retry it from that driver (e.g. swarm --resume-run)")
+
+    def external_transition(self, run_id: str, status: str, *, result: str = "", error: str = "",
+                            actor: str = "extension") -> dict:
+        run = self.ledger.require_run(run_id)
+        if not (run.get("meta") or {}).get("external"):
+            raise InvalidTransition(f"run {run_id} is harness-driven; only external runs accept status updates")
+        if status in ("completed", "failed"):
+            return self._end(run_id, status, result=result, error=error, actor=actor)
+        return self.ledger.transition(run_id, status, actor=actor)
+
     def request_replan(self, run_id: str, reason: str = "", actor: str = "user") -> dict:
         """Ask for a replan of the remaining work (applied at the next step boundary)."""
         run = self.ledger.require_run(run_id)
@@ -723,6 +743,7 @@ class RunEngine:
     def resume(self, run_id: str, checkpoint_id: Optional[str] = None, background: bool = True,
                actor: str = "user") -> dict:
         run = self.ledger.require_run(run_id)
+        self._refuse_external(run)
         if run["status"] in TERMINAL_STATES:
             raise InvalidTransition(f"run {run_id} is {run['status']} — use retry instead")
         if self._executing_now(run):
@@ -739,6 +760,7 @@ class RunEngine:
     def retry(self, run_id: str, background: bool = True, actor: str = "user") -> dict:
         """Re-run a failed/cancelled run. Completed tasks are kept; the rest re-run."""
         run = self.ledger.require_run(run_id)
+        self._refuse_external(run)
         if run["status"] not in ("failed", "cancelled"):
             raise InvalidTransition(f"run {run_id} is {run['status']} — only failed/cancelled runs can be retried")
         for t in self.ledger.list_tasks(run_id):

@@ -377,6 +377,44 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         app.add_url_rule(f"/jobs/<job_id>/{_ja}", f"harness_job_{_ja}",
                          (lambda a: lambda job_id: _job_action(job_id, a))(_ja), methods=["POST"])
 
+    # ── external drivers (Phase 10): an extension records ITS OWN run ──
+    import re as _re
+    _EVENT_TYPE = _re.compile(r"^[a-z][a-z0-9_]{0,48}$")
+
+    def _external_run(eng, run_id):
+        run = eng.ledger.require_run(run_id)
+        if not (run.get("meta") or {}).get("external"):
+            raise InvalidTransition(f"run {run_id} is harness-driven — extensions may only write to "
+                                    "runs they created with meta.external")
+        return run
+
+    @app.route("/runs/<run_id>/events", methods=["POST"])
+    def harness_run_add_event(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+
+        def go():
+            run = _external_run(eng, run_id)
+            etype = str(d.get("type") or "")
+            if not _EVENT_TYPE.match(etype):
+                raise LedgerError("event type must match [a-z][a-z0-9_]* (max 49 chars)")
+            eid = eng.ledger.emit(run_id, etype, d.get("data") or {}, task_id=str(d.get("task_id") or ""),
+                                  actor=str(d.get("actor") or f"extension:{run['meta']['external']}"))
+            return respond({"event_id": eid}, 201)
+        return _guard(go)
+
+    @app.route("/runs/<run_id>/status", methods=["POST"])
+    def harness_run_set_status(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"run": eng.external_transition(
+            run_id, str(d.get("status") or ""), result=str(d.get("result") or ""),
+            error=str(d.get("error") or ""), actor=str(d.get("actor") or "extension"))}))
+
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):
         eng, err = _engine()

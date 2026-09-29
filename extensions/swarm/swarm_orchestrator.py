@@ -170,12 +170,119 @@ _EDIT_INSTRUCTION = (
 )
 
 
+class RunRecorder:
+    """Optional: record this swarm as a durable Mneme harness run — over HTTP only.
+
+    Enabled by a top-level `harness:` block in the config:
+
+        harness:
+          port: 8080            # a Mneme proxy with the harness enabled
+          goal: "..."           # optional run goal (default: "swarm: <config file>")
+          required: false       # true = abort if the proxy can't be reached
+
+    The run is an EXTERNAL run: the harness records it (events, artifacts, status,
+    and a child run per `parallel:` sub-step) but never executes it. Each finished
+    step records which step comes next, so `--resume-run <run_id>` restarts the
+    flow exactly where it stopped after a crash or Ctrl-C.
+    """
+
+    def __init__(self, cfg, config_path, parent_run_id=""):
+        self.cfg = cfg or {}
+        self.base = f"http://localhost:{self.cfg.get('port')}" if self.cfg.get("port") else ""
+        self.config_path = config_path
+        self.parent = parent_run_id
+        self.run_id = ""
+        self.enabled = bool(self.base)
+
+    def _post(self, path, body):
+        if not self.enabled:
+            return None
+        try:
+            r = requests.post(self.base + path, json=body, timeout=15)
+        except requests.exceptions.RequestException as e:
+            return self._fail(f"harness unreachable: {e}")
+        if r.status_code >= 400:
+            return self._fail(f"harness HTTP {r.status_code} on {path}: {r.text[:200]}")
+        return r.json()
+
+    def _fail(self, msg):
+        if self.cfg.get("required"):
+            raise SystemExit(f"[harness] {msg}")
+        print(f"  [harness] {msg} — continuing without run recording", flush=True)
+        self.enabled = False
+        return None
+
+    def start(self, resume_run_id=""):
+        if not self.enabled:
+            return None
+        if resume_run_id:
+            self.run_id = resume_run_id
+            try:
+                cur = requests.get(f"{self.base}/runs/{self.run_id}", timeout=15).json().get("run") or {}
+            except (requests.exceptions.RequestException, ValueError):
+                cur = {}
+            if cur.get("status") in ("failed", "cancelled"):   # terminal -> reopen first
+                self._post(f"/runs/{self.run_id}/status", {"status": "created", "actor": "extension:swarm"})
+            self._post(f"/runs/{self.run_id}/status", {"status": "running", "actor": "extension:swarm"})
+            self.event("swarm_resumed", {})
+            return self.resume_target()
+        goal = self.cfg.get("goal") or f"swarm: {os.path.basename(self.config_path)}"
+        j = self._post("/runs", {"goal": goal, "plan": False, "start": False, "created_by": "extension:swarm",
+                                 "parent_run_id": self.parent,
+                                 "meta": {"external": "swarm", "config": os.path.abspath(self.config_path),
+                                          "cwd": os.getcwd()}})
+        if j:
+            self.run_id = j["run"]["run_id"]
+            self._post(f"/runs/{self.run_id}/status", {"status": "running", "actor": "extension:swarm"})
+            print(f"  [harness] recording as run {self.run_id}", flush=True)
+        return None
+
+    def resume_target(self):
+        """The step name recorded as 'next' by the last completed step (or None)."""
+        try:
+            r = requests.get(f"{self.base}/runs/{self.run_id}/events",
+                             params={"types": "swarm_step_completed"}, timeout=15)
+            evs = r.json().get("events", []) if r.status_code == 200 else []
+        except requests.exceptions.RequestException:
+            evs = []
+        return (evs[-1]["data"] or {}).get("next") if evs else None
+
+    def event(self, etype, data):
+        if self.enabled and self.run_id:
+            self._post(f"/runs/{self.run_id}/events", {"type": etype, "data": data, "actor": "extension:swarm"})
+
+    def artifact(self, path, step_name):
+        if self.enabled and self.run_id and path and os.path.exists(path):
+            self._post(f"/runs/{self.run_id}/artifacts", {"path": os.path.abspath(path), "kind": "file",
+                                                          "description": f"written by step {step_name}",
+                                                          "provenance": {"swarm_step": step_name}})
+
+    def finish(self, status, error="", result=""):
+        if self.enabled and self.run_id:
+            self._post(f"/runs/{self.run_id}/status", {"status": status, "error": error, "result": result,
+                                                       "actor": "extension:swarm"})
+
+    def child(self, name):
+        """A child run for one parallel sub-step."""
+        rec = RunRecorder({**self.cfg, "goal": f"parallel step {name}"}, self.config_path, self.run_id)
+        rec.enabled = self.enabled and bool(self.run_id)
+        if rec.enabled:
+            rec.start()
+        return rec
+
+
 class Orchestrator:
-    def __init__(self, config_path="swarm_config.yaml"):
+    # Disabled defaults so instances built without __init__ (tests, subclasses) still work.
+    recorder = RunRecorder(None, "")
+    _resume_run_id = ""
+
+    def __init__(self, config_path="swarm_config.yaml", resume_run_id=""):
         self._config_path = config_path
         self._config_mtime = self._file_mtime()
         self._load_config()
         self._step_visits = {}   # per-step cycle counters (the `every` throttle)
+        self.recorder = RunRecorder(self.config.get("harness"), config_path)
+        self._resume_run_id = resume_run_id
 
     def _file_mtime(self):
         try:
@@ -743,9 +850,63 @@ class Orchestrator:
 
     # ---- main loop ----
 
+    # ---- harness run recording (optional, HTTP only) ----
+
+    def _start_index(self):
+        """Index to start from: 0, or the recorded 'next' step when resuming a run."""
+        target = self.recorder.start(self._resume_run_id)
+        if not target:
+            return 0
+        if target == "END":
+            return END
+        if target not in self.name_to_index:
+            raise SystemExit(f"[harness] cannot resume: step '{target}' no longer exists")
+        print(f"  [harness] resuming run {self.recorder.run_id} at step '{target}'", flush=True)
+        return self.name_to_index[target]
+
+    def _step_outputs(self, step):
+        paths = []
+        for key in ("write_dir", "append_dir"):
+            if step.get(key):
+                paths.append(self._resolve_output_path(step[key]))
+        if step.get("edit_dir"):
+            paths.append(step["edit_dir"])
+        return paths
+
+    def _record_step(self, step, idx, next_idx, output, rec=None):
+        rec = rec or self.recorder
+        if not rec.enabled:
+            return
+        name = step.get("name") or f"#{idx}"
+        if next_idx == END:
+            nxt = "END"
+        elif 0 <= next_idx < len(self.steps):
+            nxt = self.steps[next_idx].get("name") or ""
+        else:
+            nxt = "END"
+        for p in (self._step_outputs(step) if output is not None else []):
+            rec.artifact(p, name)
+        rec.event("swarm_step_completed", {"step": name, "index": idx, "next": nxt,
+                                           "called_model": output is not None,
+                                           "output_chars": len(output) if output else 0})
+
     def run(self):
+        try:
+            self._run_flow()
+        except KeyboardInterrupt:
+            if self.recorder.enabled and self.recorder.run_id:
+                self.recorder._post(f"/runs/{self.recorder.run_id}/status",
+                                    {"status": "paused", "actor": "extension:swarm"})
+            print("\n[harness] interrupted — resume with --resume-run", self.recorder.run_id or "(not recorded)")
+            raise
+        except SystemExit as e:
+            self.recorder.finish("failed", error=str(e))
+            raise
+        self.recorder.finish("completed", result="swarm flow finished")
+
+    def _run_flow(self):
         print("Starting Orchestrator...")
-        idx = 0
+        idx = self._start_index()
         steps_run = 0
         while True:
             if idx == END or idx >= len(self.steps):
@@ -827,9 +988,26 @@ class Orchestrator:
             if step.get("clear_dir"):
                 self.clear_dir(step["clear_dir"])
 
-            idx = self._next_index(step, output, idx)
+            nxt = self._next_index(step, output, idx)
+            self._record_step(step, idx, nxt, output)
+            idx = nxt
+
+
+def _cli_args(argv):
+    """[config.yaml] [--resume-run <run_id>]"""
+    cfg, resume = "swarm_config.yaml", ""
+    rest = list(argv)
+    if "--resume-run" in rest:
+        i = rest.index("--resume-run")
+        if i + 1 >= len(rest):
+            raise SystemExit("--resume-run needs a run id")
+        resume = rest[i + 1]
+        del rest[i:i + 2]
+    if rest:
+        cfg = rest[0]
+    return cfg, resume
 
 
 if __name__ == "__main__":
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "swarm_config.yaml"
-    Orchestrator(cfg).run()
+    cfg, _resume = _cli_args(sys.argv[1:])
+    Orchestrator(cfg, resume_run_id=_resume).run()

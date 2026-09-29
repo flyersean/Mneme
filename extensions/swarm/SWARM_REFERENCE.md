@@ -62,6 +62,7 @@ setup wizard). On RunPod, avoid port `8081` — nginx reserves it.
 | `timeout`   | number | `600`                     | Default per-call request timeout (seconds). |
 | `max_steps` | number | `0` (no limit)            | Safety cap on the TOTAL number of step executions before the orchestrator stops. Catches an infinite `goto`/`if` loop that never reaches `END`. Counts every execution, including action-only steps and loop iterations. |
 | `steps`     | list   | (required)                | The ordered list of steps. |
+| `harness`   | map    | (off)                     | Record the swarm as a durable Mneme harness run (see §20). Keys: `port` (required), `goal`, `required` (default false). |
 
 ---
 
@@ -601,3 +602,47 @@ append/copy/move/swap/clear in the fixed order of §4 → resolve `goto`/`if`.
 The `Orchestrator` class in `swarm_orchestrator.py` is the reference
 implementation; `ParallelOrchestrator` shows how to fan out independent leaf
 steps concurrently.
+
+---
+
+## 20. Recording a swarm as a harness run (`harness:`) and resuming it
+
+Add a top-level `harness:` block and the orchestrator records the whole swarm as a
+**durable run** in a Mneme proxy's harness. Recording is HTTP only, like every other
+call the orchestrator makes.
+
+```yaml
+harness:
+  port: 8080          # a Mneme proxy with the harness enabled
+  goal: "tides story" # optional; default "swarm: <config file name>"
+  required: false     # true = abort if the proxy can't be reached (default: warn and continue)
+```
+
+What gets recorded:
+
+- **The run itself.** It is an *external* run (`meta.external: swarm`). The harness
+  records it but never executes it, and its recovery never takes it over.
+- **Every executed step.** Each one produces a `swarm_step_completed` event carrying
+  the step name, index, whether a model was called, the output size, and **which
+  step runs next**.
+- **Artifacts.** Every `write_dir` / `append_dir` / `edit_dir` output file is
+  registered, with its sha256 checksum.
+- **Parallel sub-steps.** Each sub-step of a `parallel:` block becomes a **child
+  run** (`parent_run_id` = the swarm's run).
+- **Status.** The run is marked `completed` at `END`, `failed` on an error (the
+  `SystemExit` message becomes the run's error), and `paused` on Ctrl-C.
+
+**Resume** a stopped or failed swarm exactly where it was:
+
+```bash
+python3 swarm_orchestrator.py swarm_config.yaml --resume-run <run_id>
+```
+
+The flow restarts at the `next` step recorded by the last completed step. Earlier
+steps are not re-run and their model calls are not repeated. A failed run is
+reopened and continues from the step that failed. If that step's name no longer
+exists in the config, the orchestrator refuses to resume.
+
+You can watch it in the proxy's `/runs/ui` page, or with `GET /runs/<id>/events`.
+You get the harness's failure observations and metrics for free. The harness side
+cannot resume or retry an external run: `POST /runs/<id>/resume` returns 409.

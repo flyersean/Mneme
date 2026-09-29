@@ -47,7 +47,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from swarm_orchestrator import Orchestrator, END
+from swarm_orchestrator import Orchestrator, END, _cli_args
 
 
 class ParallelOrchestrator(Orchestrator):
@@ -102,15 +102,24 @@ class ParallelOrchestrator(Orchestrator):
         t0 = time.time()
 
         def _one(sub):
-            return self._exec_sub_step(sub, header=f"    [parallel] {sub.get('name') or '(sub)'}")
+            # Each sub-step is a child run of the swarm's run (when recording is on).
+            child = self.recorder.child(sub.get("name") or "(sub)")
+            try:
+                out = self._exec_sub_step(sub, header=f"    [parallel] {sub.get('name') or '(sub)'}")
+            except SystemExit as e:
+                child.finish("failed", error=str(e))
+                raise
+            self._record_step(sub, -1, END, out, rec=child)
+            child.finish("completed")
+            return out
 
         with ThreadPoolExecutor(max_workers=len(block)) as pool:
             list(pool.map(_one, block))
         print(f"  [parallel] done in {time.time() - t0:.1f}s")
 
-    def run(self):
+    def _run_flow(self):
         print("Starting Parallel Orchestrator...")
-        idx = 0
+        idx = self._start_index()
         steps_run = 0
         while True:
             if idx == END or idx >= len(self.steps):
@@ -141,14 +150,18 @@ class ParallelOrchestrator(Orchestrator):
             # A `parallel:` block fans out its sub-steps concurrently.
             if "parallel" in step:
                 self._run_parallel(step["parallel"])
+                self._record_step({"name": step.get("name") or f"parallel#{idx}"}, idx,
+                                  idx + 1 if idx + 1 < len(self.steps) else END, None)
                 idx += 1
                 continue
 
             name = step.get("name") or f"#{idx}"
             output = self._exec_sub_step(step, header=f"\n{'=' * 40}\nSTEP {name}")
-            idx = self._next_index(step, output, idx)
+            nxt = self._next_index(step, output, idx)
+            self._record_step(step, idx, nxt, output)
+            idx = nxt
 
 
 if __name__ == "__main__":
-    cfg = sys.argv[1] if len(sys.argv) > 1 else "swarm_config.yaml"
-    ParallelOrchestrator(cfg).run()
+    cfg, _resume = _cli_args(sys.argv[1:])
+    ParallelOrchestrator(cfg, resume_run_id=_resume).run()
