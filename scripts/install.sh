@@ -88,7 +88,7 @@ if python3 -m pip install --break-system-packages --ignore-installed flask flask
   echo "  ✓ pip install OK"
 else
   echo "  pip (--break-system-packages) failed — retrying plain install..."
-  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright
+  python3 -m pip install flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright || true
 fi
 
 # Verify each package imports.
@@ -128,8 +128,8 @@ fi
 # python3's pip, so a proxy MCP entry `command: hound` resolves with no extra
 # PATH setup. (Hardcoded for now — becomes an optional-dependency checkbox later.)
 echo; echo "[1c/3] Hound MCP (full web stack)"
-python3 -m pip install --break-system-packages "hound-mcp[all]" 2>/dev/null \
-  || python3 -m pip install "hound-mcp[all]"
+python3 -m pip install --break-system-packages "hound-mcp[all]" \
+  || echo "  ⚠ hound-mcp[all] install failed (see error above) — web/OCR/crawl tools unavailable until fixed."
 if command -v hound >/dev/null 2>&1; then
   echo "  ✓ hound CLI ready ($(hound --version 2>/dev/null | head -1))"
 else
