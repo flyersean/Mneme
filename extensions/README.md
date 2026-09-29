@@ -55,6 +55,12 @@ See the main [README](../README.md#extensions) for the same table with more cont
 
 ## The included extensions
 
+### `gateways/` — CLI and Telegram access
+
+HTTP-only gateways that map a terminal or a Telegram chat onto the harness:
+`/commands`, chat turns, and notifications when a watched run finishes or needs
+approval. See [`gateways/README.md`](gateways/README.md).
+
 ### `swarm/` — the reference example
 
 A declarative agent workflow engine, and the intended template for writing your own.

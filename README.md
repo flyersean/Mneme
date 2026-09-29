@@ -1134,6 +1134,13 @@ install Pi and point it at Mneme as a provider (see "Pi terminal assistant" abov
 second, much smaller example of the same contract — useful for seeing how little is
 required to integrate.
 
+### Gateways (`extensions/gateways`)
+
+Reach the harness from a terminal (`cli.py`) or Telegram (`telegram.py`, which needs a
+user allow-list). Lines starting with `/` are harness commands; other text is chat, or a
+new run with `--plain run`. You are notified when a run you started finishes or needs
+approval. See [`extensions/gateways/README.md`](extensions/gateways/README.md).
+
 ### Swarm (`extensions/swarm`)
 
 The declarative agent workflow engine — see [Agent workflows & swarms](#agent-workflows--swarms)

@@ -196,6 +196,8 @@ _CONFIG_ENV_MAP = {
     "harness.lease_seconds": "MNEME_HARNESS_LEASE",
     "harness.reflect": "MNEME_HARNESS_REFLECT",
     "harness.auto_apply_level": "MNEME_HARNESS_AUTO_APPLY_LEVEL",
+    "harness.scheduler": "MNEME_HARNESS_SCHEDULER",
+    "harness.scheduler_tick": "MNEME_HARNESS_SCHEDULER_TICK",
     "logging.max_entries": "MNEME_MAX_LOG_ENTRIES",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
@@ -6867,6 +6869,13 @@ def _init_harness():
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
+        from mneme.harness.jobs import JobStore, Scheduler
+        HARNESS.jobs = JobStore(_hledger)
+        if os.environ.get("MNEME_HARNESS_SCHEDULER", "1") == "1":
+            HARNESS.scheduler = Scheduler(HARNESS, HARNESS.jobs,
+                                          tick_s=float(os.environ.get("MNEME_HARNESS_SCHEDULER_TICK", "15")),
+                                          log=lambda m: print(f"  [HARNESS] {m}", flush=True))
+            HARNESS.scheduler.start()
         if os.environ.get("MNEME_HARNESS_REFLECT", "0") == "1":
             HARNESS.on_finish.append(make_chat_reflector(_scoped_process_chat, lock=_hlock))
         _rec = HARNESS.recover(auto_resume=os.environ.get("MNEME_HARNESS_AUTO_RESUME", "0") == "1")

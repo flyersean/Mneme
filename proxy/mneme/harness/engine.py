@@ -149,6 +149,7 @@ class RunEngine:
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         self.evolution = evolution            # Evolution (Phase 6) — optional
         self.profiles = profiles              # ProfileStore (Phase 7) — optional
+        self.jobs = None                      # JobStore (Phase 9) — bound by the host
         self.on_finish.append(_capture_artifacts)
         if skills is not None:
             self.on_finish.append(_record_skill_outcomes)

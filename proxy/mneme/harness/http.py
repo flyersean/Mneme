@@ -330,6 +330,53 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         except OSError:
             return respond({"error": "runs UI not found"}, 404)
 
+    # ── jobs (Phase 9) ──
+    def _jobs():
+        eng, err = _engine()
+        if err:
+            return None, err
+        if getattr(eng, "jobs", None) is None:
+            return None, respond({"error": "jobs not configured"}, 503)
+        return eng.jobs, None
+
+    @app.route("/jobs", methods=["GET"])
+    def harness_jobs_list():
+        jobs, err = _jobs()
+        return err or respond({"jobs": jobs.list()})
+
+    @app.route("/jobs", methods=["POST"])
+    def harness_jobs_create():
+        jobs, err = _jobs()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"job": jobs.create(
+            str(d.get("name") or ""), str(d.get("goal") or ""), d.get("interval_s"), tasks=d.get("tasks"),
+            profile=str(d.get("profile") or ""), budget=d.get("budget") or {},
+            start_in_s=float(d.get("start_in_s") or 0), overlap=bool(d.get("overlap")),
+            created_by=str(d.get("created_by") or "user"))}, 201))
+
+    @app.route("/jobs/<job_id>", methods=["GET"])
+    def harness_job_detail(job_id):
+        jobs, err = _jobs()
+        if err:
+            return err
+        j = jobs.get(job_id)
+        if j is None:
+            return respond({"error": f"no such job: {job_id}"}, 404)
+        return respond({"job": j, "log": jobs.log(job_id)})
+
+    def _job_action(job_id, action):
+        jobs, err = _jobs()
+        if err:
+            return err
+        return _guard(lambda: respond({"job": jobs.trigger(job_id) if action == "trigger"
+                                       else jobs.set_enabled(job_id, action == "enable")}))
+
+    for _ja in ("enable", "disable", "trigger"):
+        app.add_url_rule(f"/jobs/<job_id>/{_ja}", f"harness_job_{_ja}",
+                         (lambda a: lambda job_id: _job_action(job_id, a))(_ja), methods=["POST"])
+
     @app.route("/runs/<run_id>/artifacts", methods=["POST"])
     def harness_run_add_artifact(run_id):
         eng, err = _engine()
