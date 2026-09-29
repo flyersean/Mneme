@@ -894,6 +894,8 @@ Two hard rules apply:
 
 ## Agent harness (runs)
 
+> **Full user guide: [`docs/harness/USER_GUIDE.md`](docs/harness/USER_GUIDE.md)** — setup, runs, planning, verification, budgets, profiles, approvals, skills, self-improvement, jobs, chat commands, dashboard, gateways, swarms, API and configuration reference.
+
 A **run** is one execution of a goal that outlives a single chat turn. The harness —
 not the model — owns its state: tasks, steps, tool calls, artifacts, checkpoints and
 an append-only event log live in `harness.db` beside the shared memory DB. Each step
@@ -958,7 +960,7 @@ curl -s -X POST localhost:8080/runs/<run_id>/resume
   `max_runtime`, `max_cost`) are enforced by the harness before every step.
 - **Retry** a failed/cancelled run with `POST /runs/<id>/retry` — completed tasks are kept.
 - Workspaces: `<db dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}`.
-- Design and roadmap: [`docs/harness/`](docs/harness/) (audit, ADRs, handoff).
+- Guide: [`docs/harness/USER_GUIDE.md`](docs/harness/USER_GUIDE.md) · design: [`docs/harness/SPEC.md`](docs/harness/SPEC.md), ADRs, handoff.
 
 ## Testing
 
