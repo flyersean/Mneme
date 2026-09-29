@@ -1,140 +1,82 @@
 # Harness work — handoff / resume point
 
 Branch: `agent-harness`. Last updated 2026-09-28.
-The overall spec and per-requirement status is in **`docs/harness/SPEC.md`**.
+The overall spec and per-requirement status is in **`SPEC.md`**. Decisions are in
+`adr/0001`–`0004`, and the starting audit is `00-architecture-audit.md`.
 
-## Status
+## Status: phases 0–10 are built and committed
 
-| Phase | Status |
+| Phase | Commit |
 |---|---|
-| 0 Audit · 1 Run engine · 2 Planning/verification | ✅ committed (`7f9564e` and earlier) |
-| 3 Skills / strategy versions / tool metadata | ✅ code + tests — **UNCOMMITTED** |
-| 4 Focused context + permission grants | ✅ code + tests — **UNCOMMITTED** |
-| 5–10 | ⬜ not started |
+| 0–1 audit + run engine | `33f32f7`, `9b23a3a` |
+| 2 planning / verification / cancel scopes | `7f9564e` |
+| 3–4 skills, strategy versions, capabilities, focused context | `b513c7a` |
+| 5 failure classes, llm_judge, approvals | `5440575` |
+| 6 self-improvement | `8ffa444` |
+| 7 profiles + artifact capture | `98e8074` |
+| 8 commands, metrics, dashboard | `457e766` |
+| 9 jobs + gateways | `59f0822` |
+| 10 swarm on runs | `558b309` |
+| docs (ADR 0004, SPEC update, README/AGENTS/yaml) | the commit after `558b309` |
 
-## ⚠ First thing to do when resuming
+`opencode.json` in the working tree is pre-existing and not ours. Never commit it.
 
-The last session was interrupted **during the full regression run, before the commit**.
-The Phase 3–4 work is sitting uncommitted in the working tree:
+## Tests
 
-```
- M proxy/mneme/harness/{chat_executor,engine,http}.py  proxy/mneme/instructions.py
- M proxy/mneme_proxy.py  tests/test_harness_proxy.py
-?? proxy/mneme/harness/{capabilities,context,skills}.py  proxy/mneme/strategy_history.py
-?? tests/test_harness_capabilities.py   docs/harness/SPEC.md
-?? opencode.json   <- pre-existing, not ours; never commit it
-```
+Run the whole suite:
 
-These four suites passed individually right before the interruption:
-`test_harness_capabilities` (10), `test_harness_proxy` (12), `test_harness_planning`
-(21), `test_harness_engine` (22).
+`cd tests; for f in test_*.py; do timeout 300 python3 $f >/dev/null 2>&1 || echo "FAIL $f"; done`
 
-1. Run the full suite:
-   `cd tests; for f in test_*.py; do timeout 300 python3 $f >/tmp/opencode/t.log 2>&1 || echo "FAIL $f"; done`.
-   The expected failures are only `test_mcp_client` and `test_mcp_endpoints`: the
-   installed `mcp` package lacks `mcp.server.mcpserver`, which predates this work.
-   Watch `test_tool_loop` in particular. The Phase 3 edits touched `_save_strategy`
-   (it gained `created_by` / `reason` parameters and strategy-history snapshots) and
-   `process_chat`'s tool sets (grant filtering). Its instruction-sync test also
-   checks the two new `{{capabilities}}` placeholders.
-2. Commit, excluding `opencode.json`:
-   `git add -A proxy tests docs && git commit -m "feat(harness): Phase 3-4 — skills registry, strategy versions, tool capabilities, focused context"`
-3. Write `docs/harness/adr/0003-skills-capabilities.md` (decisions below).
+Everything passes except `test_mcp_client` and `test_mcp_endpoints`. They fail
+because the installed `mcp` package has no `mcp.server.mcpserver`, which predates
+this work.
 
-## What Phase 3–4 added
+The harness suites:
 
-- **`proxy/mneme/strategy_history.py`**:
-  - adds an append-only `strategy_versions` table and the `created_by`,
-    `derived_from` and `validated_by` columns;
-  - `_save_strategy` and the inline `STRATEGY:` save in `chat_completions` now
-    snapshot the replaced row and the new row;
-  - new endpoint: `GET /strategies/<id>/history`.
-- **`harness/skills.py`** (`SkillRegistry`, tables in `harness.db`):
-  - loads `skills/*/SKILL.md` and `<db dir>/skills/*/SKILL.md`;
-  - `upsert` bumps the version only when content changed; `history` and
-    `restore_version` (a restore is recorded as a new version);
-  - `select`: lexical selection (embedding if bound), with `requires` expansion;
-  - `record_outcome` keeps per-skill stats;
-  - endpoints: `/skills`, `/skills/<name>`, `/skills/<name>/restore`.
-- **`harness/capabilities.py`**:
-  - built-in tool metadata: permission level, risk, cost, what the tool does, and a
-    verify hint;
-  - `PERMISSION_LEVELS`; unknown and MCP tools count as `system`;
-  - `normalize_grant`, `allowed`, `select_tools`.
-- **`harness/context.py`** (`CapabilityContext`): per step, the top 2 skills with
-  their procedure and failure modes, plus up to 4 relevant tools with permission and
-  verify hints, restricted to the run's grant. Planning gets the brief form. This
-  fills the new `{{capabilities}}` placeholder in `harness_task_context` and
-  `harness_plan`.
-- **Permission grants in the proxy.** `_scoped_process_chat(..., tool_grant=set)`
-  sets a thread-local grant that `_turn_tool_ok` applies. Ungranted tools are
-  removed from `msg_tools` **and** from the server-exec name sets. If the model calls
-  one anyway, the call passes through to the client, so the harness step fails. A
-  run's grant comes from `run.permissions["grant"]`; `None` means unrestricted, the
-  same power as chat.
-- **Engine.** The constructor takes `capabilities=` and `skills=`. A new `_end()`
-  choke point for completed/failed runs calls the `on_finish` hooks. Skill outcomes
-  are recorded from the `meta.skills` field of each step.
+| Suite | Covers |
+|---|---|
+| `test_harness_ledger` | ledger |
+| `test_harness_engine` | engine, including a real crash and resume |
+| `test_harness_planning` | planning and replanning |
+| `test_harness_capabilities` | skills, tools, context |
+| `test_harness_recovery` | failure classes, judge, approvals |
+| `test_harness_evolution` | self-improvement, including a real git repo for L4 |
+| `test_harness_profiles` | profiles, artifacts |
+| `test_harness_commands` | commands, metrics |
+| `test_harness_jobs` | jobs |
+| `test_gateways` | CLI and Telegram gateways |
+| `test_harness_proxy` | the harness through the real proxy app |
+| `test_process_chat_characterization` | pinned `process_chat` behaviour |
+| `test_swarm_harness` | real HTTP swarm, fail and then resume |
 
-**Decisions for ADR 0003:**
+Watch `test_harness_proxy`: it failed once early in Phase 2 and could not be
+reproduced afterwards.
 
-- Skills live in `harness.db`. Files are a source; the DB holds the versions.
-- A restore is recorded as a new version.
-- Selection is lexical by default, which is cheap and needs no embedder.
-- The default grant for runs is unrestricted, matching chat; profiles narrow it.
-- Tools not in the metadata table count as `system` (the conservative choice).
+## Recommended next work (hardening + evaluation, in priority order)
 
-## Next: Phase 5 → 10 (condensed plan; details in SPEC §7)
-
-5. **Verification & recovery.**
-   - `harness/failures.py`: `classify(error, meta)` returns `verification`, `tool`,
-     `empty`, `provider`, `fabricated`, `budget`, `interrupted`, `unexecutable` or
-     `other`. Store the category in step meta and in the `task_failed` event.
-   - Add an `llm_judge` check type to `verify.py`. It takes a `judge` callable; in
-     the proxy, back it with a short `query_model` PASS/FAIL prompt.
-   - Approvals: a task with `requires_approval` (or a profile with
-     `approve_each_task`) puts the run into `awaiting_approval`. Add
-     `POST /runs/<id>/approve` and `/reject`; a rejected task fails and then replans.
-6. **Self-improvement** (`harness/evolution.py`, in `harness.db`).
-   - Tables: `proposals` (kind, target, level, status, content, previous, reason,
-     evidence, tests, result) and an append-only `evolution_log`.
-   - Appliers: `instruction` (via `instructions.save_instruction`, with the previous
-     text kept), `skill` (upsert), `profile`, `knowledge` (L1, auto-applied), and
-     `code`. Code is L4: `git worktree` on branch `evolve/<id>`, then `git apply`,
-     then the test command, then record. It never merges automatically.
-   - Levels: L1 and L2 apply automatically; L3 and L4 need tests to pass and an
-     approval. If verification fails after applying, roll back and keep the failed
-     attempt.
-   - An `on_finish` hook records failure observations (L1). An optional reflection
-     turn (`harness.reflect`, default off to save spend) proposes skill updates.
-7. **Profiles.**
-   - A `profiles` table plus built-ins: default, researcher, coder. Each has skills,
-     a grant, budget defaults, `plan`, and `approve_each_task`.
-   - `engine.create(profile=)` merges the profile in.
-   - Pass `permissions` and `profile` through `POST /runs`.
-   - An artifact auto-capture hook scans `workspace/artifacts` at the end of a run.
-8. **Control plane.**
-   - `harness/commands.py`: `/help /status /runs /plan /tasks /pause /resume /cancel
-     /retry /replan /approve /reject /skills /tools /strategies /log /jobs /config /models`.
-   - Hook them at the top of `process_chat`, only for known command words. Add
-     `POST /harness/command`.
-   - Add a `static/runs.html` page (runs, run detail and events, skills,
-     evolution) and a "Runs" link in every page's nav (the nav is duplicated per
-     static HTML file).
-9. **Jobs and gateways.**
-   - A `jobs` table and a scheduler thread (interval-based, lease-claimed), with a
-     `/jobs` API.
-   - `extensions/gateways/{base.py, cli.py, telegram.py, README.md}` as HTTP clients
-     of `/harness/command` and `/runs`.
-10. **Swarm on runs.**
-    - Add `POST /runs/<id>/events` and an external-run status endpoint (only allowed
-      when `meta.external`).
-    - The engine must refuse to execute external runs, and `recover()` must skip them.
-    - Swarm config gains a `harness: {port}` block. The orchestrator records the run,
-      each step, and each artifact over HTTP; `parallel` sub-steps become child runs;
-      `--resume-run <id>` re-anchors on the last completed step.
-    - Update `SWARM_REFERENCE.md` and the swarm skill.
-
-## Known limitations
-
-See `SPEC.md` §10.
+1. **Live-model evaluation (SPEC R29).** Every test so far uses scripted models.
+   - Build `tests/agent_tasks/`: repeatable tasks in the brief's tiers (simple,
+     medium, hard, self-improvement).
+   - Run each task via `POST /runs` against real 3B, 30B and frontier proxies.
+   - Record `/harness/metrics` for each.
+   - Tune `harness_plan`, `harness_task_context`, `harness_judge` and
+     `harness_reflect` through L3 evolution proposals, so every change is versioned.
+   - The key experiment: a task the system fails → reflection → a skill proposal →
+     retry → success.
+2. **A short system prompt for runs (R13).** Harness steps currently get the full
+   `system_prompt.md`. Add a compact instruction (`system_prompt_harness`) chosen
+   when `_cancel_local.event` is set, and measure the difference on a small model.
+3. **Per-call turn context.** Move `_last_injected_ids` and `_INJECTED_STRATEGY_IDS`
+   into thread-local or per-call state, as was done for the cancel event and the
+   tool grant. That removes the last way harness steps and chat turns interfere.
+4. **Per-run strategy feedback (R9).** Record the strategy ids injected during a
+   run's steps (return them from `process_chat`), and credit them with the run's
+   outcome in `on_finish`.
+5. **Auth.** Nothing on `/runs`, `/evolution` or `/jobs` is authenticated. At a
+   minimum, document putting the reverse proxy with `MNEME_GATEWAY_TOKEN` in front
+   of it. Better: require a token for evolution approvals and L4 proposals.
+6. **Smaller items:**
+   - bind the embedder into `SkillRegistry.select`;
+   - add versioning for tool definitions (R16);
+   - persist an in-progress replan so a crash during replanning doesn't lose it;
+   - show job controls in `/runs/ui`.

@@ -130,107 +130,126 @@ User → harness controls follow the existing `<<…>>` chat commands, plus
 
 Status: ✅ done · 🟡 partial · ⬜ not started.
 
-| # | Area | Requirement (summary) | Status | Where |
-|---|---|---|---|---|
-| R1 | Run ledger | runs, tasks, steps, tool_calls, events (append-only), artifacts, checkpoints; answers "what happened?" without the model | ✅ | `harness/ledger.py` (triggers enforce append-only) |
-| R2 | Checkpoint/resume | checkpoint/resume/pause/cancel/retry; survives model, tool, network and process failures, context exhaustion, and user interrupts | ✅ | `harness/engine.py`; checkpoint after every step; `recover()`; real kill-9 test |
-| R3 | Multi-process safety | several proxies share one ledger; one executor per run | ✅ | claim + heartbeat lease |
-| R4 | Planning | goal → plan in natural language + tags; fallback so small models never dead-end | ✅ | `harness/planning.py`, `make_chat_planner`, `harness_plan` instruction |
-| R5 | Replanning | on a dead end or `REPLAN:`; superseded tasks kept; bounded | ✅ | `engine._plan(mode="replan")`, `max_replans` |
-| R6 | Separation | model proposes → harness validates / executes / observes / verifies → state update | ✅ | the step's success is judged by the harness (grade, `done_reason`, empty output, unexecutable calls, verification) |
-| R7 | Deterministic verification | command exit, file exists/contains, output contains/matches | ✅ | `harness/verify.py`, `verifying` state + events |
-| R8 | LLM verification | supplements deterministic checks, never replaces them | ⬜ | Phase 5: `llm_judge` check type |
-| R9 | Strategies | problem type, procedure, failure modes, verification, success/failure history, confidence, provenance, version, parent | 🟡 | existing table + telemetry; **✅ version history + provenance** (`strategy_history.py`); per-run feedback ⬜ |
-| R10 | Skills | reusable, composable, versioned; description, tools, strategies, verification, failure modes, stats | ✅ | `harness/skills.py`, `SKILL.md` loading, `/skills` API |
-| R11 | Tools as capabilities | metadata: permission, risk, cost, verification, examples | ✅ | `harness/capabilities.py` (built-ins; MCP/unknown → `system`) |
-| R12 | Capability selection | retrieve the relevant memories, strategies, skills and tools → small focused context | 🟡 | `harness/context.py` (skills + tools per step); memory/strategies via `process_chat`; per-run tool narrowing through permission grants |
-| R13 | Prompt architecture | short static system prompt; dynamic harness context separate; conversation separate | 🟡 | static block + dynamic tail pinned by characterization tests; harness context messages. A dedicated short system prompt for runs ⬜ |
-| R14 | Self-improvement loop | observe → identify → propose → evaluate → approve/test → apply → verify → record | ⬜ | Phase 6 |
-| R15 | Modification levels | L1 knowledge (auto), L2 strategies/skills (auto, versioned), L3 prompts/config/profiles (tested + previous kept), L4 tools/code (branch → test → verify → activate) | ⬜ | Phase 6 |
-| R16 | Versioning | strategies, skills, prompts, tool definitions, profiles | 🟡 | strategies ✅ skills ✅; prompts, profiles, tools ⬜ |
-| R17 | Provenance | created_by / derived_from / validated_by for every learned or modified object; known vs inferred vs verified | 🟡 | chunks (curation) ✅, strategies ✅, skills (source/actor) ✅, events actor ✅; proposals ⬜ |
-| R18 | Budgets | max model calls, tool calls, replans, runtime, failures, cost (+ steps) | ✅ | `engine.DEFAULT_BUDGET` (usage in the ledger) |
-| R19 | Agent profiles | skills, tools, permissions, verifier, budget defaults | ⬜ | Phase 7 (the grant mechanism already exists) |
-| R20 | Workspaces | `runs/<id>/{input,workspace,artifacts,logs,checkpoints}` | ✅ | `harness/workspace.py`; the model is told the path |
-| R21 | Artifacts | run/task, path, type, checksum, provenance, description | 🟡 | ledger + `POST /runs/<id>/artifacts` ✅; auto-capture on completion ⬜ |
-| R22 | Control commands | /help /status /plan /tasks /runs /pause /resume /cancel /retry /replan /approve /reject /tools /skills /strategies /memory /search /files /jobs /log /config /models | ⬜ | Phase 8 (the HTTP equivalents exist for runs and skills) |
-| R23 | Dashboard | runs list/detail, event viewer, strategy/skill browser, system-evolution view | ⬜ | Phase 8 (evolve the existing static pages) |
-| R24 | Background jobs | job → run; scheduling; recurring work | ⬜ | Phase 9 |
-| R25 | Gateways | generic Gateway (receive, send, authenticate, identify_user, authorize); CLI, Web, Telegram | ⬜ | Phase 9, as HTTP clients. Not `proxy/gateway.py`, which is a reverse proxy. |
-| R26 | Approvals/permissions | permission levels; approval for dangerous actions | 🟡 | levels + grants enforced in `process_chat` ✅; `awaiting_approval` flow ⬜ (Phase 5/7) |
-| R27 | Transactional self-mod | snapshot → change → test → verify → activate → record; roll back on failure and keep the attempt | ⬜ | Phase 6 |
-| R28 | Swarm on the harness | swarm = parent run + child runs + events/artifacts; not the core | 🟡 | swarm-creation skill ✅; recording swarm runs in the ledger ⬜ (Phase 10) |
-| R29 | Test strategy | repeatable agent tasks (simple → hard → self-improvement), not prose quality | 🟡 | unit + integration suites ✅; a benchmark task set ⬜ |
-| R30 | Metrics | success rates, calls per task, replans, time, failure categories, strategy/skill/tool reuse and success, recovery, self-improvement success | 🟡 | raw data in the ledger (usage, events, skill stats); `/metrics` aggregation + failure classification ⬜ |
+| # | Area | Status | Where / notes |
+|---|---|---|---|
+| R1 | Run ledger (runs, tasks, steps, tool calls, append-only events, artifacts, checkpoints) | ✅ | `harness/ledger.py` |
+| R2 | Checkpoint / resume / pause / cancel / retry; survives crashes and restarts | ✅ | `harness/engine.py`; real kill-9 test; mid-step interrupts |
+| R3 | Multi-process safety (one executor per run) | ✅ | claim + heartbeat lease; job compare-and-set |
+| R4 | Planning (natural language + `PLAN:` / `VERIFY:`; fallback) | ✅ | `harness/planning.py`, `make_chat_planner` |
+| R5 | Replanning (dead end, `REPLAN:`, user `/replan`, approval reject) | ✅ | `engine._plan`, `max_replans` |
+| R6 | Model proposes → harness validates / executes / verifies | ✅ | success is judged by the harness |
+| R7 | Deterministic verification | ✅ | `harness/verify.py` |
+| R8 | LLM verification (supplements deterministic checks, never replaces them) | ✅ | `llm_judge`, run only after deterministic checks pass |
+| R9 | Strategies: versions, provenance, history | 🟡 | `strategy_history.py` ✅; per-*run* strategy success stats ⬜ (per-turn telemetry exists) |
+| R10 | Skills (versioned, composable, stats) | ✅ | `harness/skills.py` |
+| R11 | Tools as capabilities (permission, risk, cost, verify hint) | ✅ | `harness/capabilities.py` |
+| R12 | Capability selection → small focused context | ✅ | `harness/context.py` + grant filtering in `process_chat` |
+| R13 | Static prompt / dynamic harness context / conversation separation | 🟡 | split pinned by tests; a dedicated *short* system prompt for runs ⬜ (runs still get the full `system_prompt.md`) |
+| R14 | Self-improvement loop | ✅ | `harness/evolution.py`, `observe_run`, optional reflector |
+| R15 | Modification levels L1–L4 | ✅ | L4 applies to a git branch only |
+| R16 | Versioning (strategies, skills, prompts, profiles, tools) | 🟡 | strategies, skills, profiles ✅; prompts via proposals (previous kept) ✅; tool *definitions* ⬜ |
+| R17 | Provenance on every learned or modified object | ✅ | chunks, strategies, skills, profiles, proposals, event actors |
+| R18 | Budgets | ✅ | steps, failures, model calls, tool calls, replans, runtime, cost |
+| R19 | Agent profiles | ✅ | `harness/profiles.py` (default, researcher, coder, reviewer, cautious) |
+| R20 | Workspace per run | ✅ | `harness/workspace.py` |
+| R21 | Artifacts | ✅ | ledger + automatic capture at run end |
+| R22 | Control commands | ✅ | `harness/commands.py` (chat, `/harness/command`, gateways) |
+| R23 | Dashboard (runs, events, skills, evolution, profiles, metrics) | ✅ | `static/runs.html` at `/runs/ui` |
+| R24 | Background jobs | ✅ | `harness/jobs.py` + scheduler |
+| R25 | Gateways (CLI, Telegram, future) | ✅ | `extensions/gateways/` |
+| R26 | Permissions & approvals | ✅ | per-run grants; task/profile approvals |
+| R27 | Transactional self-modification | ✅ | capture previous → apply → test → roll back; code on a branch |
+| R28 | Swarm on the harness | ✅ | external runs, child runs, `--resume-run` |
+| R29 | Test strategy with repeatable agent tasks | 🟡 | ~520 unit/integration tests (scripted models); a **live-model benchmark task set** ⬜ |
+| R30 | Metrics | ✅ | `harness/metrics.py`, `/harness/metrics` |
 
 ## 7. Phase plan and status
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Architecture audit | ✅ `00-architecture-audit.md` |
-| 1 | Persistent run engine (ledger, engine, workspace, `/runs`) | ✅ ADR 0001 |
-| 2 | Planning, replanning, deterministic verification, cancel scopes | ✅ ADR 0002 |
-| 3 | Strategy versions, skills, tool metadata | ✅ code + tests; **not yet committed** (see HANDOFF) |
-| 4 | Focused context + permission-grant tool filtering | ✅ code + tests; **not yet committed** |
-| 5 | Verification & recovery: failure classification, `llm_judge`, approvals (`awaiting_approval`, /approve /reject) | ⬜ |
-| 6 | Self-improvement: proposals, levels L1–L4, versioned appliers (instruction, skill, profile, knowledge, code via git branch), reflection hook, rollback | ⬜ |
-| 7 | Profiles (skills, grant, budget defaults, approve-each-task), artifact auto-capture | ⬜ |
-| 8 | Control plane: `/`-commands, `POST /harness/command`, runs/skills/evolution dashboard page + nav link | ⬜ |
-| 9 | Jobs + scheduler; gateway base + CLI + Telegram (HTTP clients under `extensions/gateways/`) | ⬜ |
-| 10 | Swarm records parent/child runs over HTTP (`harness:` config block, external runs, resume by step name) | ⬜ |
+| 0 | Architecture audit | ✅ |
+| 1 | Persistent run engine | ✅ ADR 0001 |
+| 2 | Planning, replanning, verification, cancel scopes | ✅ ADR 0002 |
+| 3–4 | Skills, strategy versions, tool metadata, focused context, grants | ✅ ADR 0003 |
+| 5 | Failure classification, `llm_judge`, approvals | ✅ ADR 0004 |
+| 6 | Self-improvement (proposals, L1–L4, rollback, observation, reflection) | ✅ ADR 0004 |
+| 7 | Profiles, artifact capture | ✅ ADR 0004 |
+| 8 | Commands, metrics, runs dashboard | ✅ ADR 0004 |
+| 9 | Jobs + scheduler; CLI and Telegram gateways | ✅ ADR 0004 |
+| 10 | Swarm as external runs, child runs, resume | ✅ ADR 0004 |
 
-## 8. Module map (current)
+What remains is hardening and evaluation work, not a new phase. See `HANDOFF.md`.
+
+## 8. Module map
 
 ```
 proxy/mneme/harness/
-  ledger.py         durable store, state machine, lease            (P1)
-  engine.py         run loop, budgets, checkpoints, control,
-                    recovery, planning/replanning, verification,
-                    interrupts, _end() + on_finish hooks            (P1-P4)
-  workspace.py      per-run directories                             (P1)
-  chat_executor.py  task step + planner over process_chat;
-                    grants, capability text, REPLAN detection       (P1-P4)
-  planning.py       PLAN:/VERIFY:/REPLAN: extraction                (P2)
-  verify.py         deterministic checks                            (P2)
-  skills.py         versioned skill registry                        (P3)
-  capabilities.py   tool metadata + permission levels               (P3)
-  context.py        per-step capability context                     (P4)
-  http.py           /runs, /skills routes                           (P1-P3)
-proxy/mneme/strategy_history.py  strategy_versions + provenance     (P3)
-proxy/mneme_proxy.py  wiring: _init_harness, _scoped_process_chat
-                    (cancel scope + tool grant), _turn_tool_ok,
-                    /strategies/<id>/history, harness.* config keys
-skills/swarm-creation/SKILL.md   first shipped skill
+  ledger.py        durable store, state machine, lease, external-run exclusion
+  engine.py        run loop, budgets, checkpoints, control, recovery, planning/replanning,
+                   verification, approvals, interrupts, external runs, _end() + on_finish hooks
+  workspace.py     per-run directories
+  chat_executor.py task step / planner / reflector over process_chat
+  planning.py      PLAN:/VERIFY:/REPLAN:/LESSON:/SKILL: extraction
+  verify.py        deterministic checks + llm_judge
+  failures.py      failure categories
+  skills.py        versioned skill registry
+  capabilities.py  tool metadata + permission levels
+  context.py       per-step capability context
+  evolution.py     proposals, levels, appliers (knowledge/skill/instruction/profile/code), hooks
+  profiles.py      versioned agent profiles
+  metrics.py       ledger-derived metrics
+  commands.py      /-commands
+  jobs.py          jobs + scheduler
+  http.py          HTTP routes
+proxy/mneme/strategy_history.py   strategy_versions + provenance
+proxy/static/runs.html            control-plane UI (/runs/ui)
+extensions/gateways/              base.py, cli.py, telegram.py (HTTP only)
+extensions/swarm/                 RunRecorder (harness: block, --resume-run)
+skills/swarm-creation/SKILL.md    first shipped skill
 ```
 
 Storage:
 
-- `<db dir>/harness.db` holds the ledger plus the skills tables.
-- `<db dir>/runs/<id>/` holds the per-run workspaces.
-- `mneme.db` gains an additive `strategy_versions` table and three provenance
-  columns on `strategies`.
+- `<db dir>/harness.db` holds the ledger plus the skills, profiles, proposals,
+  evolution log, jobs and job log tables.
+- `<db dir>/runs/<id>/` holds the run workspaces.
+- `<db dir>/evolve/` holds the L4 git worktrees.
+- `<db dir>/skills/` holds user skills.
+- `mneme.db` gains the additive `strategy_versions` table and provenance columns.
 
-## 9. HTTP surface (current)
+## 9. HTTP surface
 
 ```
-POST /runs {goal, tasks?, plan?, budget?, profile?, permissions?*, session_id?, parent_run_id?, meta?, start?}
-GET  /runs[?status=&parent=]   GET /runs/<id>[?events=1]   GET /runs/<id>/events[?after=&types=]
-GET  /runs/<id>/checkpoints[/<cp>]
-POST /runs/<id>/{pause,resume,cancel,retry,checkpoint}     POST /runs/<id>/artifacts
-GET  /skills[?q=&k=&all=1]   POST /skills   GET /skills/<name>   POST /skills/<name>/restore
-GET  /strategies/<id>/history
+Runs        POST /runs {goal, tasks?, plan?, budget?, profile?, permissions?, meta?, start?}
+            GET /runs[?status=&parent=]  GET /runs/<id>[?events=1]  GET /runs/<id>/events
+            GET /runs/<id>/checkpoints[/<cp>]
+            POST /runs/<id>/{pause,resume,cancel,retry,checkpoint,approve,reject}
+            POST /runs/<id>/artifacts
+External    POST /runs/<id>/events {type,data}   POST /runs/<id>/status {status,...}   (meta.external only)
+Skills      GET/POST /skills   GET /skills/<name>   POST /skills/<name>/restore
+Strategies  GET /strategies/<id>/history
+Profiles    GET/POST /profiles   GET /profiles/<name>
+Evolution   GET/POST /evolution[?status=&kind=&target=]   GET /evolution/<id>
+            POST /evolution/<id>/{test,approve,reject,rollback}
+Jobs        GET/POST /jobs   GET /jobs/<id>   POST /jobs/<id>/{enable,disable,trigger}
+Control     POST /harness/command {text}   GET /harness/metrics   GET /runs/ui
 ```
 
-\* `permissions` is supported by `engine.create`, but is **not yet passed through by
-`POST /runs`**. It is a one-line fix and belongs to Phase 7 (profiles).
+Config (`harness:`): `enabled`, `db_path`, `runs_dir`, `auto_resume`,
+`lease_seconds`, `reflect`, `auto_apply_level`, `scheduler`, `scheduler_tick`.
 
 ## 10. Known limitations / open risks
 
 - `_last_injected_ids` and `_INJECTED_STRATEGY_IDS` are still process globals shared
   between harness steps and concurrent chat turns.
-- Steps run at least once. Auto-resume is off by default because tool side effects
-  can repeat.
-- A crash during a replan loses that replan; the old pending tasks resume.
+- Steps run at least once; auto-resume is off by default.
+- A crash during a replan loses that replan.
 - `model_calls` counts harness turns, not the model re-queries inside a turn.
-- `/runs` and `/skills` have no auth; they inherit the proxy's 127.0.0.1 bind.
-- Skill selection is lexical unless an embedder is bound (not bound yet in the proxy).
+- **No auth on any endpoint.** Everything inherits the 127.0.0.1 bind; put the
+  reverse proxy (`MNEME_GATEWAY_TOKEN`) in front of it for remote use.
+- Skill selection is lexical unless an embedder is bound.
+- Runs still receive the full `system_prompt.md`. A short run-specific system prompt
+  would suit small models better (R13).
+- Nothing has been validated against a **live model** yet. Every test uses scripted
+  models, so the planner, judge and reflector prompts need tuning on real 3B, 30B
+  and frontier models.

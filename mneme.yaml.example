@@ -301,6 +301,16 @@ harness:
   auto_resume: false
   # Seconds without a heartbeat before another process may take over a run.
   lease_seconds: 120
+  # Self-improvement. Failures always become L1 knowledge notes (free). reflect: true adds
+  # ONE model call after each failed/recovered run to extract LESSON:/SKILL: proposals.
+  reflect: false
+  # Highest proposal level applied automatically: 1 = knowledge only, 2 = + skills/strategies
+  # (versioned). Levels 3 (prompts/profiles/config) and 4 (code, git branch only) always
+  # need explicit approval.
+  auto_apply_level: 2
+  # Background jobs: a scheduler thread starts runs for due jobs (POST /jobs).
+  scheduler: true
+  scheduler_tick: 15
 
 # Runtime behavior.
 runtime:

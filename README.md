@@ -927,6 +927,29 @@ curl -s -X POST localhost:8080/runs/<run_id>/resume
 - **Pause/cancel interrupt a running step** within about a second; an interrupted
   step re-runs on resume and doesn't count as a failure. The chat page's Stop button
   only stops chat turns, not runs.
+- **Skills.** Versioned, reusable procedures: `skills/<name>/SKILL.md` files, plus
+  ones added at runtime (`/skills`). The harness injects only the one or two relevant
+  to the current task, along with the few most relevant tools, so a small model is
+  not handed everything.
+- **Profiles.** `"profile": "researcher" | "coder" | "reviewer" | "cautious"`, or your
+  own. A profile sets the skills, the tool permissions (for example, no shell), the
+  budget defaults, and whether every task needs your approval.
+- **Approvals.** A task with `"requires_approval": true` (or any task under the
+  `cautious` profile) waits for you: `POST /runs/<id>/approve`, or `/reject` (which
+  replans).
+- **Self-improvement, controlled.** Every failed run becomes a stored lesson. Changes
+  to skills, prompts, profiles or code are *proposals* with a level:
+  - knowledge and skills apply automatically, and are versioned;
+  - prompts and profiles need tests plus your approval;
+  - code only ever lands on a git branch for you to merge.
+
+  Every change keeps its previous version and can be rolled back. See `/evolution`.
+- **Jobs.** `POST /jobs {"name", "goal", "interval_s"}` runs a goal on a schedule.
+- **Control plane.** Type `/help` in chat for harness commands (`/runs`, `/status`,
+  `/approve`, `/replan`, `/metrics`, …). The **Runs** page (`/runs/ui`) shows runs,
+  events, skills, system evolution, profiles and metrics.
+- **Swarms** can record themselves as runs (a `harness:` block in the swarm config) and
+  resume after a crash with `--resume-run <id>`.
 - **Survives restarts.** A checkpoint is written after every step. A run interrupted
   by a crash comes back `paused` with a `run_interrupted` event; resume it and it
   continues from the interrupted task (completed tasks never re-run). Set
