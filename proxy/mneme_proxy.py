@@ -951,6 +951,12 @@ def _main_chat_timeout() -> int:
     return OLLAMA_CHAT_TIMEOUT if not _backend_is_openai() else CHAT_TIMEOUT
 EMBED_TIMEOUT = int(os.environ.get("MNEME_EMBED_TIMEOUT", "60"))
 LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
+# Buffered (stream:false) read timeout. OpenRouter only fails over on an explicit
+# 5xx/429 — a provider that accepts-then-hangs stalls the client indefinitely.
+# This short timeout fails fast on that hang so OUR retry can recover (a fresh
+# request usually lands on a healthy provider in ~1-3s), instead of burning
+# CHAT_TIMEOUT (300s) per hang. Override with MNEME_NON_STREAM_TIMEOUT.
+NON_STREAM_TIMEOUT = int(os.environ.get("MNEME_NON_STREAM_TIMEOUT", "60"))
 
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
 MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
@@ -2140,7 +2146,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         # fails fast on a hang, letting OUR retry recover instead of burning 150s.
         try:
             r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                              json=payload, timeout=timeout)
+                              json=payload, timeout=(CONNECT_TIMEOUT, NON_STREAM_TIMEOUT))
         except requests.exceptions.RequestException as e:
             print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
