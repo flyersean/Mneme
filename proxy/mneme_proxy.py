@@ -2209,6 +2209,21 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
 
+    # A non-200 (429 rate-limit, 5xx, auth) returns a JSON error body, NOT an SSE
+    # stream. Without this check the loop below treats the error body as a stream,
+    # skips every line (none start with "data:"), and returns an empty answer the
+    # caller reads as "the model said nothing". Fail fast as a clean error so the
+    # caller's retry / fallback logic can act on it instead of silently wedging.
+    if r.status_code != 200:
+        _err_body = ""
+        try:
+            _err_body = r.text[:300]
+        except Exception:
+            pass
+        print(f"  [GRIND-GUARD] OpenRouter HTTP {r.status_code} (non-200) — aborting: {_err_body[:200]}", flush=True)
+        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+                "done_reason": "error", "error_type": f"http_{r.status_code}"}
+
     content_parts = []
     reasoning_parts = []
     tc_slots = {}          # index -> accumulator for streamed tool-call deltas
@@ -2217,18 +2232,23 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     completion_tokens = 0
     got_first = False
 
-    def _bump_socket():
-        # After the first token, extend the read timeout from the short TTFT to
-        # the full timeout so a steady-but-slow generation isn't cut off. Best
-        # effort — if the socket handle can't be reached, keep the short timeout
-        # (harmless for the fast cloud models on this path).
+    def _set_sock_timeout(t):
+        # `requests(stream=True, timeout=(...))` covers the header read only — the
+        # streaming BODY read via iter_lines() does not reliably inherit it, so a
+        # provider that stalls before the first token blocks forever. Pin the raw
+        # socket timeout explicitly before reading the body, and loosen it after
+        # the first token. Best effort: if the handle can't be reached, the
+        # RequestException handler below still bounds a dead connection.
         try:
-            r.raw._fp.fp.raw._sock.settimeout(timeout)
+            r.raw._fp.fp.raw._sock.settimeout(t)
         except Exception:
             try:
-                r.raw._fp.fp.raw.settimeout(timeout)
+                r.raw._fp.fp.raw.settimeout(t)
             except Exception:
                 pass
+
+    # Fail fast if the first token never arrives (hung / rate-limited provider).
+    _set_sock_timeout(FIRST_TOKEN_TIMEOUT)
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
@@ -2238,7 +2258,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 break
             if not got_first:
                 got_first = True
-                _bump_socket()
+                _set_sock_timeout(timeout)
             if not raw:
                 continue
             raw = raw.strip()
@@ -2294,7 +2314,12 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     except requests.exceptions.RequestException as e:
         # No first token -> hung provider. Mid-stream stall -> incomplete answer.
         # Both are retryable: signal "timeout" with 0 tokens so the retry logic
-        # (which keys off done_reason=="timeout" and eval_count==0) fires.
+        # (which keys off done_reason=="timeout" and eval_count==0) fires. If the
+        # user cancelled the turn, honour that instead of treating it as a stall.
+        if _turn_cancel_event().is_set():
+            print("  [CANCEL] user stopped the turn — aborting OpenRouter stream", flush=True)
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
+                    "done_reason": "cancelled"}
         tag = "no first token" if not got_first else "mid-response stall"
         print(f"  [GRIND-GUARD] OpenRouter stream aborted ({tag}) ({type(e).__name__}: {e}) — aborting", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
