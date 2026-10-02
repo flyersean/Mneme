@@ -432,3 +432,67 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
                                           provenance=data.get("provenance") or {})
             return respond({"artifact": art}, 201)
         return _guard(go)
+
+    # ── user control actions (the runs page buttons) ──
+    # Each wraps the corresponding engine method. actor defaults to "user" (these
+    # are human clicks, not the extension-driven /status transition above).
+
+    def _actor(d: dict) -> str:
+        return str(d.get("actor") or "user")
+
+    @app.route("/runs/<run_id>/pause", methods=["POST"])
+    def harness_run_pause(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        return _guard(lambda: respond({"run": eng.pause(run_id, actor=_actor(_body()))}))
+
+    @app.route("/runs/<run_id>/cancel", methods=["POST"])
+    def harness_run_cancel(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        return _guard(lambda: respond({"run": eng.cancel(run_id, actor=_actor(_body()))}))
+
+    @app.route("/runs/<run_id>/resume", methods=["POST"])
+    def harness_run_resume(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"run": eng.resume(run_id, checkpoint_id=d.get("checkpoint_id"),
+                                                          background=True, actor=_actor(d))}))
+
+    @app.route("/runs/<run_id>/retry", methods=["POST"])
+    def harness_run_retry(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        return _guard(lambda: respond({"run": eng.retry(run_id, background=True, actor=_actor(_body()))}))
+
+    @app.route("/runs/<run_id>/approve", methods=["POST"])
+    def harness_run_approve(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"run": eng.approve(run_id, actor=_actor(d), note=str(d.get("note") or ""),
+                                                           background=True)}))
+
+    @app.route("/runs/<run_id>/reject", methods=["POST"])
+    def harness_run_reject(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"run": eng.reject(run_id, actor=_actor(d), reason=str(d.get("reason") or ""),
+                                                          background=True)}))
+
+    @app.route("/runs/<run_id>/replan", methods=["POST"])
+    def harness_run_replan(run_id):
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        return _guard(lambda: respond({"run": eng.request_replan(run_id, reason=str(d.get("reason") or ""),
+                                                                 actor=_actor(d))}))
