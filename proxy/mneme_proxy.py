@@ -959,6 +959,13 @@ LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 # CHAT_TIMEOUT (300s) per hang. Override with MNEME_NON_STREAM_TIMEOUT.
 NON_STREAM_TIMEOUT = int(os.environ.get("MNEME_NON_STREAM_TIMEOUT", "60"))
 
+# Steady-generation (between-chunk) timeout. Once the first token has arrived,
+# a healthy stream emits tokens continuously; a gap this long means the provider
+# died mid-generation, so fail fast and let the retry loop recover — instead of
+# burning the reasoning TTFT floor (~600s) on every stall. Independent of _ttft,
+# which is a FIRST-token budget only. Override with MNEME_INTER_BYTE_TIMEOUT.
+INTER_BYTE_TIMEOUT = int(os.environ.get("MNEME_INTER_BYTE_TIMEOUT", "60"))
+
 # ─── Provider retry policy (replaces the single immediate retry) ──────────
 # A transient provider failure (no first token, mid-stream stall, 429/5xx) is
 # re-hit instantly today — the same overloaded window, on a fresh TCP+TLS
@@ -2472,17 +2479,21 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 print("  [CANCEL] user stopped the turn — aborting OpenRouter stream", flush=True)
                 finish_reason = "cancelled"
                 break
-            if not got_first:
-                got_first = True
-                # Loosen to at least the TTFT budget: if we legitimately waited
-                # out a reasoning floor for the first token, the inter-byte
-                # budget must not be shorter than it.
-                _set_sock_timeout(max(timeout, _ttft))
             if not raw:
                 continue
             raw = raw.strip()
             if not raw.startswith("data:"):
                 continue
+            if not got_first:
+                got_first = True
+                # First token arrived — drop the long TTFT budget and switch to
+                # a short inter-byte timeout. A healthy stream emits continuously;
+                # a gap longer than INTER_BYTE_TIMEOUT means the provider died
+                # mid-generation, so fail fast and retry instead of burning the
+                # ~600s reasoning floor on every stall. (Set here, on the first
+                # data: event, NOT on an SSE `: comment` heartbeat, so a
+                # hidden-reasoning model keeps the full 600s floor.)
+                _set_sock_timeout(INTER_BYTE_TIMEOUT)
             data = raw[5:].strip()
             if data == "[DONE]":
                 _saw_done = True
