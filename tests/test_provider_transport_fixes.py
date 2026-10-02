@@ -195,6 +195,27 @@ class TestPayloadBudget(unittest.TestCase):
         payload, _ = self._payload(model="test-model")
         self.assertEqual(self._posted["timeout"], (mp.CONNECT_TIMEOUT, mp.FIRST_TOKEN_TIMEOUT))
 
+    def test_provider_prefs_only_apply_to_chat_model(self):
+        # The label judge (and other aux models) must NOT inherit the chat model's
+        # provider pin — order:[Z.AI] + allow_fallbacks:false 404s a label model the
+        # pinned provider doesn't host, and strips its fallbacks.
+        os.environ.pop("MNEME_REASONING_ENABLED", None)
+        os.environ.pop("MNEME_REASONING_EFFORT", None)
+        _orig_pref, _orig_fb = mp._OR_PROVIDER_PREF, mp._OR_FALLBACK_MODELS
+        try:
+            mp._OR_PROVIDER_PREF = {"order": ["Z.AI"], "allow_fallbacks": False}
+            mp._OR_FALLBACK_MODELS = ["openai/gpt-4o-mini"]
+            # chat model (no explicit model → MODEL) gets the prefs
+            payload, _ = self._payload()
+            self.assertEqual(payload.get("provider"), {"order": ["Z.AI"], "allow_fallbacks": False})
+            self.assertEqual(payload.get("models"), [mp.MODEL, "openai/gpt-4o-mini"])
+            # label model (explicit model != MODEL) must NOT inherit them
+            payload, _ = self._payload(model="meta-llama/llama-3.2-3b-instruct")
+            self.assertNotIn("provider", payload)
+            self.assertNotIn("models", payload)
+        finally:
+            mp._OR_PROVIDER_PREF, mp._OR_FALLBACK_MODELS = _orig_pref, _orig_fb
+
 
 # ─── Fix 3: retry classification + backoff ─────────────────────────────────
 

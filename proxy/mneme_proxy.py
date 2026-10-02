@@ -2349,9 +2349,13 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     #   primary model fails (recovers a whole-model outage / cold-start no-content).
     # - `provider` prefs: ignore/order/only/allow_fallbacks/preferred_max_latency
     #   to steer routing away from known-bad or slow endpoints.
-    if _OR_FALLBACK_MODELS:
+    # BOTH are chat-model-specific: they must NOT leak onto auxiliary models (the
+    # label judge, etc.) — pinning those to the chat model's provider (e.g.
+    # order:[Z.AI] + allow_fallbacks:false) 404s a label model the pinned
+    # provider doesn't host, and its fallbacks get stripped, leaving no endpoints.
+    if _OR_FALLBACK_MODELS and _model == MODEL:
         payload["models"] = [_model] + [str(m) for m in _OR_FALLBACK_MODELS]
-    if _OR_PROVIDER_PREF:
+    if _OR_PROVIDER_PREF and _model == MODEL:
         payload["provider"] = _OR_PROVIDER_PREF
     if tools:
         _tnames = [t.get("function", {}).get("name", "?") for t in tools]
