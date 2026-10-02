@@ -974,13 +974,9 @@ document.addEventListener("click", (e) => {
 document.getElementById("hrun-start").addEventListener("click", async () => {
   const goal = document.getElementById("hrun-goal").value.trim();
   if (!goal) return;
-  try {
-    const r = await fetch("/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal }) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { alert(j.error || "HTTP " + r.status); return; }
-    document.getElementById("hrun-goal").value = "";
-    window.location.href = "/runs/ui";   // live view of the new run
-  } catch (e) { alert("error: " + e.message); }
+  document.getElementById("hrun-goal").value = "";
+  harnessPanel.classList.remove("open");   // close the dropdown
+  startRun(goal);                          // stream the run's live activity into the chat
 });
 document.getElementById("hrun-goal").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); document.getElementById("hrun-start").click(); }
