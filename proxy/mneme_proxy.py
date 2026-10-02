@@ -187,6 +187,7 @@ _CONFIG_ENV_MAP = {
     "tools.read_file": "MNEME_TOOL_READ_FILE",
     "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
+    "tools.inspect_run": "MNEME_TOOL_INSPECT_RUN",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     # Agent harness (durable runs) — see docs/harness/.
     "harness.enabled": "MNEME_HARNESS",
@@ -957,6 +958,50 @@ LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 # request usually lands on a healthy provider in ~1-3s), instead of burning
 # CHAT_TIMEOUT (300s) per hang. Override with MNEME_NON_STREAM_TIMEOUT.
 NON_STREAM_TIMEOUT = int(os.environ.get("MNEME_NON_STREAM_TIMEOUT", "60"))
+
+# ─── Provider retry policy (replaces the single immediate retry) ──────────
+# A transient provider failure (no first token, mid-stream stall, 429/5xx) is
+# re-hit instantly today — the same overloaded window, on a fresh TCP+TLS
+# handshake. Hermes (jittered_backoff) and OpenCode (Schedule.exponential +
+# jitter) both back off between attempts; the log shows the instant retry
+# failing identically. Bounded attempts, exponential backoff with jitter,
+# Retry-After honored when the provider sends it (capped). Env-overridable.
+RETRY_ATTEMPTS     = int(os.environ.get("MNEME_RETRY_ATTEMPTS", "3"))
+RETRY_BACKOFF_BASE = float(os.environ.get("MNEME_RETRY_BACKOFF_BASE", "2.0"))
+RETRY_BACKOFF_CAP  = float(os.environ.get("MNEME_RETRY_BACKOFF_CAP", "30.0"))
+RETRY_AFTER_CAP    = 600.0  # seconds — reject pathological retry-after values (Hermes caps at 600)
+# Default output budget for the OpenAI-compatible path when nothing else
+# resolves (caller, models.<model>.max_tokens, MNEME_MAX_TOKENS). OpenCode's
+# default is 32k (DEFAULT_MAX_TOKENS); Mneme currently sends NO cap, handing
+# mandatory-reasoning models an unbounded output+thinking budget (measured:
+# 28,771 reasoning tokens / 75s on GLM-5.3).
+OR_DEFAULT_MAX_TOKENS = int(os.environ.get("MNEME_OR_MAX_TOKENS", "32000"))
+# Thinking budget for reasoning models on the OpenAI-compatible path, as
+# reasoning.max_tokens. Default "auto" = max_tokens/2 (OpenCode's
+# fitThinkingBudget rule: thinking counts against the output limit, so a
+# budget near it leaves the answer no room). "0"/"off" disables (pre-fix
+# behaviour). An explicit number wins (still capped at max_tokens/2).
+OR_REASONING_BUDGET = os.environ.get("MNEME_REASONING_BUDGET", "auto")
+
+# ─── Reasoning-model first-token floors (Hermes reasoning_timeouts.py) ────
+# Thinking models routinely exceed FIRST_TOKEN_TIMEOUT before ANY byte
+# arrives — with stream=True, requests.post returns when response HEADERS
+# arrive, and GLM-5.3's upstream withholds headers while reasoning, so the
+# 180s wall killed the call on the POST itself (log: dur=180.26s n_tok=0 on
+# every glm-5.3 call). These floors raise the effective TTFT budget for known
+# reasoning models; they never lower a user-configured timeout. Matched
+# start-of-slug (after stripping any "provider/" prefix), longest slug first.
+_REASONING_TTFT_FLOORS = (
+    ("glm-5", 600), ("glm-4.7", 600), ("glm-4.6", 600), ("glm-4.5", 600),
+    ("o1-pro", 600), ("o1-preview", 600), ("o1-mini", 600), ("o1", 600),
+    ("o3-pro", 600), ("o3-mini", 300), ("o3", 600), ("o4-mini", 300),
+    ("deepseek-reasoner", 600), ("deepseek-r1", 600),
+    ("deepseek-v4-flash", 600), ("deepseek-v4-pro", 600),
+    ("nemotron-3-ultra", 600), ("nemotron-3-super", 600), ("nemotron-3-nano", 300),
+    ("qwq-32b", 300), ("qwen3", 300),
+    ("grok-4-fast-reasoning", 300), ("grok-4.5", 300),
+    ("claude-opus-4", 240), ("claude-sonnet-5", 180),
+)
 
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
 MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
@@ -2072,6 +2117,128 @@ def _truncate_tool_result(content: str) -> str:
             + content[-tail_len:])
 
 
+def _reasoning_ttft_floor(model) -> Optional[int]:
+    """First-token-timeout floor (seconds) for a known reasoning model, else None.
+
+    Slug-anchored match like Hermes' reasoning_timeouts.py: strip any
+    aggregator prefix (everything through the last "/"), lowercase, then match
+    table entries longest-first as a prefix at a slug boundary — so
+    "z-ai/glm-5.3" matches "glm-5" but "someglm-5" does not, and "o3-mini"
+    beats "o3". Only ever used as a FLOOR (callers apply max(), never min())."""
+    if not model or not isinstance(model, str):
+        return None
+    name = model.strip().lower()
+    if not name:
+        return None
+    if "/" in name:
+        name = name.rsplit("/", 1)[1]
+    for slug, floor in sorted(_REASONING_TTFT_FLOORS, key=lambda kv: -len(kv[0])):
+        if name == slug or name.startswith(slug):
+            # startswith: "glm-5.3" starts with "glm-5"; the table is ordered
+            # longest-first so the most specific entry wins. A shorter table
+            # entry only matches when it is a true slug prefix.
+            return floor
+    return None
+
+
+def _parse_retry_after(headers) -> Optional[float]:
+    """Retry-After seconds from a provider response, else None.
+
+    Accepts `retry-after` (seconds or HTTP-date) and `retry-after-ms`
+    (milliseconds — OpenRouter uses this on 429s). Capped at RETRY_AFTER_CAP
+    so a hostile/buggy value can't stall a turn for hours (Hermes: 600s cap)."""
+    if not headers:
+        return None
+    try:
+        raw = headers.get("retry-after-ms") or headers.get("Retry-After-ms")
+        if raw is not None:
+            ms = float(raw)
+            if ms >= 0:
+                return min(ms / 1000.0, RETRY_AFTER_CAP)
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            secs = float(raw)
+            if secs >= 0:
+                return min(secs, RETRY_AFTER_CAP)
+        except (TypeError, ValueError):
+            import email.utils as _eu
+            dt = _eu.parsedate_to_datetime(raw)
+            if dt is not None:
+                import datetime as _dt
+                delta = (dt - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+                if delta > 0:
+                    return min(delta, RETRY_AFTER_CAP)
+    except Exception:
+        pass
+    return None
+
+
+def _provider_failure_retryable(result: dict) -> bool:
+    """Structured retryability for a query_model result (Hermes/OpenCode pattern).
+
+    - "timeout" → retryable. Covers both no-first-token (provider hang, zero
+      tokens) and mid-stream stall (partial answer, no finish_reason seen) —
+      both are INCOMPLETE responses. Partial content is preserved by the
+      retry loop's keep-best logic, so retrying can never return less.
+    - "error" → classify by status/error_type:
+        401/402/403, auth/billing/credit → NOT retryable (same key fails again)
+        429 / rate limit → retryable (with Retry-After when present)
+        400-499 otherwise (context overflow, bad request, content policy) →
+          NOT retryable — deterministic per-request failures
+        5xx / unknown status / transport → retryable
+    - anything else ("stop", "length", "tool_calls", "cancelled") → not a failure."""
+    if not isinstance(result, dict):
+        return False
+    dr = result.get("done_reason", "")
+    if dr == "timeout":
+        return True
+    if dr != "error":
+        return False
+    status = result.get("status_code")
+    etype = (result.get("error_type") or "").lower()
+    if status in (401, 402, 403) or "auth" in etype or "billing" in etype or "credit" in etype:
+        return False
+    if status == 429 or status == 408 or "rate" in etype or "429" in etype:
+        return True
+    if status is None:
+        return True  # mid-stream SSE error / unmapped transport error — retry
+    if 500 <= int(status) <= 599:
+        return True
+    if 200 <= int(status) < 400:
+        return True  # 2xx/3xx carrying an error = malformed provider response — retry
+    if "context" in etype or "length" in etype:
+        return False  # context overflow — fix is compaction, not retry
+    return False  # other 4xx: deterministic
+
+
+def _retry_backoff_delay(attempt: int, retry_after=None) -> float:
+    """Jittered exponential backoff for retry attempt N (1-based), or the
+    provider's Retry-After when present. 2s → 4s → 8s ... capped, plus
+    uniform jitter up to half the delay (Hermes jittered_backoff shape —
+    decorrelates concurrent retries hitting the same provider)."""
+    if retry_after is not None and retry_after > 0:
+        return float(min(retry_after, RETRY_AFTER_CAP))
+    base = max(0.0, RETRY_BACKOFF_BASE)
+    try:
+        delay = min(base * (2 ** max(0, attempt - 1)), RETRY_BACKOFF_CAP)
+    except OverflowError:
+        delay = RETRY_BACKOFF_CAP
+    import random as _random
+    return delay + _random.uniform(0, 0.5 * delay)
+
+
+def _result_score(result) -> int:
+    """Rank a result by how much usable output it carries — the retry loop
+    keeps the best-scoring attempt so a failed retry chain never returns LESS
+    than an earlier partial (report defect #4: mid-stream partials discarded)."""
+    if not isinstance(result, dict):
+        return -1
+    return (len(result.get("content") or "")
+            + 50 * len(result.get("tool_calls") or []))
+
+
 def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                       max_tokens=-1, timeout=None, model=None, no_reasoning=False) -> dict:
     """Send to OpenRouter's OpenAI-compatible /chat/completions. Returns the same
@@ -2093,8 +2260,14 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # runaway-think on a trivial ask. Opt back in with either:
     #   MNEME_REASONING_ENABLED=1/true/on   -> binary on/off thinking (Qwen3.6-style)
     #   MNEME_REASONING_EFFORT=low|high|max -> effort models (deepseek, Ox Alpha)
-    # Qwen's "thinking_budget"/reasoning.max_tokens is NOT a cap — the model
-    # treats it as a goal and over-thinks MORE, so don't use it.
+    # When reasoning is ON, send a bounded thinking budget (reasoning.max_tokens,
+    # default max_tokens/2 — OpenCode's fitThinkingBudget rule: thinking counts
+    # against the output limit, so a budget near it leaves the answer/tool call
+    # no room). The old code sent NO reasoning key when enabled, handing
+    # mandatory-reasoning models (GLM-5.3) an unbounded thinking budget —
+    # measured 28,771 reasoning tokens / 75s per trivial ask. A Qwen-specific
+    # "budget is a goal not a cap" quirk was previously generalized to every
+    # reasoning model here; the budget is opt-out via MNEME_REASONING_BUDGET=0.
     _reasoning = {}
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
     _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
@@ -2103,14 +2276,32 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         _reasoning_on = True
     if no_reasoning or not _reasoning_on:
         _reasoning["enabled"] = False
-    if _reasoning:
-        payload["reasoning"] = _reasoning
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
     if _mt is None:
         _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
-        _mt = _mc.get("max_tokens") or int(os.environ.get("MNEME_MAX_TOKENS", "0"))
-    if _mt and int(_mt) > 0:
+        _mt = _mc.get("max_tokens") or int(os.environ.get("MNEME_MAX_TOKENS", "0") or 0)
+    # Always bound output: with no cap the OpenAI-compatible path hands the
+    # model (and its thinking phase) an unlimited budget. OpenCode always
+    # sends max_tokens (DEFAULT_MAX_TOKENS = 32k); adopt the same default.
+    if not _mt or int(_mt) <= 0:
+        _mt = OR_DEFAULT_MAX_TOKENS
+    if int(_mt) > 0:
         payload["max_tokens"] = int(_mt)
+        # Bounded thinking budget for reasoning models (see comment above).
+        # Explicit MNEME_REASONING_BUDGET wins, "auto" = max_tokens/2, "0"/"off"
+        # disables (legacy behaviour). Always capped at max_tokens/2.
+        if _reasoning_on and not no_reasoning:
+            _bud = OR_REASONING_BUDGET.strip().lower()
+            if _bud not in ("0", "off", "no", "none", "disabled"):
+                try:
+                    _budget = int(_bud) if _bud not in ("auto", "") else int(_mt) // 2
+                except ValueError:
+                    _budget = int(_mt) // 2
+                _budget = min(_budget, int(_mt) // 2)
+                if _budget > 0:
+                    _reasoning["max_tokens"] = _budget
+    if _reasoning:
+        payload["reasoning"] = _reasoning
     if tools:
         payload["tools"] = tools
     if format_schema:
@@ -2136,6 +2327,20 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     except Exception:
         pass
 
+    # TTFT floor for known reasoning models (§7 fix #2). With stream=True,
+    # requests.post returns when response HEADERS arrive — GLM-5.3's upstream
+    # withholds headers while reasoning, so the plain FIRST_TOKEN_TIMEOUT
+    # (180s) killed the call on the POST itself, before any SSE byte (log:
+    # dur=180.26s n_tok=0 on every glm-5.3 call). The floor raises the
+    # effective budget for known thinking models; it never lowers a
+    # user-configured timeout.
+    _floor = _reasoning_ttft_floor(_model)
+    _ttft = max(FIRST_TOKEN_TIMEOUT, _floor) if _floor else FIRST_TOKEN_TIMEOUT
+    # Non-stream buffers the whole body server-side, so a reasoning model's
+    # full thinking+answer legitimately exceeds the 60s fast-fail budget —
+    # apply the floor there too.
+    _ns_timeout = max(NON_STREAM_TIMEOUT, _floor) if _floor else NON_STREAM_TIMEOUT
+
     if not _OR_STREAM:
         # Non-streaming path: OpenRouter buffers the full response server-side, so
         # it CAN transparently fail over to a backup provider if the primary stalls
@@ -2146,7 +2351,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         # fails fast on a hang, letting OUR retry recover instead of burning 150s.
         try:
             r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                              json=payload, timeout=(CONNECT_TIMEOUT, NON_STREAM_TIMEOUT))
+                              json=payload, timeout=(CONNECT_TIMEOUT, _ns_timeout))
         except requests.exceptions.RequestException as e:
             print(f"  [GRIND-GUARD] OpenRouter request failed ({type(e).__name__}: {e}) — aborting", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
@@ -2156,7 +2361,8 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         except ValueError:
             print(f"  [GRIND-GUARD] OpenRouter non-JSON response (status {r.status_code}) — aborting", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
-                    "done_reason": "timeout"}
+                    "done_reason": "error", "error_type": f"http_{r.status_code}",
+                    "status_code": r.status_code, "retry_after": _parse_retry_after(r.headers)}
         if obj.get("error"):
             _err = obj["error"]
             _meta = _err.get("metadata") or {}
@@ -2164,7 +2370,8 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             print(f"  [GRIND-GUARD] OpenRouter error ({_etype} {_err.get('code', '')}: "
                   f"{str(_err.get('message', ''))[:100]}) — retryable", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
-                    "done_reason": "error", "error_type": _etype, "provider": obj.get("provider", "?")}
+                    "done_reason": "error", "error_type": _etype, "provider": obj.get("provider", "?"),
+                    "status_code": r.status_code, "retry_after": _parse_retry_after(r.headers)}
         _choices = obj.get("choices") or []
         _msg = (_choices[0].get("message") or {}) if _choices else {}
         _content = _msg.get("content") or ""
@@ -2206,7 +2413,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # the provider finishes, so a hung provider burns the entire read timeout.
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                          json=payload, stream=True, timeout=(CONNECT_TIMEOUT, FIRST_TOKEN_TIMEOUT))
+                          json=payload, stream=True, timeout=(CONNECT_TIMEOUT, _ttft))
         # OpenRouter streams text/event-stream with no charset, so requests falls
         # back to ISO-8859-1 for iter_lines(decode_unicode=True) and mojibakes
         # every multi-byte UTF-8 char (— -> â, ° -> Â°). Force UTF-8 before reading.
@@ -2228,7 +2435,8 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             pass
         print(f"  [GRIND-GUARD] OpenRouter HTTP {r.status_code} (non-200) — aborting: {_err_body[:200]}", flush=True)
         return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
-                "done_reason": "error", "error_type": f"http_{r.status_code}"}
+                "done_reason": "error", "error_type": f"http_{r.status_code}",
+                "status_code": r.status_code, "retry_after": _parse_retry_after(r.headers)}
 
     content_parts = []
     reasoning_parts = []
@@ -2237,6 +2445,8 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     provider = "?"
     completion_tokens = 0
     got_first = False
+    _stalled = False       # set when the stream dies mid-response — partial kept
+    _saw_done = False      # set on the [DONE] sentinel — a proper terminal event
 
     def _set_sock_timeout(t):
         # `requests(stream=True, timeout=(...))` covers the header read only — the
@@ -2254,7 +2464,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 pass
 
     # Fail fast if the first token never arrives (hung / rate-limited provider).
-    _set_sock_timeout(FIRST_TOKEN_TIMEOUT)
+    _set_sock_timeout(_ttft)
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
@@ -2264,7 +2474,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 break
             if not got_first:
                 got_first = True
-                _set_sock_timeout(timeout)
+                # Loosen to at least the TTFT budget: if we legitimately waited
+                # out a reasoning floor for the first token, the inter-byte
+                # budget must not be shorter than it.
+                _set_sock_timeout(max(timeout, _ttft))
             if not raw:
                 continue
             raw = raw.strip()
@@ -2272,6 +2485,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 continue
             data = raw[5:].strip()
             if data == "[DONE]":
+                _saw_done = True
                 break
             try:
                 obj = json.loads(data)
@@ -2318,17 +2532,26 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             if fr:
                 finish_reason = fr
     except requests.exceptions.RequestException as e:
-        # No first token -> hung provider. Mid-stream stall -> incomplete answer.
-        # Both are retryable: signal "timeout" with 0 tokens so the retry logic
-        # (which keys off done_reason=="timeout" and eval_count==0) fires. If the
-        # user cancelled the turn, honour that instead of treating it as a stall.
+        # No first token -> hung provider. Mid-stream stall -> INCOMPLETE answer.
+        # If the user cancelled the turn, honour that instead of a stall.
         if _turn_cancel_event().is_set():
             print("  [CANCEL] user stopped the turn — aborting OpenRouter stream", flush=True)
             return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0,
                     "done_reason": "cancelled"}
         tag = "no first token" if not got_first else "mid-response stall"
         print(f"  [GRIND-GUARD] OpenRouter stream aborted ({tag}) ({type(e).__name__}: {e}) — aborting", flush=True)
-        return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+        if not got_first:
+            # Nothing was received — a clean retryable signal for the retry loop.
+            return {"content": "", "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "timeout"}
+        # Mid-response stall: tokens WERE received, so this is an incomplete
+        # answer, not an absence of one. Fall through and return the partial
+        # (tool calls assembled, thinking kept) with done_reason="timeout" —
+        # the retry loop re-queries AND keeps the best-scoring attempt, so a
+        # failed retry chain returns this partial instead of a silent empty.
+        # (The old handler returned content:"" here, discarding everything —
+        # the exact "empty response" users saw mid-stream. Ollama path has
+        # always preserved partials; this matches it.)
+        _stalled = True
     finally:
         try:
             r.close()
@@ -2354,7 +2577,17 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # reasoning. Fall back (unless there are tool calls, which must stay calls).
     if not content and thinking and not tool_calls:
         content = thinking
-    if finish_reason:
+    if _stalled or (finish_reason is None and not _saw_done):
+        # INCOMPLETE response, two shapes (OpenCode's requireTerminalEvent):
+        #  - _stalled: the stream raised (timeout/ConnectionError) mid-response.
+        #  - clean EOF with NEITHER a finish_reason chunk NOR the [DONE]
+        #    sentinel — the provider died and closed the socket politely.
+        # In both, the partial never saw a terminal event, so mark it
+        # "timeout" (the retryable signal) rather than pretending it stopped
+        # cleanly — the retry loop re-queries and keeps whichever attempt
+        # produced more.
+        done_reason = "timeout"
+    elif finish_reason:
         done_reason = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(finish_reason, finish_reason)
     else:
         done_reason = "tool_calls" if tool_calls else "stop"
@@ -5488,26 +5721,62 @@ def _execute_search_tool_calls(search_calls):
     return "\n\n".join(result_texts), trace
 
 
-def _query_retry_timeout(msgs, tools=None, timeout=None):
-    """query_model with ONE retry on a transient provider failure.
+def _query_retry_timeout(msgs, tools=None, timeout=None, options=None, max_tokens=None, attempts=None):
+    """query_model with bounded retry + jittered exponential backoff (§7 fix #3).
 
-    A transient OpenRouter stream stall (the GRIND-GUARD aborts with
-    done_reason="timeout" and 0 tokens) or a mid-stream provider error
-    (done_reason="error") should not kill the whole turn. The initial query in
-    process_chat already retries this case; the tool-loop re-queries and the
-    hard-stop queries were missing it, so a single stalled re-query returned
-    empty ("(no response)") with no recovery. Timeout defaults to the
+    Replaces the single immediate retry: an instant retry re-hits the same
+    overloaded window on a fresh TCP+TLS handshake (log: the instant retry
+    failed identically, repeatedly). Hermes (jittered_backoff, 3 attempts) and
+    OpenCode (10 attempts, Schedule.exponential + jitter) both back off; this
+    follows the Hermes shape: RETRY_ATTEMPTS attempts, 2s/4s/8s exponential
+    with jitter, provider Retry-After honored (capped at RETRY_AFTER_CAP).
+
+    Failure classification (_provider_failure_retryable): "timeout" (no first
+    token OR mid-stream stall — both incomplete) and transient errors (429,
+    5xx, transport) retry; auth/billing/403, context overflow, and other
+    deterministic 4xx do not.
+
+    Keep-best: mid-stream stalls now return their PARTIAL content; the loop
+    scores every attempt and returns the highest-scoring one when all retries
+    fail, so a retry chain can never return LESS than the first partial
+    (the mid-stream partial-discard fix). Timeout defaults to the
     backend-aware foreground budget (Ollama cold-start vs hosted anti-grind)."""
     if timeout is None:
         timeout = _main_chat_timeout()
-    result = query_model(msgs, tools=tools, timeout=timeout)
-    dr = result.get("done_reason", "")
-    empty = not (result.get("content") or "").strip() and not result.get("tool_calls")
-    retryable = (dr == "timeout" and empty and not result.get("eval_count")) or dr == "error"
-    if retryable:
-        print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
-        result = query_model(msgs, tools=tools, timeout=timeout)
-    return result
+    if attempts is None:
+        attempts = max(1, RETRY_ATTEMPTS)
+    best = None
+    result = None
+    for attempt in range(1, attempts + 1):
+        result = query_model(msgs, tools=tools, timeout=timeout,
+                             options=options, max_tokens=max_tokens)
+        if not _provider_failure_retryable(result):
+            return result
+        # Retryable failure: remember the best partial so a failed chain
+        # returns it rather than the last (possibly emptier) attempt.
+        if best is None or _result_score(result) > _result_score(best):
+            best = result
+        if attempt < attempts:
+            _ra = result.get("retry_after")
+            _wait = _retry_backoff_delay(attempt, _ra)
+            _why = (result.get("done_reason") or "?")
+            _sc = result.get("status_code")
+            _et = result.get("error_type")
+            print(f"  [RETRY] provider failure ({_why}"
+                  f"{' status=' + str(_sc) if _sc else ''}"
+                  f"{' type=' + str(_et) if _et else ''})"
+                  f" — attempt {attempt}/{attempts} failed; retrying in {_wait:.1f}s"
+                  f"{' (Retry-After)' if _ra is not None else ''}", flush=True)
+            # Sleep in small increments so a user Stop stays responsive.
+            _sleep_until = time.time() + _wait
+            while time.time() < _sleep_until:
+                if _turn_cancel_event().is_set():
+                    print("  [CANCEL] user stopped the turn — aborting retry wait", flush=True)
+                    return best if best is not None else result
+                time.sleep(min(0.25, max(0.0, _sleep_until - time.time())))
+    print(f"  [RETRY] all {attempts} attempts failed — returning best partial "
+          f"(content={len((best or {}).get('content') or '')}c)", flush=True)
+    return best if best is not None else result
 
 
 _SHRUG_TOKENS = {
@@ -5907,24 +6176,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                         f.write("\n...\n")
         except Exception:
             pass
-    result = query_model(full_msgs, tools=([] if _deliberate else msg_tools), timeout=_main_chat_timeout(),
-                         options=options, max_tokens=max_tokens)
-    # Anti-grind / empty-reply guardrail: if the model returned nothing (timeout
-    # or empty reasoning), retry once with a nudge, then fall back to a clear
-    # message so the client never sees an empty/"None" reply.
+    result = _query_retry_timeout(full_msgs, tools=([] if _deliberate else msg_tools),
+                                  timeout=_main_chat_timeout(), options=options, max_tokens=max_tokens)
+    # Anti-grind / empty-reply guardrail: the bounded retry loop above has
+    # already re-queried any transient provider failure (timeout/429/5xx) with
+    # backoff and kept the best partial, so what remains here is only the
+    # empty-reply nudge (model bug, not transport) and the grind guard.
     _failed = False
     if not (result.get("content") or "").strip() and not result.get("tool_calls"):
         dr = result.get("done_reason", "?")
         if (dr == "timeout" and not result.get("eval_count")) or dr == "error":
-            # Provider hang (zero tokens received) or a mid-stream provider error
-            # — NOT a grind. OpenRouter occasionally drops large synthesis requests
-            # without a single byte, or dies mid-generation; retry once on a fresh
-            # connection before declaring a capability edge.
-            print(f"  [RETRY] provider failure ({dr}) — retrying once", flush=True)
-            result = query_model(full_msgs, tools=msg_tools, timeout=_main_chat_timeout(),
-                                 options=options, max_tokens=max_tokens)
-            if not (result.get("content") or "").strip() and not result.get("tool_calls"):
-                _failed = True
+            # Retries exhausted with zero tokens — a genuine provider outage.
+            # Fall through to the capability-edge message (no more retries).
+            print(f"  [RETRY] provider failure persisted after {RETRY_ATTEMPTS} attempts ({dr})", flush=True)
+            _failed = True
         elif dr == "timeout":
             # Grind guardrail: generation exceeded budget — retrying would just
             # grind again. Fall through to the capability-edge message.
@@ -6876,6 +7141,7 @@ def _init_harness():
         from mneme.harness.profiles import ProfileStore
         _hlock = threading.Lock()  # one process_chat at a time across plan + task steps
         _hledger = Ledger(_hdb)
+        mntools.ledger = _hledger  # read-only run-ledger access for the inspect_run tool
         # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
                                                 os.path.join(DB_DIR, "skills")])
