@@ -216,6 +216,22 @@ class TestPayloadBudget(unittest.TestCase):
         finally:
             mp._OR_PROVIDER_PREF, mp._OR_FALLBACK_MODELS = _orig_pref, _orig_fb
 
+    def test_mandatory_reasoning_model_no_reasoning_uses_budget_not_disable(self):
+        # GLM-5.3 mandates reasoning: `enabled:false` 400s. no_reasoning must
+        # bound thinking with a small budget instead of trying to disable it.
+        os.environ.pop("MNEME_REASONING_ENABLED", None)
+        os.environ.pop("MNEME_REASONING_EFFORT", None)
+        payload, _ = self._payload(model="z-ai/glm-5.3", no_reasoning=True)
+        self.assertNotIn("enabled", payload.get("reasoning", {}))
+        self.assertEqual(payload.get("reasoning", {}).get("max_tokens"),
+                         min(mp._MANDATORY_REASONING_MIN_BUDGET, mp.OR_DEFAULT_MAX_TOKENS // 2))
+
+    def test_non_mandatory_model_no_reasoning_still_disables(self):
+        os.environ.pop("MNEME_REASONING_ENABLED", None)
+        os.environ.pop("MNEME_REASONING_EFFORT", None)
+        payload, _ = self._payload(model="test-model", no_reasoning=True)
+        self.assertEqual(payload.get("reasoning"), {"enabled": False})
+
 
 # ─── Fix 3: retry classification + backoff ─────────────────────────────────
 

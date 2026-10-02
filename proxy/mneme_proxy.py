@@ -1012,6 +1012,18 @@ _REASONING_STALE_FLOORS = (
     ("grok-4-fast-reasoning", 300), ("grok-4.20-reasoning", 300), ("grok-4.5", 300), ("grok-4-fast-non-reasoning", 180),
 )
 
+# Models whose endpoints MANDATE reasoning — sending `reasoning.enabled:false`
+# makes the provider 400 with "Reasoning is mandatory for this endpoint". For
+# these, a no_reasoning call can't disable thinking; it is bounded with a small
+# budget instead. Slug-anchored, longest-first (same convention as the floors).
+_MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6")
+
+# Reasoning budget applied to a mandatory-reasoning model when a call asks for
+# NO reasoning (no_reasoning=True) — e.g. the terse yes/no self-report in
+# _ask_reusable_strategy. Small enough to keep the call cheap, big enough not to
+# truncate a legitimate thought. Capped at max_tokens/2 by the caller.
+_MANDATORY_REASONING_MIN_BUDGET = int(os.environ.get("MNEME_MANDATORY_REASONING_BUDGET", "2000"))
+
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
 MAX_QUERY_CHARS      = 500    # user query extraction for memory routing
 MAX_JUDGE_CHARS      = 8000   # pairwise judge baseline/candidate excerpt (must cover full answers)
@@ -2175,6 +2187,24 @@ def _reasoning_stale_floor(model) -> Optional[int]:
     return None
 
 
+def _model_mandates_reasoning(model) -> bool:
+    """True if the model's endpoint MANDATES reasoning (cannot be disabled).
+
+    Same slug-anchored match as _reasoning_stale_floor. Used to avoid sending
+    `reasoning.enabled:false` to models whose provider 400s on it (GLM)."""
+    if not model or not isinstance(model, str):
+        return False
+    name = model.strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[1]
+    for slug in sorted(_MANDATORY_REASONING_MODELS, key=len, reverse=True):
+        if name == slug or name.startswith(slug):
+            return True
+    return False
+
+
 def _parse_retry_after(headers) -> Optional[float]:
     """Retry-After seconds from a provider response, else None.
 
@@ -2303,12 +2333,14 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # "budget is a goal not a cap" quirk was previously generalized to every
     # reasoning model here; the budget is opt-out via MNEME_REASONING_BUDGET=0.
     _reasoning = {}
+    _mandatory = _model_mandates_reasoning(_model)
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
     _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
     if _reffort and not no_reasoning:
         _reasoning["effort"] = _reffort
         _reasoning_on = True
-    if no_reasoning or not _reasoning_on:
+    if (no_reasoning or not _reasoning_on) and not _mandatory:
+        # A non-mandatory model can be told to skip thinking entirely.
         _reasoning["enabled"] = False
     _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
@@ -2337,6 +2369,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 _budget = min(_budget, int(_mt) // 2)
                 if _budget > 0:
                     _reasoning["max_tokens"] = _budget
+        elif _mandatory and (no_reasoning or not _reasoning_on):
+            # Mandatory-reasoning model asked to skip thinking — can't send
+            # `enabled:false` (the endpoint 400s), so bound it tightly instead.
+            _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
     if _reasoning:
         payload["reasoning"] = _reasoning
     if tools:
