@@ -17,6 +17,7 @@ the module import-cycle-free and unit-testable against a temp DB + a fake embed.
 import base64
 import os
 import json
+import shutil
 import subprocess
 import re as _re
 from html import unescape as _unescape
@@ -37,6 +38,52 @@ def _default_tools_dir() -> str:
     return os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR") or os.path.join(cd, "tools"))
 TOOLS_DIR = _default_tools_dir()
 BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
+
+# ─── Filesystem scope (enforced by the native bash/write/read tools) ────
+# The model may WRITE only under MODEL_SCOPE and TOOLS_DIR (its workspace); the
+# rest of the filesystem is read-only to it. read_file is additionally limited
+# to BROWSER_ROOT (the user's view). mneme_proxy calls set_scope() after config
+# load / hot-reload; the env vars are the fallback defaults.
+MODEL_SCOPE = os.path.realpath(os.path.expanduser(
+    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+BROWSER_ROOT = os.path.realpath(os.path.expanduser(
+    os.environ.get("MNEME_BROWSER_ROOT", "~")))
+# Harness run workspaces (runs_root/<run_id>/workspace) are also the model's —
+# the run planner/executor writes files there via absolute paths.
+RUNS_ROOT = os.path.realpath(os.path.expanduser(
+    os.environ.get("MNEME_RUNS_DIR")
+    or os.path.join(os.environ.get("MNEME_CHUNK_DIR", "~/mneme/chunks"), "runs")))
+
+
+def set_scope(model_scope=None, browser_root=None):
+    global MODEL_SCOPE, BROWSER_ROOT
+    if model_scope:
+        MODEL_SCOPE = os.path.realpath(os.path.expanduser(str(model_scope)))
+    if browser_root:
+        BROWSER_ROOT = os.path.realpath(os.path.expanduser(str(browser_root)))
+
+
+def _within(path, root):
+    p = os.path.realpath(os.path.expanduser(str(path)))
+    r = os.path.realpath(str(root))
+    return p == r or p.startswith(r + os.sep)
+
+
+def _writable(path):
+    """True when `path` is inside the model's writable area (workspace + scope
+    + run workspaces)."""
+    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE)
+            or _within(path, RUNS_ROOT))
+
+
+def _writable_roots():
+    """Deduplicated list of writable roots (workspace + scope + run workspaces)."""
+    roots = []
+    for r in (TOOLS_DIR, MODEL_SCOPE, RUNS_ROOT):
+        r = os.path.realpath(r)
+        if not any(r == x or r.startswith(x + os.sep) for x in roots):
+            roots.append(r)
+    return roots
 TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
 TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
 TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
@@ -56,9 +103,17 @@ def reload_config():
     """
     global NATIVE_TOOLS_MODE, TOOLS_DIR, BASH_TIMEOUT
     global TOOL_INJECT_MIN_SIM, TOOL_INJECT_MAX, TOOL_INJECT_TOKENS
+    global MODEL_SCOPE, BROWSER_ROOT, RUNS_ROOT
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
     TOOLS_DIR = _default_tools_dir()
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
+    MODEL_SCOPE = os.path.realpath(os.path.expanduser(
+        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+    BROWSER_ROOT = os.path.realpath(os.path.expanduser(
+        os.environ.get("MNEME_BROWSER_ROOT", "~")))
+    RUNS_ROOT = os.path.realpath(os.path.expanduser(
+        os.environ.get("MNEME_RUNS_DIR")
+        or os.path.join(os.environ.get("MNEME_CHUNK_DIR", "~/mneme/chunks"), "runs")))
     TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
     TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
     TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
@@ -555,11 +610,24 @@ def is_native_exec_name(name, client_tools):
 # ─── Native execution (server-side) ─────────────────────────────────────
 
 def _exec_bash(command):
-    """Run a shell command on the proxy host. Returns a single result string."""
+    """Run a shell command inside a bubblewrap sandbox: the filesystem is
+    read-only except for the model's writable roots (TOOLS_DIR + MODEL_SCOPE).
+    Falls back to a plain subprocess when bwrap is unavailable."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
+        os.makedirs(MODEL_SCOPE, exist_ok=True)
+        os.makedirs(RUNS_ROOT, exist_ok=True)
+        bwrap = shutil.which("bwrap")
+        if bwrap:
+            cmd = [bwrap, "--ro-bind", "/", "/"]
+            for r in _writable_roots():
+                cmd += ["--bind", r, r]
+            cmd += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+                    "--chdir", TOOLS_DIR, "bash", "-c", command]
+        else:
+            cmd = ["bash", "-c", command]
         p = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
+            cmd, capture_output=True, text=True,
             timeout=BASH_TIMEOUT, cwd=TOOLS_DIR,
         )
         out = (p.stdout or "").rstrip()
@@ -573,10 +641,15 @@ def _exec_bash(command):
 
 
 def _exec_write(file_path, content):
-    """Write a file on the proxy host. Relative paths land in the tools dir."""
+    """Write a file on the proxy host, scoped to the model's writable area.
+    Relative paths land in the tools dir; absolute paths are rejected if they
+    fall outside TOOLS_DIR / MODEL_SCOPE (shared files stay read-only)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
         full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
+        if not _writable(full):
+            return (f"[write blocked: {full} is outside the model write scope "
+                    f"({MODEL_SCOPE} and {TOOLS_DIR}). Write inside that scope instead.]")
         os.makedirs(os.path.dirname(full) or TOOLS_DIR, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
@@ -730,10 +803,14 @@ def _exec_web_search(query):
 
 
 def _exec_read_file(path, start=None, end=None):
-    """Read a file (optionally a line range), capped at 12000 chars."""
+    """Read a file (optionally a line range), capped at 12000 chars, scoped to
+    the browser root (the user's view)."""
     try:
         path = os.path.expanduser(path or "")
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        full = os.path.realpath(path)
+        if not _within(full, BROWSER_ROOT):
+            return f"[read_file blocked: {path} is outside the browser scope ({BROWSER_ROOT})]"
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         total = len(lines)
         s = max(1, int(start) if start else 1)

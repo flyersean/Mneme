@@ -497,6 +497,10 @@ _STORAGE_ENV_MAP = {
 _USER_PINNED_STORAGE_ENV = {env for env in _STORAGE_ENV_MAP.values() if env in os.environ}
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
+# Apply the filesystem scope to the native tools (bash/write/read_file) from
+# config filesystem.model_scope / filesystem.browser_root.
+_fs = CONFIG_DATA.get("filesystem") or {}
+mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
 # background and their tools appear in assemble_tools on the next request).
@@ -683,6 +687,8 @@ def _reload_sampling_if_changed():
             CONFIG_DATA["model_template"] = data.get("model_template") or ""
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
+        _fs = CONFIG_DATA.get("filesystem") or {}
+        mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
     # Scalar sampling keys -> refresh env (respecting user-pinned env overrides).
     sampling = data.get("sampling") or {}
     changed = []
