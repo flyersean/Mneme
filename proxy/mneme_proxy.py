@@ -93,6 +93,7 @@ import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
 import mneme.strategy_history as _strat_hist
 import mneme.run_live as _run_live
+import mneme.thinking_log as _think_log
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -210,7 +211,7 @@ _CONFIG_ENV_MAP = {
     "openrouter_base_url": "OPENROUTER_BASE_URL",
 }
 
-_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem"}
+_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem", "debug"}
 
 # Repo root — used to locate model_templates.yaml (shipped alongside the proxy).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -496,12 +497,23 @@ _STORAGE_ENV_MAP = {
     "inject_enabled": "MNEME_INJECT_ENABLED",
 }
 _USER_PINNED_STORAGE_ENV = {env for env in _STORAGE_ENV_MAP.values() if env in os.environ}
+
+
+def _apply_thinking_log():
+    """Read debug.thinking_log / thinking_log_path and apply to the log module."""
+    _dbg = CONFIG_DATA.get("debug") or {}
+    _path = _dbg.get("thinking_log_path") or os.path.join(
+        os.environ.get("MNEME_CHUNK_DIR") or ".", "thinking.log")
+    _think_log.configure(_dbg.get("thinking_log"), _path)
+
+
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
 mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
+_apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
 # background and their tools appear in assemble_tools on the next request).
@@ -690,6 +702,9 @@ def _reload_sampling_if_changed():
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
         mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
+    if "debug" in data:
+        CONFIG_DATA["debug"] = data.get("debug") or {}
+        _apply_thinking_log()
     # Scalar sampling keys -> refresh env (respecting user-pinned env overrides).
     sampling = data.get("sampling") or {}
     changed = []
@@ -1203,8 +1218,10 @@ def _scoped_process_chat(messages, cancel_event=None, tool_grant=None, **kw):
     _sid = kw.get("session_id") or ""
     _run_id = _sid[4:] if _sid.startswith("run:") else None
     if _run_id:
-        _stream_local.sink = lambda kind, text: _run_live.publish(
-            _run_id, "token", {"kind": kind, "text": text})
+        def _sink(kind, text):
+            _run_live.publish(_run_id, "token", {"kind": kind, "text": text})
+            _think_log.record(_run_id, kind, text)
+        _stream_local.sink = _sink
     try:
         return process_chat(messages, **kw)
     finally:

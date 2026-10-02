@@ -90,8 +90,12 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
         completed = "Completed so far:\n" + "\n".join(lines) + "\n"
     retry_note = ""
     if ctx.attempt > 1 and ctx.task.get("error"):
-        retry_note = (f"This is attempt {ctx.attempt}. The previous attempt failed: "
-                      f"{ctx.task['error'][:400]}\nTry a different approach.\n")
+        # Neutral, result-driven wording. "failed" + "Try a different approach"
+        # reads as "you messed up, pivot" to the model's connotation, which made
+        # it swap a working tool for another on a false grade. State the result
+        # and let the model decide.
+        retry_note = (f"Attempt {ctx.attempt}. Previous attempt result: "
+                      f"{ctx.task['error'][:400]}\n")
     checks = (ctx.task.get("meta") or {}).get("verify") or []
     verify_note = ""
     if checks:
@@ -163,9 +167,15 @@ def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock]
         if not content:
             return StepResult(output="", ok=False, model_calls=1, tool_calls=calls, meta=meta,
                               error="empty model output")
-        if grade == "F":
+        if grade == "F" and not calls:
+            # Only a PURE-CONTENT turn (no tools used) can fail on provenance. A
+            # tool step is judged by its verification, not by whether its narration
+            # carried a [source:] tag — the "fabricated" grade was a false positive
+            # that made the model (correctly) pivot away from a working approach.
+            # Neutral wording too: "un-cited" names the property, where
+            # "failed/fabricated" reads as "you lied" to the model's connotation.
             return StepResult(output=content, ok=False, model_calls=1, tool_calls=calls, meta=meta,
-                              error="turn graded F (failed/fabricated): " + content[:200])
+                              error="response was un-cited (no [source:] tag for its claims): " + content[:200])
         return StepResult(output=content, ok=True, model_calls=1, tool_calls=calls, meta=meta,
                           replan=find_replan(content))
 

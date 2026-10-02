@@ -22,7 +22,7 @@ def classify(error: str, meta: dict = None) -> str:
         return "unexecutable"
     if "empty model output" in e:
         return "empty"
-    if "graded f" in e:
+    if "graded f" in e or "un-cited" in e:
         return "fabricated"
     if meta.get("done_reason") in ("timeout", "error") or "done_reason=timeout" in e or "done_reason=error" in e:
         return "provider"
