@@ -19,10 +19,18 @@ db = None
 EDGE_FAILURE_THRESHOLD = int(os.environ.get("MNEME_EDGE_FAILURES", "2"))   # min D/F to flag
 EDGE_FAILURE_RATIO = float(os.environ.get("MNEME_EDGE_RATIO", "0.5"))      # D/F ratio to flag
 
+# Only these problem types are tracked as capability edges. 'compute' (the model
+# grinds) and 'live_data' (the model fabricates) are where competence genuinely
+# ends. 'code' is deliberately EXCLUDED: a "write a script/file" task is a tool
+# task the model is normally competent at, and flagging it as an edge made the
+# harness strip the model's tools and tell it to "build a tool" instead of just
+# doing the task — which produced the narration-instead-of-function-call bug.
+_EDGE_TRACKED_TYPES = frozenset({"compute", "live_data"})
+
 
 def _record_capability(problem_type: str, grade: str):
     """Record a graded result against its problem type; re-evaluate the edge flag."""
-    if not problem_type or problem_type == "other":
+    if problem_type not in _EDGE_TRACKED_TYPES:
         return
     try:
         row = db.execute(
@@ -50,7 +58,7 @@ def _record_capability(problem_type: str, grade: str):
 
 def _is_capability_edge(problem_type: str) -> bool:
     """True if this problem type has accumulated enough poor grades to be a known edge."""
-    if not problem_type or problem_type == "other":
+    if problem_type not in _EDGE_TRACKED_TYPES:
         return False
     try:
         row = db.execute("SELECT flagged FROM capability_edges WHERE problem_type=?", (problem_type,)).fetchone()

@@ -6732,6 +6732,12 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # also a capability edge — the environment blocks the current approach — so
     # treat that as a failure signal even when the turn otherwise "passed".
     _eff_grade = grade
+    if grade in ("D", "F") and "SUCCESS" in _trail_statuses:
+        # The tools actually succeeded — an F here is a provenance/citation mark
+        # on the narration, not a competence failure. Don't feed it to the
+        # capability-edge tracker: a correct tool step must not read as "can't do
+        # this type".
+        _eff_grade = "B"
     if (_trail_statuses.count("FAILURE") >= 2
             and "SUCCESS" not in _trail_statuses
             and grade not in ("D", "F")):
