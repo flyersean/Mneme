@@ -959,13 +959,6 @@ LABEL_TIMEOUT = int(os.environ.get("MNEME_LABEL_TIMEOUT", "30"))
 # CHAT_TIMEOUT (300s) per hang. Override with MNEME_NON_STREAM_TIMEOUT.
 NON_STREAM_TIMEOUT = int(os.environ.get("MNEME_NON_STREAM_TIMEOUT", "60"))
 
-# Steady-generation (between-chunk) timeout. Once the first token has arrived,
-# a healthy stream emits tokens continuously; a gap this long means the provider
-# died mid-generation, so fail fast and let the retry loop recover — instead of
-# burning the reasoning TTFT floor (~600s) on every stall. Independent of _ttft,
-# which is a FIRST-token budget only. Override with MNEME_INTER_BYTE_TIMEOUT.
-INTER_BYTE_TIMEOUT = int(os.environ.get("MNEME_INTER_BYTE_TIMEOUT", "60"))
-
 # ─── Provider retry policy (replaces the single immediate retry) ──────────
 # A transient provider failure (no first token, mid-stream stall, 429/5xx) is
 # re-hit instantly today — the same overloaded window, on a fresh TCP+TLS
@@ -990,24 +983,24 @@ OR_DEFAULT_MAX_TOKENS = int(os.environ.get("MNEME_OR_MAX_TOKENS", "32000"))
 # behaviour). An explicit number wins (still capped at max_tokens/2).
 OR_REASONING_BUDGET = os.environ.get("MNEME_REASONING_BUDGET", "auto")
 
-# ─── Reasoning-model first-token floors (Hermes reasoning_timeouts.py) ────
-# Thinking models routinely exceed FIRST_TOKEN_TIMEOUT before ANY byte
-# arrives — with stream=True, requests.post returns when response HEADERS
-# arrive, and GLM-5.3's upstream withholds headers while reasoning, so the
-# 180s wall killed the call on the POST itself (log: dur=180.26s n_tok=0 on
-# every glm-5.3 call). These floors raise the effective TTFT budget for known
-# reasoning models; they never lower a user-configured timeout. Matched
-# start-of-slug (after stripping any "provider/" prefix), longest slug first.
-_REASONING_TTFT_FLOORS = (
-    ("glm-5", 600), ("glm-4.7", 600), ("glm-4.6", 600), ("glm-4.5", 600),
-    ("o1-pro", 600), ("o1-preview", 600), ("o1-mini", 600), ("o1", 600),
-    ("o3-pro", 600), ("o3-mini", 300), ("o3", 600), ("o4-mini", 300),
-    ("deepseek-reasoner", 600), ("deepseek-r1", 600),
-    ("deepseek-v4-flash", 600), ("deepseek-v4-pro", 600),
+# ─── Reasoning-model stale-timeout floors (mirrors Hermes reasoning_timeouts.py) ────
+# Stale-timeout floor for known reasoning models (mirrors Hermes'
+# agent/reasoning_timeouts.py). A stream is "stale" when it produces no bytes
+# for the stale timeout (FIRST_TOKEN_TIMEOUT default 180s); the floor is
+# applied as max(default, floor). It exists for models that emit a LONG
+# hidden-thinking block before their first byte (o-series, deepseek-r1,
+# nemotron, etc.). GLM is deliberately NOT listed: it streams its reasoning,
+# so the first byte lands in ~1-5s and 180s is plenty — the earlier 600s glm
+# floor only made provider hangs cost 10 min each. Matched start-of-slug
+# (after stripping any "provider/" prefix), longest slug first.
+_REASONING_STALE_FLOORS = (
     ("nemotron-3-ultra", 600), ("nemotron-3-super", 600), ("nemotron-3-nano", 300),
-    ("qwq-32b", 300), ("qwen3", 300),
-    ("grok-4-fast-reasoning", 300), ("grok-4.5", 300),
-    ("claude-opus-4", 240), ("claude-sonnet-5", 180),
+    ("deepseek-r1", 600), ("deepseek-reasoner", 600), ("deepseek-v4-flash", 600), ("deepseek-v4-pro", 600),
+    ("qwq-32b", 300), ("qwen3", 180),
+    ("o1", 600), ("o1-mini", 600), ("o1-pro", 600), ("o1-preview", 600),
+    ("o3", 600), ("o3-pro", 600), ("o3-mini", 300), ("o4-mini", 300),
+    ("claude-opus-4", 240), ("claude-sonnet-5", 180), ("claude-sonnet-4.5", 180), ("claude-sonnet-4.6", 180),
+    ("grok-4-fast-reasoning", 300), ("grok-4.20-reasoning", 300), ("grok-4.5", 300), ("grok-4-fast-non-reasoning", 180),
 )
 
 # ─── Truncation limits (Phase 1.2 — names only, values unchanged) ───
@@ -2124,14 +2117,15 @@ def _truncate_tool_result(content: str) -> str:
             + content[-tail_len:])
 
 
-def _reasoning_ttft_floor(model) -> Optional[int]:
-    """First-token-timeout floor (seconds) for a known reasoning model, else None.
+def _reasoning_stale_floor(model) -> Optional[int]:
+    """Stale-timeout floor (seconds) for a known reasoning model, else None.
 
     Slug-anchored match like Hermes' reasoning_timeouts.py: strip any
     aggregator prefix (everything through the last "/"), lowercase, then match
-    table entries longest-first as a prefix at a slug boundary — so
-    "z-ai/glm-5.3" matches "glm-5" but "someglm-5" does not, and "o3-mini"
-    beats "o3". Only ever used as a FLOOR (callers apply max(), never min())."""
+    table entries longest-first as a prefix at a slug boundary — so "o3-mini"
+    beats "o3". Only ever used as a FLOOR (callers apply max(), never min()).
+    Returns None for non-reasoning models, and for GLM which is intentionally
+    absent from _REASONING_STALE_FLOORS."""
     if not model or not isinstance(model, str):
         return None
     name = model.strip().lower()
@@ -2139,11 +2133,10 @@ def _reasoning_ttft_floor(model) -> Optional[int]:
         return None
     if "/" in name:
         name = name.rsplit("/", 1)[1]
-    for slug, floor in sorted(_REASONING_TTFT_FLOORS, key=lambda kv: -len(kv[0])):
+    for slug, floor in sorted(_REASONING_STALE_FLOORS, key=lambda kv: -len(kv[0])):
         if name == slug or name.startswith(slug):
-            # startswith: "glm-5.3" starts with "glm-5"; the table is ordered
-            # longest-first so the most specific entry wins. A shorter table
-            # entry only matches when it is a true slug prefix.
+            # startswith: "deepseek-v4-pro" starts with "deepseek-v4"; the table
+            # is ordered longest-first so the most specific entry wins.
             return floor
     return None
 
@@ -2334,15 +2327,15 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     except Exception:
         pass
 
-    # TTFT floor for known reasoning models (§7 fix #2). With stream=True,
-    # requests.post returns when response HEADERS arrive — GLM-5.3's upstream
-    # withholds headers while reasoning, so the plain FIRST_TOKEN_TIMEOUT
-    # (180s) killed the call on the POST itself, before any SSE byte (log:
-    # dur=180.26s n_tok=0 on every glm-5.3 call). The floor raises the
-    # effective budget for known thinking models; it never lowers a
-    # user-configured timeout.
-    _floor = _reasoning_ttft_floor(_model)
-    _ttft = max(FIRST_TOKEN_TIMEOUT, _floor) if _floor else FIRST_TOKEN_TIMEOUT
+    # Single stale timeout for the whole stream (Hermes model: "no bytes for
+    # X seconds → stale → kill + retry"). There is no separate time-to-first-
+    # token phase — a streaming reasoning model emits its first byte in ~1-5s,
+    # so the plain FIRST_TOKEN_TIMEOUT (180s) is the steady-state budget, and
+    # the floor only raises it for models with a LONG hidden-thinking block
+    # (o-series, deepseek-r1, nemotron — not GLM). One value, applied for the
+    # stream's entire lifetime, never lowered below a user-configured timeout.
+    _floor = _reasoning_stale_floor(_model)
+    _stale = max(FIRST_TOKEN_TIMEOUT, _floor) if _floor else FIRST_TOKEN_TIMEOUT
     # Non-stream buffers the whole body server-side, so a reasoning model's
     # full thinking+answer legitimately exceeds the 60s fast-fail budget —
     # apply the floor there too.
@@ -2420,7 +2413,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # the provider finishes, so a hung provider burns the entire read timeout.
     try:
         r = requests.post(f"{OR_BASE_URL}/chat/completions", headers=_or_headers(),
-                          json=payload, stream=True, timeout=(CONNECT_TIMEOUT, _ttft))
+                          json=payload, stream=True, timeout=(CONNECT_TIMEOUT, _stale))
         # OpenRouter streams text/event-stream with no charset, so requests falls
         # back to ISO-8859-1 for iter_lines(decode_unicode=True) and mojibakes
         # every multi-byte UTF-8 char (— -> â, ° -> Â°). Force UTF-8 before reading.
@@ -2470,8 +2463,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             except Exception:
                 pass
 
-    # Fail fast if the first token never arrives (hung / rate-limited provider).
-    _set_sock_timeout(_ttft)
+    # Single stale timeout for the whole stream: the socket read fails with a
+    # timeout if no bytes arrive for `_stale`, the same signal whether it happens
+    # before the first token or between chunks (Hermes' stale model).
+    _set_sock_timeout(_stale)
 
     try:
         for raw in r.iter_lines(decode_unicode=True):
@@ -2486,14 +2481,6 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 continue
             if not got_first:
                 got_first = True
-                # First token arrived — drop the long TTFT budget and switch to
-                # a short inter-byte timeout. A healthy stream emits continuously;
-                # a gap longer than INTER_BYTE_TIMEOUT means the provider died
-                # mid-generation, so fail fast and retry instead of burning the
-                # ~600s reasoning floor on every stall. (Set here, on the first
-                # data: event, NOT on an SSE `: comment` heartbeat, so a
-                # hidden-reasoning model keeps the full 600s floor.)
-                _set_sock_timeout(INTER_BYTE_TIMEOUT)
             data = raw[5:].strip()
             if data == "[DONE]":
                 _saw_done = True

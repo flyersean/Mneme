@@ -69,28 +69,29 @@ class Recorder:
         return self.replies.pop(0) if self.replies else {"content": "x", "done_reason": "stop"}
 
 
-# ─── Fix 2: reasoning-model TTFT floors ─────────────────────────────────────
+# ─── Fix 2: reasoning-model stale-timeout floors ─────────────────────────────
 
-class TestReasoningTTFTFloor(unittest.TestCase):
+class TestReasoningStaleFloor(unittest.TestCase):
     def test_known_reasoning_models_get_floor(self):
-        # (model, expected floor) — slug after the provider/ prefix
+        # (model, expected floor) — slug after the provider/ prefix.
+        # GLM is intentionally NOT floored (streams reasoning, 180s is plenty).
         cases = [
-            ("z-ai/glm-5.3", 600), ("z-ai/glm-5", 600),
             ("openai/o3-mini", 300), ("openai/o3", 600), ("openai/o1", 600),
             ("deepseek/deepseek-r1", 600), ("deepseek/deepseek-v4-flash", 600),
-            ("qwen/qwen3-8b", 300), ("qwen/qwq-32b", 300),
+            ("deepseek/deepseek-v4-pro", 600),
+            ("qwen/qwen3-8b", 180), ("qwen/qwq-32b", 300),
             ("nvidia/nemotron-3-ultra-550b", 600),
         ]
         for model, floor in cases:
-            self.assertEqual(mp._reasoning_ttft_floor(model), floor, model)
+            self.assertEqual(mp._reasoning_stale_floor(model), floor, model)
 
     def test_non_reasoning_models_get_none(self):
-        for model in ("gpt-4o", "llama-3.2-3b", "olmo-1", "test-model", "", None):
-            self.assertIsNone(mp._reasoning_ttft_floor(model), model)
+        for model in ("gpt-4o", "llama-3.2-3b", "olmo-1", "z-ai/glm-5.3", "test-model", "", None):
+            self.assertIsNone(mp._reasoning_stale_floor(model), model)
 
     def test_floor_is_longest_slug_match(self):
         # o3-mini (300) must beat the shorter o1/o3 table entries.
-        self.assertEqual(mp._reasoning_ttft_floor("openai/o3-mini-2025-01-31"), 300)
+        self.assertEqual(mp._reasoning_stale_floor("openai/o3-mini-2025-01-31"), 300)
 
 
 # ─── Fix 1: max_tokens + reasoning budget in the payload ────────────────────
@@ -183,10 +184,10 @@ class TestPayloadBudget(unittest.TestCase):
         self.assertEqual(payload["reasoning"].get("effort"), "low")
         self.assertEqual(payload["reasoning"].get("max_tokens"), 4000)
 
-    def test_ttft_floor_raises_stream_timeout(self):
-        # glm-5.3 floor 600 must replace the configured 3s TTFT on the POST.
+    def test_floor_raises_stream_timeout(self):
+        # deepseek-v4-pro floor 600 must replace the configured 3s stale timeout.
         os.environ.pop("MNEME_REASONING_ENABLED", None)
-        payload, _ = self._payload(model="z-ai/glm-5.3")
+        payload, _ = self._payload(model="deepseek/deepseek-v4-pro")
         self.assertEqual(self._posted["timeout"], (mp.CONNECT_TIMEOUT, 600))
 
     def test_no_floor_uses_configured_ttft(self):
