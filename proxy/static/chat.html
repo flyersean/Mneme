@@ -217,6 +217,51 @@
 .mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
 .mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
 </style>
+<style>
+/* harness panel + / command palette */
+#harness-panel {
+  position: absolute; top: 52px; right: 20px;
+  width: 380px; max-width: calc(100vw - 40px); max-height: 74vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12); padding: 14px 16px; font-size: 13px;
+  display: none; z-index: 20; text-align: left;
+}
+#harness-panel.open { display: block; }
+#harness-panel h3 { margin: 0 0 8px; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+#harness-runs { display: flex; flex-direction: column; gap: 2px; }
+.run-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; text-decoration: none; color: var(--text); }
+.run-item:hover { background: var(--accent-soft); }
+.run-item .badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
+.badge.s-completed { background: #dcfce7; color: #15803d; }
+.badge.s-failed, .badge.s-cancelled { background: #fee2e2; color: #b91c1c; }
+.badge.s-running, .badge.s-planning, .badge.s-verifying { background: #dbeafe; color: #1d4ed8; }
+.badge.s-paused, .badge.s-awaiting_approval { background: #fef3c7; color: #b45309; }
+.run-item .rgoal { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-item .rtime { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+#harness-cmds { display: flex; flex-direction: column; gap: 1px; }
+.cmd-line { display: flex; gap: 8px; align-items: baseline; padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.cmd-line:hover { background: var(--accent-soft); }
+.cmd-line .cname { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.cmd-line .cdesc { color: var(--muted); font-size: 12px; }
+.harness-foot { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.harness-foot a { color: var(--accent); text-decoration: none; font-size: 12px; }
+#harness-panel input, #harness-panel button { font: inherit; font-size: 13px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; }
+#harness-panel input { flex: 1; outline: none; background: var(--panel); color: var(--text); }
+#harness-panel input:focus { border-color: var(--accent); }
+#harness-panel button { cursor: pointer; background: var(--panel); color: var(--text); }
+#harness-panel button:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+.palette {
+  position: fixed; z-index: 30; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16);
+  max-width: 460px; max-height: 320px; overflow-y: auto; padding: 4px; display: none;
+}
+.palette.open { display: block; }
+.cmd-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.cmd-item:hover, .cmd-item.sel { background: var(--accent-soft); }
+.cmd-item .cname { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.cmd-item .cdesc { color: var(--muted); font-size: 12px; }
+</style>
 </head>
 <body>
 
@@ -228,6 +273,7 @@
   <div class="spacer"></div>
   <button id="settings-btn" title="Display settings">⚙</button>
   <button id="new-chat" title="Start a new conversation">New chat</button>
+  <button id="harness-btn" title="Harness runs + commands">⚡ Runs</button>
 </header>
 <nav class="mneme-nav">
   <a href="/">Dashboard</a>
@@ -243,6 +289,19 @@
   <div class="heading">Display</div>
   <label><input type="checkbox" id="opt-thinking" checked> Show thinking (reasoning)</label>
   <label><input type="checkbox" id="opt-tools" checked> Show tool calls</label>
+</div>
+
+<div id="harness-panel">
+  <h3>New run</h3>
+  <div class="row" style="display:flex; gap:6px; margin:0 0 10px;">
+    <input id="hrun-goal" placeholder="Goal — the model plans the tasks">
+    <button id="hrun-start">Start</button>
+  </div>
+  <h3>Runs</h3>
+  <div id="harness-runs"></div>
+  <h3 style="margin-top:12px">Commands — type <span style="font-family:monospace">/</span> in the box</h3>
+  <div id="harness-cmds"></div>
+  <div class="harness-foot"><a href="/runs/ui">Open Runs page →</a></div>
 </div>
 
 <div id="chat"><div class="inner" id="thread"></div></div>
@@ -438,6 +497,13 @@ sendBtn.addEventListener("click", () => {
 });
 
 input.addEventListener("keydown", (e) => {
+  if (palette.classList.contains("open")) {
+    const n = paletteCount();
+    if (e.key === "ArrowDown") { e.preventDefault(); paletteSel = (paletteSel + 1) % n; updatePaletteSelection(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); paletteSel = (paletteSel - 1 + n) % n; updatePaletteSelection(); return; }
+    if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); palettePick(); return; }
+    if (e.key === "Escape") { palette.classList.remove("open"); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
@@ -447,6 +513,7 @@ input.addEventListener("keydown", (e) => {
 input.addEventListener("input", () => {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  updatePalette();
 });
 
 document.getElementById("new-chat").addEventListener("click", () => {
@@ -463,6 +530,136 @@ document.getElementById("settings-btn").addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   if (!settingsPanel.contains(e.target)) settingsPanel.classList.remove("open");
 });
+
+// ── harness interface: commands + live runs + / palette ──────────
+const HARNESS_COMMANDS = [
+  ["/run <goal>", "start a planned run"],
+  ["/runs [status]", "list runs"],
+  ["/status [run]", "run status (default: last)"],
+  ["/plan <run>", "current plan"],
+  ["/tasks <run>", "tasks + state"],
+  ["/log <run> [n]", "last n events"],
+  ["/files <run>", "artifacts"],
+  ["/metrics", "harness metrics"],
+  ["/pause <run>", "pause a run"],
+  ["/resume <run>", "resume a run"],
+  ["/cancel <run>", "cancel a run"],
+  ["/retry <run>", "retry a run"],
+  ["/replan <run> [reason]", "replan remaining work"],
+  ["/approve <run> [note]", "approve a waiting task"],
+  ["/reject <run> [reason]", "reject a waiting task"],
+  ["/skills [query]", "list skills"],
+  ["/tools", "list tools"],
+  ["/profiles", "list profiles"],
+  ["/strategies", "list strategies"],
+  ["/memory <query>", "search memory"],
+  ["/search <query>", "search memory"],
+  ["/evolution [status]", "system evolution"],
+  ["/approve-change <id>", "approve a proposal"],
+  ["/reject-change <id>", "reject a proposal"],
+  ["/jobs", "list jobs"],
+  ["/config", "show config"],
+  ["/models", "list models"],
+  ["/help", "show this help"],
+];
+
+const harnessBtn = document.getElementById("harness-btn");
+const harnessPanel = document.getElementById("harness-panel");
+const harnessRuns = document.getElementById("harness-runs");
+const harnessCmds = document.getElementById("harness-cmds");
+
+const palette = document.createElement("div");
+palette.className = "palette";
+document.body.appendChild(palette);
+let paletteSel = 0;
+
+function escAttr(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function resizeInput() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+}
+function paletteCount() { return palette.querySelectorAll(".cmd-item").length; }
+
+function renderHarnessCmds() {
+  harnessCmds.innerHTML = HARNESS_COMMANDS.map(([c, d]) =>
+    `<div class="cmd-line" data-cmd="${escAttr(c)}"><span class="cname">${escAttr(c)}</span><span class="cdesc">${escAttr(d)}</span></div>`).join("");
+  harnessCmds.querySelectorAll(".cmd-line").forEach(line => {
+    line.onclick = () => { input.value = line.dataset.cmd + " "; resizeInput(); harnessPanel.classList.remove("open"); input.focus(); };
+  });
+}
+
+async function loadHarnessRuns() {
+  try {
+    const r = await fetch("/runs?limit=8");
+    if (!r.ok) return;
+    const { runs } = await r.json();
+    harnessRuns.innerHTML = (runs || []).map(r => `
+      <a class="run-item" href="/runs/ui">
+        <span class="badge s-${escAttr(r.status)}">${escAttr(r.status)}</span>
+        <span class="rgoal">${escAttr(r.goal || "")}</span>
+        <span class="rtime">${escAttr((r.created_at || "").slice(5, 16))}</span>
+      </a>`).join("") || '<div style="color:var(--muted);padding:4px 8px">No runs yet.</div>';
+  } catch (e) {}
+}
+
+harnessBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  harnessPanel.classList.toggle("open");
+  if (harnessPanel.classList.contains("open")) loadHarnessRuns();
+});
+document.addEventListener("click", (e) => {
+  if (!harnessPanel.contains(e.target) && e.target !== harnessBtn) harnessPanel.classList.remove("open");
+});
+
+document.getElementById("hrun-start").addEventListener("click", async () => {
+  const goal = document.getElementById("hrun-goal").value.trim();
+  if (!goal) return;
+  try {
+    const r = await fetch("/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(j.error || "HTTP " + r.status); return; }
+    document.getElementById("hrun-goal").value = "";
+    window.location.href = "/runs/ui";   // live view of the new run
+  } catch (e) { alert("error: " + e.message); }
+});
+document.getElementById("hrun-goal").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); document.getElementById("hrun-start").click(); }
+});
+
+function updatePalette() {
+  const v = input.value;
+  if (!v.startsWith("/")) { palette.classList.remove("open"); return; }
+  const prefix = v.split(/\s+/)[0];
+  const matches = HARNESS_COMMANDS.filter(([c]) => c.split(" ")[0].startsWith(prefix));
+  if (!matches.length) { palette.classList.remove("open"); return; }
+  paletteSel = Math.min(paletteSel, matches.length - 1);
+  palette.innerHTML = matches.map(([c, d], i) =>
+    `<div class="cmd-item${i === paletteSel ? " sel" : ""}" data-cmd="${escAttr(c)}"><span class="cname">${escAttr(c)}</span><span class="cdesc">${escAttr(d)}</span></div>`).join("");
+  const rect = input.getBoundingClientRect();
+  palette.classList.add("open");
+  palette.style.left = rect.left + "px";
+  palette.style.top = (rect.top - palette.offsetHeight - 8) + "px";
+  palette.querySelectorAll(".cmd-item").forEach((it, i) => {
+    it.onclick = () => { input.value = it.dataset.cmd + " "; resizeInput(); palette.classList.remove("open"); input.focus(); };
+    it.onmouseenter = () => { paletteSel = i; updatePaletteSelection(); };
+  });
+}
+function updatePaletteSelection() {
+  palette.querySelectorAll(".cmd-item").forEach((it, i) => it.classList.toggle("sel", i === paletteSel));
+}
+function palettePick() {
+  const items = palette.querySelectorAll(".cmd-item");
+  if (!items.length) return;
+  const sel = items[paletteSel] || items[0];
+  input.value = sel.dataset.cmd + " ";
+  resizeInput(); palette.classList.remove("open"); input.focus();
+}
+
+renderHarnessCmds();
+loadHarnessRuns();
+setInterval(loadHarnessRuns, 8000);
 
 // ── boot ─────────────────────────────────────────────────────────
 async function boot() {

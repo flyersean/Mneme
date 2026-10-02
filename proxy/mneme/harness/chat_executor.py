@@ -188,7 +188,9 @@ def _plan_context(pctx: PlanContext) -> str:
     if left:
         lines.append("Not yet done (your new plan replaces these):")
         lines += [f"  - {t['title']}" for t in left]
-    lines.append("Plan ONLY the remaining work, using a different approach where something failed.")
+    lines.append("Plan ONLY the remaining work. Decompose it into the smallest possible steps, "
+                 "each a single operation. Split any failed task into smaller single-purpose "
+                 "steps instead of retrying it as-is.")
     return "\n".join(lines) + "\n"
 
 

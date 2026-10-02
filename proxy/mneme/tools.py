@@ -44,6 +44,7 @@ TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
 # Bound by mneme_proxy after import (see _apply_config / startup).
 db = None          # sqlite3.Connection
 embed = None       # callable: str -> np.ndarray (normalized) | None
+ledger = None      # bound by mneme_proxy at harness startup (mneme.harness.Ledger | None)
 
 
 def reload_config():
@@ -339,8 +340,23 @@ NATIVE_WRITE_TOOL = {
     },
 }
 
+INSPECT_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "inspect_run",
+        "description": "Inspect the agent harness run ledger. With no run_id, lists recent runs (id, status, goal, created). With a run_id, returns that run's full detail: goal, status, error, usage, plan, tasks (with errors), steps (with errors), tool calls, artifacts, and checkpoints. Use to see what a run did, what failed, and why — e.g. after a run fails, inspect it to learn the exact error before retrying or starting a new run.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run to inspect (the run_... id). Omit to list recent runs."},
+                "include_events": {"type": "boolean", "description": "Also include the raw event stream (default false)."},
+            },
+        },
+    },
+}
+
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
 
 # Curation tools (retract/restore memory). Registered separately because they are
 # gated by their own config flags rather than MNEME_TOOL_<NAME>, and because they
@@ -794,6 +810,87 @@ def _exec_read_image(ref):
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _format_run_detail(d):
+    """Render a ledger.run_detail() dict into a bounded, readable text block."""
+    r = d.get("run") or {}
+    u = r.get("usage") or {}
+    plan = r.get("plan") or {}
+    out = [f"RUN {r.get('run_id')}"]
+    out.append(f"  goal: {(r.get('goal') or '')[:200]}")
+    out.append(f"  status: {r.get('status')}  attempt={r.get('attempt')}"
+               f"  plan_source={(plan.get('source') if isinstance(plan, dict) else None)}")
+    if r.get("error"):
+        out.append(f"  error: {str(r.get('error'))[:300]}")
+    out.append(f"  usage: model_calls={u.get('model_calls', 0)} tool_calls={u.get('tool_calls', 0)}"
+               f" steps={u.get('steps', 0)} replans={u.get('replans', 0)}"
+               f" failures={u.get('failures', 0)} runtime={u.get('runtime_s', 0)}s")
+    out.append(f"  created: {(r.get('created_at') or '')[:19]}  updated: {(r.get('updated_at') or '')[:19]}")
+    if isinstance(plan, dict) and plan.get("tasks"):
+        out.append(f"  plan v{plan.get('version', 0)}: " + "; ".join(str(t) for t in plan["tasks"][:8]))
+    tasks = d.get("tasks") or []
+    if tasks:
+        out.append(f"TASKS ({len(tasks)}):")
+        for t in tasks:
+            err = f" — {str(t.get('error') or '')[:140]}" if t.get("error") else ""
+            out.append(f"  [{t.get('seq')}] {t.get('status')} att={t.get('attempts')} {(t.get('title') or '')[:70]}{err}")
+    steps = d.get("steps") or []
+    if steps:
+        out.append(f"STEPS ({len(steps)}):")
+        for s in steps:
+            err = f" — {str(s.get('error') or '')[:140]}" if s.get("error") else ""
+            out.append(f"  [{s.get('seq')}] {s.get('kind')} {s.get('status')}{err}")
+    tcs = d.get("tool_calls") or []
+    if tcs:
+        out.append(f"TOOL CALLS ({len(tcs)}):")
+        for c in tcs[-15:]:
+            argstr = json.dumps(c.get("args") or {}, default=str)[:100]
+            out.append(f"  {c.get('tool')} [{c.get('status') or 'ok'}] {argstr}")
+    arts = d.get("artifacts") or []
+    if arts:
+        out.append(f"ARTIFACTS ({len(arts)}):")
+        for a in arts:
+            out.append(f"  {a.get('path')} ({a.get('size', 0)}B)")
+    cps = d.get("checkpoints") or []
+    if cps:
+        out.append(f"CHECKPOINTS ({len(cps)}):")
+        for c in cps:
+            out.append(f"  [{c.get('seq')}] {str(c.get('reason') or '')[:60]} {(c.get('created_at') or '')[:19]}")
+    if d.get("events"):
+        evs = d["events"]
+        out.append(f"EVENTS ({len(evs)}):")
+        for e in evs[-20:]:
+            out.append(f"  {(e.get('created_at') or '')[11:19]} {e.get('type')} "
+                       f"{json.dumps(e.get('data') or {}, default=str)[:90]}")
+    return "\n".join(out)
+
+
+def _exec_inspect_run(args):
+    """Inspect the harness run ledger (read-only). No run_id -> list recent runs."""
+    if ledger is None:
+        return "Harness is disabled or not initialized — there is no run ledger to inspect."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    include_events = bool(args.get("include_events"))
+    try:
+        if not run_id:
+            runs = ledger.list_runs(limit=20)
+            if not runs:
+                return "No runs yet."
+            lines = ["Recent runs (newest first):"]
+            for r in runs:
+                u = r.get("usage") or {}
+                lines.append(f"  [{r.get('run_id')}] {r.get('status')} · calls={u.get('model_calls', 0)}"
+                             f" failures={u.get('failures', 0)} · {(r.get('created_at') or '')[:19]}"
+                             f" · {(r.get('goal') or '')[:80]}")
+            return "\n".join(lines)
+        d = ledger.run_detail(run_id, include_events=include_events)
+        if d is None:
+            return f"No such run: {run_id}"
+        return _format_run_detail(d)
+    except Exception as e:
+        return f"[inspect_run error: {type(e).__name__}: {e}]"
+
+
 def execute_readonly_tool(name, args):
     """Dispatch a read-only registry tool (list_tools/read_tool/read_image/read_file/fetch_url) or web_search."""
     if name == "list_tools":
@@ -814,6 +911,8 @@ def execute_readonly_tool(name, args):
         return _exec_restore_memory(args)
     if name == "remove_memory":
         return _exec_remove_memory(args)
+    if name == "inspect_run":
+        return _exec_inspect_run(args)
     return f"[unknown registry tool: {name}]"
 
 
