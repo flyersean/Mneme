@@ -95,7 +95,7 @@
   .sb-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
   #sb-toggle { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 6px; cursor: pointer; padding: 1px 9px; font-size: 14px; line-height: 1.4; }
   #sb-toggle:hover { background: var(--accent-soft); border-color: var(--accent); }
-  .sb-cmds { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .sb-cmds { flex: 1 1 42%; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
   .sb-cmd {
     display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
     border: none; background: transparent; text-align: left;
@@ -107,6 +107,23 @@
   #sidebar.collapsed .sb-title, #sidebar.collapsed .sb-desc { display: none; }
   #sidebar.collapsed .sb-cmd { align-items: center; padding: 7px 4px; }
   #sidebar.collapsed .sb-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+
+  /* file browser section */
+  .sb-sep { height: 1px; background: var(--border); margin: 4px 10px; flex-shrink: 0; }
+  .sb-filehead { display: flex; align-items: center; gap: 4px; padding: 4px 10px; font-weight: 600; font-size: 12px; flex-shrink: 0; }
+  .sb-filehead span { flex: 1; }
+  .sb-filehead button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 5px; cursor: pointer; padding: 1px 7px; font-size: 12px; line-height: 1.4; }
+  .sb-filehead button:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .sb-filepath { padding: 0 10px 4px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .sb-files { flex: 1 1 58%; overflow-y: auto; padding: 2px 6px 6px; display: flex; flex-direction: column; gap: 1px; }
+  .fb-item { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  .fb-item:hover { background: var(--accent-soft); }
+  .fb-ico { width: 14px; text-align: center; flex-shrink: 0; }
+  .fb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .fb-badge { font-size: 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
+  .fb-item.out .fb-name { color: var(--muted); }
+  .fb-empty { color: var(--muted); font-size: 11px; padding: 4px 8px; }
+  #sidebar.collapsed .sb-filehead, #sidebar.collapsed .sb-filepath, #sidebar.collapsed .sb-files { display: none; }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
   .row { display: flex; }
@@ -335,6 +352,10 @@
   <aside id="sidebar">
     <div class="sb-head"><span class="sb-title">Commands</span><button id="sb-toggle" title="Collapse sidebar">«</button></div>
     <div class="sb-cmds" id="sidebar-cmds"></div>
+    <div class="sb-sep"></div>
+    <div class="sb-filehead"><span>Files</span><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button></div>
+    <div class="sb-filepath" id="fb-path">…</div>
+    <div class="sb-files" id="file-browser"></div>
   </aside>
   <div id="main">
     <div id="chat"><div class="inner" id="thread"></div></div>
@@ -690,6 +711,52 @@ try {
   }
 } catch (e) {}
 renderSidebar();
+
+// ── file browser ────────────────────────────────────────────────
+const fileBrowser = document.getElementById("file-browser");
+const fbPath = document.getElementById("fb-path");
+const fbUp = document.getElementById("fb-up");
+const fbRefresh = document.getElementById("fb-refresh");
+let fbCurrent = "";
+
+function insertPath(p) {
+  input.value = (input.value.trim() ? input.value.trim() + " " : "") + p;
+  resizeInput(); input.focus();
+}
+
+function fsList(path) {
+  fetch("/fs/list?path=" + encodeURIComponent(path || "")).then(r => r.json()).then(d => {
+    fbCurrent = d.current || "";
+    fbPath.textContent = (d.current === "." || !d.current) ? "~" : d.current;
+    if (!d.items || !d.items.length) { fileBrowser.innerHTML = '<div class="fb-empty">(empty)</div>'; return; }
+    fileBrowser.innerHTML = d.items.map(it => {
+      const ico = it.type === "dir" ? "📁" : "📄";
+      const badge = it.in_model_scope ? '<span class="fb-badge">rw</span>' : '<span class="fb-badge">ro</span>';
+      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}</div>`;
+    }).join("");
+    fileBrowser.querySelectorAll(".fb-item").forEach(el => {
+      el.onclick = () => {
+        if (el.dataset.type === "dir") fsList(el.dataset.path);
+        else insertPath(el.dataset.abspath);
+      };
+      if (el.dataset.type === "file") {
+        el.ondragstart = (e) => { e.dataTransfer.setData("text/plain", el.dataset.abspath); e.dataTransfer.effectAllowed = "copy"; };
+      }
+    });
+  }).catch(() => { fileBrowser.innerHTML = '<div class="fb-empty">error loading</div>'; });
+}
+
+fbUp.onclick = () => fsList(fbCurrent.split("/").slice(0, -1).join("/"));
+fbRefresh.onclick = () => fsList(fbCurrent);
+fsList("");
+
+// drop a dragged file path into the composer
+input.addEventListener("dragover", (e) => e.preventDefault());
+input.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const p = e.dataTransfer.getData("text/plain");
+  if (p) insertPath(p);
+});
 
 async function loadHarnessRuns() {
   try {

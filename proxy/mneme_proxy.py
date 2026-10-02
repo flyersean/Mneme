@@ -209,7 +209,7 @@ _CONFIG_ENV_MAP = {
     "openrouter_base_url": "OPENROUTER_BASE_URL",
 }
 
-_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers"}
+_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem"}
 
 # Repo root — used to locate model_templates.yaml (shipped alongside the proxy).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -681,6 +681,8 @@ def _reload_sampling_if_changed():
         CONFIG_DATA["models"] = _sect
         if "model_template" in data:
             CONFIG_DATA["model_template"] = data.get("model_template") or ""
+    if "filesystem" in data:
+        CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
     # Scalar sampling keys -> refresh env (respecting user-pinned env overrides).
     sampling = data.get("sampling") or {}
     changed = []
@@ -7204,6 +7206,30 @@ def _init_harness():
         HARNESS = None
 
 
+# ── Filesystem scope (the chat file browser) ─────────────────────
+# Two scopes, both configurable in mneme.yaml `filesystem:` (hot-reloadable):
+#   browser_root — what the file browser may navigate (the user's view)
+#   model_scope  — the model's read/write boundary (files outside it are
+#                  candidates for read-only sharing)
+_FS_READ_MAX = 256 * 1024  # cap on /fs/read previews (text files only)
+
+
+def _within(path: str, root: str) -> bool:
+    p = os.path.realpath(os.path.expanduser(str(path)))
+    r = os.path.realpath(root)
+    return p == r or p.startswith(r + os.sep)
+
+
+def _browser_root() -> str:
+    cfg = (CONFIG_DATA.get("filesystem") or {}).get("browser_root")
+    return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_BROWSER_ROOT", "~"))))
+
+
+def _model_scope() -> str:
+    cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
+    return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
+
+
 if FLASK_OK:
     app = Flask(__name__)
     CORS(app)
@@ -7699,6 +7725,62 @@ if FLASK_OK:
     def cancel_turn():
         _cancel_event.set()
         return _cors_response({"ok": True})
+
+    # ── Filesystem browser (scoped to filesystem.browser_root) ──
+    @app.route("/fs/list", methods=["GET"])
+    def fs_list():
+        root = _browser_root()
+        rel = request.args.get("path", "") or ""
+        target = os.path.realpath(os.path.join(root, rel))
+        if not _within(target, root):
+            target = root  # path-traversal guard
+        if not os.path.isdir(target):
+            return _cors_response({"error": "not a directory", "items": []}, 404)
+        model_scope = _model_scope()
+        items = []
+        try:
+            for e in sorted(os.scandir(target), key=lambda x: (not x.is_dir(), x.name.lower())):
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                items.append({
+                    "name": e.name,
+                    "path": os.path.relpath(e.path, root),
+                    "abspath": e.path,
+                    "type": "dir" if e.is_dir() else "file",
+                    "size": st.st_size,
+                    "in_model_scope": _within(e.path, model_scope),
+                })
+        except OSError as ex:
+            return _cors_response({"error": str(ex), "items": []}, 500)
+        return _cors_response({"root": root, "current": os.path.relpath(target, root), "items": items})
+
+    @app.route("/fs/read", methods=["GET"])
+    def fs_read():
+        root = _browser_root()
+        rel = request.args.get("path", "") or ""
+        target = os.path.realpath(os.path.join(root, rel))
+        if not _within(target, root):
+            return _cors_response({"error": "outside browser scope"}, 403)
+        if not os.path.isfile(target):
+            return _cors_response({"error": "not a file"}, 404)
+        try:
+            size = os.path.getsize(target)
+        except OSError as ex:
+            return _cors_response({"error": str(ex)}, 500)
+        if size > _FS_READ_MAX:
+            return _cors_response({"error": "file too large to preview", "size": size}, 413)
+        try:
+            with open(target, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(_FS_READ_MAX)
+        except (OSError, UnicodeError) as ex:
+            return _cors_response({"error": str(ex)}, 500)
+        return _cors_response({
+            "path": rel, "size": size,
+            "in_model_scope": _within(target, _model_scope()),
+            "content": content,
+        })
 
     # ── MCP server management (hot add/remove — no restart) ──
     @app.route("/mcp/servers", methods=["GET"])
