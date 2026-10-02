@@ -2276,9 +2276,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         _reasoning_on = True
     if no_reasoning or not _reasoning_on:
         _reasoning["enabled"] = False
+    _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
     if _mt is None:
-        _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
         _mt = _mc.get("max_tokens") or int(os.environ.get("MNEME_MAX_TOKENS", "0") or 0)
     # Always bound output: with no cap the OpenAI-compatible path hands the
     # model (and its thinking phase) an unlimited budget. OpenCode always
@@ -2288,10 +2288,13 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     if int(_mt) > 0:
         payload["max_tokens"] = int(_mt)
         # Bounded thinking budget for reasoning models (see comment above).
-        # Explicit MNEME_REASONING_BUDGET wins, "auto" = max_tokens/2, "0"/"off"
-        # disables (legacy behaviour). Always capped at max_tokens/2.
+        # Precedence: per-model config `models.<model>.reasoning_budget` > env
+        # MNEME_REASONING_BUDGET > "auto" = max_tokens/2. "0"/"off" disables
+        # (legacy behaviour). Always capped at max_tokens/2. Read from CONFIG_DATA
+        # at request time, so it hot-reloads with the rest of the `models:` block.
         if _reasoning_on and not no_reasoning:
-            _bud = OR_REASONING_BUDGET.strip().lower()
+            _rb = _mc.get("reasoning_budget")
+            _bud = str(OR_REASONING_BUDGET if _rb is None else _rb).strip().lower()
             if _bud not in ("0", "off", "no", "none", "disabled"):
                 try:
                     _budget = int(_bud) if _bud not in ("auto", "") else int(_mt) // 2
