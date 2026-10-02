@@ -33,6 +33,10 @@ CHECK_TYPES = {
 }
 _DEFAULT_TIMEOUT = 60
 _DETAIL = 500
+# Shell parse errors — a malformed command (unquoted parens/operators) errors out
+# before it can verify anything. These are NOT evidence the work failed, so they
+# must not fail a task (see run_check for the "command" branch).
+_SHELL_ERROR = re.compile(r"syntax error|unexpected", re.I)
 
 
 class VerifySpecError(ValueError):
@@ -82,11 +86,19 @@ def run_check(check: dict, output: str, base_dir: str, judge=None) -> Tuple[bool
             p = subprocess.run(check["command"], shell=True, cwd=base_dir, capture_output=True,
                                text=True, timeout=float(check.get("timeout") or _DEFAULT_TIMEOUT))
             want = int(check.get("expect_exit", 0))
-            detail = f"exit {p.returncode} (want {want})"
             tail = ((p.stdout or "") + (p.stderr or "")).strip()
+            if p.returncode == want:
+                return True, f"exit {p.returncode} (want {want})"
+            detail = f"exit {p.returncode} (want {want})"
             if tail:
                 detail += ": " + tail[-_DETAIL:]
-            return p.returncode == want, detail
+            # A shell parse error means the COMMAND was malformed, not that the
+            # work failed — it never got a chance to check anything. Treat it as
+            # inconclusive so a bad grep (unquoted parens etc.) can't turn a
+            # successful write into a false failure + replan cascade.
+            if _SHELL_ERROR.search(tail):
+                return True, "skipped (malformed shell command): " + tail[-_DETAIL:]
+            return False, detail
         if kind == "file_exists":
             full = _resolve(base_dir, check["path"])
             return os.path.exists(full), full

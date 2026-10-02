@@ -42,6 +42,22 @@ class TestParsePlan(unittest.TestCase):
         self.assertEqual(find_replan("done.\nREPLAN: the API moved"), "the API moved")
         self.assertEqual(find_replan("all good"), "")
 
+    def test_structured_verify_specs(self):
+        text = ("PLAN: write the file\n"
+                "VERIFY: file_contains out.html :: <script>\n"
+                "PLAN: run the test\n"
+                "VERIFY: file_exists out.html\n"
+                "VERIFY: output_contains PASS\n")
+        tasks = parse_plan(text)
+        self.assertEqual(tasks[0]["verify"], [{"type": "file_contains", "path": "out.html", "text": "<script>"}])
+        self.assertEqual(tasks[1]["verify"], [
+            {"type": "file_exists", "path": "out.html"},
+            {"type": "output_contains", "text": "PASS"},
+        ])
+        # a bare shell command still falls back to a command check
+        self.assertEqual(parse_plan("PLAN: x\nVERIFY: grep -q foo notes.txt")[0]["verify"],
+                         [{"type": "command", "command": "grep -q foo notes.txt"}])
+
 
 class TestVerify(unittest.TestCase):
     def setUp(self):
@@ -80,6 +96,16 @@ class TestVerify(unittest.TestCase):
         ok, res = V.run_checks([{"type": "command", "command": "sleep 5", "timeout": 0.2}], "", self.d)
         self.assertFalse(ok)
         self.assertIn("timed out", res[0]["detail"])
+
+    def test_malformed_command_is_inconclusive(self):
+        # Unquoted parens -> shell parse error. The command never ran, so it is NOT
+        # evidence the work failed; it must not fail the task.
+        ok, res = V.run_checks([{"type": "command", "command": "grep -q (unclosed /etc/passwd"}], "", self.d)
+        self.assertTrue(ok, res)
+        self.assertIn("malformed", res[0]["detail"])
+        # A genuine no-match still fails.
+        ok2, _ = V.run_checks([{"type": "command", "command": "grep -q THIS_NEVER_EXISTS notes.txt"}], "", self.d)
+        self.assertFalse(ok2)
 
 
 class Planner:

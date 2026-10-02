@@ -31,6 +31,48 @@ _VERIFY_LINE = re.compile(_PREFIX + r"VERIFY\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.+?)
 _REPLAN_LINE = re.compile(_PREFIX + r"REPLAN\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.+?)\s*$", re.I | re.M)
 _CODE_TICKS = re.compile(r"^`+|`+$")
 
+# Structured VERIFY: checks (deterministic, shell-free — no subprocess, no quoting
+# traps). The planner is steered toward these; a shell command is only the fallback.
+_VERIFY_STRUCTURED = (
+    ("file_exists", re.compile(r"^file_exists(?:\s*:)?\s+(.+)$", re.I)),
+    ("file_contains", re.compile(r"^file_contains(?:\s*:)?\s+(.+)$", re.I)),
+    ("output_contains", re.compile(r"^output_contains(?:\s*:)?\s+(.+)$", re.I)),
+    ("output_matches", re.compile(r"^output_matches(?:\s*:)?\s+(.+)$", re.I)),
+)
+
+
+def _parse_verify_spec(spec: str) -> dict:
+    """Turn a VERIFY: line body into a check dict.
+
+    Prefers deterministic, shell-free checks:
+        file_exists <path>
+        file_contains <path> :: <text>     (also accepts "<path> <text>")
+        output_contains <text>
+        output_matches <pattern>
+    Anything else becomes a legacy {"type": "command"} shell check (still run, but
+    verify.run_check downgrades a shell parse error to "inconclusive").
+    """
+    for kind, rx in _VERIFY_STRUCTURED:
+        m = rx.match(spec)
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        if kind == "file_exists":
+            return {"type": "file_exists", "path": rest}
+        if kind == "file_contains":
+            if "::" in rest:
+                path, text = rest.split("::", 1)
+                return {"type": "file_contains", "path": path.strip(), "text": text.strip()}
+            parts = rest.split(None, 1)
+            if len(parts) == 2 and parts[1].strip():
+                return {"type": "file_contains", "path": parts[0], "text": parts[1].strip()}
+            return {"type": "file_exists", "path": rest}
+        if kind == "output_contains":
+            return {"type": "output_contains", "text": rest}
+        if kind == "output_matches":
+            return {"type": "output_matches", "pattern": rest}
+    return {"type": "command", "command": spec}
+
 
 @dataclass
 class PlanResult:
@@ -54,9 +96,9 @@ def parse_plan(text: str, max_tasks: int = MAX_TASKS) -> List[dict]:
             continue
         v = _VERIFY_LINE.match(line)
         if v and tasks:
-            cmd = _CODE_TICKS.sub("", v.group(1).strip().strip("*").strip()).strip()
-            if cmd and cmd.lower() not in ("none", "n/a", "-"):
-                tasks[-1].setdefault("verify", []).append({"type": "command", "command": cmd})
+            spec = _CODE_TICKS.sub("", v.group(1).strip().strip("*").strip()).strip()
+            if spec and spec.lower() not in ("none", "n/a", "-"):
+                tasks[-1].setdefault("verify", []).append(_parse_verify_spec(spec))
     return tasks[:max_tasks]
 
 
