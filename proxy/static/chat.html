@@ -166,6 +166,10 @@
   .rc-line.rc-fail { color: #dc2626; }
   .rc-toolres summary { cursor: pointer; color: var(--muted); font-size: 11px; }
   .rc-res { white-space: pre-wrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); max-height: 200px; overflow-y: auto; margin-top: 2px; padding: 4px 6px; background: var(--bg); border-radius: 5px; }
+  .rc-thinking { margin-top: 2px; }
+  .rc-thinking summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .rc-thinking-body { white-space: pre-wrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); max-height: 200px; overflow-y: auto; margin-top: 2px; padding: 4px 6px; background: var(--bg); border-radius: 5px; }
+  .rc-narration { font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; padding: 2px 0; }
 
   .row { display: flex; }
   .row.user { justify-content: flex-end; }
@@ -587,16 +591,39 @@ function summarizeArgs(args) {
   return s.length > 90 ? s.slice(0, 90) + "…" : s;
 }
 
-function renderRunEvent(o, body, statusEl) {
+function renderRunEvent(o, body, statusEl, st) {
   const t = o.type;
   if (t === "run_started") { statusEl.textContent = "running"; statusEl.className = "rc-status"; return; }
   if (t === "run_finished") {
-    const st = (o.data && o.data.status) || "done";
-    statusEl.textContent = st;
-    statusEl.className = "rc-status rc-" + st;
+    const s = (o.data && o.data.status) || "done";
+    statusEl.textContent = s;
+    statusEl.className = "rc-status rc-" + s;
+    return;
+  }
+  // live model tokens (reasoning -> thinking, content -> narration)
+  if (t === "token") {
+    const d = o.data || {};
+    if (d.kind === "reasoning") {
+      if (!st.thinking) {
+        st.thinking = el("details", "rc-thinking");
+        st.thinking.appendChild(el("summary", null, "thinking"));
+        st.thinkingBody = el("div", "rc-thinking-body");
+        st.thinking.appendChild(st.thinkingBody);
+        body.appendChild(st.thinking);
+      }
+      st.thinkingBody.textContent += d.text || "";
+    } else if (d.kind === "content") {
+      if (!st.narration) {
+        st.narration = el("div", "rc-narration");
+        body.appendChild(st.narration);
+      }
+      st.narration.textContent += d.text || "";
+    }
+    scrollDown();
     return;
   }
   if (t === "plan_created") {
+    st.thinking = null; st.thinkingBody = null; st.narration = null;  // close planner's live tokens
     const tasks = (o.data && o.data.tasks) || [];
     const line = el("div", "rc-line", "📋 plan — " + tasks.length + " task" + (tasks.length === 1 ? "" : "s"));
     body.appendChild(line);
@@ -607,6 +634,7 @@ function renderRunEvent(o, body, statusEl) {
     return;
   }
   if (t === "task_started") {
+    st.thinking = null; st.thinkingBody = null; st.narration = null;  // new step, fresh live tokens
     const title = (o.data && o.data.title) || "task";
     body.appendChild(el("div", "rc-line rc-task", "🔧 " + title));
     return;
@@ -621,14 +649,15 @@ function renderRunEvent(o, body, statusEl) {
   if (t === "verification_failed") { body.appendChild(el("div", "rc-line rc-fail", "✗ verification failed")); return; }
   if (t === "replan_requested" || t === "replan_started") { body.appendChild(el("div", "rc-line", "🔄 replanning…")); return; }
   if (t === "tool_call") {
-    const tool = o.tool || "tool";
-    const args = summarizeArgs(o.args);
+    const d = o.data || {};
+    const tool = d.tool || "tool";
+    const args = summarizeArgs(d.args);
     const line = el("div", "rc-line", "⚙ " + tool + (args ? "  " + args : ""));
-    if (o.result) {
+    if (d.result) {
       const det = el("details", "rc-toolres");
-      const sum = el("summary", null, (o.status === "failure" ? "✗ " : "✓ ") + (o.elapsed_ms ? (o.elapsed_ms + "ms") : "done"));
+      const sum = el("summary", null, (d.elapsed_ms ? (d.elapsed_ms + "ms") : "done"));
       det.appendChild(sum);
-      det.appendChild(el("div", "rc-res", String(o.result).trim().slice(0, 900)));
+      det.appendChild(el("div", "rc-res", String(d.result).trim().slice(0, 900)));
       line.appendChild(det);
     }
     body.appendChild(line);
@@ -640,6 +669,7 @@ function renderRunEvent(o, body, statusEl) {
 async function streamRun(runId, card) {
   const body = card.querySelector(".rc-body");
   const statusEl = card.querySelector(".rc-status");
+  const st = { thinking: null, thinkingBody: null, narration: null };
   try {
     const resp = await fetch("/runs/" + runId + "/stream");
     if (!resp.ok) { statusEl.textContent = "stream error " + resp.status; return; }
@@ -658,7 +688,7 @@ async function streamRun(runId, card) {
           const p = line.slice(5).trim();
           if (!p || p === "[DONE]") continue;
           let o; try { o = JSON.parse(p); } catch (_) { continue; }
-          renderRunEvent(o, body, statusEl);
+          renderRunEvent(o, body, statusEl, st);
         }
       }
       scrollDown();
@@ -666,6 +696,20 @@ async function streamRun(runId, card) {
   } catch (e) {
     statusEl.textContent = "stream error";
   }
+}
+
+async function watchRun(runId) {
+  if (!runId) { appendMessage("assistant", "usage: /watch <run_id>"); return; }
+  try {
+    const resp = await fetch("/runs/" + runId);
+    const d = await resp.json();
+    if (!d.run) { appendMessage("assistant", "no such run: " + runId); return; }
+  } catch (e) { appendMessage("assistant", "(error: " + e.message + ")"); return; }
+  appendMessage("assistant", "watching run `" + runId.slice(-8) + "` — live below.");
+  const card = createRunCard(runId);
+  thread.appendChild(card);
+  scrollDown();
+  streamRun(runId, card);
 }
 
 async function send() {
@@ -681,6 +725,13 @@ async function send() {
   if (/^\/run(\s|$)/.test(text)) {
     const goal = text.replace(/^\/run\b/, "").trim();
     startRun(goal);
+    return;
+  }
+
+  // /watch <run_id> → stream an existing (e.g. resumed) run into the chat
+  if (/^\/watch(\s|$)/.test(text)) {
+    const runId = text.replace(/^\/watch\b/, "").trim();
+    watchRun(runId);
     return;
   }
 
@@ -818,6 +869,7 @@ document.addEventListener("click", (e) => {
 // ── harness interface: commands + live runs + / palette ──────────
 const HARNESS_COMMANDS = [
   ["/run <goal>", "start a planned run"],
+  ["/watch <run>", "stream a run's live activity into the chat"],
   ["/runs [status]", "list runs"],
   ["/status [run]", "run status (default: last)"],
   ["/plan <run>", "current plan"],

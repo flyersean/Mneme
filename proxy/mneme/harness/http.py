@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from mneme.harness.ledger import InvalidTransition, LedgerError
+from mneme import run_live
 
 
 def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
@@ -105,7 +106,8 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
 
     @app.route("/runs/<run_id>/stream", methods=["GET"])
     def harness_run_stream(run_id):
-        """Server-sent events: the run's ledger events + tool calls, live, until terminal."""
+        """Server-sent events: the run's ledger events + live tokens/tool calls,
+        interleaved, until terminal."""
         from flask import Response, stream_with_context
         import json as _json
         import time as _time
@@ -120,22 +122,26 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
 
         def generate():
             last_event_id = 0
-            seen_calls = set()
+            last_live_seq = 0
             while True:
                 try:
                     for e in eng.ledger.events(run_id, after_id=last_event_id, limit=1000):
-                        yield _sse(e)
                         last_event_id = e["event_id"]
-                    for c in eng.ledger.list_tool_calls(run_id):
-                        if c.get("call_id") not in seen_calls:
-                            seen_calls.add(c["call_id"])
-                            c["type"] = "tool_call"
-                            yield _sse(c)
+                        if e.get("type") in ("tool_completed", "tool_failed"):
+                            continue  # redundant with the live tool-call stream
+                        yield _sse(e)
+                    live_items, last_live_seq = run_live.drain(run_id, last_live_seq)
+                    for it in live_items:
+                        if it["kind"] == "token":
+                            yield _sse({"type": "token", "data": it["data"]})
+                        elif it["kind"] == "tool_call":
+                            yield _sse({"type": "tool_call", "data": it["data"]})
                     run = eng.ledger.get_run(run_id)
                     if (run or {}).get("status") in ("completed", "failed", "cancelled"):
                         yield _sse({"type": "run_finished",
                                     "data": {"status": run["status"], "error": run.get("error") or ""}})
                         yield "data: [DONE]\n\n"
+                        run_live.forget(run_id)
                         return
                 except Exception as ex:
                     yield _sse({"type": "stream_error", "data": {"error": str(ex)}})

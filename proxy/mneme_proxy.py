@@ -92,6 +92,7 @@ import mneme.curation as curation
 import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
 import mneme.strategy_history as _strat_hist
+import mneme.run_live as _run_live
 
 # ─── Config file loading ────────────────────────────────────────
 # A single config file (YAML or JSON) holds every tunable. Loaded BEFORE the
@@ -1183,14 +1184,22 @@ def _emit_token(kind: str, text: str) -> None:
 def _scoped_process_chat(messages, cancel_event=None, tool_grant=None, **kw):
     """process_chat for a harness step: a private cancel event, and (optionally) a
     permission grant — tools whose permission level is not granted are neither
-    offered to the model nor executed."""
+    offered to the model nor executed. Also routes the model's live tokens to
+    the run's stream buffer so the chat can watch the step unfold."""
     _cancel_local.event = cancel_event or threading.Event()
     _cancel_local.tool_grant = set(tool_grant) if tool_grant is not None else None
+    _sid = kw.get("session_id") or ""
+    _run_id = _sid[4:] if _sid.startswith("run:") else None
+    if _run_id:
+        _stream_local.sink = lambda kind, text: _run_live.publish(
+            _run_id, "token", {"kind": kind, "text": text})
     try:
         return process_chat(messages, **kw)
     finally:
         _cancel_local.event = None
         _cancel_local.tool_grant = None
+        if _run_id:
+            _stream_local.sink = None
 
 
 def _turn_tool_ok(name: str) -> bool:
@@ -5903,6 +5912,9 @@ def _compact_followup(followup: list, max_tokens: int, head_len: int) -> list:
 
 def process_chat(messages: list, session_id: str = "default", tools: list = None,
                  options: dict = None, max_tokens: int = None) -> dict:
+    # Harness-run session ids are "run:<run_id>" — when set, publish this turn's
+    # tool calls to the run's live stream buffer so the chat can watch them fire.
+    _run_id = session_id[4:] if (session_id or "").startswith("run:") else None
     # Extract the retrieval query from ONLY the last user message. Scoping retrieval
     # to the current turn means a follow-up ("try again", a correction) doesn't
     # re-surface chunks matched by earlier turns' keywords — which was re-injecting
@@ -6435,6 +6447,11 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     _mark_call(nm, args)
                     _t0 = time.time()
                     res = mntools.execute_native_tool(nm, args)
+                    if _run_id:
+                        _run_live.publish(_run_id, "tool_call", {
+                            "tool": nm, "args": args, "result": res,
+                            "elapsed_ms": int((time.time() - _t0) * 1000),
+                        })
                     _stage_tool_result(res, nm, args)
                     _tool_trace.append(_trace(nm, args, res, _t0))
                     print(f"  [NATIVE-TOOL] {nm} -> {res[:90]!r}", flush=True)
