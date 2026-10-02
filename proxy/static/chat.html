@@ -870,7 +870,7 @@ function renderHarnessCmds() {
   harnessCmds.innerHTML = HARNESS_COMMANDS.map(([c, d]) =>
     `<div class="cmd-line" data-cmd="${escAttr(c)}"><span class="cname">${escAttr(c)}</span><span class="cdesc">${escAttr(d)}</span></div>`).join("");
   harnessCmds.querySelectorAll(".cmd-line").forEach(line => {
-    line.onclick = () => { input.value = line.dataset.cmd + " "; resizeInput(); harnessPanel.classList.remove("open"); input.focus(); };
+    line.onclick = () => { input.value = line.dataset.cmd.split(" ")[0] + " "; resizeInput(); harnessPanel.classList.remove("open"); input.focus(); };
   });
 }
 
@@ -885,7 +885,7 @@ function renderSidebar() {
     return `<button class="sb-cmd" data-cmd="${escAttr(c)}" title="${escAttr(c)}"><span class="sb-name">${escAttr(name)}</span><span class="sb-desc">${escAttr(d)}</span></button>`;
   }).join("");
   sidebarCmds.querySelectorAll(".sb-cmd").forEach(b => {
-    b.onclick = () => { input.value = b.dataset.cmd + " "; resizeInput(); input.focus(); };
+    b.onclick = () => { input.value = b.dataset.cmd.split(" ")[0] + " "; resizeInput(); input.focus(); };
   });
 }
 
@@ -1000,7 +1000,7 @@ function updatePalette() {
   palette.style.left = rect.left + "px";
   palette.style.top = (rect.top - palette.offsetHeight - 8) + "px";
   palette.querySelectorAll(".cmd-item").forEach((it, i) => {
-    it.onclick = () => { input.value = it.dataset.cmd + " "; resizeInput(); palette.classList.remove("open"); input.focus(); };
+    it.onclick = () => { input.value = it.dataset.cmd.split(" ")[0] + " "; resizeInput(); palette.classList.remove("open"); input.focus(); };
     it.onmouseenter = () => { paletteSel = i; updatePaletteSelection(); };
   });
 }
@@ -1011,7 +1011,7 @@ function palettePick() {
   const items = palette.querySelectorAll(".cmd-item");
   if (!items.length) return;
   const sel = items[paletteSel] || items[0];
-  input.value = sel.dataset.cmd + " ";
+  input.value = sel.dataset.cmd.split(" ")[0] + " ";
   resizeInput(); palette.classList.remove("open"); input.focus();
 }
 

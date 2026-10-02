@@ -8127,6 +8127,7 @@ if FLASK_OK:
 
         def generate():
             yield _chunk({"role": "assistant"})
+            streamed_content = ""
             while True:
                 item = q.get()
                 if item[0] == "token":
@@ -8134,10 +8135,17 @@ if FLASK_OK:
                     if kind == "reasoning":
                         yield _chunk({"reasoning": text, "role": "assistant"})
                     else:
+                        streamed_content += text
                         yield _chunk({"content": text})
                 else:
                     break
             result = result_holder.get("r") or {}
+            # Command / settings / retrieval replies (done_reason != "stop") return
+            # their content WITHOUT a model call, so no token was emitted — the
+            # content would otherwise be dropped and the chat shows "(no response)".
+            final_content = result.get("content") or ""
+            if final_content and not streamed_content:
+                yield _chunk({"content": final_content})
             tool_calls = result.get("tool_calls") or []
             if tool_calls:
                 for i, tc in enumerate(tool_calls):
