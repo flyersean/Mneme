@@ -103,6 +103,49 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         return respond({"events": events,
                         "last_event_id": events[-1]["event_id"] if events else int(request.args.get("after", 0))})
 
+    @app.route("/runs/<run_id>/stream", methods=["GET"])
+    def harness_run_stream(run_id):
+        """Server-sent events: the run's ledger events + tool calls, live, until terminal."""
+        from flask import Response, stream_with_context
+        import json as _json
+        import time as _time
+        eng, err = _engine()
+        if err:
+            return err
+        if eng.ledger.get_run(run_id) is None:
+            return respond({"error": f"no such run: {run_id}"}, 404)
+
+        def _sse(obj):
+            return "data: " + _json.dumps(obj) + "\n\n"
+
+        def generate():
+            last_event_id = 0
+            seen_calls = set()
+            while True:
+                try:
+                    for e in eng.ledger.events(run_id, after_id=last_event_id, limit=1000):
+                        yield _sse(e)
+                        last_event_id = e["event_id"]
+                    for c in eng.ledger.list_tool_calls(run_id):
+                        if c.get("call_id") not in seen_calls:
+                            seen_calls.add(c["call_id"])
+                            c["type"] = "tool_call"
+                            yield _sse(c)
+                    run = eng.ledger.get_run(run_id)
+                    if (run or {}).get("status") in ("completed", "failed", "cancelled"):
+                        yield _sse({"type": "run_finished",
+                                    "data": {"status": run["status"], "error": run.get("error") or ""}})
+                        yield "data: [DONE]\n\n"
+                        return
+                except Exception as ex:
+                    yield _sse({"type": "stream_error", "data": {"error": str(ex)}})
+                    yield "data: [DONE]\n\n"
+                    return
+                _time.sleep(0.5)
+
+        return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     @app.route("/runs/<run_id>/checkpoints", methods=["GET"])
     def harness_run_checkpoints(run_id):
         eng, err = _engine()

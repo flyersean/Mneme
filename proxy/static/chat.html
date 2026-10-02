@@ -126,6 +126,22 @@
   #sidebar.collapsed .sb-filehead, #sidebar.collapsed .sb-filepath, #sidebar.collapsed .sb-files { display: none; }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
+  /* run activity card */
+  .runcard { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); width: 100%; }
+  .rc-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .rc-id { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--accent); font-weight: 600; }
+  .rc-status { color: var(--muted); }
+  .rc-status.rc-completed { color: #16a34a; }
+  .rc-status.rc-failed, .rc-status.rc-cancelled { color: #dc2626; }
+  .rc-body { padding: 6px 10px 8px; max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .rc-line { font-size: 12px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rc-line.rc-task { font-weight: 600; white-space: normal; }
+  .rc-task-item { color: var(--muted); white-space: normal; font-size: 11px; }
+  .rc-line.rc-ok { color: #16a34a; }
+  .rc-line.rc-fail { color: #dc2626; }
+  .rc-toolres summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  .rc-res { white-space: pre-wrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); max-height: 200px; overflow-y: auto; margin-top: 2px; padding: 4px 6px; background: var(--bg); border-radius: 5px; }
+
   .row { display: flex; }
   .row.user { justify-content: flex-end; }
   .row.assistant { justify-content: flex-start; }
@@ -495,6 +511,129 @@ async function stopTurn() {
   try { await fetch("/cancel", { method: "POST" }); } catch (e) {}
 }
 
+// ── harness run activity (streamed into the chat) ───────────────
+async function startRun(goal) {
+  if (!goal) { appendMessage("assistant", "usage: /run <goal>"); return; }
+  let run;
+  try {
+    const resp = await fetch("/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal, created_by: "user" })
+    });
+    const data = await resp.json();
+    run = data.run;
+  } catch (e) {
+    appendMessage("assistant", "(error starting run: " + e.message + ")");
+    return;
+  }
+  if (!run || !run.run_id) { appendMessage("assistant", "(failed to start run)"); return; }
+  appendMessage("assistant", "started run `" + run.run_id.slice(-8) + "` — live below.");
+  const card = createRunCard(run.run_id);
+  thread.appendChild(card);
+  scrollDown();
+  streamRun(run.run_id, card);
+}
+
+function createRunCard(runId) {
+  const card = el("div", "runcard");
+  const head = el("div", "rc-head");
+  head.appendChild(el("span", "rc-id", "run " + runId.slice(-8)));
+  const status = el("span", "rc-status", "starting…");
+  head.appendChild(status);
+  card.appendChild(head);
+  card.appendChild(el("div", "rc-body"));
+  return card;
+}
+
+function summarizeArgs(args) {
+  if (!args) return "";
+  let s;
+  try { s = typeof args === "string" ? args : JSON.stringify(args); } catch (_) { return ""; }
+  return s.length > 90 ? s.slice(0, 90) + "…" : s;
+}
+
+function renderRunEvent(o, body, statusEl) {
+  const t = o.type;
+  if (t === "run_started") { statusEl.textContent = "running"; statusEl.className = "rc-status"; return; }
+  if (t === "run_finished") {
+    const st = (o.data && o.data.status) || "done";
+    statusEl.textContent = st;
+    statusEl.className = "rc-status rc-" + st;
+    return;
+  }
+  if (t === "plan_created") {
+    const tasks = (o.data && o.data.tasks) || [];
+    const line = el("div", "rc-line", "📋 plan — " + tasks.length + " task" + (tasks.length === 1 ? "" : "s"));
+    body.appendChild(line);
+    for (const task of tasks) {
+      const ti = el("div", "rc-line rc-task-item", "  · " + task);
+      body.appendChild(ti);
+    }
+    return;
+  }
+  if (t === "task_started") {
+    const title = (o.data && o.data.title) || "task";
+    body.appendChild(el("div", "rc-line rc-task", "🔧 " + title));
+    return;
+  }
+  if (t === "task_completed") { body.appendChild(el("div", "rc-line rc-ok", "✅ task done")); return; }
+  if (t === "task_failed") {
+    const err = (o.data && o.data.error) ? String(o.data.error).slice(0, 140) : "";
+    body.appendChild(el("div", "rc-line rc-fail", "❌ task failed" + (err ? ": " + err : "")));
+    return;
+  }
+  if (t === "verification_passed") { body.appendChild(el("div", "rc-line rc-ok", "✔ verified")); return; }
+  if (t === "verification_failed") { body.appendChild(el("div", "rc-line rc-fail", "✗ verification failed")); return; }
+  if (t === "replan_requested" || t === "replan_started") { body.appendChild(el("div", "rc-line", "🔄 replanning…")); return; }
+  if (t === "tool_call") {
+    const tool = o.tool || "tool";
+    const args = summarizeArgs(o.args);
+    const line = el("div", "rc-line", "⚙ " + tool + (args ? "  " + args : ""));
+    if (o.result) {
+      const det = el("details", "rc-toolres");
+      const sum = el("summary", null, (o.status === "failure" ? "✗ " : "✓ ") + (o.elapsed_ms ? (o.elapsed_ms + "ms") : "done"));
+      det.appendChild(sum);
+      det.appendChild(el("div", "rc-res", String(o.result).trim().slice(0, 900)));
+      line.appendChild(det);
+    }
+    body.appendChild(line);
+    return;
+  }
+  // step_*, tool_completed, checkpoint_*, planning_*, run_created, task_created — noise, skip
+}
+
+async function streamRun(runId, card) {
+  const body = card.querySelector(".rc-body");
+  const statusEl = card.querySelector(".rc-status");
+  try {
+    const resp = await fetch("/runs/" + runId + "/stream");
+    if (!resp.ok) { statusEl.textContent = "stream error " + resp.status; return; }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        for (const line of ev.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const p = line.slice(5).trim();
+          if (!p || p === "[DONE]") continue;
+          let o; try { o = JSON.parse(p); } catch (_) { continue; }
+          renderRunEvent(o, body, statusEl);
+        }
+      }
+      scrollDown();
+    }
+  } catch (e) {
+    statusEl.textContent = "stream error";
+  }
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text || busy) return;
@@ -502,6 +641,13 @@ async function send() {
   input.style.height = "auto";
   appendMessage("user", text);
   history.push({ role: "user", content: text });
+
+  // /run <goal> → start a harness run and stream its live activity into the chat
+  if (/^\/run(\s|$)/.test(text)) {
+    const goal = text.replace(/^\/run\b/, "").trim();
+    startRun(goal);
+    return;
+  }
 
   busy = true;
   setBusyUI(true);
