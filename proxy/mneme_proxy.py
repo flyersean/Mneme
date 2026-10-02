@@ -1155,6 +1155,23 @@ def _turn_cancel_event() -> threading.Event:
     return getattr(_cancel_local, "event", None) or _cancel_event
 
 
+# ── Token streaming (the chat UI's live updates) ───────────────────
+# Per-thread token sink: the chat SSE endpoint installs a callback here while a
+# turn is in flight; the provider streaming loop calls _emit_token for each
+# content/reasoning piece as it arrives. Threads without a sink (harness steps,
+# background workers) emit to nothing.
+_stream_local = threading.local()
+
+
+def _emit_token(kind: str, text: str) -> None:
+    cb = getattr(_stream_local, "sink", None)
+    if cb:
+        try:
+            cb(kind, text)
+        except Exception:
+            pass
+
+
 def _scoped_process_chat(messages, cancel_event=None, tool_grant=None, **kw):
     """process_chat for a harness step: a private cancel event, and (optionally) a
     permission grant — tools whose permission level is not granted are neither
@@ -2515,8 +2532,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             delta = choices[0].get("delta") or {}
             if delta.get("content"):
                 content_parts.append(delta["content"])
+                _emit_token("content", delta["content"])
             if delta.get("reasoning"):
                 reasoning_parts.append(delta["reasoning"])
+                _emit_token("reasoning", delta["reasoning"])
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 slot = tc_slots.setdefault(idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
@@ -7905,111 +7924,77 @@ if FLASK_OK:
     
     # ── Chat completions (SSE streaming) ──
     def _chat_stream(messages, tools=None, session_id="default", options=None, max_tokens=None):
-        result = process_chat(messages, tools=tools, session_id=session_id,
-                              options=options, max_tokens=max_tokens)
-        ct = result.get("content", "")
-        grade = result.get("_grade", "C")
-        # (Injected-strategy telemetry is consumed inside process_chat — a
-        # second call here would be a no-op and double-log the [CONSUME] line.)
-        # Phase 5.2: embedding-distance check on self-reported A/B grades (backgrounded)
-        try:
-            _enqueue(_check_suspect_grade, grade, ct, messages)
-        except Exception as e:
-            _log_error("chat_stream:suspect_grade", e)
-        if not MEMORY_ONLY:
-            _enqueue(_strategy_lifecycle, grade, messages, result.get("_infra_failure", False))
-        content = result.get("content", "")
-        tool_calls = result.get("tool_calls", [])
+        import queue as _queue
+        import threading as _threading
 
-        # (search_memory is resolved inside process_chat — its bounded loop and
-        # fallback already handle memory search server-side, so there is nothing
-        # left to do here. Forwarding a search_memory to the client would hit the
-        # empty shim and stall.)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        
+        q = _queue.Queue()
+        result_holder = {}
+
+        def _worker():
+            # Install the token sink in THIS thread (the one running process_chat)
+            # so the provider streaming loop emits each piece as it arrives.
+            _stream_local.sink = lambda k, t: q.put(("token", k, t))
+            try:
+                r = process_chat(messages, tools=tools, session_id=session_id,
+                                 options=options, max_tokens=max_tokens)
+            except Exception as e:
+                r = {"content": "", "thinking": "", "tool_calls": [],
+                     "done_reason": "error", "error": str(e)}
+            finally:
+                _stream_local.sink = None
+            # Telemetry (was done after process_chat in the old buffered path).
+            try:
+                _enqueue(_check_suspect_grade, r.get("_grade", "C"), r.get("content", ""), messages)
+            except Exception as e:
+                _log_error("chat_stream:suspect_grade", e)
+            if not MEMORY_ONLY:
+                _enqueue(_strategy_lifecycle, r.get("_grade", "C"), messages, r.get("_infra_failure", False))
+            result_holder["r"] = r
+            q.put(("done", None))
+
+        _threading.Thread(target=_worker, daemon=True).start()
+
+        def _chunk(delta, finish=None, usage=None):
+            obj = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                   "model": FAKE_MODEL_ID,
+                   "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            if usage is not None:
+                obj["usage"] = usage
+            return "data: " + json.dumps(obj) + "\n\n"
+
         def generate():
-            # Send role first
-            yield "data: " + json.dumps({
-                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                "model": FAKE_MODEL_ID,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-            }) + "\n\n"
-            
-            # Stream thinking as reasoning if present
-            thinking = result.get("thinking", "")
-            if thinking:
-                thinking_chunk = 16
-                for i in range(0, len(thinking), thinking_chunk):
-                    piece = thinking[i:i + thinking_chunk]
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
-                    }) + "\n\n"
-            
-            # If model returned tool_calls, emit them as deltas (OpenAI-style)
+            yield _chunk({"role": "assistant"})
+            while True:
+                item = q.get()
+                if item[0] == "token":
+                    _, kind, text = item
+                    if kind == "reasoning":
+                        yield _chunk({"reasoning": text, "role": "assistant"})
+                    else:
+                        yield _chunk({"content": text})
+                else:
+                    break
+            result = result_holder.get("r") or {}
+            tool_calls = result.get("tool_calls") or []
             if tool_calls:
                 for i, tc in enumerate(tool_calls):
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {
-                                "tool_calls": [{
-                                    "index": i,
-                                    "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
-                                    "type": tc.get("type", "function"),
-                                    "function": {
-                                        "name": tc.get("function", {}).get("name", ""),
-                                        "arguments": json.dumps(tc.get("function", {}).get("arguments", {})) if isinstance(tc.get("function", {}).get("arguments"), dict) else tc.get("function", {}).get("arguments", ""),
-                                    },
-                                }]
-                            },
-                            "finish_reason": None,
-                        }],
-                    }) + "\n\n"
-                # Done with tool_calls finish reason
-                yield "data: " + json.dumps({
-                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                    "model": FAKE_MODEL_ID,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-                    "usage": {"completion_tokens": result.get("eval_count", 0)},
-                }) + "\n\n"
+                    fn = tc.get("function", {}) or {}
+                    args = fn.get("arguments", "")
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    yield _chunk({"tool_calls": [{
+                        "index": i,
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+                        "type": tc.get("type", "function"),
+                        "function": {"name": fn.get("name", ""), "arguments": args},
+                    }]})
+                yield _chunk({}, "tool_calls", {"completion_tokens": result.get("eval_count", 0)})
                 yield "data: [DONE]\n\n"
                 return
-            
-            # Stream thinking as reasoning if present
-            thinking = result.get("thinking", "")
-            if thinking:
-                thinking_chunk = 16
-                for i in range(0, len(thinking), thinking_chunk):
-                    piece = thinking[i:i + thinking_chunk]
-                    yield "data: " + json.dumps({
-                        "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                        "model": FAKE_MODEL_ID,
-                        "choices": [{"index": 0, "delta": {"reasoning": piece, "role": "assistant"}, "finish_reason": None}],
-                    }) + "\n\n"
-            
-            # Stream content in chunks
-            chunk_size = 16
-            for i in range(0, len(content), chunk_size):
-                piece = content[i:i + chunk_size]
-                yield "data: " + json.dumps({
-                    "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                    "model": FAKE_MODEL_ID,
-                    "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
-                }) + "\n\n"
-            
-            # Done
-            yield "data: " + json.dumps({
-                "id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
-                "model": FAKE_MODEL_ID,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "usage": {"completion_tokens": result.get("eval_count", 0)},
-            }) + "\n\n"
+            yield _chunk({}, "stop", {"completion_tokens": result.get("eval_count", 0)})
             yield "data: [DONE]\n\n"
-        
+
         return Response(
             stream_with_context(generate()),
             mimetype="text/event-stream",

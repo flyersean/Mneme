@@ -450,37 +450,76 @@ async function send() {
 
   busy = true;
   setBusyUI(true);
-  const thinkingRow = appendThinking();
   controller = new AbortController();
+
+  // assistant row filled live as tokens stream in
+  const row = el("div", "row assistant");
+  const bubble = el("div", "bubble");
+  bubble.textContent = "…";
+  row.appendChild(bubble);
+  thread.appendChild(row);
+  scrollDown();
+
+  let content = "";
+  let reasoning = "";
 
   try {
     const resp = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, messages: history, stream: false }),
+      body: JSON.stringify({ model: MODEL, messages: history, stream: true }),
       signal: controller.signal
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const data = await resp.json();
-    thinkingRow.remove();
 
-    const msg = data.choices && data.choices[0] && data.choices[0].message;
-    let content = (msg && msg.content) || "";
-    const reasoning = (msg && msg.reasoning) || "";
-    if (!content && msg && msg.tool_calls) {
-      content = "_(tool call: " + msg.tool_calls.map(t => t.function.name).join(", ") + ")_";
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const ev = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        for (const line of ev.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const p = line.slice(5).trim();
+          if (!p || p === "[DONE]") continue;
+          let o; try { o = JSON.parse(p); } catch (_) { continue; }
+          const d = (o.choices && o.choices[0] && o.choices[0].delta) || {};
+          if (d.reasoning) reasoning += d.reasoning;
+          if (d.content) {
+            content += d.content;
+            bubble.textContent = content;   // plain text while streaming (no markdown flicker)
+            scrollDown();
+          }
+        }
+      }
+    }
+
+    // done — reasoning details + full markdown render
+    if (reasoning.trim() && optThinking.checked) {
+      const det = el("details", "reasoning");
+      det.appendChild(el("summary", null, "thinking"));
+      det.appendChild(el("div", "body", reasoning.trim()));
+      row.insertBefore(det, bubble);
     }
     if (!content) content = "(no response)";
-
-    appendToolCalls(data.tool_trace);
-    appendMessage("assistant", content, reasoning);
+    bubble.innerHTML = renderMarkdown(content);
     history.push({ role: "assistant", content: content });
+    scrollDown();
   } catch (e) {
-    thinkingRow.remove();
     if (e.name === "AbortError") {
-      appendMessage("assistant", "[stopped]");
+      if (content) {
+        bubble.innerHTML = renderMarkdown(content);
+        history.push({ role: "assistant", content: content });
+      } else {
+        bubble.textContent = "[stopped]";
+      }
     } else {
-      appendMessage("assistant", "(error: " + e.message + ")");
+      bubble.textContent = "(error: " + e.message + ")";
     }
   } finally {
     busy = false;
