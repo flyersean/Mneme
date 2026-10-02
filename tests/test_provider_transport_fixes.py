@@ -195,6 +195,12 @@ class TestPayloadBudget(unittest.TestCase):
         payload, _ = self._payload(model="test-model")
         self.assertEqual(self._posted["timeout"], (mp.CONNECT_TIMEOUT, mp.FIRST_TOKEN_TIMEOUT))
 
+    def test_stale_chunk_timeout_is_positive_int(self):
+        # Two-phase split: the inter-chunk stale budget must be a sane positive
+        # int (default 20). Catches a dropped/renamed constant or a bad default.
+        self.assertIsInstance(mp.STALE_CHUNK_TIMEOUT, int)
+        self.assertGreater(mp.STALE_CHUNK_TIMEOUT, 0)
+
     def test_provider_prefs_only_apply_to_chat_model(self):
         # The label judge (and other aux models) must NOT inherit the chat model's
         # provider pin — order:[Z.AI] + allow_fallbacks:false 404s a label model the

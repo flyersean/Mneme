@@ -27,7 +27,8 @@
 # Only the keys the proxy already honours:
 #   sampling.*        temperature, top_p, top_k, ctx_tokens, max_tokens,
 #                     completion_reserve, reasoning_enabled, reasoning_effort
-#   timeouts.*        chat_timeout, ollama_chat_timeout, first_token_timeout
+#   timeouts.*        chat_timeout, ollama_chat_timeout, first_token_timeout,
+#                     stale_chunk_timeout
 #   models.<name>.*   per-model overrides (the exact model name is substituted
 #                     via {model} so one template works for any tag)
 #

@@ -47,7 +47,7 @@ ALLOWED_SAMPLING_KEYS = {
     "max_tokens", "reasoning_enabled", "reasoning_effort",
 }
 ALLOWED_TIMEOUT_KEYS = {
-    "chat_timeout", "ollama_chat_timeout", "first_token_timeout",
+    "chat_timeout", "ollama_chat_timeout", "first_token_timeout", "stale_chunk_timeout",
 }
 # Per-model keys the proxy honours (see the model-override loop in the payload
 # builder). Kept in sync deliberately — a template writing an unknown per-model

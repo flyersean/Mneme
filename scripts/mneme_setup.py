@@ -947,7 +947,8 @@ sampling:
 timeouts:
   chat_timeout: 300
   ollama_chat_timeout: 300
-  first_token_timeout: 180
+  first_token_timeout: 45   # no-bytes budget before the FIRST token (fail fast on a hung provider)
+  stale_chunk_timeout: 20   # no-bytes budget BETWEEN chunks once streaming has started
   novelty_timeout: 600
   embed_timeout: 60
   label_timeout: 30

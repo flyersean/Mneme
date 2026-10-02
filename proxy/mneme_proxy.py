@@ -125,6 +125,7 @@ _CONFIG_ENV_MAP = {
     "timeouts.chat_timeout": "MNEME_CHAT_TIMEOUT",
     "timeouts.ollama_chat_timeout": "MNEME_OLLAMA_CHAT_TIMEOUT",
     "timeouts.first_token_timeout": "MNEME_FIRST_TOKEN_TIMEOUT",
+    "timeouts.stale_chunk_timeout": "MNEME_STALE_CHUNK_TIMEOUT",
     "timeouts.novelty_timeout": "MNEME_NOVELTY_TIMEOUT",
     "timeouts.embed_timeout": "MNEME_EMBED_TIMEOUT",
     "timeouts.label_timeout": "MNEME_LABEL_TIMEOUT",
@@ -484,6 +485,7 @@ _TIMEOUT_ENV_MAP = {
     "chat_timeout": "MNEME_CHAT_TIMEOUT",
     "ollama_chat_timeout": "MNEME_OLLAMA_CHAT_TIMEOUT",
     "first_token_timeout": "MNEME_FIRST_TOKEN_TIMEOUT",
+    "stale_chunk_timeout": "MNEME_STALE_CHUNK_TIMEOUT",
 }
 # Env vars the user exported BEFORE the config file loaded stay pinned: hot-reload
 # will never override them (preserves the documented env > file precedence).
@@ -812,6 +814,7 @@ def _settings_snapshot() -> Dict:
             "chat_timeout": globals().get("CHAT_TIMEOUT"),
             "ollama_chat_timeout": globals().get("OLLAMA_CHAT_TIMEOUT"),
             "first_token_timeout": globals().get("FIRST_TOKEN_TIMEOUT"),
+            "stale_chunk_timeout": globals().get("STALE_CHUNK_TIMEOUT"),
         },
         "storage": {
             "memory_enabled": MEMORY_ENABLED,
@@ -904,7 +907,7 @@ def _refresh_runtime_constants():
     global TOPIC_SWITCH_SIM, TOPIC_SWITCH_GRACE, NOVEL_INJECT_FLOOR
     global MAX_PER_TOPIC, KEYWORD_FALLBACK
     global AGE_DECAY_DAYS, MAX_SIBLINGS
-    global MAX_HISTORY_MESSAGES, CHAT_TIMEOUT, OLLAMA_CHAT_TIMEOUT, FIRST_TOKEN_TIMEOUT
+    global MAX_HISTORY_MESSAGES, CHAT_TIMEOUT, OLLAMA_CHAT_TIMEOUT, FIRST_TOKEN_TIMEOUT, STALE_CHUNK_TIMEOUT
     INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.45"))
     STRATEGY_MIN_SIMILARITY = float(os.environ.get("MNEME_STRATEGY_MIN_SIMILARITY", "0.40"))
     MAX_INJECTED_TOKENS = int(os.environ.get("MNEME_MAX_INJECTED_TOKENS", "6000"))
@@ -928,7 +931,8 @@ def _refresh_runtime_constants():
     try:
         CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "300"))
         OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "300"))
-        FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "180"))
+        FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "45"))
+        STALE_CHUNK_TIMEOUT = int(os.environ.get("MNEME_STALE_CHUNK_TIMEOUT", "20"))
     except (TypeError, ValueError):
         pass
 
@@ -963,7 +967,15 @@ AGE_DECAY_DAYS     = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))  # recen
 # there's no reload latency to soak the budget.
 CHAT_TIMEOUT = int(os.environ.get("MNEME_CHAT_TIMEOUT", "300"))
 OLLAMA_CHAT_TIMEOUT = int(os.environ.get("MNEME_OLLAMA_CHAT_TIMEOUT", "300"))
-FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "180"))
+FIRST_TOKEN_TIMEOUT = int(os.environ.get("MNEME_FIRST_TOKEN_TIMEOUT", "45"))
+# Two-phase stream timeout (splits the old single 180s "stale" budget):
+#   FIRST_TOKEN_TIMEOUT — no-bytes budget BEFORE the first token arrives. 45s
+#       fails fast on a hung/cold provider while tolerating a slow reasoning
+#       warm-up (observed max successful response ~31s).
+#   STALE_CHUNK_TIMEOUT — no-bytes budget BETWEEN chunks once streaming has
+#       started. Tight (20s): a reasoning model streams continuously, so a real
+#       mid-stream deadlock is caught fast instead of burning 180s.
+STALE_CHUNK_TIMEOUT = int(os.environ.get("MNEME_STALE_CHUNK_TIMEOUT", "20"))
 CONNECT_TIMEOUT = 15  # TCP+TLS connect timeout for OpenAI-style calls
 NOVELTY_TIMEOUT = int(os.environ.get("MNEME_NOVELTY_TIMEOUT", "600"))
 
@@ -1010,11 +1022,11 @@ OR_REASONING_BUDGET = os.environ.get("MNEME_REASONING_BUDGET", "auto")
 # ─── Reasoning-model stale-timeout floors (mirrors Hermes reasoning_timeouts.py) ────
 # Stale-timeout floor for known reasoning models (mirrors Hermes'
 # agent/reasoning_timeouts.py). A stream is "stale" when it produces no bytes
-# for the stale timeout (FIRST_TOKEN_TIMEOUT default 180s); the floor is
+# for the first-token timeout (FIRST_TOKEN_TIMEOUT, default 45s); the floor is
 # applied as max(default, floor). It exists for models that emit a LONG
 # hidden-thinking block before their first byte (o-series, deepseek-r1,
 # nemotron, etc.). GLM is deliberately NOT listed: it streams its reasoning,
-# so the first byte lands in ~1-5s and 180s is plenty — the earlier 600s glm
+# so the first byte lands in ~1-5s and 45s is plenty — the earlier 600s glm
 # floor only made provider hangs cost 10 min each. Matched start-of-slug
 # (after stripping any "provider/" prefix), longest slug first.
 _REASONING_STALE_FLOORS = (
@@ -2421,13 +2433,13 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     except Exception:
         pass
 
-    # Single stale timeout for the whole stream (Hermes model: "no bytes for
-    # X seconds → stale → kill + retry"). There is no separate time-to-first-
-    # token phase — a streaming reasoning model emits its first byte in ~1-5s,
-    # so the plain FIRST_TOKEN_TIMEOUT (180s) is the steady-state budget, and
-    # the floor only raises it for models with a LONG hidden-thinking block
-    # (o-series, deepseek-r1, nemotron — not GLM). One value, applied for the
-    # stream's entire lifetime, never lowered below a user-configured timeout.
+    # Two-phase stream timeout:
+    #   BEFORE the first token — FIRST_TOKEN_TIMEOUT (45s, raised by the floor
+    #       for models with a LONG hidden-thinking block: o-series, deepseek-r1,
+    #       nemotron — not GLM). Fails fast on a hung/cold provider.
+    #   AFTER the first token — STALE_CHUNK_TIMEOUT (20s) between chunks. A
+    #       reasoning model streams continuously, so a mid-stream deadlock is
+    #       caught in 20s instead of 180s.
     _floor = _reasoning_stale_floor(_model)
     _stale = max(FIRST_TOKEN_TIMEOUT, _floor) if _floor else FIRST_TOKEN_TIMEOUT
     # Non-stream buffers the whole body server-side, so a reasoning model's
@@ -2557,9 +2569,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             except Exception:
                 pass
 
-    # Single stale timeout for the whole stream: the socket read fails with a
-    # timeout if no bytes arrive for `_stale`, the same signal whether it happens
-    # before the first token or between chunks (Hermes' stale model).
+    # Pin the raw socket timeout before reading the body. Start with the
+    # first-token budget (catch a hung/cold provider), then tighten to the
+    # inter-chunk budget once the first byte lands (catch a mid-stream deadlock).
     _set_sock_timeout(_stale)
 
     try:
@@ -2575,6 +2587,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 continue
             if not got_first:
                 got_first = True
+                _set_sock_timeout(STALE_CHUNK_TIMEOUT)
             data = raw[5:].strip()
             if data == "[DONE]":
                 _saw_done = True
@@ -8875,7 +8888,7 @@ def _dump_config():
         print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
     print(f"  [CONFIG] sampling temp={OLLAMA_TEMP} top_p={os.environ.get('MNEME_TOP_P','0.95')} top_k={os.environ.get('MNEME_TOP_K','64')} ctx={os.environ.get('MNEME_CTX_TOKENS','65536')}", flush=True)
-    print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
+    print(f"  [CONFIG] timeouts chat={CHAT_TIMEOUT} ollama={OLLAMA_CHAT_TIMEOUT} first_token={FIRST_TOKEN_TIMEOUT} stale_chunk={STALE_CHUNK_TIMEOUT} embed={EMBED_TIMEOUT} label={LABEL_TIMEOUT}", flush=True)
     print(f"  [CONFIG] staging_turns={STAGING_TURNS} idle={STAGING_IDLE} recent_extra={CONTEXT_RECENT_EXTRA} belief_evolution={os.environ.get('MNEME_BELIEF_EVOLUTION','0')}", flush=True)
     print(f"  [CONFIG] retrieval route={ROUTE_THRESHOLD} classify={CLASSIFY_THRESHOLD} inject_min_sim={INJECT_MIN_SIMILARITY} keyword_fallback={int(KEYWORD_FALLBACK)} injected_tokens={MAX_INJECTED_TOKENS}", flush=True)
     print(f"  [TOOLS] enabled={sorted(mntools.enabled_readonly_names() | mntools.native_exec_names(None))}", flush=True)
