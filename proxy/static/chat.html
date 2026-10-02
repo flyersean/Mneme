@@ -72,6 +72,31 @@
   #settings input[type=checkbox] { accent-color: var(--accent); }
   #settings .heading { font-weight: 600; margin-bottom: 4px; color: var(--text); }
 
+  #convs-panel {
+    position: absolute;
+    top: 52px;
+    right: 120px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.10);
+    padding: 12px 14px;
+    font-size: 13px;
+    display: none;
+    z-index: 10;
+    min-width: 260px;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  #convs-panel.open { display: block; }
+  #convs-panel .heading { font-weight: 600; margin-bottom: 6px; color: var(--text); }
+  .conv-item { display: flex; flex-direction: column; gap: 1px; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
+  .conv-item:hover { background: var(--accent-soft); }
+  .conv-item.active { background: var(--accent-soft); }
+  .conv-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv-time { color: var(--muted); font-size: 10px; }
+  .conv-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
+
   #chat {
     flex: 1;
     overflow-y: auto;
@@ -332,6 +357,7 @@
   </div>
   <div class="spacer"></div>
   <button id="settings-btn" title="Display settings">⚙</button>
+  <button id="convs-btn" title="Conversation history">☰</button>
   <button id="new-chat" title="Start a new conversation">New chat</button>
   <button id="harness-btn" title="Harness runs + commands">⚡ Runs</button>
 </header>
@@ -349,6 +375,11 @@
   <div class="heading">Display</div>
   <label><input type="checkbox" id="opt-thinking" checked> Show thinking (reasoning)</label>
   <label><input type="checkbox" id="opt-tools" checked> Show tool calls</label>
+</div>
+
+<div id="convs-panel">
+  <div class="heading">Conversations</div>
+  <div id="convs-list"></div>
 </div>
 
 <div id="harness-panel">
@@ -392,10 +423,13 @@ const sendBtn = document.getElementById("send");
 const modelLabel = document.getElementById("model-label");
 const chat = document.getElementById("chat");
 const settingsPanel = document.getElementById("settings");
+const convsPanel = document.getElementById("convs-panel");
+const convsBtn = document.getElementById("convs-btn");
 const optThinking = document.getElementById("opt-thinking");
 const optTools = document.getElementById("opt-tools");
 
 let history = [];   // [{role, content}]
+let convId = null;  // current conversation id (persistent chat)
 let busy = false;
 let controller = null;   // AbortController for the in-flight turn
 
@@ -641,6 +675,7 @@ async function send() {
   input.style.height = "auto";
   appendMessage("user", text);
   history.push({ role: "user", content: text });
+  saveConversation();
 
   // /run <goal> → start a harness run and stream its live activity into the chat
   if (/^\/run(\s|$)/.test(text)) {
@@ -710,12 +745,14 @@ async function send() {
     if (!content) content = "(no response)";
     bubble.innerHTML = renderMarkdown(content);
     history.push({ role: "assistant", content: content });
+    saveConversation();
     scrollDown();
   } catch (e) {
     if (e.name === "AbortError") {
       if (content) {
         bubble.innerHTML = renderMarkdown(content);
         history.push({ role: "assistant", content: content });
+        saveConversation();
       } else {
         bubble.textContent = "[stopped]";
       }
@@ -757,9 +794,7 @@ input.addEventListener("input", () => {
 });
 
 document.getElementById("new-chat").addEventListener("click", () => {
-  history = [];
-  thread.innerHTML = "";
-  input.focus();
+  newConversation();
 });
 
 // settings popover
@@ -769,6 +804,15 @@ document.getElementById("settings-btn").addEventListener("click", (e) => {
 });
 document.addEventListener("click", (e) => {
   if (!settingsPanel.contains(e.target)) settingsPanel.classList.remove("open");
+});
+
+convsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  convsPanel.classList.toggle("open");
+  if (convsPanel.classList.contains("open")) refreshConvsList();
+});
+document.addEventListener("click", (e) => {
+  if (!convsPanel.contains(e.target) && e.target !== convsBtn) convsPanel.classList.remove("open");
 });
 
 // ── harness interface: commands + live runs + / palette ──────────
@@ -975,6 +1019,75 @@ renderHarnessCmds();
 loadHarnessRuns();
 setInterval(loadHarnessRuns, 8000);
 
+// ── conversation persistence ─────────────────────────────────────
+async function saveConversation() {
+  if (!convId) return;
+  try {
+    await fetch("/conversations/" + convId, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: history })
+    });
+  } catch (e) {}
+}
+
+async function newConversation() {
+  try {
+    const r = await fetch("/conversations", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const d = await r.json();
+    if (d.conversation) convId = d.conversation.id;
+  } catch (e) { convId = null; }
+  history = [];
+  thread.innerHTML = "";
+  input.focus();
+  refreshConvsList();
+}
+
+function renderMessage(m) {
+  if (m.role === "user") appendMessage("user", m.content || "");
+  else appendMessage("assistant", m.content || "", m.reasoning || "");
+}
+
+async function loadConversation(id) {
+  try {
+    const r = await fetch("/conversations/" + id);
+    const d = await r.json();
+    if (!d.conversation) return;
+    convId = d.conversation.id;
+    history = d.conversation.messages || [];
+    thread.innerHTML = "";
+    for (const m of history) renderMessage(m);
+    scrollDown();
+  } catch (e) {}
+}
+
+async function refreshConvsList() {
+  const list = document.getElementById("convs-list");
+  if (!list) return;
+  try {
+    const r = await fetch("/conversations");
+    const d = await r.json();
+    const convs = d.conversations || [];
+    if (!convs.length) { list.innerHTML = '<div class="conv-empty">no conversations yet</div>'; return; }
+    list.innerHTML = convs.map(c =>
+      `<div class="conv-item${c.id === convId ? " active" : ""}" data-id="${escAttr(c.id)}"><span class="conv-title">${escAttr(c.title)}</span><span class="conv-time">${escAttr((c.updated_at || "").slice(0, 16).replace("T", " "))}</span></div>`).join("");
+    list.querySelectorAll(".conv-item").forEach(it => {
+      it.onclick = () => { loadConversation(it.dataset.id); convsPanel.classList.remove("open"); };
+    });
+  } catch (e) {}
+}
+
+async function initConversation() {
+  try {
+    const r = await fetch("/conversations");
+    const d = await r.json();
+    const convs = d.conversations || [];
+    if (convs.length) await loadConversation(convs[0].id);   // most recent
+    else await newConversation();
+  } catch (e) { convId = null; }
+  refreshConvsList();
+}
+
 // ── boot ─────────────────────────────────────────────────────────
 async function boot() {
   try {
@@ -984,6 +1097,7 @@ async function boot() {
   } catch (e) {
     modelLabel.textContent = MODEL;
   }
+  await initConversation();
   input.focus();
 }
 boot();

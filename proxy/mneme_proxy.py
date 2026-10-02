@@ -7782,6 +7782,80 @@ if FLASK_OK:
             "content": content,
         })
 
+    # ── Conversations (persistent chat) ──
+    def _conv_db():
+        os.makedirs(DB_DIR, exist_ok=True)
+        conn = sqlite3.connect(os.path.join(DB_DIR, "conversations.db"))
+        conn.execute("CREATE TABLE IF NOT EXISTS conversations ("
+                     "id TEXT PRIMARY KEY, title TEXT, messages TEXT, created_at TEXT, updated_at TEXT)")
+        conn.commit()
+        return conn
+
+    def _conv_now():
+        return datetime.now(timezone.utc).isoformat()
+
+    @app.route("/conversations", methods=["GET"])
+    def conversations_list():
+        conn = _conv_db()
+        try:
+            rows = conn.execute("SELECT id, title, created_at, updated_at FROM conversations "
+                                "ORDER BY updated_at DESC").fetchall()
+            return _cors_response({"conversations": [
+                {"id": r[0], "title": r[1], "created_at": r[2], "updated_at": r[3]} for r in rows]})
+        finally:
+            conn.close()
+
+    @app.route("/conversations", methods=["POST"])
+    def conversations_create():
+        body = request.get_json(silent=True) or {}
+        conv_id = "conv_" + uuid.uuid4().hex[:16]
+        title = (body.get("title") or "").strip() or "New chat"
+        now = _conv_now()
+        conn = _conv_db()
+        try:
+            conn.execute("INSERT INTO conversations (id, title, messages, created_at, updated_at) "
+                         "VALUES (?,?,?,?,?)", (conv_id, title, "[]", now, now))
+            conn.commit()
+            return _cors_response({"conversation": {"id": conv_id, "title": title, "messages": []}})
+        finally:
+            conn.close()
+
+    @app.route("/conversations/<conv_id>", methods=["GET"])
+    def conversations_get(conv_id):
+        conn = _conv_db()
+        try:
+            row = conn.execute("SELECT id, title, messages FROM conversations WHERE id=?", (conv_id,)).fetchone()
+            if not row:
+                return _cors_response({"error": "no such conversation"}, 404)
+            return _cors_response({"conversation": {
+                "id": row[0], "title": row[1], "messages": json.loads(row[2] or "[]")}})
+        finally:
+            conn.close()
+
+    @app.route("/conversations/<conv_id>", methods=["PUT"])
+    def conversations_save(conv_id):
+        body = request.get_json(silent=True) or {}
+        conn = _conv_db()
+        try:
+            now = _conv_now()
+            exists = conn.execute("SELECT id FROM conversations WHERE id=?", (conv_id,)).fetchone()
+            if not exists:
+                title = (body.get("title") or "").strip() or "New chat"
+                conn.execute("INSERT INTO conversations (id, title, messages, created_at, updated_at) "
+                             "VALUES (?,?,?,?,?)",
+                             (conv_id, title, json.dumps(body.get("messages") or []), now, now))
+            else:
+                if body.get("title") is not None:
+                    conn.execute("UPDATE conversations SET title=? WHERE id=?",
+                                 ((body.get("title") or "").strip() or "New chat", conv_id))
+                if body.get("messages") is not None:
+                    conn.execute("UPDATE conversations SET messages=?, updated_at=? WHERE id=?",
+                                 (json.dumps(body.get("messages")), now, conv_id))
+            conn.commit()
+            return _cors_response({"ok": True})
+        finally:
+            conn.close()
+
     # ── MCP server management (hot add/remove — no restart) ──
     @app.route("/mcp/servers", methods=["GET"])
     def mcp_servers_list():
