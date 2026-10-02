@@ -7955,6 +7955,16 @@ if FLASK_OK:
         finally:
             conn.close()
 
+    @app.route("/conversations/<conv_id>", methods=["DELETE"])
+    def conversations_delete(conv_id):
+        conn = _conv_db()
+        try:
+            conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
+            conn.commit()
+            return _cors_response({"ok": True})
+        finally:
+            conn.close()
+
     # ── MCP server management (hot add/remove — no restart) ──
     @app.route("/mcp/servers", methods=["GET"])
     def mcp_servers_list():

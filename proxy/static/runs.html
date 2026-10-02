@@ -99,6 +99,19 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const badge = (s) => `<span class="badge s-${esc(s)}">${esc(s)}</span>`;
+async function copyText(t) {
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+  $("msg").textContent = "copied run id";
+  setTimeout(() => { $("msg").textContent = ""; }, 1500);
+}
 let current = null; let _rendered = null, _sig = null;
 async function api(path, opts) {
   const r = await fetch(path, opts && opts.body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(opts.body)} : opts);
@@ -110,7 +123,7 @@ const post = (path, body) => api(path, {body: body || {}});
 
 async function loadRuns() {
   const {runs} = await api("/runs?limit=100");
-  $("runs").innerHTML = runs.map(r => `<tr class="click" onclick="showRun('${r.run_id}')"><td>${badge(r.status)}</td><td>${esc(r.goal.slice(0,90))}<div class="mono">${r.run_id}</div></td><td class="mono">${esc(r.created_at.slice(0,19))}</td></tr>`).join("") || `<tr><td colspan=3 class="hint">No runs yet.</td></tr>`;
+  $("runs").innerHTML = runs.map(r => `<tr class="click" onclick="showRun('${r.run_id}')"><td>${badge(r.status)}</td><td>${esc(r.goal.slice(0,90))}<div class="mono">${r.run_id} <button onclick="event.stopPropagation();copyText('${r.run_id}')" title="Copy run ID" style="font-size:11px;padding:1px 5px;vertical-align:middle">⧉</button></div></td><td class="mono">${esc(r.created_at.slice(0,19))}</td></tr>`).join("") || `<tr><td colspan=3 class="hint">No runs yet.</td></tr>`;
 }
 async function showRun(id) {
   const prevScroll = (current === id) ? (document.querySelector('#detail .events')?.scrollTop || 0) : 0;
@@ -125,7 +138,7 @@ async function showRun(id) {
                    paused:["resume","cancel"], awaiting_approval:["approve","reject","cancel"], failed:["retry"], cancelled:["retry"]}[r.status] || [];
   $("detail").innerHTML = `
     <h2>${esc(r.goal)}</h2>
-    <div class="row">${badge(r.status)} <span class="mono">${r.run_id}</span>${r.profile ? ` · profile <b>${esc(r.profile)}</b>` : ""}</div>
+    <div class="row">${badge(r.status)} <span class="mono">${r.run_id}</span><button onclick="copyText('${r.run_id}')" title="Copy run ID">⧉</button>${r.profile ? ` · profile <b>${esc(r.profile)}</b>` : ""}</div>
     <div class="row">${actions.map(act).join(" ")}</div>
     ${r.status === "awaiting_approval" ? `<p><b>Waiting for approval:</b> ${esc(JSON.parse(r.approval_state || "{}").title)}</p>` : ""}
     ${r.error ? `<p class="s-failed">${esc(r.error)}</p>` : ""}

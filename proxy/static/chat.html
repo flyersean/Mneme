@@ -90,11 +90,14 @@
   }
   #convs-panel.open { display: block; }
   #convs-panel .heading { font-weight: 600; margin-bottom: 6px; color: var(--text); }
-  .conv-item { display: flex; flex-direction: column; gap: 1px; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
+  .conv-item { display: flex; flex-direction: row; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; cursor: pointer; }
   .conv-item:hover { background: var(--accent-soft); }
   .conv-item.active { background: var(--accent-soft); }
+  .conv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   .conv-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .conv-time { color: var(--muted); font-size: 10px; }
+  .conv-del { flex-shrink: 0; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 5px; }
+  .conv-del:hover { color: var(--red, #dc2626); background: rgba(220,38,38,.10); }
   .conv-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
 
   #chat {
@@ -120,6 +123,11 @@
   .sb-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
   #sb-toggle { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 6px; cursor: pointer; padding: 1px 9px; font-size: 14px; line-height: 1.4; }
   #sb-toggle:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .sb-runid { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px 4px; border-bottom: 1px solid var(--border); }
+  .sb-runid-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  #runid-field { width: 100%; box-sizing: border-box; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+  #runid-field:focus { outline: none; border-color: var(--accent); }
+  #sidebar.collapsed .sb-runid { display: none; }
   .sb-cmds { flex: 1 1 42%; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
   .sb-cmd {
     display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
@@ -361,7 +369,7 @@
   </div>
   <div class="spacer"></div>
   <button id="settings-btn" title="Display settings">⚙</button>
-  <button id="convs-btn" title="Conversation history">☰</button>
+  <button id="convs-btn" title="Conversation history">☰ <span class="btn-label">History</span></button>
   <button id="new-chat" title="Start a new conversation">New chat</button>
   <button id="harness-btn" title="Harness runs + commands">⚡ Runs</button>
 </header>
@@ -402,6 +410,10 @@
 <div id="layout">
   <aside id="sidebar">
     <div class="sb-head"><span class="sb-title">Commands</span><button id="sb-toggle" title="Collapse sidebar">«</button></div>
+    <div class="sb-runid">
+      <span class="sb-runid-label">Run ID</span>
+      <input id="runid-field" placeholder="paste run_… id" spellcheck="false" autocomplete="off">
+    </div>
     <div class="sb-cmds" id="sidebar-cmds"></div>
     <div class="sb-sep"></div>
     <div class="sb-filehead"><span>Files</span><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button></div>
@@ -922,7 +934,7 @@ function renderHarnessCmds() {
   harnessCmds.innerHTML = HARNESS_COMMANDS.map(([c, d]) =>
     `<div class="cmd-line" data-cmd="${escAttr(c)}"><span class="cname">${escAttr(c)}</span><span class="cdesc">${escAttr(d)}</span></div>`).join("");
   harnessCmds.querySelectorAll(".cmd-line").forEach(line => {
-    line.onclick = () => { input.value = line.dataset.cmd.split(" ")[0] + " "; resizeInput(); harnessPanel.classList.remove("open"); input.focus(); };
+    line.onclick = () => { commandInsert(line.dataset.cmd); harnessPanel.classList.remove("open"); };
   });
 }
 
@@ -930,6 +942,21 @@ function renderHarnessCmds() {
 const sidebar = document.getElementById("sidebar");
 const sidebarCmds = document.getElementById("sidebar-cmds");
 const sbToggle = document.getElementById("sb-toggle");
+const runIdField = document.getElementById("runid-field");
+
+// Insert a command into the composer, substituting the sidebar Run ID field
+// into any command that takes a <run> (or optional [run]) argument. Commands
+// that don't reference a run are left as just the command name.
+function commandInsert(cmd) {
+  const rid = runIdField.value.trim();
+  if (rid && /<run>|\[run\]/.test(cmd)) {
+    input.value = cmd.replace(/<run>|\[run\]/g, rid) + " ";
+  } else {
+    input.value = cmd.split(" ")[0] + " ";
+  }
+  resizeInput();
+  input.focus();
+}
 
 function renderSidebar() {
   sidebarCmds.innerHTML = HARNESS_COMMANDS.map(([c, d]) => {
@@ -937,7 +964,7 @@ function renderSidebar() {
     return `<button class="sb-cmd" data-cmd="${escAttr(c)}" title="${escAttr(c)}"><span class="sb-name">${escAttr(name)}</span><span class="sb-desc">${escAttr(d)}</span></button>`;
   }).join("");
   sidebarCmds.querySelectorAll(".sb-cmd").forEach(b => {
-    b.onclick = () => { input.value = b.dataset.cmd.split(" ")[0] + " "; resizeInput(); input.focus(); };
+    b.onclick = () => commandInsert(b.dataset.cmd);
   });
 }
 
@@ -1048,7 +1075,7 @@ function updatePalette() {
   palette.style.left = rect.left + "px";
   palette.style.top = (rect.top - palette.offsetHeight - 8) + "px";
   palette.querySelectorAll(".cmd-item").forEach((it, i) => {
-    it.onclick = () => { input.value = it.dataset.cmd.split(" ")[0] + " "; resizeInput(); palette.classList.remove("open"); input.focus(); };
+    it.onclick = () => { commandInsert(it.dataset.cmd); palette.classList.remove("open"); };
     it.onmouseenter = () => { paletteSel = i; updatePaletteSelection(); };
   });
 }
@@ -1059,8 +1086,8 @@ function palettePick() {
   const items = palette.querySelectorAll(".cmd-item");
   if (!items.length) return;
   const sel = items[paletteSel] || items[0];
-  input.value = sel.dataset.cmd.split(" ")[0] + " ";
-  resizeInput(); palette.classList.remove("open"); input.focus();
+  commandInsert(sel.dataset.cmd);
+  palette.classList.remove("open");
 }
 
 renderHarnessCmds();
@@ -1109,6 +1136,13 @@ async function loadConversation(id) {
   } catch (e) {}
 }
 
+async function deleteConversation(id) {
+  if (!confirm("Delete this conversation?")) return;
+  try { await fetch("/conversations/" + id, { method: "DELETE" }); } catch (e) {}
+  if (id === convId) await newConversation();
+  else refreshConvsList();
+}
+
 async function refreshConvsList() {
   const list = document.getElementById("convs-list");
   if (!list) return;
@@ -1118,9 +1152,13 @@ async function refreshConvsList() {
     const convs = d.conversations || [];
     if (!convs.length) { list.innerHTML = '<div class="conv-empty">no conversations yet</div>'; return; }
     list.innerHTML = convs.map(c =>
-      `<div class="conv-item${c.id === convId ? " active" : ""}" data-id="${escAttr(c.id)}"><span class="conv-title">${escAttr(c.title)}</span><span class="conv-time">${escAttr((c.updated_at || "").slice(0, 16).replace("T", " "))}</span></div>`).join("");
+      `<div class="conv-item${c.id === convId ? " active" : ""}" data-id="${escAttr(c.id)}">
+         <div class="conv-main"><span class="conv-title">${escAttr(c.title)}</span><span class="conv-time">${escAttr((c.updated_at || "").slice(0, 16).replace("T", " "))}</span></div>
+         <button class="conv-del" title="Delete conversation">✕</button>
+       </div>`).join("");
     list.querySelectorAll(".conv-item").forEach(it => {
       it.onclick = () => { loadConversation(it.dataset.id); convsPanel.classList.remove("open"); };
+      it.querySelector(".conv-del").onclick = (e) => { e.stopPropagation(); deleteConversation(it.dataset.id); };
     });
   } catch (e) {}
 }
