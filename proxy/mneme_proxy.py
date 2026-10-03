@@ -1447,30 +1447,15 @@ try:
 except sqlite3.OperationalError:
     pass
 
-# ─── Curated seed strategies ────────────────────────────────────
-# Hand-written problem-solving playbooks, keyed by problem type. Idempotent
-# (INSERT OR IGNORE) so they survive restarts and re-appear after a DB clear.
-# Injected on matching problem-type turns (and on failed steps via the harness
-# retry path), NOT into unrelated problem types.
-_SEED_STRATEGIES = [
-    ("seed_web_hidden_api", "web_retrieval",
-     "WHEN a page returns empty or JS-only content (blank DOM, client-side rendering), "
-     "do NOT guess or give up — the data is usually reachable another way. In order: "
-     "(1) retry fetch_url on the SAME url with render_js: true; "
-     "(2) probe for a machine-readable API: /api, /openapi.json, /swagger.json, /llms.txt, "
-     "robots.txt, sitemap.xml, or the URL with .json/.csv appended; "
-     "(3) check for an alternate serialization via the HTTP Link: rel=alternate header; "
-     "(4) for Hugging Face model facts, use https://huggingface.co/api/models/<org>/<name> "
-     "(JSON metadata: license, tags, downloads) and the model card's model-index block for "
-     "benchmark scores. Prefer the API over scraping rendered HTML."),
-]
-for _sid, _ptype, _text in _SEED_STRATEGIES:
-    db.execute(
-        "INSERT OR IGNORE INTO strategies "
-        "(strategy_id, problem_type, strategy_text, grade, cost, created_at, created_by) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (_sid, _ptype, _text, "A", 0, datetime.now(timezone.utc).isoformat(), "curator"))
-db.commit()
+# ─── Shipped + user strategies (durable files) ─────────────────
+# Loaded from strategies.yaml (ships with the repo) + strategies.user.yaml
+# (per-instance) with INSERT OR IGNORE, so the curated playbooks survive both
+# restarts and a DB reset. See mneme/strategies.py.
+_SHIPPED_STRATEGIES_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "strategies.yaml")
+_USER_STRATEGIES_PATH = os.path.join(CHUNK_DIR, "strategies.user.yaml") if CHUNK_DIR else ""
+import mneme.strategies as _strat
+_strat.load_shipped(db, (_SHIPPED_STRATEGIES_PATH, _USER_STRATEGIES_PATH))
 
 # ─── Grade Priority (same as raw-k-cache) ──────────────────────
 GRADE_PRIORITY = {"A": 3, "B": 2, "C": 1, "F": 0}
@@ -7201,6 +7186,12 @@ def _reset_memory():
             except Exception as e:
                 _log_error(f"_reset_memory:{table}", e)
         db.commit()
+        # Re-load shipped + user strategies immediately so a fresh DB comes back
+        # with the curated playbooks (not only on the next restart).
+        try:
+            _strat.load_shipped(db, (_SHIPPED_STRATEGIES_PATH, _USER_STRATEGIES_PATH))
+        except Exception as e:
+            _log_error("_reset_memory:reseed", e)
     with faiss_lock():
         if FAISS_OK:
             _index = faiss.IndexFlatIP(DIM)
@@ -7415,6 +7406,87 @@ if FLASK_OK:
                 "validated_by", "use_count", "success_count", "effective_grade", "retired")
         return _cors_response({"current": dict(zip(cols, row)) if row else None,
                                "history": _strat_hist.history(db, strategy_id)})
+
+    # ── Strategy management (page + REST) ──────────────────────
+    _STRATEGIES_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "strategies.html")
+
+    @app.route("/strategies/ui", methods=["GET"])
+    def strategies_ui():
+        try:
+            with open(_STRATEGIES_HTML_PATH, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except Exception as e:
+            return _cors_response({"error": "strategies UI not found"}, status=404)
+
+    @app.route("/strategies", methods=["GET"])
+    def strategies_list():
+        try:
+            rows = db.execute(
+                "SELECT strategy_id, problem_type, strategy_text, grade, cost, created_by, "
+                "use_count, success_count, retired FROM strategies "
+                "ORDER BY retired, problem_type, strategy_id").fetchall()
+            cols = ("strategy_id", "problem_type", "strategy_text", "grade", "cost",
+                    "created_by", "use_count", "success_count", "retired")
+            items = [dict(zip(cols, r)) for r in rows]
+            return _cors_response({"strategies": items,
+                                   "shipped_path": _SHIPPED_STRATEGIES_PATH,
+                                   "user_path": _USER_STRATEGIES_PATH})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/strategies/export", methods=["GET"])
+    def strategies_export():
+        sid = (request.args.get("id") or "").strip() or None
+        payload = _strat.export_json(db, sid)
+        resp = Response(payload, mimetype="application/json")
+        resp.headers["Content-Disposition"] = f'attachment; filename="{sid or "strategies"}.json"'
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+
+    @app.route("/strategies/import", methods=["POST"])
+    def strategies_import():
+        try:
+            if request.files and "file" in request.files:
+                data = request.files["file"].read().decode("utf-8", "replace")
+            else:
+                data = request.get_json(force=True, silent=True)
+            added = _strat.import_json(db, data)
+            return _cors_response({"imported": added})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/strategies/<strategy_id>", methods=["PUT", "DELETE"])
+    def strategy_update(strategy_id):
+        try:
+            if request.method == "DELETE":
+                db.execute("DELETE FROM strategies WHERE strategy_id=?", (strategy_id,))
+                db.commit()
+                return _cors_response({"ok": True})
+            data = request.get_json(force=True) or {}
+            sets, vals = [], []
+            for col in ("problem_type", "strategy_text", "grade"):
+                if col in data:
+                    sets.append(f"{col}=?")
+                    vals.append(data[col])
+            if "retired" in data:
+                sets.append("retired=?")
+                vals.append(1 if data["retired"] else 0)
+            if not sets:
+                return _cors_response({"error": "nothing to update"}, status=400)
+            vals.append(strategy_id)
+            db.execute(f"UPDATE strategies SET {', '.join(sets)} WHERE strategy_id=?", vals)
+            db.commit()
+            return _cors_response({"ok": True})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/strategies/<strategy_id>/ship", methods=["POST"])
+    def strategy_ship(strategy_id):
+        try:
+            ok = _strat.promote(db, strategy_id, _USER_STRATEGIES_PATH)
+            return _cors_response({"shipped": ok, "user_path": _USER_STRATEGIES_PATH})
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
 
     @app.route("/admin/reload", methods=["POST"])
     def admin_reload():

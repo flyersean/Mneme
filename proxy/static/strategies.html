@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Strategies</title>
+<style>
+  :root{--bg:#f6f7fb;--card:#ffffff;--border:#e5e7eb;--ink:#1f2937;--muted:#6b7280;--accent:#2563eb;--danger:#dc2626;--ok:#16a34a}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0;background:var(--card);border-bottom:1px solid var(--border)}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main{max-width:1080px;margin:0 auto;padding:16px 24px 40px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px}
+  h1{font-size:18px;margin:0 0 4px}
+  .muted{color:var(--muted);font-size:12px}
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  select,input[type=text],textarea{font:inherit;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--ink)}
+  textarea{width:100%;min-height:180px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;resize:vertical}
+  button{font:inherit;padding:6px 12px;border-radius:7px;border:1px solid var(--border);background:#f9fafb;color:var(--ink);cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+  button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+  button.tiny{padding:3px 8px;font-size:12px}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:#f9fafb;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+  tr:hover td{background:#f9fafb;cursor:pointer}
+  tr.retired td{opacity:.55}
+  .badge{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600}
+  .b-A{background:#dcfce7;color:#166534}
+  .b-B{background:#e0e7ff;color:#3730a3}
+  .b-C{background:#fef3c7;color:#92400e}
+  .b-F{background:#fee2e2;color:#991b1b}
+  .src{color:var(--muted);font-size:11px}
+  .preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;color:var(--muted)}
+  .err{color:var(--danger);margin:8px 0;min-height:18px}
+  .okmsg{color:var(--ok);margin:8px 0;min-height:18px}
+  .row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+  .grow{flex:1}
+  .hidden{display:none}
+  code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+  <a href="/ollama">Ollama</a>
+  <a href="/runs/ui">Runs</a>
+  <a href="/strategies/ui" class="active">Strategies</a>
+</nav>
+
+<main>
+  <h1>Strategies</h1>
+  <p class="muted">
+    Problem-solving playbooks, keyed by problem type. They inject on matching turns (and on failed
+    harness steps), never into unrelated problems. <b>Shipped</b> strategies live in
+    <code id="shippedPath">strategies.yaml</code>; <b>user</b> strategies (promoted below) in
+    <code id="userPath">strategies.user.yaml</code> — both survive a DB reset.
+  </p>
+
+  <div class="card">
+    <div class="toolbar">
+      <select id="ptype"><option value="">All problem types</option></select>
+      <select id="src">
+        <option value="">All sources</option>
+        <option value="shipped">shipped</option>
+        <option value="user">user</option>
+        <option value="imported">imported</option>
+        <option value="model">model</option>
+        <option value="run">run</option>
+      </select>
+      <label><input type="checkbox" id="showRetired"> show retired</label>
+      <span class="grow"></span>
+      <button id="exportBtn" title="Download all strategies as JSON (save anywhere)">⭳ Export all</button>
+      <button id="importBtn" title="Import strategies from a previously exported JSON file">⭱ Import…</button>
+      <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+    </div>
+    <div class="err" id="err"></div>
+    <div class="okmsg" id="ok"></div>
+    <div id="list"></div>
+  </div>
+
+  <div class="card hidden" id="detail">
+    <div class="row">
+      <b id="dTitle" style="font-family:ui-monospace,monospace">—</b>
+      <span class="grow"></span>
+      <button class="tiny ok" id="shipBtn">⭱ Ship to user file</button>
+      <button class="tiny" id="exportOneBtn">⭳ Export</button>
+      <button class="tiny" id="retireBtn">Retire</button>
+      <button class="tiny danger" id="delBtn">Delete</button>
+    </div>
+    <div class="row">
+      <label>problem_type</label>
+      <select id="dPtype"></select>
+      <label>grade</label>
+      <select id="dGrade"><option>A</option><option>B</option><option>C</option><option>F</option></select>
+      <span class="src" id="dMeta"></span>
+    </div>
+    <textarea id="dText"></textarea>
+    <div class="row">
+      <span class="grow"></span>
+      <button class="primary" id="saveBtn">Save changes</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = { items: [], current: null, ptypes: new Set() };
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let body = {};
+  try { body = await r.json(); } catch (e) { body = {}; }
+  if (!r.ok) throw new Error(body.error || (r.status + " " + r.statusText));
+  return body;
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function load() {
+  $("err").textContent = "";
+  try {
+    const d = await api("/strategies");
+    state.items = d.strategies || [];
+    state.ptypes = new Set(state.items.map(i => i.problem_type).filter(Boolean));
+    if (d.shipped_path) $("shippedPath").textContent = d.shipped_path;
+    if (d.user_path) $("userPath").textContent = d.user_path;
+    fillPtype();
+    render();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+function fillPtype() {
+  const sel = $("ptype"), cur = sel.value;
+  sel.innerHTML = '<option value="">All problem types</option>' +
+    [...state.ptypes].sort().map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  sel.value = cur;
+}
+
+function filtered() {
+  const pt = $("ptype").value, src = $("src").value, sr = $("showRetired").checked;
+  return state.items.filter(i =>
+    (!pt || i.problem_type === pt) &&
+    (!src || i.created_by === src) &&
+    (sr || !i.retired));
+}
+
+function render() {
+  const items = filtered();
+  const rows = items.map(i => `
+    <tr class="${i.retired ? 'retired' : ''}" data-id="${esc(i.strategy_id)}">
+      <td>${esc(i.problem_type)}</td>
+      <td><span class="badge b-${esc(i.grade || 'B')}">${esc(i.grade || 'B')}</span></td>
+      <td class="preview" title="${esc(i.strategy_text)}">${esc(i.strategy_text)}</td>
+      <td class="src">${esc(i.created_by || '')}</td>
+      <td>${i.use_count || 0}</td>
+      <td>${i.success_count || 0}</td>
+      <td>${i.retired ? 'retired' : 'active'}</td>
+    </tr>`).join("");
+  $("list").innerHTML = items.length
+    ? `<table><thead><tr><th>type</th><th>grade</th><th>playbook</th><th>source</th><th>uses</th><th>✓</th><th>state</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<p class="muted">No strategies match the filter.</p>';
+  document.querySelectorAll("#list tr[data-id]").forEach(tr =>
+    tr.addEventListener("click", () => openDetail(tr.dataset.id)));
+}
+
+function openDetail(id) {
+  const i = state.items.find(x => x.strategy_id === id);
+  if (!i) return;
+  state.current = i;
+  $("detail").classList.remove("hidden");
+  $("dTitle").textContent = i.strategy_id;
+  $("dPtype").value = i.problem_type;
+  $("dGrade").value = i.grade || "B";
+  $("dText").value = i.strategy_text;
+  $("dMeta").textContent = `source: ${i.created_by || '?'} · uses ${i.use_count || 0} · ✓ ${i.success_count || 0} · ${i.retired ? 'retired' : 'active'}`;
+  $("retireBtn").textContent = i.retired ? "Unretire" : "Retire";
+  window.scrollTo({top: 0, behavior: "smooth"});
+}
+
+async function save() {
+  if (!state.current) return;
+  try {
+    await api("/strategies/" + encodeURIComponent(state.current.strategy_id), {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ problem_type: $("dPtype").value, grade: $("dGrade").value, strategy_text: $("dText").value })
+    });
+    $("ok").textContent = "saved";
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function toggleRetired() {
+  if (!state.current) return;
+  try {
+    await api("/strategies/" + encodeURIComponent(state.current.strategy_id), {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ retired: !state.current.retired })
+    });
+    $("ok").textContent = state.current.retired ? "un-retired" : "retired";
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function ship() {
+  if (!state.current) return;
+  try {
+    const d = await api("/strategies/" + encodeURIComponent(state.current.strategy_id) + "/ship", { method: "POST" });
+    $("ok").textContent = d.shipped ? `shipped to ${d.user_path}` : "ship failed";
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function del() {
+  if (!state.current) return;
+  if (!confirm("Delete this strategy? (Shipped copies in strategies.yaml will re-appear on next reset.)")) return;
+  try {
+    await api("/strategies/" + encodeURIComponent(state.current.strategy_id), { method: "DELETE" });
+    $("detail").classList.add("hidden");
+    state.current = null;
+    $("ok").textContent = "deleted";
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+function exportAll() { window.location = "/strategies/export"; }
+function exportOne() {
+  if (state.current) window.location = "/strategies/export?id=" + encodeURIComponent(state.current.strategy_id);
+}
+
+async function importFile(file) {
+  if (!file) return;
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch("/strategies/import", { method: "POST", body: fd });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.error || r.status);
+    $("ok").textContent = `imported ${b.imported} strateg${b.imported === 1 ? "y" : "ies"}`;
+    load();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+$("saveBtn").addEventListener("click", save);
+$("retireBtn").addEventListener("click", toggleRetired);
+$("shipBtn").addEventListener("click", ship);
+$("delBtn").addEventListener("click", del);
+$("exportBtn").addEventListener("click", exportAll);
+$("exportOneBtn").addEventListener("click", exportOne);
+$("importBtn").addEventListener("click", () => $("importFile").click());
+$("importFile").addEventListener("change", e => { importFile(e.target.files[0]); e.target.value = ""; });
+$("ptype").addEventListener("change", render);
+$("src").addEventListener("change", render);
+$("showRetired").addEventListener("change", render);
+
+load();
+</script>
+</body>
+</html>
