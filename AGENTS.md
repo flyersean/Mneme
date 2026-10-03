@@ -98,7 +98,7 @@ providers:
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY     # key is read from THIS env var, never stored here
     model: deepseek/deepseek-v4-flash   # chat model
-    embed_model: voyageai/voyage-4-lite # embeddings model
+    embed_model: qwen/qwen3-embedding-8b # embeddings model
     label_model: meta-llama/llama-3.2-3b-instruct  # topic-label model
     headers: {}                         # optional (HTTP-Referer / X-Title, etc.)
     fallback_models: []                 # OpenRouter-only: walked if the primary model fails
@@ -146,7 +146,7 @@ curation:                          # fixing bad memory without wiping the DB
 retrieval:
   max_injected_tokens: 6000          # token budget for memory injected each turn
   inject_min_similarity: 0.45        # THE main knob — absolute cosine floor; below it nothing injects.
-                                     # ⚠ EMBEDDER-DEPENDENT: voyage-4-lite ~0.62, snowflake-arctic-embed2 ~0.45
+                                     # ⚠ EMBEDDER-DEPENDENT: qwen3-embedding-8b ~0.45, voyage-4-lite ~0.62, snowflake-arctic-embed2 ~0.45
   strategy_min_similarity: 0.40      # second (lower) floor for strategy retrieval
   keyword_fallback: false            # LIKE-substring fallback (junk-prone; off)
   route_threshold: 0.08              # deprecated for retrieval
@@ -199,9 +199,9 @@ models:                              # per-model overrides; keyed by EXACT model
 
 **Critical rules:**
 - `retrieval.inject_min_similarity` is **embedder-dependent**. Every embedding model has its
-  own cosine scale — re-tune whenever you change `embed_model` (voyage-4-lite ~0.62,
-  snowflake-arctic-embed2 ~0.45). Same for `strategy_min_similarity` (must stay below it).
-- The embedding dimension (`DIM`, hardcoded 1024) must match the configured `embed_model`.
+  own cosine scale — re-tune whenever you change `embed_model` (qwen3-embedding-8b ~0.45,
+  voyage-4-lite ~0.62, snowflake-arctic-embed2 ~0.45). Same for `strategy_min_similarity` (must stay below it).
+- The embedding dimension (`embed_dim`, default 1024) must match the configured `embed_model`.
   A mismatched embedder breaks the FAISS index — a re-embed migration is required.
 - Unknown keys abort startup. `models:` keys must be the exact model name string.
 

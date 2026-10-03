@@ -148,7 +148,7 @@ Once running, the proxy is at `http://localhost:8080/` — dashboard at `/` (lin
 
 ## How it fits together
 
-**Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `memory_only: false` (or `MNEME_MEMORY_ONLY=0`) to turn them on here — the config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
+**Full build by default.** This branch (`agent-harness`) ships with the *strategy / self-improving layer* turned **on by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, the full tool loop, and the strategy/self-improving layer all run out of the box. The same code ships on the `main` branch with the experimental layer off by default (`memory_only: true`); set `memory_only: true` (or `MNEME_MEMORY_ONLY=1`) to switch this branch to memory-only mode. The config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
 
 **Backend-agnostic.** One config file chooses the backend — local [Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter, OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads are required when running against a hosted provider.
 
@@ -342,12 +342,12 @@ A vision-capable backend sees images through the proxy, and images are remembere
 - `[source: input]` tag: facts read from the input file/context handed to the model this turn (e.g. a swarm `read_dir` file) are cited `[source: input]` or `[source: input:<filename>]`. Honest but *unverified* — the file was handed over unchecked, so "from the file" is not "confirmed true". The cross-check verifies a named file actually appears in the input.
 - Trust tier: every chunk is tagged `verified` (user/page/tool — observed) or `unverified` (model-generated — a claim, not an observation) at ingest. Unverified chunks are re-injected with an `[UNVERIFIED]` marker so the model doesn't re-assert its own past output as fact — this closes the self-reinforcement loop where a hallucination, once cited, kept coming back as "memory". Swarm `read_dir` input is auto-detected (its `--- <path> ---` headers) and staged as `input` (unverified), so even a large file split into its own chunk can't enter memory as fact.
 
-### Experimental features (off by default)
+### Experimental features
 
-*These exist and are under active development, but they're **off by default** on this
-branch (`memory_only: true`). They are not dead code — they're developed and tested
-on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
-`memory_only: false` to enable them here.*
+*These are **on by default** on this branch (`memory_only: false`) and under active
+development. They are developed and tested here (`agent-harness`) and merged back into
+`main` as they stabilize — on `main` they ship off by default (`memory_only: true`). Set
+`memory_only: true` to turn them off here.*
 
 - **Strategy / self-improving layer** — strategy learning from tool traces, novel-procedure detection, failure extraction, and belief evolution. Strategies are linked to the source chunk that produced them, and retrieval keys on that linkage (no hand-maintained problem-type taxonomy). A D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers; SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success).
 - **Capability-edge tracking & overcome** — records a competence edge for the `compute` and `live_data` problem types (where the model grinds or fabricates); enough D/F grades flag a type, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared. `code` tasks are deliberately *not* tracked — a write-a-file task is normal tool work, not a competence edge.
@@ -430,7 +430,7 @@ The retrieval gate is an **absolute similarity floor**, not a relative one. If n
 
 A substring keyword fallback exists but is **off by default** (`keyword_fallback: false`) because it has no semantic score and pollutes context, such as "tool" matching an unrelated "Paramotor Tool" memory.
 
-Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the experimental self-improving layer, so the second floor is inactive in the default memory-only build unless `memory_only: false`.
+Retrieval is **two-floor**: a chunk scoring in `[strategy_min_similarity, inject_min_similarity)` isn't injected as memory, but any **strategy linked to that chunk** still is. This is how a learned approach ("verify the menu price on the restaurant's own site") generalizes to a *different* restaurant whose chunk sits just under the memory floor. Strategy retrieval is part of the self-improving layer, which is on by default on this branch; in a memory-only build (`memory_only: true`) the second floor is inactive.
 
 Retrieval is **topic-switch aware**. When the current turn diverges from the last few turns (a topic switch), injection is hardened for a short grace window — a raised `novel_inject_floor` and no sibling expansion — so a dominant stale topic in a large DB can't steer the model back. `max_per_topic` further caps how many chunks any single `topic_label` may contribute. These four knobs live under `retrieval:` in `mneme.yaml.example` and default to sensible values (set any to `0` to disable).
 
@@ -755,7 +755,7 @@ The knobs you'll actually touch are listed below. See `mneme.yaml.example` for f
 |---|---|---|
 | `backend.type` / `backend.provider` | `openai` / `openrouter` | which backend + which `providers:` entry to use |
 | `providers.<name>.model` | `deepseek/deepseek-v4-flash` | main chat model |
-| `providers.<name>.embed_model` | `voyageai/voyage-4-lite` | embedding model (must be 1024-dim) |
+| `providers.<name>.embed_model` | `qwen/qwen3-embedding-8b` | embedding model (must be 1024-dim) |
 | `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (must be non-thinking) |
 | `sampling.temperature` | `0.2` | creativity — lower is more deterministic |
 | `retrieval.inject_min_similarity` | `0.45` | **the main knob** — minimum cosine similarity for a memory to be injected. Below it, inject *nothing*. Raise = fewer/higher-confidence; lower = more recall. **Embedder-dependent** — see the note below. |
@@ -792,16 +792,17 @@ Measure yours by embedding a few obviously-relevant and obviously-irrelevant que
 
 Reference scales:
 
+- `qwen3-embedding-8b` (the default) noise ~0.39 / relevant ~0.64 → use ~0.45.
 - `voyage-4-lite` noise ~0.48 / relevant ~0.70 → use ~0.62.
-- `snowflake-arctic-embed2` noise ~0.32 / relevant ~0.40 → use ~0.45 (the default).
+- `snowflake-arctic-embed2` noise ~0.32 / relevant ~0.40 → use ~0.45.
 
 `strategy_min_similarity` must always stay below it.
 
 ### Memory-only mode
 
-`storage.memory_only: true` (the default on this branch) turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset. It is a *default on/off switch*, not a removal — the code stays present and tested.
+`storage.memory_only: false` (the default on this branch) turns **on** the full stack — memory retrieval, provenance grading, the full toolset, and the strategy/self-improving layer.
 
-`storage.memory_only: false` enables the experimental layer; the `unified_mneme` branch ships that way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
+`storage.memory_only: true` turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset (the `main` branch ships that way). It is a *default on/off switch*, not a removal — the code stays present and tested either way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
 
 ### Memory modes — the flags + the floor
 
@@ -841,7 +842,7 @@ To add an instance, run the setup wizard again and point it at the same DB direc
 
 Two hard rules apply:
 
-1. **Same embedder everywhere.** Every instance sharing a DB must use the SAME embedding model. The vectors in one DB live in one semantic space. If instance A embeds with `snowflake-arctic-embed2` (Ollama) and instance B with `voyage-4-lite` (OpenRouter), both are 1024-dim so FAISS won't crash — but similarity across them is garbage. The startup health check flags "different embed model, same dim" but does not prevent it. The wizard locks the embedder (and labeler) to the first setup's choice; don't change them on a shared DB.
+1. **Same embedder everywhere.** Every instance sharing a DB must use the SAME embedding model. The vectors in one DB live in one semantic space. If instance A embeds with `snowflake-arctic-embed2` (Ollama) and instance B with `qwen3-embedding-8b` (OpenRouter), both are 1024-dim so FAISS won't crash — but similarity across them is garbage. The startup health check flags "different embed model, same dim" but does not prevent it. The wizard locks the embedder (and labeler) to the first setup's choice; don't change them on a shared DB.
 
 2. **Same machine is rock solid; cross-machine needs a real shared filesystem.** On one machine, instances share the DB with plain file locking (SQLite WAL + fcntl on the FAISS index). Across machines, the DB directory must live on shared storage (NFS/S3-mount), and the fcntl lock is only reliable on NFSv4 — on NFSv3 or a plain S3 mount, concurrent writes aren't safely serialized. So "one instance on RunPod + one on an Ollama pod" needs a proper shared filesystem, not just network reachability.
 
@@ -1041,7 +1042,7 @@ The full suite is **386 tests** across 21 files. Beyond the tool loop:
 `tests/test_mcp_client.py` requires the `mcp` package (`pip install mcp`); its
 tests are skipped/failed without it.
 
-The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
+The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `agent-harness` branch — it exercises the experimental layer, which is on by default here.
 
 ## Gateway (reverse proxy)
 
@@ -1086,6 +1087,10 @@ in `extensions/` is imported by `proxy/`, and an extension never imports the pro
 the only connection is the network API.
 
 See [`extensions/README.md`](extensions/README.md) for the full integration guide.
+
+### The `extension.yaml` manifest (optional standard)
+
+By default an extension is just a program you run in the terminal. If you add an `extension.yaml` manifest to its directory, the proxy's **Extensions** page (`/extensions`) discovers, configures, runs and kills it — including a code editor (line numbers, YAML highlighting, format/validate) for any `config_file`. Without a manifest it still runs the terminal way (the standard is opt-in, not enforced). See [`extensions/README.md`](extensions/README.md) for the spec.
 
 That separation is deliberate, and it is what makes the API the contract:
 
@@ -1240,5 +1245,6 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 
 ## Branches
 
-- `main` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`memory_only: true`). Start here.
-- `unified_mneme` — **the full build**. Same code with the experimental layer enabled by default (`memory_only: false`), plus the live-model capability benchmark harness. This is where the experimental features are developed and tested before being merged back into `main`.
+- `agent-harness` — **the full build (this branch)**. Memory retrieval, provenance grading, the full toolset, and the strategy/self-improving layer on by default (`memory_only: false`), plus the agent harness (planned multi-step runs, the runs dashboard, the provider/model switcher, the extensions page, the dashboard "add proxy" dialog).
+- `main` — **the release branch**. Same code with the experimental strategy/self-improving layer off by default (`memory_only: true`). Memory retrieval, grading, and the full toolset on. Start here for a conservative setup.
+- `unified_mneme` — the earlier full-build branch; `agent-harness` supersedes it.
