@@ -68,7 +68,8 @@ providers:
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY       # key is read from THIS env var, never stored here
     model: deepseek/deepseek-v4-flash     # chat model
-    embed_model: voyageai/voyage-4-lite   # model that turns text into searchable vectors
+    embed_model: qwen/qwen3-embedding-8b   # model that turns text into searchable vectors
+    # embed_dim: 1024          # optional MRL-truncated output dim (default 1024); must match across every proxy sharing one DB
     label_model: meta-llama/llama-3.2-3b-instruct  # model that writes short topic labels
     # OpenRouter reliability (ignored by any other OpenAI-compatible provider).
     fallback_models: ["google/gemini-2.5-flash"]

@@ -206,6 +206,7 @@ _CONFIG_ENV_MAP = {
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",
     "embed_model": "EMBED_MODEL",
+    "embed_dim": "EMBED_DIM",
     "label_model": "LABEL_MODEL",
     "ollama_url": "MNEME_OLLAMA_URL",
     "openrouter_api_key": "OPENROUTER_API_KEY",
@@ -1485,7 +1486,12 @@ def grade_priority(chunk_id: str) -> int:
 # EMBED_MODEL is env-overridable so a DB can move between machines with
 # different embedders (the startup health check re-embeds mismatched chunks).
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "snowflake-arctic-embed2")
-DIM = 1024
+# Embedding dimension. MRL models (Qwen3-Embedding, bge-m3) can emit a truncated
+# dim, so the FAISS index dimension and the requested output dim are the same knob.
+try:
+    DIM = int(os.environ.get("EMBED_DIM", "1024"))
+except (TypeError, ValueError):
+    DIM = 1024
 try:
     import faiss
     _index = faiss.IndexFlatIP(DIM)          # inner product (cosine on norm'd vectors)
@@ -1627,7 +1633,7 @@ def _embed_single(text: str) -> np.ndarray:
         r = requests.post(
             f"{OR_BASE_URL}/embeddings",
             headers=_or_headers(),
-            json={"model": EMBED_MODEL, "input": text},
+            json={"model": EMBED_MODEL, "input": text, "dimensions": DIM},
             timeout=EMBED_TIMEOUT,
         )
         r.raise_for_status()
@@ -1635,11 +1641,15 @@ def _embed_single(text: str) -> np.ndarray:
     else:
         r = requests.post(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text},
+            json={"model": EMBED_MODEL, "prompt": text, "dimensions": DIM},
             timeout=EMBED_TIMEOUT,
         )
         r.raise_for_status()
         v = np.array(r.json()["embedding"], dtype=np.float32)
+    # MRL truncation safety net: if the provider ignores `dimensions` and returns
+    # the native-dim vector, keep the first DIM (pad if it somehow returns fewer).
+    if v.shape[0] != DIM:
+        v = v[:DIM] if v.shape[0] > DIM else np.pad(v, (0, DIM - v.shape[0]))
     return v / (np.linalg.norm(v) + 1e-8)
 
 def embed(text: str):
