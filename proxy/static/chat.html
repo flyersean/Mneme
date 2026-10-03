@@ -371,6 +371,29 @@ header .model:hover { color: var(--accent); }
 .mp-item .mp-id { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
 .mp-item .mp-ctx { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .mp-empty { padding: 12px 10px; color: var(--muted); font-size: 13px; }
+.model-row { display: flex; align-items: center; gap: 8px; }
+#model-btn { font: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--accent); cursor: pointer; }
+#model-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.mp-providers { border-bottom: 1px solid var(--border); margin-bottom: 4px; padding-bottom: 4px; }
+.mp-prov { display: flex; gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px; }
+.mp-prov-name { font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .03em; }
+.mp-prov-model { color: var(--muted); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.mp-prov-key { margin-left: auto; }
+.mp-setkey { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.mp-custom { display: flex; gap: 6px; padding: 4px 10px 6px; }
+.mp-custom-input { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; outline: none; }
+.mp-custom-input:focus { border-color: var(--accent); }
+.mp-custom-btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; }
+.mp-custom-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+#key-dialog { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; }
+#key-dialog.open { display: flex; }
+.kd-box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; width: 360px; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+.kd-title { font-weight: 600; margin-bottom: 10px; }
+.kd-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; outline: none; margin-bottom: 12px; }
+.kd-input:focus { border-color: var(--accent); }
+.kd-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.kd-actions button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
+.kd-actions .kd-save { background: var(--accent); color: #fff; border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -378,7 +401,10 @@ header .model:hover { color: var(--accent); }
 <header>
   <div>
     <div class="title">Mneme</div>
-    <div class="model" id="model-label">connecting…</div>
+    <div class="model-row">
+      <div class="model" id="model-label">connecting…</div>
+      <button id="model-btn" title="Select a different model">Select model ▾</button>
+    </div>
   </div>
   <div class="spacer"></div>
   <button id="settings-btn" title="Display settings">⚙</button>
@@ -1204,17 +1230,45 @@ async function initConversation() {
 
 // ── model picker (provider/model switcher) ──────────────────────
 let currentModelId = "";
+let currentBackend = "";
 const modelPicker = document.createElement("div");
 modelPicker.id = "model-picker";
 modelPicker.className = "palette";
 modelPicker.innerHTML =
-  '<input class="mp-search" placeholder="Search models… (type to filter, Enter to pick)" />' +
+  '<input class="mp-search" placeholder="Search models…" />' +
+  '<div class="mp-providers"></div>' +
+  '<div class="mp-custom"><input class="mp-custom-input" placeholder="enter a model id…" /><button class="mp-custom-btn">Use</button></div>' +
   '<div class="mp-cur"></div><div class="mp-list"></div>';
 document.body.appendChild(modelPicker);
 const mpSearch = modelPicker.querySelector(".mp-search");
 const mpList = modelPicker.querySelector(".mp-list");
 const mpCur = modelPicker.querySelector(".mp-cur");
+const mpProvidersEl = modelPicker.querySelector(".mp-providers");
+const mpCustomInput = modelPicker.querySelector(".mp-custom-input");
+const mpCustomBtn = modelPicker.querySelector(".mp-custom-btn");
 let mpModels = [];
+let mpProviders = [];
+
+const keyDialog = document.createElement("div");
+keyDialog.id = "key-dialog";
+keyDialog.innerHTML =
+  '<div class="kd-box"><div class="kd-title"></div>' +
+  '<input class="kd-input" type="password" placeholder="API key" />' +
+  '<div class="kd-actions"><button class="kd-cancel">Cancel</button><button class="kd-save">Save</button></div></div>';
+document.body.appendChild(keyDialog);
+let keyProvider = "";
+
+function renderProviders() {
+  if (!mpProviders.length) { mpProvidersEl.innerHTML = ""; return; }
+  mpProvidersEl.innerHTML = mpProviders.map(p =>
+    `<div class="mp-prov${p.has_key ? "" : " nokey"}">` +
+    `<span class="mp-prov-name">${escAttr(p.name)}</span>` +
+    `<span class="mp-prov-model">${escAttr(p.model || "")}</span>` +
+    `<span class="mp-prov-key">${p.has_key ? "✓" : '<a class="mp-setkey" data-prov="' + escAttr(p.name) + '">set key</a>'}</span></div>`).join("");
+  mpProvidersEl.querySelectorAll(".mp-setkey").forEach(a => {
+    a.onclick = (e) => { e.stopPropagation(); openKeyDialog(a.dataset.prov); };
+  });
+}
 
 function renderModelPicker(filter) {
   const f = (filter || "").toLowerCase();
@@ -1228,7 +1282,7 @@ function renderModelPicker(filter) {
   mpCur.textContent = "current: " + (currentModelId || "…");
   const provs = [...groups.keys()].sort();
   if (!provs.length) {
-    mpList.innerHTML = '<div class="mp-empty">No matches — type a full model id + Enter to switch.</div>';
+    mpList.innerHTML = '<div class="mp-empty">No matches — use the "enter a model id" box above.</div>';
     return;
   }
   let html = "";
@@ -1249,16 +1303,19 @@ async function openModelPicker() {
   modelPicker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 460)) + "px";
   modelPicker.style.top = (rect.bottom + 6) + "px";
   modelPicker.classList.add("open");
-  mpSearch.value = ""; mpModels = []; renderModelPicker("");
+  mpSearch.value = ""; mpCustomInput.value = ""; mpModels = []; mpProviders = [];
+  renderModelPicker(""); renderProviders();
   mpSearch.focus();
   try {
     const d = await (await fetch("/models/available")).json();
+    currentBackend = d.backend || "";
     mpModels = d.models || [];
-    if (!mpModels.length && (d.providers || []).length) {
-      mpModels = d.providers.filter(p => p.model).map(p => ({ id: p.model, name: p.name, context_length: null }));
+    mpProviders = d.providers || [];
+    if (!mpModels.length && mpProviders.length) {
+      mpModels = mpProviders.filter(p => p.model).map(p => ({ id: p.model, name: p.name, context_length: null }));
     }
     if (d.current) currentModelId = d.current;
-    renderModelPicker("");
+    renderModelPicker(""); renderProviders();
   } catch (e) { renderModelPicker(""); }
 }
 
@@ -1277,9 +1334,61 @@ async function switchModel(id) {
   modelPicker.classList.remove("open");
 }
 
+async function useCustomModel() {
+  const v = mpCustomInput.value.trim();
+  if (!v) return;
+  const pulled = mpModels.some(m => m.id === v);
+  if (currentBackend === "ollama" && !pulled) {
+    if (confirm(`"${v}" isn't pulled locally. Pull it from Ollama now? (may download several GB)`)) {
+      await pullAndUse(v);
+    }
+    return;
+  }
+  await switchModel(v);
+}
+
+async function pullAndUse(model) {
+  mpCur.textContent = "pulling " + model + "…";
+  try {
+    await fetch("/ollama/pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: model }) });
+  } catch (e) {}
+  for (let i = 0; i < 150; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const d = await (await fetch("/models/available")).json();
+      mpModels = d.models || [];
+      if (mpModels.some(m => m.id === model)) { await switchModel(model); return; }
+    } catch (e) {}
+    mpCur.textContent = "pulling " + model + "… (" + (i + 1) + ")";
+  }
+  mpCur.textContent = "pull timed out for " + model;
+}
+
+function openKeyDialog(provider) {
+  keyProvider = provider;
+  keyDialog.querySelector(".kd-title").textContent = "API key for " + provider;
+  keyDialog.querySelector(".kd-input").value = "";
+  keyDialog.classList.add("open");
+  keyDialog.querySelector(".kd-input").focus();
+}
+
+async function saveKey() {
+  const key = keyDialog.querySelector(".kd-input").value.trim();
+  if (!key) return;
+  try {
+    await fetch("/providers/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: keyProvider, key }) });
+    const d = await (await fetch("/models/available")).json();
+    mpProviders = d.providers || [];
+    renderProviders();
+  } catch (e) {}
+  keyDialog.classList.remove("open");
+}
+
+const modelBtn = document.getElementById("model-btn");
 modelLabel.style.cursor = "pointer";
 modelLabel.title = "Switch model";
 modelLabel.onclick = openModelPicker;
+if (modelBtn) modelBtn.onclick = openModelPicker;
 mpSearch.addEventListener("input", () => renderModelPicker(mpSearch.value));
 mpSearch.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
@@ -1291,9 +1400,17 @@ mpSearch.addEventListener("keydown", (e) => {
     modelPicker.classList.remove("open");
   }
 });
+mpCustomBtn.addEventListener("click", useCustomModel);
+mpCustomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { useCustomModel(); e.preventDefault(); } });
+keyDialog.querySelector(".kd-save").addEventListener("click", saveKey);
+keyDialog.querySelector(".kd-cancel").addEventListener("click", () => keyDialog.classList.remove("open"));
+keyDialog.querySelector(".kd-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveKey(); else if (e.key === "Escape") keyDialog.classList.remove("open"); });
 document.addEventListener("click", (e) => {
-  if (!modelPicker.contains(e.target) && e.target !== modelLabel) {
+  if (!modelPicker.contains(e.target) && e.target !== modelLabel && e.target !== modelBtn) {
     modelPicker.classList.remove("open");
+  }
+  if (keyDialog.classList.contains("open") && e.target === keyDialog) {
+    keyDialog.classList.remove("open");
   }
 });
 
@@ -1303,7 +1420,6 @@ async function boot() {
     const r = await fetch("/health");
     const h = await r.json();
     currentModelId = h.backend || h.model || "";
-    window.__BACKEND = h.backend || "?";
     modelLabel.textContent = currentModelId || MODEL;
   } catch (e) {
     modelLabel.textContent = MODEL;

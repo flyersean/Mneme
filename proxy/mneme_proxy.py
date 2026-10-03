@@ -795,6 +795,34 @@ def _persist_model(model: str) -> bool:
         return False
 
 
+def _env_file_path() -> str:
+    """Path to the env file the start script sources (provider keys live there,
+    never in the config). Shared across instances at <mneme-root>/env."""
+    return os.path.join(os.path.dirname(DB_DIR), "env")
+
+
+def _persist_env_key(env_file: str, key_name: str, key_value: str) -> bool:
+    """Add/update `KEY=value` in the env file, preserving other lines. The key
+    value itself is never logged — only the variable name."""
+    try:
+        lines = []
+        if os.path.isfile(env_file):
+            with open(env_file, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        pat = re.compile(rf'^\s*(?:export\s+)?{re.escape(key_name)}\s*=')
+        kept = [ln for ln in lines if not pat.match(ln)]
+        kept.append(f"{key_name}={key_value}")
+        tmp = env_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(kept) + "\n")
+        os.replace(tmp, env_file)
+        os.chmod(env_file, 0o600)
+        return True
+    except Exception as e:
+        print(f"  [PROVIDER-KEY] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
 def _settings_snapshot() -> Dict:
     """The EFFECTIVE settings, for the <<SETTINGS>> report.
 
@@ -7528,20 +7556,33 @@ if FLASK_OK:
 
     @app.route("/models/available", methods=["GET"])
     def models_available():
-        """List models available to switch to: the configured providers (with their
-        current model) plus a live OpenRouter model catalog when OpenRouter is the
-        backend. The picker groups by the `provider/model` prefix client-side."""
+        """List models available to switch to: the configured providers (with key
+        status) plus a live catalog — OpenRouter /models for the openai backend,
+        or Ollama /api/tags for the ollama backend. The picker groups by the
+        `provider/model` prefix client-side."""
         providers = []
         provs = CONFIG_DATA.get("providers") or {}
         for name, prov in provs.items():
             if isinstance(prov, dict):
+                api_key_env = prov.get("api_key_env", "")
                 providers.append({
                     "name": name,
                     "model": prov.get("model", ""),
                     "base_url": prov.get("base_url", ""),
+                    "api_key_env": api_key_env,
+                    "has_key": bool(api_key_env and os.environ.get(api_key_env)),
                 })
         models = []
-        if "openrouter" in provs:
+        if MNEME_BACKEND == "ollama":
+            try:
+                r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=15)
+                if r.status_code == 200:
+                    for m in r.json().get("models", []):
+                        nm = m.get("name", "")
+                        models.append({"id": nm, "name": nm, "context_length": None, "pulled": True})
+            except Exception as e:
+                print(f"  [MODELS] ollama tags failed: {type(e).__name__}", flush=True)
+        elif "openrouter" in provs:
             try:
                 r = requests.get(f"{OR_BASE_URL}/models", headers=_or_headers(), timeout=15)
                 if r.status_code == 200:
@@ -7553,7 +7594,34 @@ if FLASK_OK:
                         })
             except Exception as e:
                 print(f"  [MODELS] list fetch failed: {type(e).__name__}", flush=True)
-        return _cors_response({"current": MODEL, "providers": providers, "models": models})
+        return _cors_response({
+            "current": MODEL,
+            "backend": MNEME_BACKEND,
+            "providers": providers,
+            "models": models,
+        })
+
+    @app.route("/providers/key", methods=["POST"])
+    def providers_key():
+        """Save an API key for a configured provider (add-key dialog). Applies to
+        the running process immediately and persists to the env file the start
+        script sources. The key value is never echoed or logged."""
+        data = request.get_json(force=True, silent=True) or {}
+        provider = (data.get("provider") or "").strip()
+        key = (data.get("key") or "").strip()
+        if not provider or not key:
+            return _cors_response({"ok": False, "error": "missing provider or key"}, status=400)
+        prov = (CONFIG_DATA.get("providers") or {}).get(provider) or {}
+        api_key_env = prov.get("api_key_env") or ""
+        if not api_key_env:
+            return _cors_response({"ok": False, "error": f"provider {provider!r} has no api_key_env"}, status=400)
+        os.environ[api_key_env] = key
+        if api_key_env == "OPENROUTER_API_KEY":
+            global OR_API_KEY
+            OR_API_KEY = key
+        persisted = _persist_env_key(_env_file_path(), api_key_env, key)
+        print(f"  [PROVIDER-KEY] set {api_key_env} for {provider} (persisted={persisted})", flush=True)
+        return _cors_response({"ok": True, "provider": provider, "persisted": persisted})
 
     @app.route("/models/switch", methods=["POST"])
     def models_switch():
