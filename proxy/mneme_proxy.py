@@ -1433,9 +1433,8 @@ _strat_hist.ensure_schema(db)
 try:
     db.execute("UPDATE strategies SET outcome='FAILURE' WHERE strategy_text LIKE 'FAILURE on:%' OR strategy_text LIKE 'TRUNCATED on:%'")
     # Older code saved strategies with problem_type='model' placeholder, which
-    # never matches a query's classified type (so they never injected). Fold them
-    # back to 'other'.
-    db.execute("UPDATE strategies SET problem_type='other' WHERE problem_type='model'")
+    # never matches a query's classified type (so they stay inert). Left as-is —
+    # 'other' is deprecated as a tag (not searchable), so we no longer fold into it.
     # Reformat old-format failure text to the negative directive, so existing
     # rows match what generate_strategy now produces for new failures. Idempotent:
     # once rewritten the text no longer starts with "FAILURE on:".

@@ -4,8 +4,9 @@
 #
 # Each entry:
 #   id            unique slug (stable across DBs)
-#   problem_type  one of: web_retrieval | live_data | code | error |
-#                 memory_operation | other  (see mneme/capability._classify_problem_type)
+#   problem_type  one of: web_retrieval | live_data | code | error | compute |
+#                 memory_operation  (never 'other' — not searchable)
+#                 (see mneme/capability._classify_problem_type)
 #   grade         A (known-good curated) / B / C
 #   cost          relative cost hint (0 = cheap); cheaper wins a retrieval slot
 #   text          the playbook, injected on matching problem-type turns/failures
@@ -71,7 +72,7 @@
     When a tool returns a large raw payload, extract only the metrics, code, or evidence relevant to the sub-goal into a workspace notes file, and let the raw payload fall out of context. Keep the working context lean.
 
 - id: exit_no_new_info
-  problem_type: other
+  problem_type: web_retrieval
   grade: B
   cost: 1
   created_by: shipped
@@ -111,7 +112,7 @@
     For "latest / current / today" targets, hit the source's release page or latest endpoint and record the retrieval date; a cached number may be stale.
 
 - id: cheap_check_first
-  problem_type: other
+  problem_type: code
   grade: C
   cost: 0
   created_by: shipped
