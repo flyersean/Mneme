@@ -1,0 +1,11 @@
+# Mneme extension manifest — see extensions/README.md for the spec.
+# Pi is an interactive terminal assistant; "Run" launches it with the Mneme tools
+# loaded (it's really meant to be run in your own terminal — the command below is
+# the exact invocation). The provider/model point at the Mneme proxy configured by
+# the setup wizard (~/.pi/agent/models.json).
+
+name: pi-tools
+description: Pi coding-agent tools that call Mneme's memory and web tools
+
+command: ["pi", "--provider", "mneme", "--model", "text-mneme:64k"]
+args: ["--extension", "mneme-search-tool.ts", "--extension", "mneme-web-tools.ts"]

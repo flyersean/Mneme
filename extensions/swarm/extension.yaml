@@ -1,0 +1,13 @@
+# Mneme extension manifest — see extensions/README.md for the spec.
+# The swarm is a one-shot orchestrator: Run starts it from this directory,
+# Configure opens swarm_config.yaml in the YAML editor, Kill stops a stuck run.
+
+name: swarm
+description: Declarative multi-proxy workflow orchestrator (serial driver)
+
+command: ["python3", "swarm_orchestrator.py"]
+args: ["swarm_config.yaml"]
+
+# The editor shows this file directly — edit the loop's steps, ports, prompts and
+# paths (relative to this directory) and re-Run to pick up the changes.
+config_file: swarm_config.yaml
