@@ -7665,6 +7665,21 @@ if FLASK_OK:
     def chat_ui():
         return _serve_html(_CHAT_HTML_PATH, "CHAT-UI")
 
+    @app.route("/static/<path:filename>")
+    def static_asset(filename):
+        """Serve static assets (vendored JS/CSS under static/) — used by the
+        extensions page's CodeMirror editor."""
+        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        safe = os.path.normpath(os.path.join(static_dir, filename))
+        if not (safe == static_dir or safe.startswith(static_dir + os.sep)):
+            return _cors_response({"error": "bad path"}, status=400)
+        if not os.path.isfile(safe):
+            return _cors_response({"error": "not found"}, status=404)
+        ext = os.path.splitext(safe)[1].lower().lstrip(".")
+        ctype = {"js": "application/javascript", "css": "text/css", "html": "text/html"}.get(ext, "application/octet-stream")
+        with open(safe, "rb") as f:
+            return f.read(), 200, {"Content-Type": ctype}
+
     _EXTENSIONS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "extensions.html")
 
     @app.route("/extensions", methods=["GET"])

@@ -52,7 +52,16 @@
   .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
   .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
   .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:200px; max-height:52vh; overflow-y:auto; }
+  .cm-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .cm-toolbar .yaml-status { font-size:12px; color:var(--muted); }
+  .cm-toolbar .yaml-status.err { color:var(--red); }
+  .cm-toolbar .yaml-status.ok { color:var(--green); }
+  .CodeMirror { border:1px solid var(--line); border-radius:7px; font-size:13px; height:320px; }
 </style>
+<link rel="stylesheet" href="/static/vendor/codemirror.min.css">
+<script src="/static/vendor/codemirror.min.js"></script>
+<script src="/static/vendor/yaml.min.js"></script>
+<script src="/static/vendor/js-yaml.min.js"></script>
 </head>
 <body>
 <header>
@@ -166,12 +175,19 @@ async function openCfg(name) {
     html += `</div>`;
   }
   if (j.config_file) {
-    html += `<div class="field"><label>${esc(j.config_file)} (raw YAML)</label>` +
+    html += `<div class="field"><label>${esc(j.config_file)} (YAML)</label>` +
+      `<div class="cm-toolbar"><button type="button" onclick="formatYaml()">Format</button><span class="yaml-status" id="yamlStatus"></span></div>` +
       `<textarea id="cfg_file">${esc(j.config_file_content || '')}</textarea></div>`;
   }
   if (!html) html = '<div class="empty">This extension has no configurable settings.</div>';
   body.innerHTML = html;
+  cmEditor = null;
   document.getElementById('cfgModal').classList.add('open');
+  if (document.getElementById('cfg_file')) {
+    initYamlEditor();
+    // CodeMirror can't measure inside display:none — re-measure once the modal is laid out.
+    setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+  }
 }
 
 async function saveCfg() {
@@ -182,14 +198,53 @@ async function saveCfg() {
     if (el) values[c.key] = el.value;
   }
   const body = { values };
-  const fileEl = document.getElementById('cfg_file');
-  if (fileEl) body.config_file_content = fileEl.value;
+  if (cmEditor) body.config_file_content = cmEditor.getValue();
   const r = await fetch('/extensions/' + encodeURIComponent(cfgName) + '/config', {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
   });
   const j = await r.json();
   if (j.ok) document.getElementById('cfgModal').classList.remove('open');
   else alert(j.error || 'failed to save');
+}
+
+let cmEditor = null;
+function initYamlEditor() {
+  const ta = document.getElementById('cfg_file');
+  if (!ta) return;
+  cmEditor = CodeMirror.fromTextArea(ta, {
+    lineNumbers: true,
+    mode: 'yaml',
+    indentUnit: 2,
+    indentWithTabs: false,
+    tabSize: 2,
+    lineWrapping: false,
+  });
+  cmEditor.on('change', validateYaml);
+  validateYaml();
+}
+
+function validateYaml() {
+  const el = document.getElementById('yamlStatus');
+  if (!el || !cmEditor) return;
+  try {
+    jsyaml.load(cmEditor.getValue());
+    el.textContent = '✓ valid YAML';
+    el.className = 'yaml-status ok';
+  } catch (e) {
+    el.textContent = '✗ ' + (e.reason || e.message || 'invalid YAML');
+    el.className = 'yaml-status err';
+  }
+}
+
+function formatYaml() {
+  if (!cmEditor) return;
+  try {
+    const doc = jsyaml.load(cmEditor.getValue());
+    cmEditor.setValue(jsyaml.dump(doc, { indent: 2 }));
+    validateYaml();
+  } catch (e) {
+    alert('Cannot format — YAML is invalid:\n' + (e.reason || e.message || e));
+  }
 }
 
 async function openLog(name) {
