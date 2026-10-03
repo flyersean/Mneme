@@ -7919,6 +7919,50 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
+    # ── Add proxy (dashboard) ──
+    setup_jobs = {}
+
+    @app.route("/setup", methods=["POST"])
+    def setup_add_proxy():
+        """Kick off a non-interactive 'add proxy instance' run (driven by the
+        dashboard's Add Proxy dialog). Spawns mneme_setup.py --add in the
+        background and streams its output to a log the client polls."""
+        data = request.get_json(force=True, silent=True) or {}
+        job_id = uuid.uuid4().hex[:12]
+        json_path = os.path.join("/tmp", f"mneme_setup_{job_id}.json")
+        log_path = os.path.join("/tmp", f"mneme_setup_{job_id}.log")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        env = os.environ.copy()
+        env["MNEME_CHUNK_DIR"] = DB_DIR          # shared DB dir, not this instance's
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        logf = open(log_path, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            [sys.executable, "-uB", "scripts/mneme_setup.py", "--add", json_path],
+            cwd=REPO_ROOT, env=env, stdout=logf, stderr=subprocess.STDOUT,
+            start_new_session=True)
+        setup_jobs[job_id] = {"proc": proc, "log": log_path, "logf": logf}
+        return _cors_response({"job_id": job_id})
+
+    @app.route("/setup/<job_id>", methods=["GET"])
+    def setup_status(job_id):
+        job = setup_jobs.get(job_id)
+        if not job:
+            return _cors_response({"error": "no such job"}, status=404)
+        proc = job["proc"]
+        done = proc.poll() is not None
+        output = ""
+        try:
+            with open(job["log"], "r", encoding="utf-8") as f:
+                output = f.read()
+        except Exception:
+            pass
+        return _cors_response({
+            "done": done,
+            "exit_code": proc.returncode if done else None,
+            "output": output,
+        })
+
     # ── Ollama control panel ──
     @app.route("/ollama", methods=["GET"])
     def ollama_ui():

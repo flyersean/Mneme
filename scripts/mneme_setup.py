@@ -1767,6 +1767,120 @@ def _add_instance(memory_dir, shared, memory_only):
     return 0 if started else 1
 
 
+def add_instance_noninteractive(params):
+    """Add a proxy instance with NO interactive prompts (driven by the dashboard's
+    "Add proxy" dialog). `params` is a dict with:
+        port           (int, required)
+        chat_backend   ("openrouter" | "ollama", default "openrouter")
+        chat_model     (str, required — full OpenRouter id or Ollama model name)
+        api_key        (optional str — save a new OpenRouter key; else reuse the saved one)
+        inject         (bool, default True)
+        ctx_size       (optional int, default 64000)
+        model_template (optional str, default "" — none)
+        mcp_servers    (optional list, default [])
+        overwrite      (optional bool, default False)
+    Returns 0 on success, 1 on failure. Prints progress to stdout (streamed to the
+    dashboard's terminal pane)."""
+    global REPO_ROOT, MEMORY_DIR
+    REPO_ROOT = find_repo()
+    branch = detect_branch(REPO_ROOT)
+    memory_only = (branch == "main")
+
+    db_dir = os.path.abspath(os.path.expanduser(
+        os.environ.get("MNEME_CHUNK_DIR") or os.path.expanduser("~/mneme/chunks")))
+    MEMORY_DIR = db_dir
+    if not db_exists(db_dir):
+        print(f"  ✗ no existing install at {db_dir} — run the full setup first", flush=True)
+        return 1
+    shared = load_shared_config(db_dir)
+
+    chat_backend = params.get("chat_backend", "openrouter") or "openrouter"
+    port = int(params.get("port") or 0)
+    if not port:
+        print("  ✗ missing port", flush=True)
+        return 1
+    chat_model = (params.get("chat_model") or "").strip()
+    if not chat_model:
+        print("  ✗ missing chat_model", flush=True)
+        return 1
+    inject = "1" if params.get("inject", True) else "0"
+    model_template = params.get("model_template") or ""
+    mcp_servers = params.get("mcp_servers") or []
+    ctx_size = int(params.get("ctx_size") or 64000)
+
+    embed_model = shared.get("embed_model") or OL_DEFAULT_EMBED
+    embed_backend = shared.get("embed_backend") or "ollama"
+    label_model = shared.get("label_model") or OL_DEFAULT_LABEL
+    label_backend = shared.get("label_backend") or "ollama"
+
+    print("  Add a proxy instance to the existing DB", flush=True)
+    print(f"  Shared DB:  {db_dir}", flush=True)
+    print(f"  Embedder (locked): {embed_model}  ({embed_backend})", flush=True)
+    print(f"  Labeler  (locked): {label_model}  ({label_backend})", flush=True)
+    print(f"  Chat backend: {chat_backend}", flush=True)
+    print(f"  Chat model:   {chat_model}", flush=True)
+    print(f"  Port:         {port}", flush=True)
+
+    instance_dir = _instance_dir(db_dir, port)
+    db_path = os.path.join(db_dir, "mneme.db")
+
+    if os.path.isfile(os.path.join(instance_dir, "mneme.yaml")) and not params.get("overwrite"):
+        print(f"  ✗ an instance already exists on port {port} — not overwriting (pass overwrite:true)", flush=True)
+        return 1
+
+    if chat_backend == "openrouter":
+        api_key = (params.get("api_key") or "").strip()
+        if api_key:
+            info = or_get(api_key, "/auth/key")
+            if not (info and "data" in info):
+                print("  ✗ invalid OpenRouter API key", flush=True)
+                return 1
+            save_key(api_key)
+            print("  ✓ OpenRouter key saved", flush=True)
+        elif not load_saved_key():
+            print("  ✗ no OpenRouter key available — pass api_key", flush=True)
+            return 1
+
+    if chat_backend == "ollama":
+        ensure_ollama()
+        pulled = get_pulled_models()
+        if chat_model not in pulled:
+            print(f"  Pulling {chat_model}…", flush=True)
+            pull_model(chat_model)
+        chat_model = create_context_modelfile(chat_model, ctx_size)
+        if model_template:
+            chat_model, ctx_size = _install_template_modelfile(
+                model_template, chat_backend, chat_model, ctx_size,
+                port=port, instance_dir=instance_dir,
+                shared=bool(shared.get("shared_weights", True)))
+
+    instance_models = {
+        "model": chat_model,
+        "embed_model": embed_model,
+        "label_model": label_model,
+        "ctx_size": ctx_size,
+    }
+    cfg = write_config(chat_backend, instance_models, port, inject, memory_only,
+                       instance_dir, db_path, mcp_servers, model_template=model_template)
+    script = write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_model,
+                                         embed_model, embed_backend, label_model, label_backend,
+                                         inject, memory_only)
+    started = start_instance(instance_dir, port, chat_backend, chat_model,
+                             embed_model, embed_backend, label_model, label_backend,
+                             inject, memory_only)
+    create_access_symlinks()
+
+    print("", flush=True)
+    print("  Instance " + ("started" if started else "configured but FAILED to start") + ".", flush=True)
+    print(f"  Chat model:  {chat_model}  (backend {chat_backend})", flush=True)
+    print(f"  Port:        {port}", flush=True)
+    print(f"  Config:      {cfg}", flush=True)
+    print(f"  Start:       {script}", flush=True)
+    print(f"  Log:         {instance_dir}/proxy-{port}.log", flush=True)
+    print(f"  Chat UI:     http://localhost:{port}/chat", flush=True)
+    return 0 if started else 1
+
+
 def create_access_symlinks():
     """Expose the memory dir + repo to JupyterLab's file browser via /workspace
     symlinks, so a user can browse and download the DB, config, and prompts from
@@ -2007,6 +2121,21 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--add" in sys.argv:
+        # Non-interactive: add a proxy instance from a JSON answers file.
+        _i = sys.argv.index("--add")
+        if _i + 1 >= len(sys.argv):
+            print("usage: mneme_setup.py --add <answers.json>", flush=True)
+            sys.exit(2)
+        try:
+            with open(sys.argv[_i + 1], "r", encoding="utf-8") as f:
+                _params = json.load(f)
+            sys.exit(add_instance_noninteractive(_params))
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"\n  ✗ Add-instance failed: {type(e).__name__}: {e}", flush=True)
+            sys.exit(1)
     try:
         sys.exit(main())
     except KeyboardInterrupt:

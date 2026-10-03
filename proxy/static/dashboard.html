@@ -46,12 +46,33 @@
   .row .k { color:var(--muted); }
   .row .v { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
   #reloadMsg { margin-left:10px; font-size:13px; color:var(--muted); }
+  .add-proxy { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  .add-proxy:hover { background:#1d4ed8; border-color:#1d4ed8; }
+
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.42); display:none; align-items:center; justify-content:center; z-index:50; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:#fff; border:1px solid var(--line); border-radius:12px; width:580px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); font-weight:650; }
+  .modal-head .close { border:none; background:none; font-size:22px; line-height:1; cursor:pointer; color:var(--muted); }
+  .modal-body { padding:16px 18px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:4px; }
+  .field label .opt { font-weight:400; color:#9ca3af; }
+  .field input, .field select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; font-size:14px; box-sizing:border-box; }
+  .field input:focus, .field select:focus { outline:none; border-color:var(--accent); }
+  .field label.check { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--fg); font-weight:500; }
+  .field label.check input { width:auto; }
+  .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+  .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
+  .modal-actions button:disabled { opacity:.6; cursor:default; }
+  .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:280px; max-height:48vh; overflow-y:auto; }
 </style>
 </head>
 <body>
 <header>
   <h1>Mneme — Dashboard</h1>
   <div class="toolbar">
+    <button class="add-proxy" id="addProxyBtn">＋ Add proxy</button>
     <button onclick="loadInstances()">Refresh</button>
     <button id="reloadBtn">Reload config</button>
     <span id="reloadMsg"></span>
@@ -83,6 +104,42 @@
     <div class="status" id="status">Loading…</div>
   </section>
 </main>
+<div class="modal-overlay" id="setupModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span>Add proxy</span>
+      <button class="close" id="setupClose">×</button>
+    </div>
+    <div class="modal-body" id="setupForm">
+      <div class="field">
+        <label>Port</label>
+        <input type="number" id="setupPort" placeholder="e.g. 8081" />
+      </div>
+      <div class="field">
+        <label>Backend</label>
+        <select id="setupBackend">
+          <option value="openrouter">OpenRouter (hosted)</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Chat model</label>
+        <input type="text" id="setupModel" placeholder="deepseek/deepseek-chat — or qwen3:32b for Ollama" />
+      </div>
+      <div class="field" id="keyField">
+        <label>OpenRouter API key <span class="opt">(blank = reuse the saved key)</span></label>
+        <input type="password" id="setupKey" placeholder="sk-or-…" />
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="setupInject" checked /> Inject Mneme's system instructions</label>
+      </div>
+      <div class="modal-actions">
+        <button id="setupCreate">Create proxy</button>
+      </div>
+    </div>
+    <div class="terminal" id="setupTerminal" style="display:none"></div>
+  </div>
+</div>
 <script>
 async function loadInstances() {
   const rows = document.getElementById('rows');
@@ -149,6 +206,72 @@ document.getElementById('reloadBtn').addEventListener('click', async () => {
     msg.textContent = j.ok ? 'done' : 'failed';
     if (j.ok) loadStatus();
   } catch (e) { msg.textContent = 'error: ' + e; }
+});
+
+const setupModal = document.getElementById('setupModal');
+function openSetup() {
+  setupModal.classList.add('open');
+  document.getElementById('setupForm').style.display = '';
+  document.getElementById('setupTerminal').style.display = 'none';
+  document.getElementById('setupTerminal').textContent = '';
+  document.getElementById('setupPort').value = '';
+  document.getElementById('setupModel').value = '';
+  document.getElementById('setupKey').value = '';
+}
+function closeSetup() { setupModal.classList.remove('open'); }
+
+async function createProxy() {
+  const port = parseInt(document.getElementById('setupPort').value, 10);
+  const chat_backend = document.getElementById('setupBackend').value;
+  const chat_model = document.getElementById('setupModel').value.trim();
+  const api_key = document.getElementById('setupKey').value.trim();
+  const inject = document.getElementById('setupInject').checked;
+  if (!port || !chat_model) { alert('Port and chat model are required.'); return; }
+  const body = { port, chat_backend, chat_model, inject };
+  if (api_key) body.api_key = api_key;
+  document.getElementById('setupForm').style.display = 'none';
+  const term = document.getElementById('setupTerminal');
+  term.style.display = '';
+  term.textContent = 'Submitting to /setup…\n';
+  const createBtn = document.getElementById('setupCreate');
+  createBtn.disabled = true;
+  let jobId;
+  try {
+    const r = await fetch('/setup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json();
+    jobId = j.job_id;
+  } catch (e) {
+    term.textContent += '\n✗ ' + e.message + '\n';
+    createBtn.disabled = false;
+    return;
+  }
+  let shown = 0;
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/setup/' + jobId);
+      const j = await r.json();
+      const out = j.output || '';
+      if (out.length > shown) {
+        term.textContent += out.slice(shown);
+        shown = out.length;
+        term.scrollTop = term.scrollHeight;
+      }
+      if (j.done) {
+        clearInterval(poll);
+        term.textContent += '\n\n— finished (exit ' + j.exit_code + ') —\n';
+        createBtn.disabled = false;
+        setTimeout(() => { closeSetup(); loadInstances(); }, 1500);
+      }
+    } catch (e) { /* transient — keep polling */ }
+  }, 800);
+}
+
+document.getElementById('addProxyBtn').addEventListener('click', openSetup);
+document.getElementById('setupClose').addEventListener('click', closeSetup);
+document.getElementById('setupCreate').addEventListener('click', createProxy);
+setupModal.addEventListener('click', (e) => { if (e.target === setupModal) closeSetup(); });
+document.getElementById('setupBackend').addEventListener('change', (e) => {
+  document.getElementById('keyField').style.display = (e.target.value === 'openrouter') ? '' : 'none';
 });
 
 loadInstances();
