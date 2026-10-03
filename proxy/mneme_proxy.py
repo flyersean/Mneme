@@ -7256,7 +7256,13 @@ def _init_harness():
         from mneme.harness.chat_executor import make_chat_executor, make_chat_planner, make_chat_reflector
         from mneme.harness import evolution as _evo
         _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
-        _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(DB_DIR, "runs"))
+        # Run workspaces MUST share a root with the tools' writable RUNS_ROOT
+        # (tools.py computes it from MNEME_CHUNK_DIR, i.e. CHUNK_DIR, not DB_DIR).
+        # Using DB_DIR here diverged the two paths (db_path and chunk_dir point at
+        # different dirs), so the "workspace" the planner/executor was told about
+        # was always read-only — every write there was blocked and the model had to
+        # rediscover the real writable scope by trial and error.
+        _hruns = os.path.expanduser(os.environ.get("MNEME_RUNS_DIR") or os.path.join(CHUNK_DIR, "runs"))
         from mneme.harness.skills import SkillRegistry
         from mneme.harness.context import CapabilityContext
         from mneme.harness.profiles import ProfileStore

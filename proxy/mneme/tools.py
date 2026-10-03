@@ -368,7 +368,7 @@ NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a shell command on the Mneme host. Its working directory is the tools directory — the same place the write tool saves relative paths. Use an absolute path (e.g. /workspace/x) to touch files elsewhere.",
+        "description": "Run a shell command on the Mneme host. Its working directory is the tools directory — the same place the write tool saves relative paths. Use an absolute path inside your writable scope (the model scope, the tools directory, or the run's workspace) to touch files elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -383,11 +383,11 @@ NATIVE_WRITE_TOOL = {
     "type": "function",
     "function": {
         "name": "write",
-        "description": "Write a file on the Mneme host. Relative paths are saved into the tools directory — the same directory the bash tool runs in. Use an absolute path (e.g. /workspace/x) to write anywhere else. Returns the full path written.",
+        "description": "Write a file on the Mneme host. Relative paths are saved into the tools directory — the same directory the bash tool runs in. Use an absolute path inside your writable scope (the model scope, the tools directory, or the run's workspace) to write elsewhere. Returns the full path written.",
         "parameters": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Path to write. Relative paths go in the tools directory; absolute paths (e.g. /workspace/x) go exactly there."},
+                "file_path": {"type": "string", "description": "Path to write. Relative paths go in the tools directory; absolute paths inside your writable scope go exactly there."},
                 "content": {"type": "string", "description": "Full file contents"},
             },
             "required": ["file_path", "content"],
@@ -643,13 +643,14 @@ def _exec_bash(command):
 def _exec_write(file_path, content):
     """Write a file on the proxy host, scoped to the model's writable area.
     Relative paths land in the tools dir; absolute paths are rejected if they
-    fall outside TOOLS_DIR / MODEL_SCOPE (shared files stay read-only)."""
+    fall outside TOOLS_DIR / MODEL_SCOPE / RUNS_ROOT (shared files stay read-only)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
         full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
         if not _writable(full):
             return (f"[write blocked: {full} is outside the model write scope "
-                    f"({MODEL_SCOPE} and {TOOLS_DIR}). Write inside that scope instead.]")
+                    f"({MODEL_SCOPE}, {TOOLS_DIR}, and run workspaces under {RUNS_ROOT}). "
+                    f"Write inside that scope instead.]")
         os.makedirs(os.path.dirname(full) or TOOLS_DIR, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
