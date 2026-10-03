@@ -54,6 +54,25 @@ class TestOverviewRoutes(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("text/html", r.headers.get("Content-Type", ""))
 
+    def test_overview_config_routes_registered(self):
+        rules = self._rules()
+        self.assertIn("/overview/config/<int:port>", rules)
+
+    def test_overview_config_get_missing_returns_404(self):
+        r = mp.app.test_client().get("/overview/config/9999")
+        self.assertEqual(r.status_code, 404)
+
+    def test_overview_config_save_rejects_invalid_yaml(self):
+        r = mp.app.test_client().post("/overview/config/9999",
+                                      json={"content": "model: [unclosed"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("invalid YAML", r.get_json().get("error", ""))
+
+    def test_overview_config_save_rejects_missing_content(self):
+        r = mp.app.test_client().post("/overview/config/9999", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("missing content", r.get_json().get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

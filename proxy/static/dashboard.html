@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/vendor/codemirror.min.css">
 <title>Mneme — Dashboard</title>
 <style>
   :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --green:#16a34a; --red:#dc2626; }
@@ -33,8 +34,10 @@
   .self-tag { color:var(--muted); font-size:11px; }
   .links a { margin-right:9px; color:var(--accent); text-decoration:none; font-size:13px; white-space:nowrap; }
   .links a:hover { text-decoration:underline; }
-  a.dash { margin-right:9px; color:var(--accent); text-decoration:none; font-size:13px; white-space:nowrap; }
-  a.dash:hover { text-decoration:underline; }
+  button.dash { color:var(--accent); margin-right:6px; }
+  button.dash:hover { border-color:var(--accent); }
+  button.config { color:var(--accent); margin-right:6px; }
+  button.config:hover { border-color:var(--accent); }
   button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button.start { color:var(--green); }
@@ -68,6 +71,19 @@
   .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
   .modal-actions button:disabled { opacity:.6; cursor:default; }
   .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:280px; max-height:48vh; overflow-y:auto; }
+
+  /* ── Per-proxy config editor ── */
+  #cfgModal .CodeMirror { border:1px solid var(--line); border-radius:7px 7px 0 0; font-size:13px; height:60vh; min-height:320px; }
+  .modal-overlay.wide .modal { width:min(1040px,94vw); }
+  .cm-resize { height:9px; cursor:ns-resize; background:var(--panel); border:1px solid var(--line); border-top:none; border-radius:0 0 7px 7px; }
+  .cm-resize:hover { background:#e5e7eb; }
+  .editor-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .editor-toolbar button { padding:4px 10px; font-size:12px; }
+  .editor-status { margin-left:auto; font-size:12px; }
+  .editor-status.ok { color:var(--green); }
+  .editor-status.err { color:var(--red); }
+  .cfg-note { font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .modal-actions button.secondary { background:var(--bg); color:var(--fg); border:1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -143,6 +159,31 @@
     <div class="terminal" id="setupTerminal" style="display:none"></div>
   </div>
 </div>
+
+<div class="modal-overlay" id="cfgModal">
+  <div class="modal">
+    <div class="modal-head">
+      <span id="cfgTitle">Configure proxy</span>
+      <button class="close" id="cfgClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="editor-toolbar">
+        <button id="cfgFormat">Format</button>
+        <span class="editor-status" id="cfgStatus"></span>
+      </div>
+      <div class="cfg-note" id="cfgNote"></div>
+      <textarea id="cfgFile"></textarea>
+      <div class="modal-actions" style="margin-top:10px;">
+        <button id="cfgSave">Save config</button>
+        <button class="secondary" id="cfgCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/vendor/codemirror.min.js"></script>
+<script src="/static/vendor/yaml.min.js"></script>
+<script src="/static/vendor/js-yaml.min.js"></script>
 <script>
 async function loadInstances() {
   const rows = document.getElementById('rows');
@@ -155,13 +196,14 @@ async function loadInstances() {
     for (const it of list) {
       const badge = it.running ? '<span class="badge up">running</span>' : '<span class="badge down">stopped</span>';
       const selfTag = it.self ? '<span class="self-tag">(this proxy)</span>' : '';
-      const dash = `<a class="dash" href="http://localhost:${it.port}/" target="_blank" rel="noopener">Dashboard</a>`;
+      const dash = `<button class="dash" onclick="window.open('http://localhost:${it.port}/','_blank')">Dashboard</button>`;
+      const cfg = `<button class="config" onclick="openConfig(${it.port})">Config</button>`;
       const lifecycle = it.self
         ? ''
         : (it.running
             ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
             : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
-      const actions = dash + lifecycle;
+      const actions = dash + cfg + lifecycle;
       rows.insertAdjacentHTML('beforeend',
         `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td>${badge}</td><td>${actions}</td></tr>`);
     }
@@ -278,6 +320,87 @@ setupModal.addEventListener('click', (e) => { if (e.target === setupModal) close
 document.getElementById('setupBackend').addEventListener('change', (e) => {
   document.getElementById('keyField').style.display = (e.target.value === 'openrouter') ? '' : 'none';
 });
+
+// ── Per-proxy config editor ──
+let cmEditor = null, cfgPort = null;
+
+async function openConfig(port) {
+  cfgPort = port;
+  document.getElementById('cfgTitle').textContent = 'Configure proxy :' + port;
+  try {
+    const r = await fetch('/overview/config/' + port);
+    const j = await r.json();
+    if (j.error) { alert(j.error); return; }
+    document.getElementById('cfgNote').textContent =
+      'Editing ' + j.path + ' — retrieval/memory knobs hot-reload on save; model, backend, and embedding changes need a proxy restart.';
+    const ta = document.getElementById('cfgFile');
+    ta.value = j.content || '';
+    const modal = document.getElementById('cfgModal');
+    modal.classList.add('wide');
+    modal.classList.add('open');
+    initCm();
+  } catch (e) { alert(e.message); }
+}
+
+function initCm() {
+  if (cmEditor) { cmEditor.toTextArea(); cmEditor = null; }
+  const ta = document.getElementById('cfgFile');
+  cmEditor = CodeMirror.fromTextArea(ta, {
+    lineNumbers: true, mode: 'yaml', indentUnit: 2, indentWithTabs: false, tabSize: 2, lineWrapping: false
+  });
+  cmEditor.on('change', validateCfg);
+  validateCfg();
+  addResizeHandle();
+  setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+}
+
+function validateCfg() {
+  const st = document.getElementById('cfgStatus');
+  try { jsyaml.load(cmEditor.getValue()); st.textContent = '✓ valid YAML'; st.className = 'editor-status ok'; }
+  catch (e) { st.textContent = '✗ ' + e.message; st.className = 'editor-status err'; }
+}
+
+function addResizeHandle() {
+  const cm = document.querySelector('#cfgModal .CodeMirror');
+  if (!cm) return;
+  document.querySelectorAll('#cfgModal .cm-resize').forEach(h => h.remove());
+  const handle = document.createElement('div');
+  handle.className = 'cm-resize';
+  cm.parentNode.insertBefore(handle, cm.nextSibling);
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY, startH = cm.offsetHeight;
+    const onMove = (ev) => { const nh = startH + (ev.clientY - startY); if (nh < 200) return; cm.style.height = nh + 'px'; if (cmEditor) cmEditor.setSize('100%', nh + 'px'); };
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); if (cmEditor) cmEditor.refresh(); };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function closeCfg() { document.getElementById('cfgModal').classList.remove('open'); }
+
+async function saveConfig() {
+  const content = cmEditor ? cmEditor.getValue() : document.getElementById('cfgFile').value;
+  const btn = document.getElementById('cfgSave');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/overview/config/' + cfgPort, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content }) });
+    const j = await r.json();
+    if (j.error) { alert(j.error); }
+    else { closeCfg(); loadInstances(); }
+  } catch (e) { alert(e.message); }
+  btn.disabled = false;
+}
+
+document.getElementById('cfgClose').addEventListener('click', closeCfg);
+document.getElementById('cfgCancel').addEventListener('click', closeCfg);
+document.getElementById('cfgSave').addEventListener('click', saveConfig);
+document.getElementById('cfgFormat').addEventListener('click', () => {
+  if (!cmEditor) return;
+  try { cmEditor.setValue(jsyaml.dump(jsyaml.load(cmEditor.getValue()), { indent: 2 })); }
+  catch (e) { alert('Cannot format: ' + e.message); }
+});
+document.getElementById('cfgModal').addEventListener('click', (e) => { if (e.target === document.getElementById('cfgModal')) closeCfg(); });
 
 loadInstances();
 loadStatus();

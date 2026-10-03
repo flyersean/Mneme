@@ -8166,6 +8166,38 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
+    # ── Per-proxy config editor (dashboard) ──
+    @app.route("/overview/config/<int:port>", methods=["GET"])
+    def overview_config_get(port):
+        cfg = os.path.join(_instances_root(), str(port), "mneme.yaml")
+        if not os.path.isfile(cfg):
+            return _cors_response({"error": f"no config for port {port}"}, status=404)
+        try:
+            with open(cfg, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+        return _cors_response({"port": port, "path": cfg, "content": content})
+
+    @app.route("/overview/config/<int:port>", methods=["POST"])
+    def overview_config_save(port):
+        body = request.get_json(force=True) or {}
+        content = body.get("content")
+        if content is None:
+            return _cors_response({"error": "missing content"}, status=400)
+        try:
+            import yaml as _yaml
+            _yaml.safe_load(content)
+        except Exception as e:
+            return _cors_response({"error": f"invalid YAML: {e}"}, status=400)
+        cfg = os.path.join(_instances_root(), str(port), "mneme.yaml")
+        try:
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            return _cors_response({"error": str(e)}, status=500)
+        return _cors_response({"ok": True, "port": port, "path": cfg})
+
     # ── Add proxy (dashboard) ──
     setup_jobs = {}
 
