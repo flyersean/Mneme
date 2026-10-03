@@ -962,6 +962,7 @@ function commandInsert(cmd) {
     input.value = cmd.split(" ")[0] + " ";
   }
   resizeInput();
+  palette.classList.remove("open");
   input.focus();
 }
 
@@ -1055,6 +1056,13 @@ harnessBtn.addEventListener("click", (e) => {
 });
 document.addEventListener("click", (e) => {
   if (!harnessPanel.contains(e.target) && e.target !== harnessBtn) harnessPanel.classList.remove("open");
+});
+// Dismiss the "/" command palette on outside click — it otherwise sticks when the
+// user clicks away (e.g. into the command sidebar) while it's open.
+document.addEventListener("click", (e) => {
+  if (!palette.contains(e.target) && e.target !== input) {
+    palette.classList.remove("open");
+  }
 });
 
 document.getElementById("hrun-start").addEventListener("click", async () => {
