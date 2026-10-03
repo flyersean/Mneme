@@ -82,7 +82,7 @@ optional, and the defaults are shown:
 harness:
   enabled: true          # false = no harness (chat unaffected)
   # db_path: <db dir>/harness.db     # run ledger + skills/profiles/proposals/jobs
-  # runs_dir: <db dir>/runs          # per-run workspaces
+  # runs_dir: <chunk dir>/runs       # per-run workspaces (the instance's chunk dir)
   auto_resume: false     # resume crash-interrupted runs automatically at startup
   lease_seconds: 120     # heartbeat lease before another process may take a run over
   reflect: false         # one extra model call after failed runs to extract lessons/skills
@@ -92,6 +92,8 @@ harness:
 ```
 
 `<db dir>` is the directory that contains `storage.db_path`, the shared memory DB.
+`<chunk dir>` is `storage.chunk_dir`, the instance's own directory — run workspaces
+live under it (not the shared DB dir) so they're writable by the model.
 As with every Mneme key, each setting can also be set through an environment
 variable (see §21).
 
@@ -694,7 +696,7 @@ and profiles.
 |---|---|---|
 | `harness.enabled` | `MNEME_HARNESS` | `true` |
 | `harness.db_path` | `MNEME_HARNESS_DB` | `<db dir>/harness.db` |
-| `harness.runs_dir` | `MNEME_RUNS_DIR` | `<db dir>/runs` |
+| `harness.runs_dir` | `MNEME_RUNS_DIR` | `<chunk dir>/runs` |
 | `harness.auto_resume` | `MNEME_HARNESS_AUTO_RESUME` | `false` |
 | `harness.lease_seconds` | `MNEME_HARNESS_LEASE` | `120` |
 | `harness.reflect` | `MNEME_HARNESS_REFLECT` | `false` |

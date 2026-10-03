@@ -185,7 +185,7 @@ Phase 1 (this change) — **additive only**, in a separate file:
   override `harness.db_path`). Tables: `runs`, `tasks`, `steps`, `tool_calls`,
   `events` (append-only, enforced by triggers), `artifacts`, `checkpoints`,
   `harness_meta` (schema version).
-- New directory `<db_dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}`.
+- New directory `<chunk_dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}`.
 - No change to `mneme.db`, FAISS, or any existing table.
 
 Later phases (not done here):

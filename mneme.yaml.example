@@ -99,12 +99,18 @@ sampling:
 timeouts:
   chat_timeout: 300       # seconds to wait for a chat reply (OpenAI-style backends)
   ollama_chat_timeout: 300  # Ollama — cold-start model loading delays the first token
-  first_token_timeout: 180  # abort if no first token arrives (hung provider)
+  first_token_timeout: 45   # abort if no first token arrives (hung provider)
+  stale_chunk_timeout: 20   # abort if no bytes BETWEEN chunks once streaming has started
   novelty_timeout: 600    # timeout for the slower multi-step novelty/strategy calls
   embed_timeout: 60       # embedding request timeout
   label_timeout: 30       # topic-labeling request timeout
   edge_failures: 2        # consecutive failures before treating a model as an "edge case"
   edge_ratio: 0.5         # fraction of recent turns failing that trips the edge-case detector
+
+# Debug aids — hot-reloadable.
+debug:
+  thinking_log: false     # append the model's reasoning + content tokens per run to a JSONL file
+  # thinking_log_path: "" # where to write it (default: <chunk dir>/thinking.log)
 
 # Where things live and how memory is staged.
 storage:
@@ -294,7 +300,9 @@ harness:
   # memory DB, so every proxy sharing that DB sees every run.
   # db_path: ~/mneme/chunks/harness.db
   # Per-run workspaces: <runs_dir>/<run_id>/{input,workspace,artifacts,logs,checkpoints}
-  # runs_dir: ~/mneme/chunks/runs
+  # Default <storage.chunk_dir>/runs — the instance's own chunk dir, which is writable
+  # by the model (aligns with the tools' writable scope; NOT the shared-db dir).
+  # runs_dir: ~/mneme/chunks/instances/8080/runs
   # Runs interrupted by a crash/restart come back PAUSED. true = resume them
   # automatically at startup (the interrupted step re-runs — tool side effects
   # like bash/write may repeat, which is why this is off by default).

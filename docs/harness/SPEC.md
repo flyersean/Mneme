@@ -212,7 +212,8 @@ Storage:
 
 - `<db dir>/harness.db` holds the ledger plus the skills, profiles, proposals,
   evolution log, jobs and job log tables.
-- `<db dir>/runs/<id>/` holds the run workspaces.
+- `<chunk dir>/runs/<id>/` holds the run workspaces (the instance's chunk dir, so
+  they're writable by the model).
 - `<db dir>/evolve/` holds the L4 git worktrees.
 - `<db dir>/skills/` holds user skills.
 - `mneme.db` gains the additive `strategy_versions` table and provenance columns.

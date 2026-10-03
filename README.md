@@ -350,7 +350,7 @@ on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
 `memory_only: false` to enable them here.*
 
 - **Strategy / self-improving layer** — strategy learning from tool traces, novel-procedure detection, failure extraction, and belief evolution. Strategies are linked to the source chunk that produced them, and retrieval keys on that linkage (no hand-maintained problem-type taxonomy). A D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers; SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success).
-- **Capability-edge tracking & overcome** — records a competence edge per problem type; three consecutive tool failures flag it, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared.
+- **Capability-edge tracking & overcome** — records a competence edge for the `compute` and `live_data` problem types (where the model grinds or fabricates); enough D/F grades flag a type, and the next similar task is routed into **overcome mode** (hard-stop: build a tool, reuse a saved one, or — when the build budget is spent — answer honestly and surface the edge) instead of grinding or silently giving up. A built tool is saved and the edge can be cleared. `code` tasks are deliberately *not* tracked — a write-a-file task is normal tool work, not a competence edge.
 - **Thinking & learning modes** — `/mode/think` (novelty: generate a baseline, forbid its modal features, diverge, and grade novelty objectively via embedding distance + pairwise judge — not self-report) and `/mode/learn` (parameter cycling + strategy extraction).
 
 ## Usage and connecting clients
@@ -900,8 +900,9 @@ A **run** is one execution of a goal that outlives a single chat turn. The harne
 not the model — owns its state: tasks, steps, tool calls, artifacts, checkpoints and
 an append-only event log live in `harness.db` beside the shared memory DB. Each step
 is one ordinary Mneme turn (memory, tools, grading), so a run gets everything a chat
-does. A step only counts as done when the harness sees it succeed (not graded F, not
-empty, no unexecutable tool calls) — the model saying "done" is not enough.
+does. A step only counts as done when the harness sees it succeed (its verification
+passes, the turn isn't empty, no unexecutable tool calls) — the model saying "done" is
+not enough.
 
 ```bash
 # create + start a run with two tasks and a budget
@@ -959,7 +960,7 @@ curl -s -X POST localhost:8080/runs/<run_id>/resume
 - **Budgets** (`max_steps`, `max_failures`, `max_model_calls`, `max_tool_calls`,
   `max_runtime`, `max_cost`) are enforced by the harness before every step.
 - **Retry** a failed/cancelled run with `POST /runs/<id>/retry` — completed tasks are kept.
-- Workspaces: `<db dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}`.
+- Workspaces: `<chunk dir>/runs/<run_id>/{input,workspace,artifacts,logs,checkpoints}` (the instance's chunk dir, not the shared DB dir).
 - Guide: [`docs/harness/USER_GUIDE.md`](docs/harness/USER_GUIDE.md) · design: [`docs/harness/SPEC.md`](docs/harness/SPEC.md), ADRs, handoff.
 
 ## Testing
