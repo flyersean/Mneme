@@ -115,3 +115,22 @@ def _classify_problem_type(text: str) -> str:
     if kw("save", "archive", "memory", "store", "remember", "recall"):
         return "memory_operation"
     return "other"
+
+
+def _strategies_for(problem_type: str, limit: int = 2) -> list:
+    """Saved strategies for a problem type (grade-first, cheapest wins), for
+    failure-recovery injection. Mirrors mneme_proxy.get_strategies but lives here
+    so the harness executor can reach it without importing the orchestrator."""
+    if not problem_type or not db:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT strategy_text FROM strategies WHERE retired=0 AND problem_type=? "
+            "ORDER BY CASE grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END, "
+            "cost ASC, effective_grade DESC, use_count DESC LIMIT ?",
+            (problem_type, limit),
+        ).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except Exception as e:
+        _log_error("strategies_for", e)
+        return []

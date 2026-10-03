@@ -1447,6 +1447,31 @@ try:
 except sqlite3.OperationalError:
     pass
 
+# ─── Curated seed strategies ────────────────────────────────────
+# Hand-written problem-solving playbooks, keyed by problem type. Idempotent
+# (INSERT OR IGNORE) so they survive restarts and re-appear after a DB clear.
+# Injected on matching problem-type turns (and on failed steps via the harness
+# retry path), NOT into unrelated problem types.
+_SEED_STRATEGIES = [
+    ("seed_web_hidden_api", "web_retrieval",
+     "WHEN a page returns empty or JS-only content (blank DOM, client-side rendering), "
+     "do NOT guess or give up — the data is usually reachable another way. In order: "
+     "(1) retry fetch_url on the SAME url with render_js: true; "
+     "(2) probe for a machine-readable API: /api, /openapi.json, /swagger.json, /llms.txt, "
+     "robots.txt, sitemap.xml, or the URL with .json/.csv appended; "
+     "(3) check for an alternate serialization via the HTTP Link: rel=alternate header; "
+     "(4) for Hugging Face model facts, use https://huggingface.co/api/models/<org>/<name> "
+     "(JSON metadata: license, tags, downloads) and the model card's model-index block for "
+     "benchmark scores. Prefer the API over scraping rendered HTML."),
+]
+for _sid, _ptype, _text in _SEED_STRATEGIES:
+    db.execute(
+        "INSERT OR IGNORE INTO strategies "
+        "(strategy_id, problem_type, strategy_text, grade, cost, created_at, created_by) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_sid, _ptype, _text, "A", 0, datetime.now(timezone.utc).isoformat(), "curator"))
+db.commit()
+
 # ─── Grade Priority (same as raw-k-cache) ──────────────────────
 GRADE_PRIORITY = {"A": 3, "B": 2, "C": 1, "F": 0}
 DEFAULT_GRADE   = "C"

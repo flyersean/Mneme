@@ -96,6 +96,18 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
         # and let the model decide.
         retry_note = (f"Attempt {ctx.attempt}. Previous attempt result: "
                       f"{ctx.task['error'][:400]}\n")
+        # On a failed step, surface the saved strategies for THIS problem type —
+        # a known technique for the class of problem the step belongs to, not
+        # strategies for unrelated problems (a web-scrape playbook never injects
+        # into a math task). Grade-first, cheapest wins.
+        try:
+            from mneme.capability import _classify_problem_type, _strategies_for
+            ptype = _classify_problem_type(
+                (ctx.task.get("title") or "") + "\n" + (ctx.task.get("error") or ""))
+            for s in _strategies_for(ptype):
+                retry_note += f"\nKnown approach for '{ptype}' problems: {s[:400]}\n"
+        except Exception:
+            pass
     checks = (ctx.task.get("meta") or {}).get("verify") or []
     verify_note = ""
     if checks:
