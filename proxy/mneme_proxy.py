@@ -770,6 +770,31 @@ def _force_config_reload() -> bool:
         return False
 
 
+def _persist_model(model: str) -> bool:
+    """Persist the active chat model to the top-level `model:` key in the config
+    file so a switch survives a restart. Uses a targeted single-line replace so
+    the hand-maintained comments/formatting elsewhere in the file are untouched.
+    The top-level `model:` is the authoritative source of truth (it maps to
+    MNEME_MODEL before the provider-level `_set` fallback runs)."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        new_text, n = re.subn(r'(?m)^model:\s*.*$', f'model: "{model}"', text, count=1)
+        if n == 0:
+            print("  [MODEL-SWITCH] no top-level `model:` line to replace", flush=True)
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [MODEL-SWITCH] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
 def _settings_snapshot() -> Dict:
     """The EFFECTIVE settings, for the <<SETTINGS>> report.
 
@@ -7500,6 +7525,51 @@ if FLASK_OK:
     @app.route("/admin/reload", methods=["POST"])
     def admin_reload():
         return _cors_response({"ok": _force_config_reload()})
+
+    @app.route("/models/available", methods=["GET"])
+    def models_available():
+        """List models available to switch to: the configured providers (with their
+        current model) plus a live OpenRouter model catalog when OpenRouter is the
+        backend. The picker groups by the `provider/model` prefix client-side."""
+        providers = []
+        provs = CONFIG_DATA.get("providers") or {}
+        for name, prov in provs.items():
+            if isinstance(prov, dict):
+                providers.append({
+                    "name": name,
+                    "model": prov.get("model", ""),
+                    "base_url": prov.get("base_url", ""),
+                })
+        models = []
+        if "openrouter" in provs:
+            try:
+                r = requests.get(f"{OR_BASE_URL}/models", headers=_or_headers(), timeout=15)
+                if r.status_code == 200:
+                    for m in r.json().get("data", []):
+                        models.append({
+                            "id": m.get("id") or "",
+                            "name": m.get("name") or m.get("id") or "",
+                            "context_length": m.get("context_length"),
+                        })
+            except Exception as e:
+                print(f"  [MODELS] list fetch failed: {type(e).__name__}", flush=True)
+        return _cors_response({"current": MODEL, "providers": providers, "models": models})
+
+    @app.route("/models/switch", methods=["POST"])
+    def models_switch():
+        """Switch the active chat model for this proxy (global, not per-conversation).
+        Applies immediately by updating the MODEL global and persists to the config
+        so the choice survives a restart."""
+        global MODEL
+        data = request.get_json(force=True, silent=True) or {}
+        model = (data.get("model") or "").strip()
+        if not model:
+            return _cors_response({"ok": False, "error": "missing model"}, status=400)
+        MODEL = model
+        os.environ["MNEME_MODEL"] = model
+        persisted = _persist_model(model)
+        print(f"  [MODEL-SWITCH] -> {model} (persisted={persisted})", flush=True)
+        return _cors_response({"ok": True, "model": model, "persisted": persisted})
 
     # ── Dashboard: one hub with the full nav menu + proxy overview + status ──
     _OLLAMA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "ollama.html")

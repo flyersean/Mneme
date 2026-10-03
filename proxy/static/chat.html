@@ -358,6 +358,19 @@
 .cmd-item:hover, .cmd-item.sel { background: var(--accent-soft); }
 .cmd-item .cname { font-family: "SF Mono", Menlo, Consolas, monospace; font-weight: 600; color: var(--accent); white-space: nowrap; }
 .cmd-item .cdesc { color: var(--muted); font-size: 12px; }
+/* ── model picker (provider/model switcher) ── */
+header .model { cursor: pointer; user-select: none; }
+header .model:hover { color: var(--accent); }
+#model-picker { width: 440px; }
+.mp-search { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; margin-bottom: 4px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; outline: none; }
+.mp-search:focus { border-color: var(--accent); }
+.mp-cur { padding: 2px 10px 6px; color: var(--muted); font-size: 11px; }
+.mp-provider { padding: 5px 10px 3px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.mp-item { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.mp-item:hover { background: var(--accent-soft); }
+.mp-item .mp-id { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+.mp-item .mp-ctx { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.mp-empty { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -1189,12 +1202,109 @@ async function initConversation() {
   refreshConvsList();
 }
 
+// ── model picker (provider/model switcher) ──────────────────────
+let currentModelId = "";
+const modelPicker = document.createElement("div");
+modelPicker.id = "model-picker";
+modelPicker.className = "palette";
+modelPicker.innerHTML =
+  '<input class="mp-search" placeholder="Search models… (type to filter, Enter to pick)" />' +
+  '<div class="mp-cur"></div><div class="mp-list"></div>';
+document.body.appendChild(modelPicker);
+const mpSearch = modelPicker.querySelector(".mp-search");
+const mpList = modelPicker.querySelector(".mp-list");
+const mpCur = modelPicker.querySelector(".mp-cur");
+let mpModels = [];
+
+function renderModelPicker(filter) {
+  const f = (filter || "").toLowerCase();
+  const groups = new Map();
+  for (const m of mpModels) {
+    if (f && !((m.id || "") + " " + (m.name || "")).toLowerCase().includes(f)) continue;
+    const prov = (m.id || "").includes("/") ? m.id.split("/")[0] : "other";
+    if (!groups.has(prov)) groups.set(prov, []);
+    groups.get(prov).push(m);
+  }
+  mpCur.textContent = "current: " + (currentModelId || "…");
+  const provs = [...groups.keys()].sort();
+  if (!provs.length) {
+    mpList.innerHTML = '<div class="mp-empty">No matches — type a full model id + Enter to switch.</div>';
+    return;
+  }
+  let html = "";
+  for (const p of provs) {
+    html += `<div class="mp-provider">${escAttr(p)}</div>`;
+    for (const m of groups.get(p)) {
+      const ctx = m.context_length
+        ? ((m.context_length >= 1000 ? (m.context_length / 1000).toFixed(0) + "k" : m.context_length) + " ctx") : "";
+      html += `<div class="mp-item" data-id="${escAttr(m.id)}"><span class="mp-id">${escAttr(m.id)}</span><span class="mp-ctx">${escAttr(ctx)}</span></div>`;
+    }
+  }
+  mpList.innerHTML = html;
+  mpList.querySelectorAll(".mp-item").forEach(it => { it.onclick = () => switchModel(it.dataset.id); });
+}
+
+async function openModelPicker() {
+  const rect = modelLabel.getBoundingClientRect();
+  modelPicker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 460)) + "px";
+  modelPicker.style.top = (rect.bottom + 6) + "px";
+  modelPicker.classList.add("open");
+  mpSearch.value = ""; mpModels = []; renderModelPicker("");
+  mpSearch.focus();
+  try {
+    const d = await (await fetch("/models/available")).json();
+    mpModels = d.models || [];
+    if (!mpModels.length && (d.providers || []).length) {
+      mpModels = d.providers.filter(p => p.model).map(p => ({ id: p.model, name: p.name, context_length: null }));
+    }
+    if (d.current) currentModelId = d.current;
+    renderModelPicker("");
+  } catch (e) { renderModelPicker(""); }
+}
+
+async function switchModel(id) {
+  if (!id) return;
+  try {
+    const d = await (await fetch("/models/switch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: id }),
+    })).json();
+    if (d.ok) {
+      currentModelId = id;
+      modelLabel.textContent = id;
+    }
+  } catch (e) {}
+  modelPicker.classList.remove("open");
+}
+
+modelLabel.style.cursor = "pointer";
+modelLabel.title = "Switch model";
+modelLabel.onclick = openModelPicker;
+mpSearch.addEventListener("input", () => renderModelPicker(mpSearch.value));
+mpSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const first = mpList.querySelector(".mp-item");
+    if (first) switchModel(first.dataset.id);
+    else if (mpSearch.value.trim()) switchModel(mpSearch.value.trim());
+    e.preventDefault();
+  } else if (e.key === "Escape") {
+    modelPicker.classList.remove("open");
+  }
+});
+document.addEventListener("click", (e) => {
+  if (!modelPicker.contains(e.target) && e.target !== modelLabel) {
+    modelPicker.classList.remove("open");
+  }
+});
+
 // ── boot ─────────────────────────────────────────────────────────
 async function boot() {
   try {
     const r = await fetch("/health");
     const h = await r.json();
-    modelLabel.textContent = (h.model || MODEL) + "  ·  backend " + (h.backend || "?");
+    currentModelId = h.backend || h.model || "";
+    window.__BACKEND = h.backend || "?";
+    modelLabel.textContent = currentModelId || MODEL;
   } catch (e) {
     modelLabel.textContent = MODEL;
   }
