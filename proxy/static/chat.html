@@ -394,6 +394,14 @@ header .model:hover { color: var(--accent); }
 .kd-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .kd-actions button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
 .kd-actions .kd-save { background: var(--accent); color: #fff; border-color: var(--accent); }
+.mp-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.mp-back { color: var(--accent); cursor: pointer; text-decoration: none; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.mp-back:hover { text-decoration: underline; }
+.mp-provider-list .mp-prov { cursor: pointer; border-radius: 7px; }
+.mp-provider-list .mp-prov:hover { background: var(--accent-soft); }
+.mp-provider-list .mp-prov.cur { background: var(--accent-soft); }
+.mp-prov .mp-prov-kind { color: var(--muted); font-size: 11px; }
+.mp-prov .mp-prov-key { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -1228,26 +1236,35 @@ async function initConversation() {
   refreshConvsList();
 }
 
-// ── model picker (provider/model switcher) ──────────────────────
+// ── model picker (provider -> model switcher) ───────────────────
 let currentModelId = "";
 let currentBackend = "";
 const modelPicker = document.createElement("div");
 modelPicker.id = "model-picker";
 modelPicker.className = "palette";
 modelPicker.innerHTML =
-  '<input class="mp-search" placeholder="Search models…" />' +
-  '<div class="mp-providers"></div>' +
-  '<div class="mp-custom"><input class="mp-custom-input" placeholder="enter a model id…" /><button class="mp-custom-btn">Use</button></div>' +
-  '<div class="mp-cur"></div><div class="mp-list"></div>';
+  '<div class="mp-view" data-view="providers">' +
+    '<div class="mp-head">Providers</div>' +
+    '<div class="mp-provider-list"></div>' +
+  '</div>' +
+  '<div class="mp-view" data-view="models" style="display:none">' +
+    '<div class="mp-head"><a class="mp-back">← providers</a> <span class="mp-prov-title"></span></div>' +
+    '<input class="mp-search" placeholder="Search models…" />' +
+    '<div class="mp-custom"><input class="mp-custom-input" placeholder="enter a model id…" /><button class="mp-custom-btn">Use</button></div>' +
+    '<div class="mp-cur"></div><div class="mp-list"></div>' +
+  '</div>';
 document.body.appendChild(modelPicker);
 const mpSearch = modelPicker.querySelector(".mp-search");
 const mpList = modelPicker.querySelector(".mp-list");
 const mpCur = modelPicker.querySelector(".mp-cur");
-const mpProvidersEl = modelPicker.querySelector(".mp-providers");
+const mpProviderList = modelPicker.querySelector(".mp-provider-list");
+const mpProvTitle = modelPicker.querySelector(".mp-prov-title");
 const mpCustomInput = modelPicker.querySelector(".mp-custom-input");
 const mpCustomBtn = modelPicker.querySelector(".mp-custom-btn");
+let mpCatalog = [];
 let mpModels = [];
-let mpProviders = [];
+let mpCurrentProvider = "";     // provider the user is browsing
+let mpActiveProvider = "";      // currently active provider (from /providers)
 
 const keyDialog = document.createElement("div");
 keyDialog.id = "key-dialog";
@@ -1258,44 +1275,57 @@ keyDialog.innerHTML =
 document.body.appendChild(keyDialog);
 let keyProvider = "";
 
-function renderProviders() {
-  if (!mpProviders.length) { mpProvidersEl.innerHTML = ""; return; }
-  mpProvidersEl.innerHTML = mpProviders.map(p =>
-    `<div class="mp-prov${p.has_key ? "" : " nokey"}">` +
-    `<span class="mp-prov-name">${escAttr(p.name)}</span>` +
-    `<span class="mp-prov-model">${escAttr(p.model || "")}</span>` +
-    `<span class="mp-prov-key">${p.has_key ? "✓" : '<a class="mp-setkey" data-prov="' + escAttr(p.name) + '">set key</a>'}</span></div>`).join("");
-  mpProvidersEl.querySelectorAll(".mp-setkey").forEach(a => {
-    a.onclick = (e) => { e.stopPropagation(); openKeyDialog(a.dataset.prov); };
+function showView(v) {
+  modelPicker.querySelectorAll(".mp-view").forEach(el => {
+    el.style.display = (el.dataset.view === v) ? "" : "none";
   });
 }
 
-function renderModelPicker(filter) {
+function renderProviders() {
+  if (!mpCatalog.length) { mpProviderList.innerHTML = '<div class="mp-empty">No providers configured.</div>'; return; }
+  mpProviderList.innerHTML = mpCatalog.map(p => {
+    const isCur = p.name === mpActiveProvider;
+    const keyBadge = p.kind === "ollama" ? '<span class="mp-prov-kind">local</span>'
+      : (p.has_key ? '<span class="mp-prov-key">✓</span>' : '<span class="mp-prov-key">set key</span>');
+    return `<div class="mp-prov${isCur ? " cur" : ""}" data-prov="${escAttr(p.name)}">` +
+      `<span class="mp-prov-name">${escAttr(p.label || p.name)}</span>${keyBadge}</div>`;
+  }).join("");
+  mpProviderList.querySelectorAll(".mp-prov").forEach(div => {
+    div.onclick = () => selectProvider(div.dataset.prov);
+  });
+}
+
+async function selectProvider(name) {
+  mpCurrentProvider = name;
+  const p = mpCatalog.find(x => x.name === name) || { label: name, kind: "openai" };
+  mpProvTitle.textContent = p.label || name;
+  showView("models");
+  mpSearch.value = ""; mpCustomInput.value = ""; mpModels = []; renderModels("");
+  mpSearch.focus();
+  try {
+    const d = await (await fetch(`/providers/${encodeURIComponent(name)}/models`)).json();
+    if (d.needs_key) {
+      mpCur.textContent = "This provider needs an API key.";
+      openKeyDialog(name);
+      return;
+    }
+    mpModels = d.models || [];
+    renderModels("");
+  } catch (e) { renderModels(""); }
+}
+
+function renderModels(filter) {
   const f = (filter || "").toLowerCase();
-  const groups = new Map();
-  for (const m of mpModels) {
-    if (f && !((m.id || "") + " " + (m.name || "")).toLowerCase().includes(f)) continue;
-    const prov = (m.id || "").includes("/") ? m.id.split("/")[0] : "other";
-    if (!groups.has(prov)) groups.set(prov, []);
-    groups.get(prov).push(m);
-  }
+  let items = mpModels;
+  if (f) items = items.filter(m => ((m.id || "") + " " + (m.name || "")).toLowerCase().includes(f));
   mpCur.textContent = "current: " + (currentModelId || "…");
-  const provs = [...groups.keys()].sort();
-  if (!provs.length) {
+  if (!items.length) {
     mpList.innerHTML = '<div class="mp-empty">No matches — use the "enter a model id" box above.</div>';
     return;
   }
-  let html = "";
-  for (const p of provs) {
-    html += `<div class="mp-provider">${escAttr(p)}</div>`;
-    for (const m of groups.get(p)) {
-      const ctx = m.context_length
-        ? ((m.context_length >= 1000 ? (m.context_length / 1000).toFixed(0) + "k" : m.context_length) + " ctx") : "";
-      html += `<div class="mp-item" data-id="${escAttr(m.id)}"><span class="mp-id">${escAttr(m.id)}</span><span class="mp-ctx">${escAttr(ctx)}</span></div>`;
-    }
-  }
-  mpList.innerHTML = html;
-  mpList.querySelectorAll(".mp-item").forEach(it => { it.onclick = () => switchModel(it.dataset.id); });
+  mpList.innerHTML = items.map(m =>
+    `<div class="mp-item" data-id="${escAttr(m.id)}"><span class="mp-id">${escAttr(m.id)}</span></div>`).join("");
+  mpList.querySelectorAll(".mp-item").forEach(it => { it.onclick = () => activateModel(it.dataset.id); });
 }
 
 async function openModelPicker() {
@@ -1303,31 +1333,28 @@ async function openModelPicker() {
   modelPicker.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 460)) + "px";
   modelPicker.style.top = (rect.bottom + 6) + "px";
   modelPicker.classList.add("open");
-  mpSearch.value = ""; mpCustomInput.value = ""; mpModels = []; mpProviders = [];
-  renderModelPicker(""); renderProviders();
-  mpSearch.focus();
+  showView("providers");
+  mpCatalog = []; renderProviders();
   try {
-    const d = await (await fetch("/models/available")).json();
+    const d = await (await fetch("/providers")).json();
+    mpCatalog = d.catalog || [];
+    mpActiveProvider = d.current_provider || "";
+    currentModelId = d.current_model || currentModelId;
     currentBackend = d.backend || "";
-    mpModels = d.models || [];
-    mpProviders = d.providers || [];
-    if (!mpModels.length && mpProviders.length) {
-      mpModels = mpProviders.filter(p => p.model).map(p => ({ id: p.model, name: p.name, context_length: null }));
-    }
-    if (d.current) currentModelId = d.current;
-    renderModelPicker(""); renderProviders();
-  } catch (e) { renderModelPicker(""); }
+    renderProviders();
+  } catch (e) { renderProviders(); }
 }
 
-async function switchModel(id) {
-  if (!id) return;
+async function activateModel(id) {
+  if (!id || !mpCurrentProvider) return;
   try {
-    const d = await (await fetch("/models/switch", {
+    const d = await (await fetch("/providers/activate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: id }),
+      body: JSON.stringify({ provider: mpCurrentProvider, model: id }),
     })).json();
     if (d.ok) {
       currentModelId = id;
+      mpActiveProvider = mpCurrentProvider;
       modelLabel.textContent = id;
     }
   } catch (e) {}
@@ -1337,14 +1364,15 @@ async function switchModel(id) {
 async function useCustomModel() {
   const v = mpCustomInput.value.trim();
   if (!v) return;
+  const isOllama = (mpCatalog.find(x => x.name === mpCurrentProvider) || {}).kind === "ollama";
   const pulled = mpModels.some(m => m.id === v);
-  if (currentBackend === "ollama" && !pulled) {
+  if (isOllama && !pulled) {
     if (confirm(`"${v}" isn't pulled locally. Pull it from Ollama now? (may download several GB)`)) {
       await pullAndUse(v);
     }
     return;
   }
-  await switchModel(v);
+  await activateModel(v);
 }
 
 async function pullAndUse(model) {
@@ -1355,9 +1383,9 @@ async function pullAndUse(model) {
   for (let i = 0; i < 150; i++) {
     await new Promise(r => setTimeout(r, 2000));
     try {
-      const d = await (await fetch("/models/available")).json();
+      const d = await (await fetch(`/providers/${encodeURIComponent(mpCurrentProvider)}/models`)).json();
       mpModels = d.models || [];
-      if (mpModels.some(m => m.id === model)) { await switchModel(model); return; }
+      if (mpModels.some(m => m.id === model)) { await activateModel(model); return; }
     } catch (e) {}
     mpCur.textContent = "pulling " + model + "… (" + (i + 1) + ")";
   }
@@ -1377,9 +1405,15 @@ async function saveKey() {
   if (!key) return;
   try {
     await fetch("/providers/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: keyProvider, key }) });
-    const d = await (await fetch("/models/available")).json();
-    mpProviders = d.providers || [];
+    // refresh catalog key status + re-fetch the provider's models
+    const pc = await (await fetch("/providers")).json();
+    mpCatalog = pc.catalog || [];
     renderProviders();
+    if (mpCurrentProvider === keyProvider) {
+      const d = await (await fetch(`/providers/${encodeURIComponent(keyProvider)}/models`)).json();
+      mpModels = d.models || [];
+      renderModels("");
+    }
   } catch (e) {}
   keyDialog.classList.remove("open");
 }
@@ -1389,15 +1423,17 @@ modelLabel.style.cursor = "pointer";
 modelLabel.title = "Switch model";
 modelLabel.onclick = openModelPicker;
 if (modelBtn) modelBtn.onclick = openModelPicker;
-mpSearch.addEventListener("input", () => renderModelPicker(mpSearch.value));
+modelPicker.querySelector(".mp-back").addEventListener("click", () => showView("providers"));
+mpSearch.addEventListener("input", () => renderModels(mpSearch.value));
 mpSearch.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     const first = mpList.querySelector(".mp-item");
-    if (first) switchModel(first.dataset.id);
-    else if (mpSearch.value.trim()) switchModel(mpSearch.value.trim());
+    if (first) activateModel(first.dataset.id);
+    else if (mpSearch.value.trim()) activateModel(mpSearch.value.trim());
     e.preventDefault();
   } else if (e.key === "Escape") {
-    modelPicker.classList.remove("open");
+    if (modelPicker.querySelector('.mp-view[data-view="models"]').style.display !== "none") showView("providers");
+    else modelPicker.classList.remove("open");
   }
 });
 mpCustomBtn.addEventListener("click", useCustomModel);

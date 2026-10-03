@@ -291,6 +291,24 @@ def _apply_config(data: Dict, path: str):
                 os.environ[env] = _config_scalar(v)
 
 
+# Curated catalog of popular providers for the model switcher's provider -> model
+# flow. `base_url` + `key_env` let the proxy query a provider's model list and
+# route to it without a hand-written config block; the provider choice + model are
+# persisted by POST /providers/activate. All are OpenAI-compatible except Ollama.
+PROVIDER_CATALOG = {
+    "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY", "kind": "openai"},
+    "openai":     {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY", "kind": "openai"},
+    "anthropic":  {"label": "Anthropic", "base_url": "https://api.anthropic.com/v1", "key_env": "ANTHROPIC_API_KEY", "kind": "openai"},
+    "google":     {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "key_env": "GOOGLE_API_KEY", "kind": "openai"},
+    "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai"},
+    "groq":       {"label": "Groq", "base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY", "kind": "openai"},
+    "mistral":    {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "key_env": "MISTRAL_API_KEY", "kind": "openai"},
+    "xai":        {"label": "xAI", "base_url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY", "kind": "openai"},
+    "together":   {"label": "Together AI", "base_url": "https://api.together.xyz/v1", "key_env": "TOGETHER_API_KEY", "kind": "openai"},
+    "ollama":     {"label": "Ollama (local)", "base_url": "http://localhost:11434", "key_env": "", "kind": "ollama"},
+}
+
+
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
@@ -308,6 +326,11 @@ def _resolve_provider():
         return
     name = os.environ.get("MNEME_PROVIDER", "openrouter")
     prov = (CONFIG_DATA.get("providers") or {}).get(name) or {}
+    if not prov and name in PROVIDER_CATALOG:
+        # Catalog fallback: a provider chosen via the switcher without a
+        # hand-written config block still resolves its base_url + key_env.
+        _cat = PROVIDER_CATALOG[name]
+        prov = {"base_url": _cat.get("base_url", ""), "api_key_env": _cat.get("key_env", "")}
     if not prov:
         return  # providers not configured — rely on env vars directly (back-compat)
 
@@ -820,6 +843,48 @@ def _persist_env_key(env_file: str, key_name: str, key_value: str) -> bool:
         return True
     except Exception as e:
         print(f"  [PROVIDER-KEY] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+def _persist_backend_provider(name: str) -> bool:
+    """Persist the active backend provider to the `backend.provider:` line (2-space
+    indent under `backend:`) so a provider switch survives a restart."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        new_text, n = re.subn(r'(?m)^  provider:.*$', f'  provider: {name}', text, count=1)
+        if n == 0:
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [PROVIDER] persist backend.provider failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+def _persist_backend_type(t: str) -> bool:
+    """Persist `backend.type:` (2-space indent under `backend:`), used when the
+    switcher toggles between an OpenAI-compatible backend and Ollama."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        new_text, n = re.subn(r'(?m)^  type:.*$', f'  type: {t}', text, count=1)
+        if n == 0:
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [PROVIDER] persist backend.type failed: {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -7622,6 +7687,104 @@ if FLASK_OK:
         persisted = _persist_env_key(_env_file_path(), api_key_env, key)
         print(f"  [PROVIDER-KEY] set {api_key_env} for {provider} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "provider": provider, "persisted": persisted})
+
+    @app.route("/providers", methods=["GET"])
+    def providers_list():
+        """The provider catalog (curated) + configured providers, with key status
+        and the current provider/model, for the switcher's provider -> model flow."""
+        catalog = []
+        for name, info in PROVIDER_CATALOG.items():
+            key_env = info.get("key_env", "")
+            catalog.append({
+                "name": name, "label": info.get("label", name),
+                "kind": info.get("kind", "openai"), "key_env": key_env,
+                "has_key": bool(key_env and os.environ.get(key_env)),
+            })
+        configured = []
+        for name, prov in (CONFIG_DATA.get("providers") or {}).items():
+            if isinstance(prov, dict):
+                key_env = prov.get("api_key_env", "")
+                configured.append({
+                    "name": name, "model": prov.get("model", ""),
+                    "has_key": bool(key_env and os.environ.get(key_env)),
+                })
+        return _cors_response({
+            "current_provider": os.environ.get("MNEME_PROVIDER", "openrouter"),
+            "current_model": MODEL,
+            "backend": MNEME_BACKEND,
+            "catalog": catalog,
+            "configured": configured,
+        })
+
+    @app.route("/providers/<name>/models", methods=["GET"])
+    def providers_models(name):
+        """List a provider's models: /api/tags for Ollama, /models for the
+        OpenAI-compatible providers (using the stored key)."""
+        info = PROVIDER_CATALOG.get(name)
+        if info is None:
+            prov = (CONFIG_DATA.get("providers") or {}).get(name) or {}
+            info = {"base_url": prov.get("base_url", ""), "key_env": prov.get("api_key_env", ""), "kind": "openai"}
+        if info.get("kind") == "ollama":
+            try:
+                r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=15)
+                if r.status_code == 200:
+                    models = [{"id": m.get("name", ""), "name": m.get("name", "")}
+                              for m in r.json().get("models", [])]
+                    return _cors_response({"models": models})
+            except Exception:
+                pass
+            return _cors_response({"models": []})
+        key_env = info.get("key_env", "")
+        key = os.environ.get(key_env, "") if key_env else ""
+        if not key:
+            return _cors_response({"models": [], "needs_key": True, "key_env": key_env})
+        try:
+            r = requests.get(f"{info['base_url']}/models",
+                             headers={"Authorization": f"Bearer {key}", "Accept-Encoding": "identity"},
+                             timeout=15)
+            if r.status_code == 200:
+                models = [{"id": m.get("id", ""), "name": m.get("name") or m.get("id", "") or m.get("id", "")}
+                          for m in r.json().get("data", [])]
+                return _cors_response({"models": models})
+        except Exception as e:
+            print(f"  [PROVIDERS] {name} models failed: {type(e).__name__}", flush=True)
+        return _cors_response({"models": []})
+
+    @app.route("/providers/activate", methods=["POST"])
+    def providers_activate():
+        """Activate a provider + model (provider -> model flow). Reassigns the
+        runtime connection globals immediately and persists the choice so it
+        survives a restart."""
+        global OR_BASE_URL, OR_API_KEY, MODEL, MNEME_BACKEND
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("provider") or "").strip()
+        model = (data.get("model") or "").strip()
+        if not name or not model:
+            return _cors_response({"ok": False, "error": "missing provider or model"}, status=400)
+        info = PROVIDER_CATALOG.get(name)
+        if info is None:
+            prov = (CONFIG_DATA.get("providers") or {}).get(name) or {}
+            info = {"label": name, "base_url": prov.get("base_url", ""), "key_env": prov.get("api_key_env", ""), "kind": "openai"}
+        if info.get("kind") == "ollama":
+            MNEME_BACKEND = "ollama"
+            os.environ["MNEME_BACKEND"] = "ollama"
+            _persist_backend_type("ollama")
+        else:
+            MNEME_BACKEND = "openrouter" if name == "openrouter" else "openai"
+            os.environ["MNEME_BACKEND"] = MNEME_BACKEND
+            if info.get("base_url"):
+                OR_BASE_URL = info["base_url"]
+            key_env = info.get("key_env", "")
+            if key_env:
+                OR_API_KEY = os.environ.get(key_env, "")
+            _persist_backend_type(MNEME_BACKEND)
+        MODEL = model
+        os.environ["MNEME_MODEL"] = model
+        os.environ["MNEME_PROVIDER"] = name
+        _persist_model(model)
+        _persist_backend_provider(name)
+        print(f"  [PROVIDER-ACTIVATE] -> {name}/{model} (backend={MNEME_BACKEND})", flush=True)
+        return _cors_response({"ok": True, "provider": name, "model": model, "backend": MNEME_BACKEND})
 
     @app.route("/models/switch", methods=["POST"])
     def models_switch():
