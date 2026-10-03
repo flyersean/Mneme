@@ -943,6 +943,12 @@ const sidebar = document.getElementById("sidebar");
 const sidebarCmds = document.getElementById("sidebar-cmds");
 const sbToggle = document.getElementById("sb-toggle");
 const runIdField = document.getElementById("runid-field");
+// Persist the run-id field so it survives navigation/refresh (same pattern as
+// the sidebar-collapse flag below).
+try { runIdField.value = localStorage.getItem("mneme.runId") || ""; } catch (e) {}
+runIdField.addEventListener("input", () => {
+  try { localStorage.setItem("mneme.runId", runIdField.value); } catch (e) {}
+});
 
 // Insert a command into the composer, substituting the sidebar Run ID field
 // into any command that takes a <run> (or optional [run]) argument. Commands
