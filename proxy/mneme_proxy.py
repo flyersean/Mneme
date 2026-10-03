@@ -888,6 +888,161 @@ def _persist_backend_type(t: str) -> bool:
         return False
 
 
+def _extensions_root() -> str:
+    """Directory scanned for extension manifests (extensions/<dir>/extension.yaml)."""
+    return os.path.join(REPO_ROOT, "extensions")
+
+
+def _extensions_runtime_dir() -> str:
+    """Per-proxy runtime state for extensions (pidfiles, logs, saved env config)."""
+    d = os.path.join(CHUNK_DIR, "extensions_runtime")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _load_extension_manifests():
+    """Scan extensions/*/extension.yaml. Directories WITHOUT a manifest are
+    skipped — they remain 'run in the terminal' extensions (the standard is
+    opt-in, not enforced)."""
+    import yaml
+    root = _extensions_root()
+    out = []
+    if not os.path.isdir(root):
+        return out
+    for entry in sorted(os.listdir(root)):
+        ext_dir = os.path.join(root, entry)
+        mp = os.path.join(ext_dir, "extension.yaml")
+        if not os.path.isfile(mp):
+            continue
+        try:
+            with open(mp, "r", encoding="utf-8") as f:
+                m = yaml.safe_load(f.read()) or {}
+        except Exception:
+            continue
+        if not isinstance(m, dict):
+            continue
+        name = str(m.get("name") or entry).strip()
+        out.append({
+            "name": name,
+            "dir": entry,
+            "path": ext_dir,
+            "description": m.get("description") or "",
+            "command": m.get("command") or [],
+            "args": m.get("args") or [],
+            "config": m.get("config") or [],
+            "config_file": m.get("config_file") or None,
+            "health": m.get("health") or None,
+        })
+    return out
+
+
+def _ext_pidfile(name):
+    return os.path.join(_extensions_runtime_dir(), name + ".pid")
+
+
+def _ext_logfile(name):
+    return os.path.join(_extensions_runtime_dir(), name + ".log")
+
+
+def _ext_envfile(name):
+    return os.path.join(_extensions_runtime_dir(), name + ".env")
+
+
+def _ext_is_running(name):
+    p = _ext_pidfile(name)
+    if not os.path.isfile(p):
+        return False
+    try:
+        pid = int(open(p, "r", encoding="utf-8").read().strip())
+    except Exception:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
+def _ext_read_env(name):
+    out = {}
+    p = _ext_envfile(name)
+    if os.path.isfile(p):
+        for line in open(p, "r", encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    return out
+
+
+def _ext_write_env(name, values):
+    p = _ext_envfile(name)
+    lines = []
+    for k, v in (values or {}).items():
+        if v is None or v == "":
+            continue
+        lines.append(f"{k}={v}")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+
+
+def _ext_spawn(manifest):
+    """Launch an extension process (its `command` + `args`, with {port}/{url}
+    substituted) from its own directory, inheriting the saved env config."""
+    cmd = list(manifest.get("command") or [])
+    args = [a.replace("{port}", str(PORT)).replace("{url}", f"http://localhost:{PORT}")
+            for a in (manifest.get("args") or [])]
+    full = cmd + args
+    env = os.environ.copy()
+    for k, v in _ext_read_env(manifest["name"]).items():
+        env[k] = v
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    logf = open(_ext_logfile(manifest["name"]), "a", encoding="utf-8")
+    proc = subprocess.Popen(full, cwd=manifest["path"], env=env,
+                            stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    with open(_ext_pidfile(manifest["name"]), "w") as f:
+        f.write(str(proc.pid))
+    return proc.pid
+
+
+def _ext_kill(name):
+    pid = None
+    p = _ext_pidfile(name)
+    if os.path.isfile(p):
+        try:
+            pid = int(open(p, "r", encoding="utf-8").read().strip())
+        except Exception:
+            pid = None
+    if pid:
+        try:
+            os.kill(pid, 15)
+            for _ in range(10):
+                time.sleep(0.3)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+            else:
+                os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+        # Reap the child so it doesn't linger as <defunct> (the proxy is the parent).
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except Exception:
+            pass
+    try:
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception:
+        pass
+    return True
+
+
 def _settings_snapshot() -> Dict:
     """The EFFECTIVE settings, for the <<SETTINGS>> report.
 
@@ -7509,6 +7664,83 @@ if FLASK_OK:
     @app.route("/chat", methods=["GET"])
     def chat_ui():
         return _serve_html(_CHAT_HTML_PATH, "CHAT-UI")
+
+    _EXTENSIONS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "extensions.html")
+
+    @app.route("/extensions", methods=["GET"])
+    def extensions_ui():
+        return _serve_html(_EXTENSIONS_HTML_PATH, "EXTENSIONS-UI")
+
+    @app.route("/extensions/list", methods=["GET"])
+    def extensions_list():
+        exts = []
+        for m in _load_extension_manifests():
+            exts.append({
+                "name": m["name"], "dir": m["dir"], "description": m["description"],
+                "config": m["config"], "config_file": m["config_file"], "health": m["health"],
+                "running": _ext_is_running(m["name"]),
+            })
+        return _cors_response({"extensions": exts, "root": _extensions_root()})
+
+    @app.route("/extensions/<name>/run", methods=["POST"])
+    def extensions_run(name):
+        m = next((x for x in _load_extension_manifests() if x["name"] == name), None)
+        if not m:
+            return _cors_response({"ok": False, "error": f"no extension {name!r}"}, status=404)
+        if _ext_is_running(name):
+            return _cors_response({"ok": False, "error": f"{name} is already running"})
+        try:
+            pid = _ext_spawn(m)
+            return _cors_response({"ok": True, "pid": pid})
+        except Exception as e:
+            return _cors_response({"ok": False, "error": str(e)}, status=500)
+
+    @app.route("/extensions/<name>/kill", methods=["POST"])
+    def extensions_kill(name):
+        if not _ext_is_running(name):
+            return _cors_response({"ok": False, "error": f"{name} is not running"})
+        _ext_kill(name)
+        return _cors_response({"ok": True})
+
+    @app.route("/extensions/<name>/log", methods=["GET"])
+    def extensions_log(name):
+        lp = _ext_logfile(name)
+        out = ""
+        if os.path.isfile(lp):
+            with open(lp, "r", encoding="utf-8") as f:
+                out = f.read()
+        return _cors_response({"output": out})
+
+    @app.route("/extensions/<name>/config", methods=["GET"])
+    def extensions_config_get(name):
+        m = next((x for x in _load_extension_manifests() if x["name"] == name), None)
+        if not m:
+            return _cors_response({"error": f"no extension {name!r}"}, status=404)
+        cf_content = None
+        if m.get("config_file"):
+            cf = os.path.join(m["path"], m["config_file"])
+            if os.path.isfile(cf):
+                with open(cf, "r", encoding="utf-8") as f:
+                    cf_content = f.read()
+        return _cors_response({
+            "name": name, "config": m["config"], "values": _ext_read_env(name),
+            "config_file": m.get("config_file"), "config_file_content": cf_content,
+        })
+
+    @app.route("/extensions/<name>/config", methods=["POST"])
+    def extensions_config_save(name):
+        m = next((x for x in _load_extension_manifests() if x["name"] == name), None)
+        if not m:
+            return _cors_response({"ok": False, "error": f"no extension {name!r}"}, status=404)
+        data = request.get_json(force=True, silent=True) or {}
+        values = data.get("values") or {}
+        if values:
+            _ext_write_env(name, values)
+        if m.get("config_file") and data.get("config_file_content") is not None:
+            cf = os.path.join(m["path"], m["config_file"])
+            with open(cf, "w", encoding="utf-8") as f:
+                f.write(data["config_file_content"])
+        return _cors_response({"ok": True})
 
     @app.route("/dashboard/status", methods=["GET"])
     def dashboard_status():

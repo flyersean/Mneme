@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mneme — Extensions</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff; --panel:#f7f7f8; --line:#e5e7eb; --accent:#2563eb; --green:#16a34a; --red:#dc2626; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:18px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; font-weight:650; }
+  main { padding:24px 28px; max-width:960px; margin:0 auto; }
+  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  section { margin-top:24px; }
+  h2 { margin:0 0 6px; font-size:15px; font-weight:650; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  .hint code { background:var(--panel); padding:1px 5px; border-radius:4px; font-size:12px; }
+  .ext { border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+  .ext .head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .ext .name { font-weight:650; font-size:15px; }
+  .ext .dir { color:var(--muted); font-size:11px; font-family:ui-monospace,Menlo,monospace; }
+  .ext .desc { color:var(--muted); font-size:13px; margin-top:3px; }
+  .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .badge.up { background:#ecfdf5; color:var(--green); border:1px solid #bbf7d0; }
+  .badge.down { background:#fef2f2; color:var(--red); border:1px solid #fecaca; }
+  .actions { margin-left:auto; display:flex; gap:8px; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.run { color:var(--green); }
+  button.run:hover { border-color:var(--green); }
+  button.kill { color:var(--red); }
+  button.kill:hover { border-color:var(--red); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  .empty { color:var(--muted); font-size:14px; padding:16px 0; }
+
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.42); display:none; align-items:center; justify-content:center; z-index:50; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:#fff; border:1px solid var(--line); border-radius:12px; width:620px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); font-weight:650; }
+  .modal-head .close { border:none; background:none; font-size:22px; line-height:1; cursor:pointer; color:var(--muted); }
+  .modal-body { padding:16px 18px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:4px; }
+  .field label .req { color:var(--red); }
+  .field input, .field select, .field textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; font-size:14px; box-sizing:border-box; }
+  .field textarea { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; min-height:220px; }
+  .field input:focus, .field select:focus, .field textarea:focus { outline:none; border-color:var(--accent); }
+  .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+  .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
+  .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:200px; max-height:52vh; overflow-y:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mneme — Extensions</h1>
+  <button onclick="load()">Refresh</button>
+</header>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+  <a href="/ollama">Ollama</a>
+  <a href="/runs/ui">Runs</a>
+  <a href="/strategies/ui">Strategies</a>
+  <a href="/extensions" class="active">Extensions</a>
+</nav>
+<main>
+  <section>
+    <h2>Extensions</h2>
+    <p class="hint">Extensions that ship an <code>extension.yaml</code> manifest are discovered, configured and run from here. Anything without a manifest still runs from the terminal — see <code>extensions/README.md</code>.</p>
+    <div id="exts"><div class="empty">Loading…</div></div>
+  </section>
+</main>
+
+<div class="modal-overlay" id="cfgModal">
+  <div class="modal">
+    <div class="modal-head"><span id="cfgTitle">Configure</span><button class="close" id="cfgClose">×</button></div>
+    <div class="modal-body" id="cfgBody"></div>
+    <div class="modal-actions" style="padding:0 18px 18px;"><button id="cfgSave">Save</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="logModal">
+  <div class="modal">
+    <div class="modal-head"><span id="logTitle">Log</span><button class="close" id="logClose">×</button></div>
+    <div class="terminal" id="logPane"></div>
+  </div>
+</div>
+
+<script>
+let exts = [];
+
+async function load() {
+  const box = document.getElementById('exts');
+  try {
+    const r = await fetch('/extensions/list');
+    const j = await r.json();
+    exts = j.extensions || [];
+    if (!exts.length) {
+      box.innerHTML = '<div class="empty">No extensions with a manifest found in ' + (j.root || 'extensions/') + '. Add an <code>extension.yaml</code> to one to see it here.</div>';
+      return;
+    }
+    box.innerHTML = exts.map(e => {
+      const badge = e.running ? '<span class="badge up">running</span>' : '<span class="badge down">stopped</span>';
+      const act = e.running
+        ? `<button class="kill" onclick="killExt('${e.name}')">Kill</button>`
+        : `<button class="run" onclick="runExt('${e.name}')">Run</button>`;
+      return `<div class="ext">
+        <div class="head">
+          <span class="name">${esc(e.name)}</span><span class="dir">${esc(e.dir)}</span>${badge}
+          <span class="actions">
+            <button onclick="openCfg('${e.name}')">Configure</button>
+            <button onclick="openLog('${e.name}')">Log</button>
+            ${act}
+          </span>
+        </div>
+        <div class="desc">${esc(e.description || '')}</div>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    box.innerHTML = '<div class="empty">Error: ' + esc(err.message) + '</div>';
+  }
+}
+
+async function runExt(name) {
+  const r = await fetch('/extensions/' + encodeURIComponent(name) + '/run', { method:'POST' });
+  const j = await r.json();
+  if (j.ok) { setTimeout(load, 600); } else { alert(j.error || 'failed to run'); }
+}
+
+async function killExt(name) {
+  const r = await fetch('/extensions/' + encodeURIComponent(name) + '/kill', { method:'POST' });
+  const j = await r.json();
+  if (j.ok) { setTimeout(load, 600); } else { alert(j.error || 'failed to kill'); }
+}
+
+let cfgName = '';
+async function openCfg(name) {
+  cfgName = name;
+  const r = await fetch('/extensions/' + encodeURIComponent(name) + '/config');
+  const j = await r.json();
+  const body = document.getElementById('cfgBody');
+  document.getElementById('cfgTitle').textContent = 'Configure ' + name;
+  let html = '';
+  const values = j.values || {};
+  for (const c of (j.config || [])) {
+    const key = c.key || '';
+    const cur = values[key] != null ? values[key] : (c.default || '');
+    const req = c.required ? ' <span class="req">*</span>' : '';
+    html += `<div class="field"><label>${esc(c.label || key)}${req}</label>`;
+    if (c.type === 'secret') {
+      html += `<input type="password" id="cfg_${esc(key)}" value="${esc(cur)}" />`;
+    } else if (c.type === 'select' && c.options) {
+      html += `<select id="cfg_${esc(key)}">` + c.options.map(o => `<option${o === cur ? ' selected' : ''}>${esc(o)}</option>`).join('') + `</select>`;
+    } else if (c.type === 'number') {
+      html += `<input type="number" id="cfg_${esc(key)}" value="${esc(cur)}" />`;
+    } else {
+      html += `<input type="text" id="cfg_${esc(key)}" value="${esc(cur)}" />`;
+    }
+    html += `</div>`;
+  }
+  if (j.config_file) {
+    html += `<div class="field"><label>${esc(j.config_file)} (raw YAML)</label>` +
+      `<textarea id="cfg_file">${esc(j.config_file_content || '')}</textarea></div>`;
+  }
+  if (!html) html = '<div class="empty">This extension has no configurable settings.</div>';
+  body.innerHTML = html;
+  document.getElementById('cfgModal').classList.add('open');
+}
+
+async function saveCfg() {
+  const values = {};
+  const ext = exts.find(x => x.name === cfgName) || {};
+  for (const c of (ext.config || [])) {
+    const el = document.getElementById('cfg_' + (c.key || ''));
+    if (el) values[c.key] = el.value;
+  }
+  const body = { values };
+  const fileEl = document.getElementById('cfg_file');
+  if (fileEl) body.config_file_content = fileEl.value;
+  const r = await fetch('/extensions/' + encodeURIComponent(cfgName) + '/config', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  if (j.ok) document.getElementById('cfgModal').classList.remove('open');
+  else alert(j.error || 'failed to save');
+}
+
+async function openLog(name) {
+  const r = await fetch('/extensions/' + encodeURIComponent(name) + '/log');
+  const j = await r.json();
+  document.getElementById('logTitle').textContent = 'Log — ' + name;
+  document.getElementById('logPane').textContent = j.output || '(no output yet)';
+  document.getElementById('logModal').classList.add('open');
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.getElementById('cfgClose').addEventListener('click', () => document.getElementById('cfgModal').classList.remove('open'));
+document.getElementById('logClose').addEventListener('click', () => document.getElementById('logModal').classList.remove('open'));
+document.getElementById('cfgSave').addEventListener('click', saveCfg);
+document.getElementById('cfgModal').addEventListener('click', (e) => { if (e.target === document.getElementById('cfgModal')) document.getElementById('cfgModal').classList.remove('open'); });
+document.getElementById('logModal').addEventListener('click', (e) => { if (e.target === document.getElementById('logModal')) document.getElementById('logModal').classList.remove('open'); });
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# Mneme extension manifest — OPTIONAL standard.
+#
+# If this file exists in an extension's directory, the proxy's /extensions page
+# discovers, configures, runs and kills it. Without this file the extension is
+# unaffected and still runs from the terminal (the standard is opt-in, not enforced).
+#
+# `command` + `args` are run from THIS directory. The tokens {port} and {url}
+# are substituted with the managing proxy's port / base URL.
+#
+# `config` entries are rendered as a form; each `key` is injected into the
+# process environment when it runs (saved to <chunk_dir>/extensions_runtime/<name>.env).
+# Supported types: secret, string, number, select (needs `options`).
+#
+# `config_file` (optional) names a file in this directory that the page exposes
+# as a raw YAML editor instead of a form.
+
+name: telegram-gateway
+description: Reach Mneme from Telegram (private chats, allow-listed users)
+
+command: ["python3", "telegram.py"]
+args: ["--url", "http://localhost:{port}", "--plain", "run"]
+
+config:
+  - key: MNEME_TELEGRAM_TOKEN
+    label: Bot token (from @BotFather)
+    type: secret
+    required: true
+  - key: MNEME_TELEGRAM_ALLOWED
+    label: Allowed user ID(s), comma-separated
+    type: string
+    required: true

@@ -94,3 +94,47 @@ TypeScript files calling the proxy's endpoints directly.
 
 Nothing needs to be registered with Mneme, and no proxy restart is required to add or
 remove an extension — you just point a new client at the port.
+
+## The `extension.yaml` manifest (optional standard)
+
+By default an extension is just a program you run in the terminal. If you add an
+`extension.yaml` to its directory, the proxy's **Extensions** page (`/extensions`)
+will discover, configure, run and kill it. The standard is **opt-in and non-enforced**:
+a directory without a manifest is skipped by the page and still runs the terminal way.
+
+A minimal manifest:
+
+```yaml
+name: telegram-gateway              # shown on the Extensions page
+description: Reach Mneme from Telegram
+command: ["python3", "telegram.py"] # run from this directory
+args: ["--url", "http://localhost:{port}", "--plain", "run"]  # {port}/{url} are substituted
+config:                             # -> rendered as a form, injected as env vars at run time
+  - key: MNEME_TELEGRAM_TOKEN
+    label: Bot token
+    type: secret
+    required: true
+  - key: MNEME_TELEGRAM_ALLOWED
+    label: Allowed user IDs
+    type: string
+    required: true
+```
+
+Fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | identifier shown on the page (defaults to the directory name) |
+| `description` | one-line summary |
+| `command` | the executable + fixed args, run from the manifest's directory |
+| `args` | trailing args; `{port}` and `{url}` are substituted with the proxy's own |
+| `config` | a list of `{key, label, type, required, default, options}` — each `key` is exported into the process env |
+| `config_file` | optional path to a YAML file in this directory; the page shows it as a raw editor instead of a form |
+| `health` | optional endpoint the page could poll (reserved for v2) |
+
+`config` types: `secret` (password), `string`, `number`, `select` (needs `options`).
+
+Config values are saved per-proxy to `<chunk_dir>/extensions_runtime/<name>.env`
+and injected into the process environment when you press **Run**. Pidfiles live
+alongside them, so **Kill** targets the exact process the page started. Logs go to
+`<chunk_dir>/extensions_runtime/<name>.log` (the **Log** button).
