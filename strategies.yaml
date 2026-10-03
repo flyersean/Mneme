@@ -4,11 +4,16 @@
 #
 # Each entry:
 #   id            unique slug (stable across DBs)
-#   problem_type  one of: web_retrieval | compute | live_data | code | error |
+#   problem_type  one of: web_retrieval | live_data | code | error |
 #                 memory_operation | other  (see mneme/capability._classify_problem_type)
 #   grade         A (known-good curated) / B / C
 #   cost          relative cost hint (0 = cheap); cheaper wins a retrieval slot
 #   text          the playbook, injected on matching problem-type turns/failures
+#
+# Retrieval is grade-first, then cheapest. So within one problem type, the A-grade
+# playbooks inject before the B/C ones. Two overlapping web_retrieval playbooks
+# (web_hidden_api vs api_over_html) are kept distinct and ordered so the specific
+# recovery playbook (A) always leads the general preference (B).
 #
 # User promotions go to strategies.user.yaml (per-instance), NOT this file.
 
@@ -24,3 +29,91 @@
     (3) check for an alternate serialization via the HTTP Link: rel=alternate header;
     (4) for Hugging Face model facts, use https://huggingface.co/api/models/<org>/<name> (JSON metadata: license, tags, downloads) and the model card's model-index block for benchmark scores.
     Prefer the API over scraping rendered HTML.
+
+- id: primary_source_first
+  problem_type: web_retrieval
+  grade: A
+  cost: 0
+  created_by: shipped
+  text: |
+    Get a specific fact (a version, license, dimension, score, name) from its primary source — the official repo, config.json, API, model card, or paper — not a blog, forum, or search snippet. A search snippet is a lead to a primary source, not an answer. Cite the primary source you actually read.
+
+- id: api_over_html
+  problem_type: web_retrieval
+  grade: B
+  cost: 0
+  created_by: shipped
+  text: |
+    Prefer a structured endpoint (.json / .csv / .parquet, or a JSON API) over scraping rendered HTML — it is smaller, faster, and parses cleanly. Scrape HTML only when no structured endpoint exists. (This is the standing preference; the web_hidden_api playbook is the recovery path for when a page is JS-only.)
+
+- id: parse_dont_read
+  problem_type: web_retrieval
+  grade: B
+  cost: 1
+  created_by: shipped
+  text: |
+    When a data source is large, nested, or malformed, do not read it into context. Write a jq / python / grep one-liner to extract and print only the fields you need. This keeps the context lean and parses arbitrary formats predictably.
+
+- id: fast_fact_route
+  problem_type: web_retrieval
+  grade: B
+  cost: 1
+  created_by: shipped
+  text: |
+    When the target is a single objective fact (a version, license, dimension, name), do not plan or browse — fetch the primary source directly and answer. Reserve the full planning loop for comparisons, synthesis, and debugging.
+
+- id: scratchpad_distill
+  problem_type: web_retrieval
+  grade: B
+  cost: 1
+  created_by: shipped
+  text: |
+    When a tool returns a large raw payload, extract only the metrics, code, or evidence relevant to the sub-goal into a workspace notes file, and let the raw payload fall out of context. Keep the working context lean.
+
+- id: exit_no_new_info
+  problem_type: other
+  grade: B
+  cost: 1
+  created_by: shipped
+  text: |
+    If two consecutive iterations produce no new information, stop searching. Report the best-known values with citations and state the uncertainty; do not keep looping past diminishing returns.
+
+- id: retry_once_transient
+  problem_type: error
+  grade: B
+  cost: 0
+  created_by: shipped
+  text: |
+    When a fetch or search fails with a transient error (rate-limit, timeout, 5xx, network reset), retry once after a short pause before treating it as a dead end. Transient failures often clear on the second attempt.
+
+- id: verify_before_assert
+  problem_type: web_retrieval
+  grade: B
+  cost: 1
+  created_by: shipped
+  text: |
+    Before stating a specific figure, confirm it against a primary source, ideally two independent ones. If you cannot confirm it, say the number is unverified or approximate rather than asserting it.
+
+- id: workspace_discipline
+  problem_type: code
+  grade: B
+  cost: 0
+  created_by: shipped
+  text: |
+    Write files to the run's workspace or the goal's explicit output path, not ad-hoc absolute paths — the harness verifies and captures artifacts there. Check where a file should go before writing it.
+
+- id: stale_data_check
+  problem_type: live_data
+  grade: C
+  cost: 1
+  created_by: shipped
+  text: |
+    For "latest / current / today" targets, hit the source's release page or latest endpoint and record the retrieval date; a cached number may be stale.
+
+- id: cheap_check_first
+  problem_type: other
+  grade: C
+  cost: 0
+  created_by: shipped
+  text: |
+    Verify with the cheapest deterministic check first (file_exists, file_contains, grep, head) before an expensive call. A cheap negative saves the expensive positive.
