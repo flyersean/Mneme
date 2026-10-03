@@ -126,9 +126,12 @@ DEFAULT_INSTRUCTIONS = {
         "2. What have you already tried, and why did each attempt fail?\n"
         "3. What is the actual obstacle (blocked, JS-rendered, auth, rate-limit, wrong tool)?\n"
         "Then take ONE genuinely different approach.\n"
-        "You are NOT limited to what you already tried. You can CREATE the resource you need "
-        "(write a script; `pip install <lib>`; install a headless browser via "
-        "`pip install playwright && playwright install chromium`; `npm i`; call an API) and you can "
+        "You are NOT limited to what you already tried. For a JavaScript-rendered page (empty "
+        "fetch, JS-only shell), retry fetch_url on the SAME url with render_js: true — it renders "
+        "the page in a headless browser. Otherwise you can CREATE the resource you need "
+        "(write a script; `pip install <lib>` — a writable pip target is already configured; "
+        "playwright and Chromium are already installed — import them directly; `npm i`; call an "
+        "API) and you can "
         "FIND resources with your tools (web_search to research how; list_tools/read_tool to reuse a "
         "tool you already built; search_memory for past work). Do not repeat an approach that failed."
     ),
@@ -146,8 +149,8 @@ DEFAULT_INSTRUCTIONS = {
     "step_back_concede": (
         "\n=== CONCEDE OR ANSWER ===\n"
         "You have made {{count}} tool calls and still cannot get the key fact. Before giving up, ask: "
-        "is there a resource you could CREATE to reach it (install a headless browser, write a scraper, "
-        "call an API)? If you have genuinely exhausted creating and finding resources, stop and say so "
+        "is there a resource you could CREATE to reach it (retry fetch_url with render_js: true, "
+        "write a scraper with the pre-installed playwright, call an API, pip install a library)? If you have genuinely exhausted creating and finding resources, stop and say so "
         "plainly — tell the user what you could NOT get and why. Then give them everything you DID "
         "find, with a clear note on what is missing. Do not make any more tool calls."
     ),

@@ -212,9 +212,11 @@ FETCH_URL_TOOL = {
             "finished — call fetch_url on the best URL first.\n"
             "\n"
             "Use it instead of `bash curl` (curl returns raw HTML with scripts and markup; this "
-            "returns readable text). Works on ordinary sites. If it returns empty text, a "
-            "login/bot wall, or a JS-only shell, the page needs a real browser — say so rather "
-            "than guessing at the contents.\n"
+            "returns readable text). Works on ordinary sites. If it returns empty text or a "
+            "JS-only shell (a page that loads its content with JavaScript — React/Streamlit apps, "
+            "leaderboards), retry the SAME url with render_js: true, which renders the page in a "
+            "headless browser and reads the result. If that still fails (login/bot wall), say so "
+            "rather than guessing at the contents.\n"
             "\n"
             "Mneme saves the FULL page text to memory as page:<domain> chunks; you see a bounded "
             "head+tail window, and can retrieve any detail later with search_memory."
@@ -223,6 +225,7 @@ FETCH_URL_TOOL = {
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "Full http(s) URL to fetch, e.g. https://jamopizza.com/menu"},
+                "render_js": {"type": "boolean", "description": "Render the page with a headless browser (runs JavaScript) before extracting text. Use only when the plain fetch came back empty or JS-only. Slower (a few seconds)."},
             },
             "required": ["url"],
         },
@@ -617,6 +620,14 @@ def _exec_bash(command):
         os.makedirs(TOOLS_DIR, exist_ok=True)
         os.makedirs(MODEL_SCOPE, exist_ok=True)
         os.makedirs(RUNS_ROOT, exist_ok=True)
+        # A writable pip target inside the sandbox so `pip install <lib>` can
+        # succeed despite the read-only root (the default site-packages is
+        # read-only there). PYTHONPATH lets the model import what it installs.
+        pylibs = os.path.join(TOOLS_DIR, "pylibs")
+        os.makedirs(pylibs, exist_ok=True)
+        env = dict(os.environ)
+        env["PIP_TARGET"] = pylibs
+        env["PYTHONPATH"] = pylibs + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         bwrap = shutil.which("bwrap")
         if bwrap:
             cmd = [bwrap, "--ro-bind", "/", "/"]
@@ -628,7 +639,7 @@ def _exec_bash(command):
             cmd = ["bash", "-c", command]
         p = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=BASH_TIMEOUT, cwd=TOOLS_DIR,
+            timeout=BASH_TIMEOUT, cwd=TOOLS_DIR, env=env,
         )
         out = (p.stdout or "").rstrip()
         if p.stderr:
@@ -828,17 +839,23 @@ def _exec_read_file(path, start=None, end=None):
         return f"[read_file error: {type(e).__name__}: {e}]"
 
 
-def _exec_fetch_url(url):
+def _exec_fetch_url(url, render_js=False):
     """Fetch a URL and return clean text (HTML/CSS/JS stripped).
 
     Returns the FULL page text (generous cap for pathological pages). The proxy
     stages the full text into memory as page:<domain> chunks and forwards only a
     bounded head+tail window to the model, so the model isn't flooded but the
     entire page is retrievable via search_memory.
+
+    With render_js=True the page is rendered in a headless Chromium first, so
+    JavaScript-only pages (React/Streamlit apps, leaderboards) yield their real
+    content instead of an empty shell.
     """
     url = (url or "").strip()
     if not url.lower().startswith(("http://", "https://")):
         return f"[fetch_url: invalid URL: {url}]"
+    if render_js:
+        return _exec_fetch_url_rendered(url)
     try:
         r = requests.get(url, timeout=20, headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -855,6 +872,33 @@ def _exec_fetch_url(url):
         return text[:300000] if text else "[fetch_url: empty page]"
     except Exception as e:
         return f"[fetch_url error: {type(e).__name__}: {e}]"
+
+
+def _exec_fetch_url_rendered(url):
+    """Render a URL in headless Chromium (playwright) and return its visible text."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return "[fetch_url: render_js needs playwright — `pip install playwright && playwright install chromium`]"
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=12000)
+                except Exception:
+                    pass  # best-effort: some pages never go idle
+                page.wait_for_timeout(1000)
+                text = page.inner_text("body")
+            finally:
+                browser.close()
+        text = _re.sub(r"[ \t\r\f\v]+", " ", text)
+        text = _re.sub(r"\n\s*\n+", "\n", text).strip()
+        return text[:300000] if text else "[fetch_url: rendered page is empty]"
+    except Exception as e:
+        return f"[fetch_url render error: {type(e).__name__}: {e}]"
 
 
 def _exec_read_image(ref):
@@ -980,7 +1024,7 @@ def execute_readonly_tool(name, args):
     if name == "read_file":
         return _exec_read_file((args or {}).get("path", ""), (args or {}).get("start"), (args or {}).get("end"))
     if name == "fetch_url":
-        return _exec_fetch_url((args or {}).get("url", ""))
+        return _exec_fetch_url((args or {}).get("url", ""), bool((args or {}).get("render_js")))
     if name == "web_search":
         return _exec_web_search((args or {}).get("query", ""))
     if name == "flag_bad_memory":
