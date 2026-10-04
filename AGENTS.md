@@ -135,6 +135,36 @@ standalone file.
 
 ---
 
+## Filesystem scope & permissions (what an agent may write)
+
+The filesystem is split into two roots, both under `filesystem:` in `mneme.yaml`:
+
+- `browser_root` (default `~`) — what the user and the file browser can *navigate* (the wide view).
+- `model_scope` (default `~/mneme/output`) — the agent's *write* boundary.
+
+**The agent may WRITE only under `model_scope`, its tools directory, and harness run
+workspaces.** Everything else under `browser_root` is read-only to it. A `write` outside that
+area is refused (`[write blocked: …]`) — a hard boundary, not a prompt.
+
+**To grant or change scope at runtime** (no restart needed):
+
+- The file browser's **"◎ scope"** button sets `model_scope` to the folder currently viewed
+  (persists to `mneme.yaml`).
+- The inline **"Grant write access"** button (surfaced after a blocked write) widens scope to
+  that path.
+- `POST /fs/scope {"path": "…"}` — programmatic, validated against `browser_root`.
+- Or edit `filesystem.model_scope` in `mneme.yaml` and `POST /admin/reload`.
+
+**Rule:** if a path you need is out of scope, do **not** work around it (no path tricks, no
+claiming a read-only file was written). Ask the user, or grant the scope through the UI —
+this doc and the permission UI describe the same scope model.
+
+`strategies.yaml` / `strategies.user.yaml` are **managed by the proxy** (merged at startup and
+after `/reset`); don't hand-edit them. Strategies are learned through the self-improving
+layer, not written as files.
+
+---
+
 ## 2. Setting up a Mneme proxy
 
 A proxy needs: the code, a backend, and a config file. The single source of truth is
@@ -180,6 +210,30 @@ The proxy **fails loudly on unknown/typo'd keys** — do not invent keys.
 
 The setup wizard lays this out as `<db>/instances/<port>/mneme.yaml` (config) with
 `db_path: <db>/mneme.db` (shared DB).
+
+### 2.4 Throwaway test instance (the quick loop)
+
+You don't have to touch the running proxy to test — spin a second one on another port with
+its own scratch state (same code, isolated config):
+
+```bash
+cp ~/mneme/chunks/instances/8080/mneme.yaml /tmp/mneme-test.yaml
+# edit /tmp/mneme-test.yaml: storage.port: 8082, storage.chunk_dir: /tmp/mneme-test
+# (for memory isolation, also point storage.db_path at a scratch file)
+python3 proxy/mneme_proxy.py --config /tmp/mneme-test.yaml   # Ctrl-C to kill
+```
+
+### 2.5 Verify your change
+
+- **Python (proxy / tools / harness):** `python3 -m unittest tests.test_<name> -v`
+  (unittest, NOT pytest) and `python3 -m py_compile proxy/mneme_proxy.py` for a fast syntax
+  gate. Then restart — the running process does **not** hot-reload Python code.
+- **Restart:** `bash chunks/instances/<port>/start_proxy.sh`. Startup can take ~30–80s while
+  it re-embeds chunks (noise calibration).
+- **Static UI (chat / dashboard / themes):** served from disk — just reload the page, no
+  restart. A theme change is live when `GET /themes` lists it; a JS/CSS change shows on reload.
+- **Endpoints:** hit them with `curl` first (`/health`, `/themes`, `/fs/list`, …) before
+  clicking around the UI.
 
 ---
 
@@ -359,6 +413,17 @@ IGNORED — the proxy does not silently override its own config.
 | GET/POST | `/skills`, `/profiles`, `/evolution`, `/jobs` | Skills, agent profiles, self-improvement proposals, scheduled jobs |
 | POST | `/harness/command` | Harness `/commands` (`{"text": "/status last"}`) |
 | GET | `/harness/metrics`, `/runs/ui` | Metrics JSON; the runs / skills / evolution dashboard |
+| GET | `/themes` | List theme files (custom themes auto-appear) |
+| GET | `/fs/list`, `/fs/read` | File browser: list/read within `browser_root` |
+| POST | `/fs/scope` | Set `filesystem.model_scope` (persists, validated) |
+| GET | `/fs/blocked` | Recently blocked write paths (`?clear=1` pops them) |
+| GET | `/providers`, `/providers/<name>/models`, `/models/available` | Model/provider switcher data |
+| POST | `/providers/activate`, `/providers/key` | Switch model; save/update a provider API key |
+| GET | `/overview`, `/overview/config/<port>` | Dashboard + per-proxy config editor |
+| POST | `/admin/reload` | Hot-reload config from disk |
+| GET | `/memory`, `/memory/*` | Memory browser endpoints |
+| GET | `/extensions`, `/extensions/*` | Extension management UI (run/kill/config/log) |
+| POST | `/setup`, `/setup/<job_id>` | Background setup job + log tail |
 
 The agent harness (`proxy/mneme/harness/`) is **core**, not an extension — see
 `docs/harness/`. Extensions may drive it over the `/runs` HTTP API like any other
