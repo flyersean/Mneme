@@ -52,8 +52,9 @@ break the ability to mix providers against one DB.
 proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
                         gateway.py (reverse proxy), static/*.html (chat/dashboard/
                         extensions/strategies/runs/memory UIs), static/vendor/ (self-hosted
-                        CodeMirror), system_prompt*.md (the injected instructions),
-                        mneme/harness/ (the agent harness — core, not an extension)
+                        CodeMirror), static/themes/ + theme.css + theme.js (the theming
+                        system — see the "Theming" section), system_prompt*.md (the injected
+                        instructions), mneme/harness/ (the agent harness — core, not an extension)
 scripts/                mneme_setup.py (install + add-instance wizard),
                         calibrate_similarity.py, benchmark.py, start_gateway.sh, …
 extensions/             HTTP consumers, NOT part of the proxy: gateways/, swarm/, pi/,
@@ -97,6 +98,40 @@ skills/, experiments/   scratch / support
   `qwen/qwen3-embedding-8b`, 1024-dim). Similarity thresholds are embedder-dependent — re-tune
   `inject_min_similarity`/`strategy_min_similarity` whenever you change the embedder. The
   startup health check flags a mismatched model/dim.
+
+---
+
+## Theming (light / dark / custom themes)
+
+The UI is themed entirely by CSS custom properties, and a theme is a single CSS file.
+A custom theme is **just a file dropped into `proxy/static/themes/`** — it appears in the
+Theme dropdown with no other change. That's the point: an agent can author a theme as a
+standalone file.
+
+**Files:**
+
+- `proxy/static/themes/light.css` / `dark.css` — the built-in themes. Each defines the same
+  **18 canonical variables** (below). Copy one and save as `proxy/static/themes/<name>.css`
+  to add a theme.
+- `proxy/static/theme.css` — the **alias layer**. Pages predating the theme system named the
+  same colors differently (`--text`, `--border`, `--card`, `--ink`, `--ok`, `--danger`,
+  `--warn`). This file maps those onto the canonical names (`--fg`, `--line`, `--panel`, …).
+  It holds **no colors** — add alias mappings here, never hex values.
+- `proxy/static/theme.js` — loads the saved theme before first paint (from
+  `localStorage["mneme.theme"]`, default `light`) and injects the Theme `<select>` into the
+  nav. `GET /themes` lists the available theme files.
+
+**Canonical variables** (a theme must define all 18):
+
+`--fg` `--bg` `--panel` `--line` `--muted` `--accent` `--accent-soft` `--green`
+`--green-soft` `--red` `--red-soft` `--amber` `--amber-soft` `--user-bubble` `--user-text`
+`--assistant-bubble` `--code-bg` `--tool-bg`
+
+**Rules when touching the UI:**
+
+- Never hard-code a color in a page's inline `<style>` — use `var(--<name>)` (prefer a
+  canonical name; if you must use a legacy name, add its alias in `theme.css`).
+- Don't re-add a `:root { … }` color block to any page — colors come from the theme files.
 
 ---
 
