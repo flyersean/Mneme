@@ -28,7 +28,7 @@
   header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 900px; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   main { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
-  .legend { background: var(--accent-soft); border: 1px solid #d7e2ff; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #1e3a8a; margin-bottom: 20px; }
+  .legend { background: var(--accent-soft); border: 1px solid var(--accent-soft); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--accent); margin-bottom: 20px; }
   .card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -52,7 +52,7 @@
     border-radius: 8px;
     padding: 10px 12px;
     resize: vertical;
-    background: #fcfcfd;
+    background: var(--panel);
     color: var(--text);
   }
   textarea:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
@@ -69,14 +69,14 @@
   button:hover { opacity: 0.88; }
   a.link { font-size: 12px; color: var(--accent); text-decoration: none; }
   a.link:hover { text-decoration: underline; }
-  .status { position: fixed; bottom: 20px; right: 20px; background: #111827; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+  .status { position: fixed; bottom: 20px; right: 20px; background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
   .status.show { opacity: 1; }
 </style>
 <style>
 .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
-.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
-.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
-.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
+.mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+.mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -178,7 +178,7 @@
   function flash(msg, isErr) {
     const s = document.getElementById('status');
     s.textContent = msg;
-    s.style.background = isErr ? '#b91c1c' : '#111827';
+    s.style.background = isErr ? 'var(--red)' : 'var(--fg)';
     s.classList.add('show');
     clearTimeout(s._t);
     s._t = setTimeout(() => s.classList.remove('show'), 2200);

@@ -18,7 +18,7 @@
 
   /* ── Nav bar (shared by every page; only the Dashboard shows the full menu) ── */
   .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
-  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
   .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
   .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 
@@ -30,8 +30,8 @@
   th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
   .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
-  .badge.up { background:#ecfdf5; color:var(--green); border:1px solid #bbf7d0; }
-  .badge.down { background:#fef2f2; color:var(--red); border:1px solid #fecaca; }
+  .badge.up { background:var(--green-soft); color:var(--green); border:1px solid var(--green); }
+  .badge.down { background:var(--red-soft); color:var(--red); border:1px solid var(--red); }
   .model { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
   .self-tag { color:var(--muted); font-size:11px; }
   .links a { margin-right:9px; color:var(--accent); text-decoration:none; font-size:13px; white-space:nowrap; }
@@ -54,17 +54,17 @@
   .row .v { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
   #reloadMsg { margin-left:10px; font-size:13px; color:var(--muted); }
   .add-proxy { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
-  .add-proxy:hover { background:#1d4ed8; border-color:#1d4ed8; }
+  .add-proxy:hover { background:var(--accent); border-color:var(--accent); }
 
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.42); display:none; align-items:center; justify-content:center; z-index:50; }
   .modal-overlay.open { display:flex; }
-  .modal { background:#fff; border:1px solid var(--line); border-radius:12px; width:580px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
+  .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; width:580px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
   .modal-head { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); font-weight:650; }
   .modal-head .close { border:none; background:none; font-size:22px; line-height:1; cursor:pointer; color:var(--muted); }
   .modal-body { padding:16px 18px; }
   .field { margin-bottom:12px; }
   .field label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:4px; }
-  .field label .opt { font-weight:400; color:#9ca3af; }
+  .field label .opt { font-weight:400; color:var(--muted); }
   .field input, .field select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; font-size:14px; box-sizing:border-box; }
   .field input:focus, .field select:focus { outline:none; border-color:var(--accent); }
   .field label.check { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--fg); font-weight:500; }
@@ -72,13 +72,13 @@
   .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
   .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
   .modal-actions button:disabled { opacity:.6; cursor:default; }
-  .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:280px; max-height:48vh; overflow-y:auto; }
+  .terminal { background:var(--code-bg); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:280px; max-height:48vh; overflow-y:auto; }
 
   /* ── Per-proxy config editor ── */
   #cfgModal .CodeMirror { border:1px solid var(--line); border-radius:7px 7px 0 0; font-size:13px; height:60vh; min-height:320px; }
   .modal-overlay.wide .modal { width:min(1040px,94vw); }
   .cm-resize { height:9px; cursor:ns-resize; background:var(--panel); border:1px solid var(--line); border-top:none; border-radius:0 0 7px 7px; }
-  .cm-resize:hover { background:#e5e7eb; }
+  .cm-resize:hover { background:var(--accent-soft); }
   .editor-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
   .editor-toolbar button { padding:4px 10px; font-size:12px; }
   .editor-status { margin-left:auto; font-size:12px; }

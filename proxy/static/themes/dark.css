@@ -1,6 +1,7 @@
 /* Mneme dark theme — canonical variables (every theme defines these). */
 :root {
-  --fg: #e5e7eb;
+  color-scheme: dark;
+  --fg: #b8bcc4;
   --bg: #0f1115;
   --panel: #1a1d24;
   --line: #2d3138;
@@ -14,7 +15,7 @@
   --amber: #f59e0b;
   --amber-soft: #2b2012;
   --user-bubble: #2c4a6e;
-  --user-text: #ffffff;
+  --user-text: #c4c8cf;
   --assistant-bubble: #1a1d24;
   --code-bg: #16181d;
   --tool-bg: #14161b;

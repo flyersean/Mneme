@@ -18,7 +18,7 @@
   .toolbar .right { display:flex; gap:10px; align-items:center; }
   .badge { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
   .badge.user { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .badge.mf { background:#fef3c7; border-color:#f59e0b; color:#92400e; }
+  .badge.mf { background:var(--amber-soft); border-color:var(--amber); color:var(--amber); }
   table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
   th, td { text-align:left; padding:10px 12px; font-size:14px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
@@ -34,7 +34,7 @@
   .editor input[type=text], .editor textarea { width:100%; font:inherit; font-size:14px; padding:8px; border:1px solid var(--line); border-radius:7px; }
   .editor textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
   .editor textarea.code { min-height:140px; }
-  .editor textarea.modelfile { min-height:140px; background:#fafafa; }
+  .editor textarea.modelfile { min-height:140px; background:var(--panel); }
   .editor .row { display:flex; gap:10px; }
   .editor .row > div { flex:1; }
   .hint { font-size:12px; color:var(--muted); margin-top:3px; }
@@ -45,9 +45,9 @@
 </style>
 <style>
 .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
-.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
-.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
-.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
+.mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+.mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 </head>
 <body>

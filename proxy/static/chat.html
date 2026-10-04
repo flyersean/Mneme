@@ -167,14 +167,14 @@
   .rc-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
   .rc-id { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--accent); font-weight: 600; }
   .rc-status { color: var(--muted); }
-  .rc-status.rc-completed { color: #16a34a; }
-  .rc-status.rc-failed, .rc-status.rc-cancelled { color: #dc2626; }
+  .rc-status.rc-completed { color: var(--green); }
+  .rc-status.rc-failed, .rc-status.rc-cancelled { color: var(--red); }
   .rc-body { padding: 6px 10px 8px; max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .rc-line { font-size: 12px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rc-line.rc-task { font-weight: 600; white-space: normal; }
   .rc-task-item { color: var(--muted); white-space: normal; font-size: 11px; }
-  .rc-line.rc-ok { color: #16a34a; }
-  .rc-line.rc-fail { color: #dc2626; }
+  .rc-line.rc-ok { color: var(--green); }
+  .rc-line.rc-fail { color: var(--red); }
   .rc-toolres summary { cursor: pointer; color: var(--muted); font-size: 11px; }
   .rc-res { white-space: pre-wrap; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); max-height: 200px; overflow-y: auto; margin-top: 2px; padding: 4px 6px; background: var(--bg); border-radius: 5px; }
   .rc-thinking { margin-top: 2px; }
@@ -233,12 +233,12 @@
   .toolcall {
     background: var(--tool-bg);
     border: 1px solid var(--border);
-    border-left: 3px solid #9ca3af;
+    border-left: 3px solid var(--muted);
     border-radius: 8px;
     padding: 6px 10px;
     font-size: 13px;
   }
-  .toolcall.blocked { border-left-color: #dc2626; }
+  .toolcall.blocked { border-left-color: var(--red); }
   .toolcall summary {
     cursor: pointer;
     list-style: none;
@@ -256,7 +256,7 @@
     padding: 1px 7px;
     border-radius: 5px;
   }
-  .toolcall.blocked .tname { color: #dc2626; background: #fef2f2; }
+  .toolcall.blocked .tname { color: var(--red); background: var(--red-soft); }
   .toolcall .targs { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .toolcall .ttime { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .toolcall .tbody {
@@ -306,16 +306,16 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  #send:hover { background: #1d4ed8; }
+  #send:hover { background: var(--accent); }
   #send:disabled { opacity: .5; cursor: not-allowed; }
-  #send.stop { background: #dc2626; }
-  #send.stop:hover { background: #b91c1c; }
+  #send.stop { background: var(--red); }
+  #send.stop:hover { background: var(--red); }
 </style>
 <style>
 .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
-.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
-.mneme-nav a:hover{border-color:#2563eb;color:#2563eb}
-.mneme-nav a.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
+.mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+.mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 <style>
 /* harness panel + / command palette */
@@ -332,10 +332,10 @@
 .run-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; text-decoration: none; color: var(--text); }
 .run-item:hover { background: var(--accent-soft); }
 .run-item .badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
-.badge.s-completed { background: #dcfce7; color: #15803d; }
-.badge.s-failed, .badge.s-cancelled { background: #fee2e2; color: #b91c1c; }
-.badge.s-running, .badge.s-planning, .badge.s-verifying { background: #dbeafe; color: #1d4ed8; }
-.badge.s-paused, .badge.s-awaiting_approval { background: #fef3c7; color: #b45309; }
+.badge.s-completed { background: var(--green-soft); color: var(--green); }
+.badge.s-failed, .badge.s-cancelled { background: var(--red-soft); color: var(--red); }
+.badge.s-running, .badge.s-planning, .badge.s-verifying { background: var(--accent-soft); color: var(--accent); }
+.badge.s-paused, .badge.s-awaiting_approval { background: var(--amber-soft); color: var(--amber); }
 .run-item .rgoal { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-item .rtime { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 #harness-cmds { display: flex; flex-direction: column; gap: 1px; }

@@ -14,7 +14,7 @@
   h1 { margin:0; font-size:20px; font-weight:650; }
   main { padding:24px 28px; max-width:960px; margin:0 auto; }
   .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0;border-bottom:1px solid var(--line);background:var(--bg)}
-  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:#4b5563;font-size:13px;background:#f9fafb;border:1px solid #e5e7eb}
+  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
   .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
   .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
   section { margin-top:24px; }
@@ -27,8 +27,8 @@
   .ext .dir { color:var(--muted); font-size:11px; font-family:ui-monospace,Menlo,monospace; }
   .ext .desc { color:var(--muted); font-size:13px; margin-top:3px; }
   .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
-  .badge.up { background:#ecfdf5; color:var(--green); border:1px solid #bbf7d0; }
-  .badge.down { background:#fef2f2; color:var(--red); border:1px solid #fecaca; }
+  .badge.up { background:var(--green-soft); color:var(--green); border:1px solid var(--green); }
+  .badge.down { background:var(--red-soft); color:var(--red); border:1px solid var(--red); }
   .actions { margin-left:auto; display:flex; gap:8px; }
   button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); cursor:pointer; }
   button:hover { border-color:var(--accent); }
@@ -41,7 +41,7 @@
 
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.42); display:none; align-items:center; justify-content:center; z-index:50; }
   .modal-overlay.open { display:flex; }
-  .modal { background:#fff; border:1px solid var(--line); border-radius:12px; width:620px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
+  .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; width:620px; max-width:94vw; max-height:86vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,.28); }
   .modal-head { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); font-weight:650; }
   .modal-head .close { border:none; background:none; font-size:22px; line-height:1; cursor:pointer; color:var(--muted); }
   .modal-body { padding:16px 18px; }
@@ -53,7 +53,7 @@
   .field input:focus, .field select:focus, .field textarea:focus { outline:none; border-color:var(--accent); }
   .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
   .modal-actions button { background:var(--accent); color:#fff; border:none; padding:9px 18px; border-radius:7px; cursor:pointer; font-weight:600; font-size:14px; }
-  .terminal { background:#0d1117; color:#c9d1d9; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:200px; max-height:52vh; overflow-y:auto; }
+  .terminal { background:var(--code-bg); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:200px; max-height:52vh; overflow-y:auto; }
   .cm-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
   .cm-toolbar .yaml-status { font-size:12px; color:var(--muted); }
   .cm-toolbar .yaml-status.err { color:var(--red); }
@@ -61,8 +61,8 @@
   #cfgModal .CodeMirror { border:1px solid var(--line); border-radius:7px 7px 0 0; font-size:13px; height:60vh; min-height:320px; }
   .modal-overlay.wide .modal { width:min(1040px,94vw); }
   .cm-resize { height:9px; cursor:ns-resize; background:var(--panel); border:1px solid var(--line); border-top:none; border-radius:0 0 7px 7px; }
-  .cm-resize:hover { background:#e5e7eb; }
-  .cm-resize::after { content:""; display:block; width:40px; height:3px; background:#d1d5db; border-radius:2px; margin:3px auto 0; }
+  .cm-resize:hover { background:var(--accent-soft); }
+  .cm-resize::after { content:""; display:block; width:40px; height:3px; background:var(--line); border-radius:2px; margin:3px auto 0; }
 </style>
 <link rel="stylesheet" href="/static/vendor/codemirror.min.css">
 <script src="/static/vendor/codemirror.min.js"></script>
