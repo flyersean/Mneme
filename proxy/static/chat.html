@@ -147,6 +147,9 @@
   .fb-empty { color: var(--muted); font-size: 11px; padding: 4px 8px; }
   .fb-badge.rw { color: var(--green); border-color: var(--green); }
   .fb-badge.ro { color: var(--muted); }
+  .fb-insert { flex-shrink: 0; border: none; background: none; color: var(--accent); cursor: pointer; font-size: 12px; line-height: 1; padding: 1px 4px; border-radius: 4px; opacity: 0; }
+  .fb-item:hover .fb-insert { opacity: 1; }
+  .fb-insert:hover { background: var(--accent-soft); }
 
   /* blocked-write "grant access" affordance (inline in the chat thread) */
   .grant-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; margin: 4px 0; border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; background: var(--panel); font-size: 12px; }
@@ -1097,13 +1100,15 @@ function fsList(path) {
     fileBrowser.innerHTML = d.items.map(it => {
       const ico = it.type === "dir" ? "📁" : "📄";
       const badge = it.in_model_scope ? '<span class="fb-badge rw">rw</span>' : '<span class="fb-badge ro">ro</span>';
-      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}</div>`;
+      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}${it.type === "dir" ? '<button class="fb-insert" title="Insert path into chat">⤴</button>' : ''}</div>`;
     }).join("");
     fileBrowser.querySelectorAll(".fb-item").forEach(el => {
       el.onclick = () => {
         if (el.dataset.type === "dir") fsList(el.dataset.path);
         else insertPath(el.dataset.abspath);
       };
+      const ins = el.querySelector(".fb-insert");
+      if (ins) ins.onclick = (e) => { e.stopPropagation(); insertPath(el.dataset.abspath); };
       if (el.dataset.type === "file") {
         el.ondragstart = (e) => { e.dataTransfer.setData("text/plain", el.dataset.abspath); e.dataTransfer.effectAllowed = "copy"; };
       }
