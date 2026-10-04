@@ -44,6 +44,10 @@ The `extensions/swarm/` orchestrator is the worked example of an extension. Keep
 separation clean: adding an extension must never require changing proxy code, and must not
 break the ability to mix providers against one DB.
 
+**Working principle (applies everywhere, not just files):** when something is out of scope —
+a file path, a config key, a tool behavior, a capability — say so honestly and ask, or grant
+it through the UI. Never work around it, and never claim a blocked action succeeded.
+
 ---
 
 ## Repo layout
