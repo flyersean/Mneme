@@ -404,6 +404,8 @@ header .model:hover { color: var(--accent); }
 .mp-provider-list .mp-prov.cur { background: var(--accent-soft); }
 .mp-prov .mp-prov-kind { color: var(--muted); font-size: 11px; }
 .mp-prov .mp-prov-key { color: var(--muted); font-size: 11px; }
+.mp-prov .mp-prov-key.mp-setkey-link { color: var(--accent); cursor: pointer; }
+.mp-prov .mp-prov-key.mp-setkey-link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -1293,13 +1295,22 @@ function renderProviders() {
   if (!mpCatalog.length) { mpProviderList.innerHTML = '<div class="mp-empty">No providers configured.</div>'; return; }
   mpProviderList.innerHTML = mpCatalog.map(p => {
     const isCur = p.name === mpActiveProvider;
-    const keyBadge = p.kind === "ollama" ? '<span class="mp-prov-kind">local</span>'
-      : (p.has_key ? '<span class="mp-prov-key">✓</span>' : '<span class="mp-prov-key">set key</span>');
+    const keyBadge = p.kind === "ollama"
+      ? '<span class="mp-prov-kind">local</span>'
+      : `<span class="mp-prov-key mp-setkey-link" data-setkey="${escAttr(p.name)}" title="${p.has_key ? 'Update key' : 'Set key'}">${p.has_key ? '✓' : 'set key'}</span>`;
     return `<div class="mp-prov${isCur ? " cur" : ""}" data-prov="${escAttr(p.name)}">` +
       `<span class="mp-prov-name">${escAttr(p.label || p.name)}</span>${keyBadge}</div>`;
   }).join("");
   mpProviderList.querySelectorAll(".mp-prov").forEach(div => {
     div.onclick = () => selectProvider(div.dataset.prov);
+  });
+  // The key badge opens the add/update dialog directly (without entering the models view).
+  mpProviderList.querySelectorAll(".mp-setkey-link").forEach(el => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      mpCurrentProvider = el.dataset.setkey;
+      openKeyDialog(el.dataset.setkey);
+    };
   });
 }
 
