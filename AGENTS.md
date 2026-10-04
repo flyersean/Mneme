@@ -1,12 +1,23 @@
-# AGENTS.md — Setting up Mneme and authoring extensions
+# AGENTS.md — How to use and code Mneme (for an AI)
 
 This file is the instruction manual for **AI agents** (coding agents, orchestration
-agents, etc.) that need to (1) stand up a Mneme proxy instance and (2) build an
-**extension** (an orchestrator or any other driver) that consumes Mneme proxies.
+agents, skill builders) that need to stand up a Mneme proxy, drive it, or build on top
+of it. It gives you the mental model, repo layout, and the key gotchas **inline**, and
+**links out** to the authoritative specs for everything detailed (config keys, the
+harness, extensions, strategy retrieval). When an inline statement and a linked spec
+disagree, trust the linked spec — it is the source of truth.
 
-It is self-contained: every config key and the full HTTP contract are specified below.
-The other reference doc is `mneme.yaml.example` (a tuned, copy-able proxy config
-with every key commented).
+**The specs, and where they live (read these for the detail):**
+
+| You need | Read |
+|---|---|
+| Every proxy config key | `mneme.yaml.example` (commented, tuned) |
+| The agent harness (runs/plan/verify, ledger, scheduler) | `docs/harness/SPEC.md` + `docs/harness/USER_GUIDE.md` |
+| Strategy retrieval + capability-edge/overcome | `docs/strategy-retrieval-spec.md` |
+| Memory chunking, trust tiers, provenance grading | `docs/provenance-and-chunk-lifecycle.md` |
+| Extension contract + the `extension.yaml` manifest | `extensions/README.md` |
+| Swarm orchestrator config (field-by-field) | `extensions/swarm/SWARM_REFERENCE.md` |
+| Human-facing overview, security, gateway | `README.md` |
 
 ---
 
@@ -32,6 +43,60 @@ Flask service that points at three *separate, swappable* parts:
 The `extensions/swarm/` orchestrator is the worked example of an extension. Keep the
 separation clean: adding an extension must never require changing proxy code, and must not
 break the ability to mix providers against one DB.
+
+---
+
+## Repo layout
+
+```text
+proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
+                        gateway.py (reverse proxy), static/*.html (chat/dashboard/
+                        extensions/strategies/runs/memory UIs), static/vendor/ (self-hosted
+                        CodeMirror), system_prompt*.md (the injected instructions),
+                        mneme/harness/ (the agent harness — core, not an extension)
+scripts/                mneme_setup.py (install + add-instance wizard),
+                        calibrate_similarity.py, benchmark.py, start_gateway.sh, …
+extensions/             HTTP consumers, NOT part of the proxy: gateways/, swarm/, pi/,
+                        + README.md (the contract + the extension.yaml manifest spec)
+docs/                   specs: harness/ (SPEC.md, USER_GUIDE.md, adr/),
+                        strategy-retrieval-spec.md, provenance-and-chunk-lifecycle.md,
+                        model-notes.md
+strategies.yaml         shipped strategy library (the self-improving layer)
+mneme.yaml.example      THE authoritative proxy config (every key + comment)
+model_templates.yaml    model templates
+tests/                  unittest suite (NOT pytest): python3 -m unittest tests.test_<name>
+skills/, experiments/   scratch / support
+```
+
+## Core concepts (the basics, with links)
+
+- **Memory.** Each turn is staged, chunked, embedded, and retrieved by cosine similarity
+  before the next turn (the "inject floor"). Chunks carry a trust tier
+  (`verified`/`unverified`) and a `[source: …]` citation; **provenance grading** scores an
+  answer's honesty, not its content. Detail: `docs/provenance-and-chunk-lifecycle.md`.
+
+- **Strategies / self-improving layer.** `strategies.yaml` (+ per-instance
+  `strategies.user.yaml`) holds learned directives, each linked to the source chunk that
+  produced it (no hand taxonomy). Retrieval is two-floor; a D/F turn distills one
+  imperative; **capability-edge tracking** routes a flagged `compute`/`live_data` task into
+  **overcome mode** (build/reuse a tool or answer honestly). On by default on `agent-harness`,
+  off on `main` — the switch is `storage.memory_only`. Detail:
+  `docs/strategy-retrieval-spec.md`.
+
+- **Harness (agent-harness).** Durable planned runs: goal → plan → worker steps → verify,
+  recorded to a ledger (`harness.db`) with `runs_dir` artifacts, plus resume/leases/reflect/
+  auto-apply and a scheduler. Core code in `proxy/mneme/harness/`, driven over the `/runs`
+  HTTP API, UI at `/runs/ui`. Detail: `docs/harness/SPEC.md` + `docs/harness/USER_GUIDE.md`.
+
+- **Extensions.** Programs that talk to a proxy over HTTP only — never imported, never share
+  code. An optional `extension.yaml` manifest makes one manageable from the `/extensions`
+  page (run/kill/configure/log + a YAML editor for `config_file`); without a manifest it still
+  runs from the terminal. Detail: `extensions/README.md`.
+
+- **Embedding.** One DB = one embedding model + one dimension (default
+  `qwen/qwen3-embedding-8b`, 1024-dim). Similarity thresholds are embedder-dependent — re-tune
+  `inject_min_similarity`/`strategy_min_similarity` whenever you change the embedder. The
+  startup health check flags a mismatched model/dim.
 
 ---
 
@@ -84,6 +149,9 @@ The setup wizard lays this out as `<db>/instances/<port>/mneme.yaml` (config) wi
 ---
 
 ## 3. `mneme.yaml` — full spec (proxy config)
+
+> **Authoritative:** `mneme.yaml.example`. This inline copy is for convenience and may
+> lag — if they disagree, trust the example.
 
 ### 3.1 Complete copy-able example
 
@@ -267,6 +335,9 @@ the harness records but never executes it. The full spec is `docs/harness/SPEC.m
 
 ## 5. `swarm_config.yaml` — full spec (orchestrator config)
 
+> **Authoritative:** `extensions/swarm/SWARM_REFERENCE.md` (field-by-field) + the shipped
+> `extensions/swarm/swarm_config.yaml`. This inline copy may lag.
+
 This is the config for `extensions/swarm/swarm_orchestrator.py`. It is the reference for
 what an orchestrator config should look like.
 
@@ -410,6 +481,7 @@ extensions/<name>/
   README.md          # what it does, how to run, how to adapt
   <your script>      # the driver (orchestrator)
   <your config>.yaml # the loop/step definition (if config-driven)
+  extension.yaml     # OPTIONAL manifest -> manageable from the /extensions page
 ```
 
 Rules:
@@ -423,5 +495,29 @@ Rules:
 4. **Add a `README.md`** with: what it does, the run command, the config schema, and how to
    adapt it (ports, backends, control flow).
 5. **Reference it in the main README** under the `## Extensions` section.
+
+### 7.1 The `extension.yaml` manifest (optional standard)
+
+By default an extension is a program you run in the terminal. If you add an
+`extension.yaml` to its directory, the proxy's **Extensions** page (`/extensions`)
+discovers, configures, runs and kills it — including a code editor (line numbers, YAML
+highlighting, format/validate) for any `config_file`. The standard is **opt-in and
+non-enforced**: a directory without a manifest is skipped by the page and still runs the
+terminal way.
+
+Fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | identifier shown on the page (defaults to the directory name) |
+| `description` | one-line summary |
+| `command` | executable + fixed args, run from the manifest's directory |
+| `args` | trailing args; `{port}` and `{url}` are substituted with the proxy's own |
+| `config` | list of `{key, label, type, required, default, options}` — each `key` is exported into the process env |
+| `config_file` | optional path to a YAML file in this directory; shown as a raw editor instead of a form |
+
+`config` types: `secret` (password), `string`, `number`, `select` (needs `options`).
+Values are saved per-proxy to `<chunk_dir>/extensions_runtime/<name>.env`; pidfiles + logs
+live alongside them. See `extensions/README.md` for a worked example.
 
 The reference implementation is `extensions/swarm/` — read it before writing a new one.
