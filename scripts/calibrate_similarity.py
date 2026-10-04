@@ -150,7 +150,7 @@ def embed_batch(texts, label):
     """Embed a list of texts via OpenRouter (single batched request), returning
     an (n, DIM) float array. Retries on transient cold-start/timeout errors."""
     if not OR_KEY:
-        print("ERROR: OPENROUTER_API_KEY not set. Source /home/sean/mneme/env first.")
+        print("ERROR: OPENROUTER_API_KEY not set. Source your API-key env file (e.g. ~/mneme/env) first.")
         sys.exit(1)
     for attempt in range(5):
         try:

@@ -8,7 +8,7 @@ This drives the REAL build_context() and inspects the text the model receives.
 """
 import json, os, re, sys, tempfile
 
-REPO = "/home/sean/mneme/repo"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "proxy"))
 
 TMP = tempfile.mkdtemp(prefix="mneme_badlabel_")
