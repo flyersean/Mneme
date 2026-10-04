@@ -102,12 +102,18 @@
   /* command sidebar */
   #layout { flex: 1; display: flex; min-height: 0; }
   #sidebar {
-    width: 236px; flex-shrink: 0;
+    width: 236px; flex-shrink: 0; position: relative;
     background: var(--panel); border-right: 1px solid var(--border);
     display: flex; flex-direction: column; overflow: hidden;
     transition: width .15s ease;
   }
-  #sidebar.collapsed { width: 46px; }
+  #sidebar.collapsed { width: 46px !important; }
+  #sb-resize {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 6px;
+    cursor: col-resize; z-index: 5;
+  }
+  #sb-resize:hover, #sb-resize.dragging { background: var(--accent); opacity: .5; }
+  #sidebar.collapsed #sb-resize { display: none; }
   .sb-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
   .sb-title { font-weight: 600; font-size: 13px; white-space: nowrap; }
   #sb-toggle { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 6px; cursor: pointer; padding: 1px 9px; font-size: 14px; line-height: 1.4; }
@@ -494,6 +500,7 @@ header .model:hover { color: var(--accent); }
     <div class="sb-filehead"><span>Files</span><button id="fb-scope" title="Set the model's write scope to this folder">◎ scope</button><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button><button id="fb-open-config" title="Configure 'open with system app' actions">⚙</button></div>
     <div class="sb-filepath" id="fb-path">…</div>
     <div class="sb-files" id="file-browser"></div>
+    <div id="sb-resize" title="Drag to resize"></div>
   </aside>
   <div id="main">
     <div id="chat"><div class="inner" id="thread"></div></div>
@@ -1090,6 +1097,39 @@ try {
     sbToggle.textContent = "»";
   }
 } catch (e) {}
+
+// ── sidebar resize handle ────────────────────────────────────────
+const sbResize = document.getElementById("sb-resize");
+let resizeDragging = false;
+sbResize.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  resizeDragging = true;
+  sbResize.classList.add("dragging");
+  sidebar.style.transition = "none";   // no easing while dragging
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize";
+});
+document.addEventListener("mousemove", (e) => {
+  if (!resizeDragging) return;
+  const rect = sidebar.getBoundingClientRect();
+  const w = Math.min(640, Math.max(160, e.clientX - rect.left));
+  sidebar.style.width = w + "px";
+});
+document.addEventListener("mouseup", () => {
+  if (!resizeDragging) return;
+  resizeDragging = false;
+  sbResize.classList.remove("dragging");
+  sidebar.style.transition = "";
+  document.body.style.userSelect = "";
+  document.body.style.cursor = "";
+  try { localStorage.setItem("mneme.sidebarWidth", String(parseInt(sidebar.style.width) || 236)); } catch (e) {}
+});
+// restore a saved width (the collapsed state still wins via `!important`)
+try {
+  const w = parseInt(localStorage.getItem("mneme.sidebarWidth"));
+  if (w >= 160 && w <= 640) sidebar.style.width = w + "px";
+} catch (e) {}
+
 renderSidebar();
 
 // ── file browser ────────────────────────────────────────────────
@@ -1206,7 +1246,7 @@ function fsList(path) {
       const ico = it.type === "dir" ? "📁" : "📄";
       const badge = it.in_model_scope ? '<span class="fb-badge rw">rw</span>' : '<span class="fb-badge ro">ro</span>';
       const openTitle = it.type === "dir" ? "Open folder in the system file manager" : "Open file with the system default app";
-      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}" data-kind="${fbKind(it)}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}<button class="fb-insert" title="Insert path into chat">⤴</button><button class="fb-open" title="${openTitle}">↗</button></div>`;
+      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}" data-kind="${fbKind(it)}"><span class="fb-ico">${ico}</span><span class="fb-name" title="${escAttr(it.name)}">${escAttr(it.name)}</span>${badge}<button class="fb-insert" title="Insert path into chat">⤴</button><button class="fb-open" title="${openTitle}">↗</button></div>`;
     }).join("");
     fileBrowser.querySelectorAll(".fb-item").forEach(el => {
       el.onclick = () => {
