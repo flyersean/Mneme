@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue, ast
+import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -887,6 +887,41 @@ def _persist_model_scope(path: str) -> bool:
         return True
     except Exception as e:
         print(f"  [FS-SCOPE] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+# ── "Open with system app" commands (file browser) ─────────────────
+# Per-kind launcher commands, persisted to a small JSON sidecar beside the config
+# so a user can override the system default (all default to `xdg-open`, which asks
+# the OS's default-app table). Kinds: folder, text, browser, other.
+_OPEN_CMDS_DEFAULT = {"folder": "xdg-open", "text": "xdg-open", "browser": "xdg-open", "other": "xdg-open"}
+
+
+def _open_cmds_path() -> str:
+    base = os.path.dirname(CONFIG_PATH) if CONFIG_PATH else (DB_DIR or ".")
+    return os.path.join(base, "open_commands.json")
+
+
+def _load_open_commands() -> dict:
+    cmds = dict(_OPEN_CMDS_DEFAULT)
+    try:
+        with open(_open_cmds_path(), "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cmds.update({k: v for k, v in loaded.items() if k in _OPEN_CMDS_DEFAULT})
+    except Exception:
+        pass
+    return cmds
+
+
+def _save_open_commands(cmds: dict) -> bool:
+    try:
+        with open(_open_cmds_path(), "w", encoding="utf-8") as f:
+            json.dump({k: (cmds.get(k) or _OPEN_CMDS_DEFAULT[k]).strip() or _OPEN_CMDS_DEFAULT[k]
+                       for k in _OPEN_CMDS_DEFAULT}, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"  [FS-OPEN] save open_commands failed: {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -8683,6 +8718,51 @@ if FLASK_OK:
         if request.args.get("clear") == "1":
             mntools.clear_blocked_writes()
         return _cors_response({"blocked": paths})
+
+    @app.route("/fs/open-config", methods=["GET"])
+    def fs_open_config():
+        """The per-kind "open with system app" launcher commands (all default to
+        `xdg-open`)."""
+        return _cors_response({"commands": _load_open_commands()})
+
+    @app.route("/fs/open-config", methods=["POST"])
+    def fs_open_config_save():
+        data = request.get_json(force=True, silent=True) or {}
+        cmds = _load_open_commands()
+        for k in _OPEN_CMDS_DEFAULT:
+            v = (data.get(k) or "").strip()
+            if v:
+                cmds[k] = v
+        ok = _save_open_commands(cmds)
+        return _cors_response({"ok": ok, "commands": cmds})
+
+    @app.route("/fs/open", methods=["POST"])
+    def fs_open():
+        """Open a path (inside browser_root) with the system app for its kind. The
+        command is looked up from the user's open-commands config, never taken from
+        the request, and the path is passed as a separate argv element (no shell)."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        kind = (data.get("kind") or "other").strip()
+        if kind not in _OPEN_CMDS_DEFAULT:
+            kind = "other"
+        if not path:
+            return _cors_response({"ok": False, "error": "missing path"}, 400)
+        root = _browser_root()
+        target = os.path.realpath(os.path.expanduser(path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        if not os.path.exists(target):
+            return _cors_response({"ok": False, "error": "path does not exist"}, 404)
+        cmd = (_load_open_commands().get(kind) or "xdg-open").strip()
+        try:
+            cmdline = shlex.split(cmd) + [target]
+            subprocess.Popen(cmdline, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            return _cors_response({"ok": False, "error": f"launch failed: {e}"}, 500)
+        print(f"  [FS-OPEN] {kind} -> {cmd} {target}", flush=True)
+        return _cors_response({"ok": True, "command": cmd, "path": target})
 
     # ── Conversations (persistent chat) ──
     def _conv_db():

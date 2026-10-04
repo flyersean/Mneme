@@ -147,9 +147,25 @@
   .fb-empty { color: var(--muted); font-size: 13px; padding: 4px 8px; }
   .fb-badge.rw { color: var(--green); border-color: var(--green); }
   .fb-badge.ro { color: var(--muted); }
-  .fb-insert { flex-shrink: 0; border: none; background: none; color: var(--accent); cursor: pointer; font-size: 14px; line-height: 1; padding: 1px 4px; border-radius: 4px; opacity: 0; }
-  .fb-item:hover .fb-insert { opacity: 1; }
-  .fb-insert:hover { background: var(--accent-soft); }
+  .fb-insert, .fb-open { flex-shrink: 0; border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--muted); }
+  .fb-insert:hover, .fb-open:hover { background: var(--accent-soft); color: var(--accent); }
+
+  /* "open with system app" settings modal */
+  #fb-open-dialog { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; }
+  #fb-open-dialog.open { display: flex; }
+  .fo-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; width: 480px; max-width: 92vw; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+  .fo-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+  .fo-sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  .fo-field { margin-bottom: 12px; }
+  .fo-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+  .fo-field input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; outline: none; }
+  .fo-field input:focus { border-color: var(--accent); }
+  .fo-field .fo-hint { display: block; margin-top: 3px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); }
+  .fo-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .fo-actions button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
+  .fo-actions button:hover { background: var(--accent-soft); }
+  .fo-actions .fo-save { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .fo-actions .fo-save:hover { background: var(--accent); }
 
   /* blocked-write "grant access" affordance (inline in the chat thread) */
   .grant-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; margin: 4px 0; border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; background: var(--panel); font-size: 12px; }
@@ -475,7 +491,7 @@ header .model:hover { color: var(--accent); }
     </div>
     <div class="sb-cmds" id="sidebar-cmds"></div>
     <div class="sb-sep"></div>
-    <div class="sb-filehead"><span>Files</span><button id="fb-scope" title="Set the model's write scope to this folder">◎ scope</button><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button></div>
+    <div class="sb-filehead"><span>Files</span><button id="fb-scope" title="Set the model's write scope to this folder">◎ scope</button><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button><button id="fb-open-config" title="Configure 'open with system app' actions">⚙</button></div>
     <div class="sb-filepath" id="fb-path">…</div>
     <div class="sb-files" id="file-browser"></div>
   </aside>
@@ -487,6 +503,37 @@ header .model:hover { color: var(--accent); }
         <button id="send">Send</button>
       </div>
     </footer>
+  </div>
+</div>
+
+<div id="fb-open-dialog">
+  <div class="fo-box">
+    <div class="fo-title">Open with system app</div>
+    <div class="fo-sub">Which command launches each kind of path. Leave as <code>xdg-open</code> to use your system default; override to pin a specific app (e.g. <code>nemo</code> for folders, <code>geany</code> for code, <code>google-chrome</code> for HTML).</div>
+    <div class="fo-field">
+      <label for="fo-folder">Folder</label>
+      <input id="fo-folder" placeholder="xdg-open">
+      <span class="fo-hint">file manager — nemo, thunar, nautilus, dolphin…</span>
+    </div>
+    <div class="fo-field">
+      <label for="fo-text">Text / code file</label>
+      <input id="fo-text" placeholder="xdg-open">
+      <span class="fo-hint">.txt .md .py .js .json… — geany, code, gedit, kate…</span>
+    </div>
+    <div class="fo-field">
+      <label for="fo-browser">HTML / web file</label>
+      <input id="fo-browser" placeholder="xdg-open">
+      <span class="fo-hint">.html .htm — google-chrome, chromium, firefox…</span>
+    </div>
+    <div class="fo-field">
+      <label for="fo-other">Everything else</label>
+      <input id="fo-other" placeholder="xdg-open">
+      <span class="fo-hint">images, PDFs, binaries…</span>
+    </div>
+    <div class="fo-actions">
+      <button id="fo-cancel">Cancel</button>
+      <button id="fo-save" class="fo-save">Save</button>
+    </div>
   </div>
 </div>
 
@@ -1060,6 +1107,64 @@ function insertPath(p) {
   resizeInput(); input.focus();
 }
 
+// Classify a file-browser entry into an "open with system app" kind.
+function fbKind(it) {
+  if (it.type === "dir") return "folder";
+  const n = (it.name || "").toLowerCase();
+  if (/\.(html?|xhtml)$/.test(n)) return "browser";
+  if (/\.(txt|md|markdown|rst|tex|py|js|mjs|cjs|ts|jsx|tsx|json|ya?ml|toml|ini|cfg|conf|sh|bash|zsh|c|h|cc|cpp|hpp|java|go|rs|rb|php|sql|xml|svg|css|scss|less|log|env|gitignore|makefile|dockerfile|csv|tsv)$/.test(n)) return "text";
+  return "other";
+}
+
+async function openSystemApp(path, kind) {
+  try {
+    const r = await fetch("/fs/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, kind }) });
+    const d = await r.json();
+    if (d.ok) toast("Opened with: " + (d.command || "system default"));
+    else toast("Open failed: " + (d.error || r.status));
+  } catch (e) { toast("Open failed: " + e.message); }
+}
+
+// ── "open with system app" settings ───────────────────────────────
+const fbOpenDialog = document.getElementById("fb-open-dialog");
+const fbOpenConfigBtn = document.getElementById("fb-open-config");
+
+async function loadOpenConfig() {
+  try {
+    const r = await fetch("/fs/open-config");
+    const d = await r.json();
+    const c = d.commands || {};
+    document.getElementById("fo-folder").value = c.folder || "";
+    document.getElementById("fo-text").value = c.text || "";
+    document.getElementById("fo-browser").value = c.browser || "";
+    document.getElementById("fo-other").value = c.other || "";
+  } catch (e) {}
+}
+
+async function saveOpenConfig() {
+  try {
+    const body = {
+      folder: document.getElementById("fo-folder").value.trim(),
+      text: document.getElementById("fo-text").value.trim(),
+      browser: document.getElementById("fo-browser").value.trim(),
+      other: document.getElementById("fo-other").value.trim(),
+    };
+    const r = await fetch("/fs/open-config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (d.ok) { toast("Open actions saved"); closeOpenConfig(); }
+    else toast("Save failed: " + (d.error || "?"));
+  } catch (e) { toast("Save failed: " + e.message); }
+}
+
+function openOpenConfig() { loadOpenConfig(); fbOpenDialog.classList.add("open"); }
+function closeOpenConfig() { fbOpenDialog.classList.remove("open"); }
+
+fbOpenConfigBtn.onclick = openOpenConfig;
+document.getElementById("fo-cancel").onclick = closeOpenConfig;
+document.getElementById("fo-save").onclick = saveOpenConfig;
+fbOpenDialog.addEventListener("click", (e) => { if (e.target === fbOpenDialog) closeOpenConfig(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && fbOpenDialog.classList.contains("open")) closeOpenConfig(); });
+
 function fbAbs() {
   if (!fbCurrent || fbCurrent === ".") return fbRoot;
   return fbRoot + "/" + fbCurrent;
@@ -1100,7 +1205,8 @@ function fsList(path) {
     fileBrowser.innerHTML = d.items.map(it => {
       const ico = it.type === "dir" ? "📁" : "📄";
       const badge = it.in_model_scope ? '<span class="fb-badge rw">rw</span>' : '<span class="fb-badge ro">ro</span>';
-      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}${it.type === "dir" ? '<button class="fb-insert" title="Insert path into chat">⤴</button>' : ''}</div>`;
+      const openTitle = it.type === "dir" ? "Open folder in the system file manager" : "Open file with the system default app";
+      return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}" data-kind="${fbKind(it)}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}<button class="fb-insert" title="Insert path into chat">⤴</button><button class="fb-open" title="${openTitle}">↗</button></div>`;
     }).join("");
     fileBrowser.querySelectorAll(".fb-item").forEach(el => {
       el.onclick = () => {
@@ -1109,6 +1215,8 @@ function fsList(path) {
       };
       const ins = el.querySelector(".fb-insert");
       if (ins) ins.onclick = (e) => { e.stopPropagation(); insertPath(el.dataset.abspath); };
+      const opn = el.querySelector(".fb-open");
+      if (opn) opn.onclick = (e) => { e.stopPropagation(); openSystemApp(el.dataset.abspath, el.dataset.kind); };
       if (el.dataset.type === "file") {
         el.ondragstart = (e) => { e.dataTransfer.setData("text/plain", el.dataset.abspath); e.dataTransfer.effectAllowed = "copy"; };
       }
