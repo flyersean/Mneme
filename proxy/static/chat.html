@@ -1126,8 +1126,12 @@ document.getElementById("hrun-goal").addEventListener("keydown", (e) => {
 
 function updatePalette() {
   const v = input.value;
-  if (!v.startsWith("/")) { palette.classList.remove("open"); return; }
-  const prefix = v.split(/\s+/)[0];
+  // The palette completes a bare command name. Once a space appears the user is
+  // typing arguments, so close it — Enter must SEND the request, not re-pick the
+  // command (otherwise a typed "/run <goal>" would vanish on Enter because the
+  // palette was still open — e.g. "/runs" is a prefix match of "/run").
+  if (!v.startsWith("/") || v.includes(" ")) { palette.classList.remove("open"); return; }
+  const prefix = v;
   const matches = HARNESS_COMMANDS.filter(([c]) => c.split(" ")[0].startsWith(prefix));
   if (!matches.length) { palette.classList.remove("open"); return; }
   paletteSel = Math.min(paletteSel, matches.length - 1);
