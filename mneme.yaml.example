@@ -121,7 +121,7 @@ storage:
   inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
   memory_only: false         # true = memory-only build: the EXPERIMENTAL strategy/self-improving layer is OFF by
                              # default (memory + grading + tools stay on). Not dead — it's developed and tested on
-                             # the unified_mneme branch and merged back into main. main defaults true, unified false.
+                             # the agent-harness branch and merged back into main. main defaults true, agent-harness false.
   memory_enabled: true       # master switch: false = NO memory — no retrieval/injection, no staging/archiving, search_memory off (run through the proxy with tools only)
   inject_enabled: true       # false = SAVE-ONLY mode: skip memory retrieval/injection (models see NO memory context),
                              # but turns are still staged/archived, and search_memory + /search still work. Good for
