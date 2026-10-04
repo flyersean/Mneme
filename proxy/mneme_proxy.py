@@ -7682,6 +7682,20 @@ if FLASK_OK:
 
     _EXTENSIONS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "extensions.html")
 
+    @app.route("/themes", methods=["GET"])
+    def themes_list():
+        """List available themes (CSS files under static/themes/). A custom theme
+        is just a <name>.css dropped there — it shows up here and in the switcher."""
+        themes_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "themes")
+        names = []
+        if os.path.isdir(themes_dir):
+            names = sorted(
+                os.path.splitext(f)[0]
+                for f in os.listdir(themes_dir)
+                if f.endswith(".css") and not f.startswith("_")
+            )
+        return _cors_response({"themes": names})
+
     @app.route("/extensions", methods=["GET"])
     def extensions_ui():
         return _serve_html(_EXTENSIONS_HTML_PATH, "EXTENSIONS-UI")

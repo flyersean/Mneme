@@ -1,0 +1,21 @@
+/* Mneme light theme — canonical variables (every theme defines these). */
+:root {
+  --fg: #1f2937;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e5e7eb;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+  --green: #16a34a;
+  --green-soft: #f0fdf4;
+  --red: #dc2626;
+  --red-soft: #fef2f2;
+  --amber: #b45309;
+  --amber-soft: #fffbeb;
+  --user-bubble: #2563eb;
+  --user-text: #ffffff;
+  --assistant-bubble: #ffffff;
+  --code-bg: #f3f4f6;
+  --tool-bg: #f8fafc;
+}

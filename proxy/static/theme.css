@@ -1,0 +1,39 @@
+/* Mneme shared theme — canonical CSS variables + local-name aliases.
+ *
+ * Themes (light / dark / custom) are plain CSS files in /static/themes/ that
+ * define the CANONICAL variables below (--fg, --bg, --panel, --line, --muted,
+ * --accent, --accent-soft, --green, --green-soft, --red, --red-soft, --amber,
+ * --amber-soft, --user-bubble, --user-text, --assistant-bubble, --code-bg,
+ * --tool-bg). To add a theme, drop a <name>.css there — it is listed by
+ * GET /themes and appears in the switcher automatically (see /static/theme.js).
+ *
+ * This file defines NO colors. It only maps each page's LOCAL variable names
+ * (which predate the theme system and differ slightly per page) onto the
+ * canonical names above, so a single theme file drives every page.
+ */
+:root {
+  --text: var(--fg);
+  --ink: var(--fg);
+  --border: var(--line);
+  --card: var(--panel);
+  --ok: var(--green);
+  --ok-soft: var(--green-soft);
+  --danger: var(--red);
+  --danger-soft: var(--red-soft);
+  --warn: var(--amber);
+  --warn-soft: var(--amber-soft);
+}
+
+/* Theme switcher — a <select> injected into the nav by /static/theme.js */
+.theme-switcher {
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.theme-switcher:focus { outline: none; border-color: var(--accent); }
