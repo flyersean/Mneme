@@ -819,7 +819,7 @@ async function send() {
     const resp = await fetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, messages: history, stream: true }),
+      body: JSON.stringify({ model: MODEL, messages: history, stream: true, conversation_id: convId }),
       signal: controller.signal
     });
     if (!resp.ok) throw new Error("HTTP " + resp.status);

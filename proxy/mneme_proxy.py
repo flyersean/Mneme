@@ -8688,6 +8688,7 @@ if FLASK_OK:
     def _conv_db():
         os.makedirs(DB_DIR, exist_ok=True)
         conn = sqlite3.connect(os.path.join(DB_DIR, "conversations.db"))
+        conn.execute("PRAGMA busy_timeout = 5000")  # worker thread + HTTP handlers share this DB
         conn.execute("CREATE TABLE IF NOT EXISTS conversations ("
                      "id TEXT PRIMARY KEY, title TEXT, messages TEXT, created_at TEXT, updated_at TEXT)")
         conn.commit()
@@ -8695,6 +8696,31 @@ if FLASK_OK:
 
     def _conv_now():
         return datetime.now(timezone.utc).isoformat()
+
+    def _persist_conversation(conv_id, messages, title=None):
+        """Write a conversation straight to the DB (no HTTP round-trip). Used by the
+        streaming worker so a turn's reply is persisted server-side even if the client
+        navigates away mid-stream and never saves it itself."""
+        if not conv_id:
+            return
+        conn = _conv_db()
+        try:
+            now = _conv_now()
+            exists = conn.execute("SELECT id FROM conversations WHERE id=?", (conv_id,)).fetchone()
+            if not exists:
+                conn.execute("INSERT INTO conversations (id, title, messages, created_at, updated_at) "
+                             "VALUES (?,?,?,?,?)",
+                             (conv_id, (title or "").strip() or "New chat",
+                              json.dumps(messages or []), now, now))
+            else:
+                if title is not None:
+                    conn.execute("UPDATE conversations SET title=? WHERE id=?",
+                                 ((title or "").strip() or "New chat", conv_id))
+                conn.execute("UPDATE conversations SET messages=?, updated_at=? WHERE id=?",
+                             (json.dumps(messages or []), now, conv_id))
+            conn.commit()
+        finally:
+            conn.close()
 
     @app.route("/conversations", methods=["GET"])
     def conversations_list():
@@ -8832,7 +8858,8 @@ if FLASK_OK:
         
         if stream:
             return _chat_stream(messages, tools=data.get("tools"), session_id=session_id,
-                                options=_gen_opts, max_tokens=_max_tokens)
+                                options=_gen_opts, max_tokens=_max_tokens,
+                                conversation_id=data.get("conversation_id"))
         
         result = process_chat(messages, tools=data.get("tools"), session_id=session_id,
                               options=_gen_opts, max_tokens=_max_tokens)
@@ -8991,7 +9018,8 @@ if FLASK_OK:
             return resp
     
     # ── Chat completions (SSE streaming) ──
-    def _chat_stream(messages, tools=None, session_id="default", options=None, max_tokens=None):
+    def _chat_stream(messages, tools=None, session_id="default", options=None, max_tokens=None,
+                     conversation_id=None):
         import queue as _queue
         import threading as _threading
 
@@ -9003,6 +9031,7 @@ if FLASK_OK:
             # Install the token sink in THIS thread (the one running process_chat)
             # so the provider streaming loop emits each piece as it arrives.
             _stream_local.sink = lambda k, t: q.put(("token", k, t))
+            turn_messages = list(messages)  # snapshot before process_chat may consume it
             try:
                 r = process_chat(messages, tools=tools, session_id=session_id,
                                  options=options, max_tokens=max_tokens)
@@ -9011,6 +9040,18 @@ if FLASK_OK:
                      "done_reason": "error", "error": str(e)}
             finally:
                 _stream_local.sink = None
+            # Persist the turn server-side so the reply survives client navigation /
+            # refresh / tab-close. (The client still saves as a fast path; this is the
+            # durable one that runs even when the client is gone.)
+            if conversation_id:
+                try:
+                    content = r.get("content") or ""
+                    if not content:
+                        content = "(no response)"
+                    _persist_conversation(conversation_id,
+                                          turn_messages + [{"role": "assistant", "content": content}])
+                except Exception as e:
+                    _log_error("chat_stream:persist_conversation", e)
             # Telemetry (was done after process_chat in the old buffered path).
             try:
                 _enqueue(_check_suspect_grade, r.get("_grade", "C"), r.get("content", ""), messages)
