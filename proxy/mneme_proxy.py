@@ -9117,7 +9117,6 @@ if FLASK_OK:
             mimetype="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
                 "Access-Control-Allow-Origin": "*",
             }
         )

@@ -37,3 +37,8 @@
   cursor: pointer;
 }
 .theme-switcher:focus { outline: none; border-color: var(--accent); }
+
+/* Global UI scale — the UI reads best at 125% browser zoom, so bake that in.
+ * CSS `zoom` scales layout + text together (mimics browser zoom). The file
+ * browser's own font sizes are bumped separately in chat.html to ~150%. */
+html { zoom: 1.25; }
