@@ -7,47 +7,148 @@
 <script src="/static/theme.js"></script>
 <title>Mneme — Strategies</title>
 <style>
-  
-  *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
-  .mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0;background:var(--card);border-bottom:1px solid var(--border)}
-  .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
-  .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
-  .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-  main{max-width:1080px;margin:0 auto;padding:16px 24px 40px}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:14px}
-  h1{font-size:18px;margin:0 0 4px}
-  .muted{color:var(--muted);font-size:12px}
-  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
-  select,input[type=text],textarea{font:inherit;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--ink)}
-  textarea{width:100%;min-height:180px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;resize:vertical}
-  button{font:inherit;padding:6px 12px;border-radius:7px;border:1px solid var(--border);background:var(--panel);color:var(--ink);cursor:pointer}
-  button:hover{border-color:var(--accent);color:var(--accent)}
-  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-  button.ok{background:var(--ok);color:#fff;border-color:var(--ok)}
-  button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
-  button.tiny{padding:3px 8px;font-size:12px}
-  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
-  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
-  th{background:var(--panel);font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
-  tr:hover td{background:var(--panel);cursor:pointer}
-  tr.retired td{opacity:.55}
-  .badge{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600}
-  .b-A{background:var(--green-soft);color:var(--green)}
-  .b-B{background:var(--accent-soft);color:var(--accent)}
-  .b-C{background:var(--amber-soft);color:var(--amber)}
-  .b-F{background:var(--red-soft);color:var(--red)}
-  .src{color:var(--muted);font-size:11px}
-  .preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;color:var(--muted)}
-  .err{color:var(--danger);margin:8px 0;min-height:18px}
-  .okmsg{color:var(--ok);margin:8px 0;min-height:18px}
-  .row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-  .grow{flex:1}
-  .hidden{display:none}
-  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:12px}
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 28px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 900px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 20px 80px; }
+
+  .notice {
+    background: var(--accent-soft); border: 1px solid var(--accent-soft); border-radius: 8px;
+    padding: 12px 16px; font-size: 13px; color: var(--accent); margin-bottom: 18px;
+  }
+  .notice b { font-weight: 600; }
+
+  /* ── Filters ── */
+  .filters {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .frow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .f { display: flex; flex-direction: column; gap: 4px; }
+  .f label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .f input, .f select {
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
+    font-size: 13px; background: var(--panel); color: var(--text); min-width: 130px;
+    font-family: inherit;
+  }
+  .f input:focus, .f select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .f.grow input { min-width: 230px; }
+  button {
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    border-radius: 7px; padding: 8px 13px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: var(--accent-soft); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); border-color: var(--danger); background: var(--panel); }
+  button.danger:hover { background: var(--danger-soft); }
+  button.ok { color: var(--ok); border-color: var(--ok); background: var(--panel); }
+  button.ok:hover { background: var(--ok-soft); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.tiny { padding: 4px 9px; font-size: 12px; }
+
+  .resultbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .bulkbar {
+    display: none; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--warn-soft); border: 1px solid var(--amber-soft); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--amber);
+  }
+  .bulkbar.on { display: flex; }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  thead th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600; padding: 10px 12px; background: var(--panel);
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.retired { background: var(--danger-soft); }
+  tbody tr:hover { background: var(--panel); }
+  tbody tr.retired:hover { background: var(--red-soft); }
+  .cid { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; white-space: nowrap; }
+  .preview { max-width: 460px; color: var(--fg); }
+  .topic { font-weight: 600; margin-bottom: 2px; }
+  .when { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .tags { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; border: 1px solid var(--border); background: var(--panel); color: var(--fg);
+    white-space: nowrap;
+  }
+  .tag.retired { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); font-weight: 600; }
+  .tag.src { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .tag.gradeA { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+  .tag.gradeB { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .tag.gradeC { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
+  .tag.gradeF { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+  .rowacts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .err { background: var(--danger-soft); border: 1px solid var(--red); color: var(--danger); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; display: none; }
+  .err.on { display: block; }
+
+  /* ── Detail drawer ── */
+  .drawer-back { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: none; z-index: 40; }
+  .drawer-back.on { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(680px, 94vw);
+    background: var(--card); border-left: 1px solid var(--border); z-index: 41;
+    transform: translateX(100%); transition: transform .18s ease; overflow-y: auto;
+  }
+  .drawer.on { transform: translateX(0); }
+  .drawer-head { position: sticky; top: 0; background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .drawer-body { padding: 16px 18px 60px; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 5px 12px; font-size: 13px; margin-bottom: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .sect { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 18px 0 8px; }
+  textarea {
+    width: 100%; min-height: 200px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.5; background: var(--panel); color: var(--text); resize: vertical;
+  }
+  textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .editrow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-bottom: 10px; }
+  .editrow label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; display: flex; flex-direction: column; gap: 4px; }
+  .editrow select {
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
+    font-size: 13px; background: var(--panel); color: var(--text); min-width: 130px; font-family: inherit;
+  }
+</style>
+<style>
+.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
+.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
+.mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
+.mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 </head>
 <body>
+<header>
+  <h1>Strategies</h1>
+  <p>
+    Problem-solving playbooks, keyed by problem type. They inject on matching turns (and on
+    failed harness steps), never into unrelated problems. <b>Shipped</b> strategies live in
+    <code id="shippedPath">strategies.yaml</code>; <b>user</b> strategies (promoted via "Ship")
+    in <code id="userPath">strategies.user.yaml</code> — both survive a DB reset.
+  </p>
+</header>
 <nav class="mneme-nav">
   <a href="/">Dashboard</a>
   <a href="/chat">Chat</a>
@@ -60,63 +161,102 @@
 </nav>
 
 <main>
-  <h1>Strategies</h1>
-  <p class="muted">
-    Problem-solving playbooks, keyed by problem type. They inject on matching turns (and on failed
-    harness steps), never into unrelated problems. <b>Shipped</b> strategies live in
-    <code id="shippedPath">strategies.yaml</code>; <b>user</b> strategies (promoted below) in
-    <code id="userPath">strategies.user.yaml</code> — both survive a DB reset.
-  </p>
+  <div class="notice">
+    <b>Retire, don't delete.</b> Retiring a strategy keeps it (and its history) while taking it
+    out of circulation — reversible at any time. Deleting removes it from the DB entirely; a
+    shipped copy in <code>strategies.yaml</code> would re-appear on the next reset.
+  </div>
+  <div class="err" id="err"></div>
 
-  <div class="card">
-    <div class="toolbar">
-      <select id="ptype"><option value="">All problem types</option></select>
-      <select id="src">
-        <option value="">All sources</option>
-        <option value="shipped">shipped</option>
-        <option value="user">user</option>
-        <option value="imported">imported</option>
-        <option value="model">model</option>
-        <option value="run">run</option>
-      </select>
-      <label><input type="checkbox" id="showRetired"> show retired</label>
-      <span class="grow"></span>
-      <button id="exportBtn" title="Download all strategies as JSON (save anywhere)">⭳ Export all</button>
-      <button id="importBtn" title="Import strategies from a previously exported JSON file">⭱ Import…</button>
-      <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+  <div class="filters">
+    <div class="frow">
+      <div class="f grow">
+        <label for="keyword">Keyword (playbook or type)</label>
+        <input id="keyword" placeholder="e.g. price, verify, live_data" autocomplete="off">
+      </div>
+      <div class="f">
+        <label for="ptype">Problem type</label>
+        <select id="ptype"><option value="">All types</option></select>
+      </div>
+      <div class="f">
+        <label for="src">Source</label>
+        <select id="src"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="grade">Grade</label>
+        <select id="grade"><option value="">Any</option></select>
+      </div>
+      <div class="f">
+        <label for="retired">Retired state</label>
+        <select id="retired">
+          <option value="">All strategies</option>
+          <option value="active">Active only</option>
+          <option value="retired">Retired only</option>
+        </select>
+      </div>
+      <div class="f">
+        <label for="order">Sort</label>
+        <select id="order">
+          <option value="uses">Most used</option>
+          <option value="success">Most successful</option>
+          <option value="rate">Best success rate</option>
+          <option value="type">By problem type</option>
+          <option value="grade">By grade</option>
+        </select>
+      </div>
+      <div class="f"><button id="clear">Clear</button></div>
+      <div class="f"><button id="exportAll" title="Download all strategies as JSON">⭳ Export all</button></div>
+      <div class="f"><button id="importBtn" title="Import strategies from a previously exported JSON file">⭱ Import…</button></div>
+      <input type="file" id="importFile" accept=".json,application/json" style="display:none">
     </div>
-    <div class="err" id="err"></div>
-    <div class="okmsg" id="ok"></div>
-    <div id="list"></div>
   </div>
 
-  <div class="card hidden" id="detail">
-    <div class="row">
-      <b id="dTitle" style="font-family:ui-monospace,monospace">—</b>
-      <span class="grow"></span>
-      <button class="tiny ok" id="shipBtn">⭱ Ship to user file</button>
-      <button class="tiny" id="exportOneBtn">⭳ Export</button>
-      <button class="tiny" id="retireBtn">Retire</button>
-      <button class="tiny danger" id="delBtn">Delete</button>
-    </div>
-    <div class="row">
-      <label>problem_type</label>
-      <select id="dPtype"></select>
-      <label>grade</label>
-      <select id="dGrade"><option>A</option><option>B</option><option>C</option><option>F</option></select>
-      <span class="src" id="dMeta"></span>
-    </div>
-    <textarea id="dText"></textarea>
-    <div class="row">
-      <span class="grow"></span>
-      <button class="primary" id="saveBtn">Save changes</button>
+  <div class="resultbar">
+    <div class="count" id="count">—</div>
+    <div style="display:flex;gap:8px;">
+      <button class="tiny" id="selall">Select all on page</button>
+      <button class="tiny" id="selnone">Clear selection</button>
     </div>
   </div>
+
+  <div class="bulkbar" id="bulkbar">
+    <span id="bulkcount">0 selected</span>
+    <button class="ok" id="bulkunretire">Un-retire selected</button>
+    <button class="danger" id="bulkretire">Retire selected</button>
+    <button class="danger" id="bulkdelete">Delete selected</button>
+    <button id="bulkcancel">Cancel</button>
+  </div>
+
+  <div id="listwrap"></div>
 </main>
 
+<div class="drawer-back" id="back"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div><b id="dtitle">Strategy</b><div class="cid" id="dcid" style="color:var(--muted)"></div></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button id="dship" class="tiny ok" title="Promote to the user strategies file (survives a DB reset)">⭱ Ship</button>
+      <button id="dexport" class="tiny" title="Download just this strategy as JSON">⭳ Export</button>
+      <button id="dretire" class="tiny danger">Retire</button>
+      <button id="ddelete" class="tiny danger">Delete</button>
+      <button id="dclose" class="tiny">✕</button>
+    </div>
+  </div>
+  <div class="drawer-body" id="dbody"></div>
+</aside>
+
 <script>
-const $ = id => document.getElementById(id);
-let state = { items: [], current: null, ptypes: new Set() };
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { items: [], selected: new Set(), current: null };
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function showErr(msg) { $("err").textContent = msg; $("err").classList.add("on"); }
+function clearErr() { $("err").classList.remove("on"); }
 
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -125,143 +265,291 @@ async function api(url, opts) {
   if (!r.ok) throw new Error(body.error || (r.status + " " + r.statusText));
   return body;
 }
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function load() {
-  $("err").textContent = "";
+  clearErr();
   try {
     const d = await api("/strategies");
     state.items = d.strategies || [];
-    state.ptypes = new Set(state.items.map(i => i.problem_type).filter(Boolean));
     if (d.shipped_path) $("shippedPath").textContent = d.shipped_path;
     if (d.user_path) $("userPath").textContent = d.user_path;
-    fillPtype();
+    fillDropdowns();
     render();
-  } catch (e) { $("err").textContent = e.message; }
+  } catch (e) { showErr(e.message); }
 }
 
-function fillPtype() {
-  const sel = $("ptype"), cur = sel.value;
-  sel.innerHTML = '<option value="">All problem types</option>' +
-    [...state.ptypes].sort().map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
-  sel.value = cur;
+function fillDropdowns() {
+  const ptypes = new Set(), sources = new Set(), grades = new Set();
+  state.items.forEach((i) => {
+    if (i.problem_type) ptypes.add(i.problem_type);
+    if (i.created_by) sources.add(i.created_by);
+    if (i.grade) grades.add(i.grade);
+  });
+  const fill = (id, vals, allLabel) => {
+    const sel = $(id), cur = sel.value;
+    sel.innerHTML = `<option value="">${allLabel}</option>` +
+      [...vals].sort().map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    sel.value = cur;
+  };
+  fill("ptype", ptypes, "All types");
+  fill("src", sources, "Any");
+  fill("grade", grades, "Any");
 }
 
 function filtered() {
-  const pt = $("ptype").value, src = $("src").value, sr = $("showRetired").checked;
-  return state.items.filter(i =>
-    (!pt || i.problem_type === pt) &&
-    (!src || i.created_by === src) &&
-    (sr || !i.retired));
+  const kw = $("keyword").value.trim().toLowerCase();
+  const pt = $("ptype").value, src = $("src").value, gr = $("grade").value, ret = $("retired").value;
+  let items = state.items.filter((i) => {
+    if (pt && i.problem_type !== pt) return false;
+    if (src && i.created_by !== src) return false;
+    if (gr && i.grade !== gr) return false;
+    if (ret === "active" && i.retired) return false;
+    if (ret === "retired" && !i.retired) return false;
+    if (kw) {
+      const hay = ((i.strategy_text || "") + " " + (i.problem_type || "")).toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+  const order = $("order").value;
+  const rate = (i) => (i.use_count ? (i.success_count || 0) / i.use_count : 0);
+  const cmp = {
+    uses: (a, b) => (b.use_count || 0) - (a.use_count || 0),
+    success: (a, b) => (b.success_count || 0) - (a.success_count || 0),
+    rate: (a, b) => rate(b) - rate(a),
+    type: (a, b) => (a.problem_type || "").localeCompare(b.problem_type || ""),
+    grade: (a, b) => (a.grade || "Z").localeCompare(b.grade || "Z"),
+  }[order] || ((a, b) => 0);
+  items.sort(cmp);
+  return items;
+}
+
+function rowTags(i) {
+  const t = [];
+  if (i.retired) t.push('<span class="tag retired">RETIRED</span>');
+  if (i.grade) {
+    const cls = i.grade === "A" ? "gradeA" : (i.grade === "B" ? "gradeB" : (i.grade === "C" ? "gradeC" : "gradeF"));
+    t.push(`<span class="tag ${cls}">grade ${esc(i.grade)}</span>`);
+  }
+  if (i.created_by) t.push(`<span class="tag src">${esc(i.created_by)}</span>`);
+  return t.join(" ");
 }
 
 function render() {
+  const wrap = $("listwrap");
   const items = filtered();
-  const rows = items.map(i => `
-    <tr class="${i.retired ? 'retired' : ''}" data-id="${esc(i.strategy_id)}">
-      <td>${esc(i.problem_type)}</td>
-      <td><span class="badge b-${esc(i.grade || 'B')}">${esc(i.grade || 'B')}</span></td>
-      <td class="preview" title="${esc(i.strategy_text)}">${esc(i.strategy_text)}</td>
-      <td class="src">${esc(i.created_by || '')}</td>
-      <td>${i.use_count || 0}</td>
-      <td>${i.success_count || 0}</td>
-      <td>${i.retired ? 'retired' : 'active'}</td>
-    </tr>`).join("");
-  $("list").innerHTML = items.length
-    ? `<table><thead><tr><th>type</th><th>grade</th><th>playbook</th><th>source</th><th>uses</th><th>✓</th><th>state</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<p class="muted">No strategies match the filter.</p>';
-  document.querySelectorAll("#list tr[data-id]").forEach(tr =>
-    tr.addEventListener("click", () => openDetail(tr.dataset.id)));
+  $("count").textContent = `${items.length} of ${state.items.length} strateg${state.items.length === 1 ? "y" : "ies"}`;
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty">No strategies match these filters.</div>';
+    return;
+  }
+  const rows = items.map((i) => {
+    const on = state.selected.has(i.strategy_id);
+    return `
+      <tr class="${i.retired ? "retired" : ""}">
+        <td><input type="checkbox" data-sel="${esc(i.strategy_id)}" ${on ? "checked" : ""}></td>
+        <td>
+          <div class="topic">${esc(i.problem_type || "(no type)")}</div>
+          <div class="preview">${esc(i.strategy_text)}</div>
+        </td>
+        <td><div class="tags">${rowTags(i)}</div></td>
+        <td>${i.use_count || 0}</td>
+        <td>${i.success_count || 0}</td>
+        <td>
+          <div class="rowacts">
+            <button class="tiny" data-open="${esc(i.strategy_id)}">View</button>
+            ${i.retired
+              ? `<button class="tiny ok" data-retire="${esc(i.strategy_id)}" data-to="0">Restore</button>`
+              : `<button class="tiny danger" data-retire="${esc(i.strategy_id)}" data-to="1">Retire</button>`}
+          </div>
+        </td>
+      </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:34px"></th><th>Type / playbook</th><th>Flags</th>
+      <th>Uses</th><th>✓</th><th>Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-function openDetail(id) {
-  const i = state.items.find(x => x.strategy_id === id);
+function updateBulk() {
+  const n = state.selected.size;
+  $("bulkbar").classList.toggle("on", n > 0);
+  $("bulkcount").textContent = n + " selected";
+}
+
+async function setRetired(ids, retired) {
+  clearErr();
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      await api("/strategies/" + encodeURIComponent(id), {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ retired: !!retired }),
+      });
+    } catch (e) { failed++; }
+  }
+  if (failed) showErr(failed + " strateg" + (failed === 1 ? "y" : "ies") + " could not be updated");
+  state.selected.clear();
+  await load();
+}
+
+async function deleteMany(ids) {
+  clearErr();
+  if (!confirm("Delete " + ids.length + " strateg" + (ids.length === 1 ? "y" : "ies") +
+      "? Shipped copies in strategies.yaml will re-appear on the next reset.")) return;
+  let failed = 0;
+  for (const id of ids) {
+    try { await api("/strategies/" + encodeURIComponent(id), { method: "DELETE" }); }
+    catch (e) { failed++; }
+  }
+  if (failed) showErr(failed + " strateg" + (failed === 1 ? "y" : "ies") + " could not be deleted");
+  state.selected.clear();
+  await load();
+}
+
+async function openDetail(id) {
+  clearErr();
+  const i = state.items.find((x) => x.strategy_id === id);
   if (!i) return;
   state.current = i;
-  $("detail").classList.remove("hidden");
-  $("dTitle").textContent = i.strategy_id;
-  $("dPtype").value = i.problem_type;
-  $("dGrade").value = i.grade || "B";
-  $("dText").value = i.strategy_text;
-  $("dMeta").textContent = `source: ${i.created_by || '?'} · uses ${i.use_count || 0} · ✓ ${i.success_count || 0} · ${i.retired ? 'retired' : 'active'}`;
-  $("retireBtn").textContent = i.retired ? "Unretire" : "Retire";
-  window.scrollTo({top: 0, behavior: "smooth"});
+  $("dtitle").textContent = i.problem_type || "(no type)";
+  $("dcid").textContent = i.strategy_id || "";
+  $("dretire").textContent = i.retired ? "Un-retire" : "Retire";
+  $("dretire").className = i.retired ? "tiny ok" : "tiny danger";
+  const ptOpts = [...new Set(state.items.map(x => x.problem_type).filter(Boolean))].sort()
+    .map(p => `<option value="${esc(p)}" ${p === i.problem_type ? "selected" : ""}>${esc(p)}</option>`).join("");
+  $("dbody").innerHTML = `
+    <div class="editrow">
+      <label>problem_type
+        <select id="dPtype"><option value="">(none)</option>${ptOpts}</select>
+      </label>
+      <label>grade
+        <select id="dGrade">
+          ${["A","B","C","D","F"].map(g => `<option ${g === (i.grade || "B") ? "selected" : ""}>${g}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    <textarea id="dText">${esc(i.strategy_text)}</textarea>
+    <dl class="kv" style="margin-top:16px">
+      <dt>State</dt><dd>${i.retired ? "<b style='color:var(--danger)'>retired</b> — not injected" : "active"}</dd>
+      <dt>Source</dt><dd>${esc(i.created_by || "—")}</dd>
+      <dt>Uses</dt><dd>${i.use_count || 0}</dd>
+      <dt>Successes</dt><dd>${i.success_count || 0}</dd>
+      <dt>Cost</dt><dd>${i.cost || "—"}</dd>
+    </dl>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="primary" id="dsave">Save changes</button>
+    </div>
+  `;
+  $("dsave").addEventListener("click", save);
+  $("back").classList.add("on");
+  $("drawer").classList.add("on");
 }
 
 async function save() {
   if (!state.current) return;
+  clearErr();
   try {
     await api("/strategies/" + encodeURIComponent(state.current.strategy_id), {
-      method: "PUT", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ problem_type: $("dPtype").value, grade: $("dGrade").value, strategy_text: $("dText").value })
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        problem_type: $("dPtype").value, grade: $("dGrade").value, strategy_text: $("dText").value,
+      }),
     });
-    $("ok").textContent = "saved";
-    load();
-  } catch (e) { $("err").textContent = e.message; }
+    closeDrawer();
+    await load();
+  } catch (e) { showErr(e.message); }
 }
 
-async function toggleRetired() {
+async function retireCurrent() {
   if (!state.current) return;
-  try {
-    await api("/strategies/" + encodeURIComponent(state.current.strategy_id), {
-      method: "PUT", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ retired: !state.current.retired })
-    });
-    $("ok").textContent = state.current.retired ? "un-retired" : "retired";
-    load();
-  } catch (e) { $("err").textContent = e.message; }
+  await setRetired([state.current.strategy_id], !state.current.retired);
+  closeDrawer();
 }
 
-async function ship() {
+async function shipCurrent() {
   if (!state.current) return;
+  clearErr();
   try {
     const d = await api("/strategies/" + encodeURIComponent(state.current.strategy_id) + "/ship", { method: "POST" });
-    $("ok").textContent = d.shipped ? `shipped to ${d.user_path}` : "ship failed";
-    load();
-  } catch (e) { $("err").textContent = e.message; }
+    closeDrawer();
+    await load();
+  } catch (e) { showErr(e.message); }
 }
 
-async function del() {
+async function deleteCurrent() {
   if (!state.current) return;
-  if (!confirm("Delete this strategy? (Shipped copies in strategies.yaml will re-appear on next reset.)")) return;
-  try {
-    await api("/strategies/" + encodeURIComponent(state.current.strategy_id), { method: "DELETE" });
-    $("detail").classList.add("hidden");
-    state.current = null;
-    $("ok").textContent = "deleted";
-    load();
-  } catch (e) { $("err").textContent = e.message; }
+  await deleteMany([state.current.strategy_id]);
+  closeDrawer();
 }
 
-function exportAll() { window.location = "/strategies/export"; }
+function closeDrawer() {
+  $("back").classList.remove("on");
+  $("drawer").classList.remove("on");
+  state.current = null;
+}
+
 function exportOne() {
   if (state.current) window.location = "/strategies/export?id=" + encodeURIComponent(state.current.strategy_id);
 }
 
 async function importFile(file) {
   if (!file) return;
+  clearErr();
   try {
     const fd = new FormData();
     fd.append("file", file);
     const r = await fetch("/strategies/import", { method: "POST", body: fd });
     const b = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(b.error || r.status);
-    $("ok").textContent = `imported ${b.imported} strateg${b.imported === 1 ? "y" : "ies"}`;
-    load();
-  } catch (e) { $("err").textContent = e.message; }
+    await load();
+  } catch (e) { showErr(e.message); }
 }
 
-$("saveBtn").addEventListener("click", save);
-$("retireBtn").addEventListener("click", toggleRetired);
-$("shipBtn").addEventListener("click", ship);
-$("delBtn").addEventListener("click", del);
-$("exportBtn").addEventListener("click", exportAll);
-$("exportOneBtn").addEventListener("click", exportOne);
+// ── wiring ──
+$("clear").addEventListener("click", () => {
+  $("keyword").value = ""; $("ptype").value = ""; $("src").value = "";
+  $("grade").value = ""; $("retired").value = ""; $("order").value = "uses";
+  render();
+});
+["keyword", "ptype", "src", "grade", "retired", "order"].forEach((id) =>
+  $(id).addEventListener("input", render));
+$("keyword").addEventListener("keydown", (e) => { if (e.key === "Enter") render(); });
+$("exportAll").addEventListener("click", () => { window.location = "/strategies/export"; });
 $("importBtn").addEventListener("click", () => $("importFile").click());
-$("importFile").addEventListener("change", e => { importFile(e.target.files[0]); e.target.value = ""; });
-$("ptype").addEventListener("change", render);
-$("src").addEventListener("change", render);
-$("showRetired").addEventListener("change", render);
+$("importFile").addEventListener("change", (e) => { importFile(e.target.files[0]); e.target.value = ""; });
+$("selall").addEventListener("click", () => {
+  filtered().forEach((i) => state.selected.add(i.strategy_id));
+  render(); updateBulk();
+});
+$("selnone").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkcancel").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkunretire").addEventListener("click", () => setRetired([...state.selected], false));
+$("bulkretire").addEventListener("click", () => setRetired([...state.selected], true));
+$("bulkdelete").addEventListener("click", () => deleteMany([...state.selected]));
+
+$("listwrap").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.open) openDetail(t.dataset.open);
+  else if (t.dataset && t.dataset.retire) setRetired([t.dataset.retire], t.dataset.to === "1");
+});
+$("listwrap").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.sel) {
+    if (t.checked) state.selected.add(t.dataset.sel);
+    else state.selected.delete(t.dataset.sel);
+    updateBulk();
+  }
+});
+
+$("dclose").addEventListener("click", closeDrawer);
+$("back").addEventListener("click", closeDrawer);
+$("dship").addEventListener("click", shipCurrent);
+$("dexport").addEventListener("click", exportOne);
+$("dretire").addEventListener("click", retireCurrent);
+$("ddelete").addEventListener("click", deleteCurrent);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
 load();
 </script>
