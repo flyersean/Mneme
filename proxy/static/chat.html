@@ -217,9 +217,10 @@
   }
   .row.user .bubble pre { background: rgba(255,255,255,0.18); }
 
-  .thinking { color: var(--muted); font-style: italic; font-size: 14px; padding: 8px 4px; }
-  .thinking .dot { animation: blink 1.2s infinite; }
-  @keyframes blink { 0%,100% { opacity: .2; } 50% { opacity: 1; } }
+  .thinking { color: var(--muted); font-style: italic; font-size: 14px; padding: 8px 4px; display: flex; align-items: center; gap: 6px; }
+  .thinking .thinking-label { margin-right: 2px; }
+  .thinking .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); display: inline-block; animation: dot-bounce 1.4s infinite ease-in-out; }
+  @keyframes dot-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-5px); opacity: 1; } }
 
   details.reasoning { margin: 4px 0; }
   details.reasoning summary { cursor: pointer; color: var(--muted); font-size: 12px; }
@@ -596,9 +597,13 @@ function appendToolCalls(trace) {
 
 function appendThinking() {
   const row = el("div", "row assistant");
-  const t = el("div", "thinking", "thinking");
-  const dots = el("span", "dot", " . . .");
-  t.appendChild(dots);
+  const t = el("div", "thinking");
+  t.appendChild(el("span", "thinking-label", "thinking"));
+  for (let i = 0; i < 3; i++) {
+    const d = el("span", "dot");
+    d.style.animationDelay = (i * 0.18) + "s";
+    t.appendChild(d);
+  }
   row.appendChild(t);
   thread.appendChild(row);
   scrollDown();
