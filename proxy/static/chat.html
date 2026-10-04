@@ -776,7 +776,7 @@ async function send() {
   input.style.height = "auto";
   appendMessage("user", text);
   history.push({ role: "user", content: text });
-  saveConversation();
+  await saveConversation();
 
   // /run <goal> → start a harness run and stream its live activity into the chat
   if (/^\/run(\s|$)/.test(text)) {
@@ -861,14 +861,14 @@ async function send() {
     if (!content) content = "(no response)";
     bubble.innerHTML = renderMarkdown(content);
     history.push({ role: "assistant", content: content });
-    saveConversation();
+    await saveConversation();
     scrollDown();
   } catch (e) {
     if (e.name === "AbortError") {
       if (content) {
         bubble.innerHTML = renderMarkdown(content);
         history.push({ role: "assistant", content: content });
-        saveConversation();
+        await saveConversation();
       } else {
         bubble.textContent = "[stopped]";
       }
