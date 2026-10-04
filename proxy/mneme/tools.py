@@ -84,6 +84,32 @@ def _writable_roots():
         if not any(r == x or r.startswith(x + os.sep) for x in roots):
             roots.append(r)
     return roots
+
+
+# ─── Blocked-write tracking ─────────────────────────────────────
+# When the `write` tool refuses a path outside scope, it's recorded here so the
+# proxy can surface it (GET /fs/blocked) and the chat UI can offer a one-click
+# "grant write access" affordance. Capped + deduped to the last N distinct paths.
+_BLOCKED_WRITES = []
+_BLOCKED_WRITES_MAX = 50
+
+
+def record_blocked_write(path):
+    p = os.path.realpath(str(path))
+    if p not in _BLOCKED_WRITES:
+        _BLOCKED_WRITES.append(p)
+        if len(_BLOCKED_WRITES) > _BLOCKED_WRITES_MAX:
+            _BLOCKED_WRITES.pop(0)
+
+
+def recent_blocked_writes():
+    return list(_BLOCKED_WRITES)
+
+
+def clear_blocked_writes():
+    _BLOCKED_WRITES.clear()
+
+
 TOOL_INJECT_MIN_SIM = float(os.environ.get("MNEME_TOOL_INJECT_MIN_SIMILARITY", "0.75"))
 TOOL_INJECT_MAX = int(os.environ.get("MNEME_TOOL_INJECT_MAX", "3"))
 TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
@@ -659,6 +685,7 @@ def _exec_write(file_path, content):
         os.makedirs(TOOLS_DIR, exist_ok=True)
         full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
         if not _writable(full):
+            record_blocked_write(full)
             return (f"[write blocked: {full} is outside the model write scope "
                     f"({MODEL_SCOPE}, {TOOLS_DIR}, and run workspaces under {RUNS_ROOT}). "
                     f"Write inside that scope instead.]")

@@ -51,5 +51,40 @@ class TestNativeToolPathConsistency(unittest.TestCase):
         self.assertIn("tools directory", write_desc.lower())
 
 
+class TestBlockedWriteTracking(unittest.TestCase):
+    """A blocked `write` (path outside the model scope) must be recorded so the
+    proxy can surface it (GET /fs/blocked) and the chat UI can offer a one-click
+    "grant write access" affordance."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["MNEME_TOOLS_DIR"] = self.tmp
+        mntools.reload_config()
+        mntools.clear_blocked_writes()
+
+    def tearDown(self):
+        mntools.clear_blocked_writes()
+        mntools.reload_config()
+
+    def test_blocked_write_is_recorded(self):
+        outside = os.path.realpath(os.path.join(self.tmp, "..", "outside_scope.txt"))
+        res = mntools.execute_native_tool("write", {"file_path": outside, "content": "x"})
+        self.assertIn("blocked", res)
+        self.assertIn(outside, mntools.recent_blocked_writes())
+
+    def test_blocked_write_dedupes(self):
+        outside = os.path.realpath(os.path.join(self.tmp, "..", "outside_scope.txt"))
+        mntools.execute_native_tool("write", {"file_path": outside, "content": "x"})
+        mntools.execute_native_tool("write", {"file_path": outside, "content": "y"})
+        self.assertEqual(mntools.recent_blocked_writes().count(outside), 1)
+
+    def test_clear_blocked_writes(self):
+        outside = os.path.realpath(os.path.join(self.tmp, "..", "outside_scope.txt"))
+        mntools.execute_native_tool("write", {"file_path": outside, "content": "x"})
+        self.assertEqual(len(mntools.recent_blocked_writes()), 1)
+        mntools.clear_blocked_writes()
+        self.assertEqual(mntools.recent_blocked_writes(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

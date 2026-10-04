@@ -145,6 +145,20 @@
   .fb-badge { font-size: 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
   .fb-item.out .fb-name { color: var(--muted); }
   .fb-empty { color: var(--muted); font-size: 11px; padding: 4px 8px; }
+  .fb-badge.rw { color: var(--green); border-color: var(--green); }
+  .fb-badge.ro { color: var(--muted); }
+
+  /* blocked-write "grant access" affordance (inline in the chat thread) */
+  .grant-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px; margin: 4px 0; border: 1px solid var(--border); border-left: 3px solid var(--amber); border-radius: 8px; background: var(--panel); font-size: 12px; }
+  .grant-row code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+  .grant-msg { color: var(--muted); }
+  .grant-btn { padding: 3px 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px; }
+  .grant-btn:hover { filter: brightness(1.08); }
+  .grant-btn:disabled { opacity: .6; cursor: default; }
+
+  /* transient toast */
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(10px); background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.15); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 999; max-width: 80vw; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   #sidebar.collapsed .sb-filehead, #sidebar.collapsed .sb-filepath, #sidebar.collapsed .sb-files { display: none; }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
@@ -458,7 +472,7 @@ header .model:hover { color: var(--accent); }
     </div>
     <div class="sb-cmds" id="sidebar-cmds"></div>
     <div class="sb-sep"></div>
-    <div class="sb-filehead"><span>Files</span><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button></div>
+    <div class="sb-filehead"><span>Files</span><button id="fb-scope" title="Set the model's write scope to this folder">◎ scope</button><button id="fb-up" title="Up one level">↑</button><button id="fb-refresh" title="Refresh">↻</button></div>
     <div class="sb-filepath" id="fb-path">…</div>
     <div class="sb-files" id="file-browser"></div>
   </aside>
@@ -792,6 +806,7 @@ async function send() {
   busy = true;
   setBusyUI(true);
   controller = new AbortController();
+  fetch("/fs/blocked?clear=1").catch(() => {});   // reset this turn's blocked-write set
 
   // assistant row filled live as tokens stream in
   const row = el("div", "row assistant");
@@ -868,6 +883,7 @@ async function send() {
     busy = false;
     controller = null;
     setBusyUI(false);
+    checkBlockedWrites();
     input.focus();
   }
 }
@@ -1035,21 +1051,56 @@ const fileBrowser = document.getElementById("file-browser");
 const fbPath = document.getElementById("fb-path");
 const fbUp = document.getElementById("fb-up");
 const fbRefresh = document.getElementById("fb-refresh");
+const fbScope = document.getElementById("fb-scope");
 let fbCurrent = "";
+let fbRoot = "";        // absolute browser root (from /fs/list)
+let fbModelScope = "";  // absolute model write scope (from /fs/list)
 
 function insertPath(p) {
   input.value = (input.value.trim() ? input.value.trim() + " " : "") + p;
   resizeInput(); input.focus();
 }
 
+function fbAbs() {
+  if (!fbCurrent || fbCurrent === ".") return fbRoot;
+  return fbRoot + "/" + fbCurrent;
+}
+
+function toast(msg) {
+  let t = document.getElementById("toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 3400);
+}
+
+async function setScope(path) {
+  if (!path) return;
+  try {
+    const r = await fetch("/fs/scope", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+    const d = await r.json();
+    if (d.ok) {
+      fbModelScope = d.model_scope;
+      toast("Write scope set to " + d.model_scope);
+      fsList(fbCurrent);   // refresh rw/ro badges
+    } else {
+      toast("Set scope failed: " + (d.error || r.status));
+    }
+  } catch (e) { toast("Set scope failed: " + e.message); }
+}
+
 function fsList(path) {
   fetch("/fs/list?path=" + encodeURIComponent(path || "")).then(r => r.json()).then(d => {
     fbCurrent = d.current || "";
+    fbRoot = d.root || "";
+    if (d.model_scope) fbModelScope = d.model_scope;
     fbPath.textContent = (d.current === "." || !d.current) ? "~" : d.current;
+    fbScope.title = fbModelScope ? ("Set the model's write scope to this folder (current: " + fbModelScope + ")") : "Set the model's write scope to this folder";
     if (!d.items || !d.items.length) { fileBrowser.innerHTML = '<div class="fb-empty">(empty)</div>'; return; }
     fileBrowser.innerHTML = d.items.map(it => {
       const ico = it.type === "dir" ? "📁" : "📄";
-      const badge = it.in_model_scope ? '<span class="fb-badge">rw</span>' : '<span class="fb-badge">ro</span>';
+      const badge = it.in_model_scope ? '<span class="fb-badge rw">rw</span>' : '<span class="fb-badge ro">ro</span>';
       return `<div class="fb-item${it.in_model_scope ? "" : " out"}" draggable="${it.type === "file"}" data-path="${escAttr(it.path)}" data-abspath="${escAttr(it.abspath)}" data-type="${it.type}"><span class="fb-ico">${ico}</span><span class="fb-name">${escAttr(it.name)}</span>${badge}</div>`;
     }).join("");
     fileBrowser.querySelectorAll(".fb-item").forEach(el => {
@@ -1066,7 +1117,36 @@ function fsList(path) {
 
 fbUp.onclick = () => fsList(fbCurrent.split("/").slice(0, -1).join("/"));
 fbRefresh.onclick = () => fsList(fbCurrent);
+fbScope.onclick = () => setScope(fbAbs());
 fsList("");
+
+// ── blocked-write "grant access" affordance ─────────────────────
+function appendGrantButton(path) {
+  const row = el("div", "grant-row");
+  const msg = el("span", "grant-msg", "The model tried to write outside its scope:");
+  const code = el("code", null, path);
+  const btn = el("button", "grant-btn", "Grant write access");
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = "Granting…";
+    await setScope(path);
+    btn.textContent = "Granted ✓";
+  };
+  row.appendChild(msg); row.appendChild(code); row.appendChild(btn);
+  thread.appendChild(row);
+  scrollDown();
+}
+
+async function checkBlockedWrites() {
+  try {
+    const r = await fetch("/fs/blocked?clear=1");
+    const d = await r.json();
+    for (const p of (d.blocked || [])) {
+      if (fbModelScope && p === fbModelScope) continue;
+      appendGrantButton(p);
+    }
+  } catch (e) {}
+}
 
 // drop a dragged file path into the composer
 input.addEventListener("dragover", (e) => e.preventDefault());

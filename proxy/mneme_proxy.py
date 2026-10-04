@@ -867,6 +867,29 @@ def _persist_backend_provider(name: str) -> bool:
         return False
 
 
+def _persist_model_scope(path: str) -> bool:
+    """Persist `filesystem.model_scope` to the config file (2-space indent under
+    `filesystem:`) so a scope change survives a restart. Targeted single-line
+    replace, preserving every other line's formatting/comments."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        new_text, n = re.subn(r'(?m)^  model_scope:\s*.*$', f'  model_scope: "{path}"', text, count=1)
+        if n == 0:
+            print("  [FS-SCOPE] no `  model_scope:` line to replace", flush=True)
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [FS-SCOPE] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
 def _persist_backend_type(t: str) -> bool:
     """Persist `backend.type:` (2-space indent under `backend:`), used when the
     switcher toggles between an OpenAI-compatible backend and Ollama."""
@@ -8603,7 +8626,8 @@ if FLASK_OK:
                 })
         except OSError as ex:
             return _cors_response({"error": str(ex), "items": []}, 500)
-        return _cors_response({"root": root, "current": os.path.relpath(target, root), "items": items})
+        return _cors_response({"root": root, "current": os.path.relpath(target, root),
+                               "model_scope": model_scope, "items": items})
 
     @app.route("/fs/read", methods=["GET"])
     def fs_read():
@@ -8630,6 +8654,35 @@ if FLASK_OK:
             "in_model_scope": _within(target, _model_scope()),
             "content": content,
         })
+
+    @app.route("/fs/scope", methods=["POST"])
+    def fs_scope():
+        """Set the model's write scope (filesystem.model_scope) to a path inside
+        browser_root. Hot-applies via mntools.set_scope and persists to the config
+        file so it survives a restart. Validated against browser_root so a user can
+        only grant scope to something the browser can actually see."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return _cors_response({"ok": False, "error": "missing path"}, 400)
+        root = _browser_root()
+        target = os.path.realpath(os.path.expanduser(path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        CONFIG_DATA.setdefault("filesystem", {})["model_scope"] = target
+        mntools.set_scope(model_scope=target)
+        persisted = _persist_model_scope(target)
+        print(f"  [FS-SCOPE] model_scope -> {target} (persisted={persisted})", flush=True)
+        return _cors_response({"ok": True, "model_scope": target, "persisted": persisted})
+
+    @app.route("/fs/blocked", methods=["GET"])
+    def fs_blocked():
+        """Recent paths the model tried to write but were outside scope. Pass
+        `clear=1` to pop them after returning (the chat UI fetches per-turn)."""
+        paths = mntools.recent_blocked_writes()
+        if request.args.get("clear") == "1":
+            mntools.clear_blocked_writes()
+        return _cors_response({"blocked": paths})
 
     # ── Conversations (persistent chat) ──
     def _conv_db():
