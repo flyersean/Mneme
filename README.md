@@ -66,7 +66,7 @@ your **laptop** to reach a remote proxy.
 ### 1. Install (on the host)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/memory-only/scripts/install.sh | MNEME_BRANCH=memory-only bash
 ```
 
 **What the installer touches.** It is more than a `pip install`, so here is the
@@ -99,13 +99,13 @@ cd Mneme && ./scripts/install.sh
 ### 2. Configure (on the host)
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/memory-only/scripts/mneme_setup.py && MNEME_BRANCH=memory-only python3 /tmp/setup.py
 ```
 
 ### 3. Connect (on your laptop — only for a remote pod)
 
 ```bash
-curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/memory-only/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/` (links to chat, memory, prompts, templates), chat UI at `/chat`, OpenAI-compatible API at `/v1`. Skip step 3 if you're running everything on one machine.
@@ -148,7 +148,7 @@ Once running, the proxy is at `http://localhost:8080/` — dashboard at `/` (lin
 
 ## How it fits together
 
-**Memory-only by default, full-featured underneath.** This branch (`main`) ships with the *strategy / self-improving layer* turned **off by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `unified_mneme` branch and merged back into `main` as they stabilize. Set `memory_only: false` (or `MNEME_MEMORY_ONLY=0`) to turn them on here — the config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
+**Memory-only by default, full-featured underneath.** This branch (`memory-only`) ships with the *strategy / self-improving layer* turned **off by default** — the one switch is `storage.memory_only` in the config (env-var equivalent `MNEME_MEMORY_ONLY`). It limits which features are *on by default*, not which features exist: memory retrieval, provenance grading, and the full tool loop always run, and the off-by-default features are **experimental**, not dead. They're developed and tested on the `agent-harness` branch and merged back into `memory-only` as they stabilize. Set `memory_only: false` (or `MNEME_MEMORY_ONLY=0`) to turn them on here — the config key is **live-reloadable** (edit it and the next request picks it up, no restart). See "Experimental features" below.
 
 **Backend-agnostic.** One config file chooses the backend — local [Ollama](https://ollama.com) or any OpenAI-compatible provider (OpenRouter, OpenAI, DeepSeek, Groq, Together, Mistral, ...). No GPU or model downloads are required when running against a hosted provider.
 
@@ -346,7 +346,7 @@ A vision-capable backend sees images through the proxy, and images are remembere
 
 *These exist and are under active development, but they're **off by default** on this
 branch (`memory_only: true`). They are not dead code — they're developed and tested
-on the `unified_mneme` branch and merged back into `main` as they stabilize. Set
+on the `agent-harness` branch and merged back into `memory-only` as they stabilize. Set
 `memory_only: false` to enable them here.*
 
 - **Strategy / self-improving layer** — strategy learning from tool traces, novel-procedure detection, failure extraction, and belief evolution. Strategies are linked to the source chunk that produced them, and retrieval keys on that linkage (no hand-maintained problem-type taxonomy). A D/F turn distills one imperative directive to prevent recurrence — filtered through a junk-directive guard *and* skipped entirely for honest-terminal answers; SUCCESS strategies save only on a recovery (≥2 consecutive tool failures then success).
@@ -801,7 +801,7 @@ Reference scales:
 
 `storage.memory_only: true` (the default on this branch) turns off the experimental strategy/self-improving layer while keeping memory retrieval, provenance grading, and the full toolset. It is a *default on/off switch*, not a removal — the code stays present and tested.
 
-`storage.memory_only: false` enables the experimental layer; the `unified_mneme` branch ships that way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
+`storage.memory_only: false` enables the experimental layer; the `agent-harness` branch ships that way. The config key is **live-reloadable** — edit `mneme.yaml` and the next request picks up the change without restarting the proxy. (The env var `MNEME_MEMORY_ONLY` is the equivalent override, and takes precedence over the config key if you export it manually.)
 
 ### Memory modes — the flags + the floor
 
@@ -966,7 +966,7 @@ The full suite is **386 tests** across 21 files. Beyond the tool loop:
 `tests/test_mcp_client.py` requires the `mcp` package (`pip install mcp`); its
 tests are skipped/failed without it.
 
-The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `unified_mneme` branch — it exercises the experimental layer, not the default memory-only path.
+The live-model capability benchmark (a separate harness that runs a scripted model through capability-edge tasks and scores the outcome) lives on the `agent-harness` branch — it exercises the experimental layer, not the default memory-only path.
 
 ## Gateway (reverse proxy)
 
@@ -1158,5 +1158,6 @@ See `extensions/swarm/README.md` for a worked example that exercises every primi
 
 ## Branches
 
-- `main` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`memory_only: true`). Start here.
-- `unified_mneme` — **the full build**. Same code with the experimental layer enabled by default (`memory_only: false`), plus the live-model capability benchmark harness. This is where the experimental features are developed and tested before being merged back into `main`.
+- `memory-only` — **the release branch** (this branch). Memory retrieval, provenance grading, and the full toolset on; the experimental strategy/self-improving layer off by default (`memory_only: true`). No agent harness. Start here for a conservative, memory-only setup.
+- `agent-harness` — **the full build, and the default on GitHub**. Same memory + provenance + tools, with the experimental strategy/self-improving layer enabled by default (`memory_only: false`) plus the agent harness (durable runs) and the live-model capability benchmark. This is where experimental features are developed and tested before being merged back into `memory-only`.
+- `unified_mneme` — the earlier full-build branch; superseded by `agent-harness`. Kept for history.
