@@ -114,13 +114,13 @@ def banner():
 def detect_branch(repo_root):
     """Which repo branch is installed? Drives the memory-only default and the Pi
     extension download URL. Prefers the git branch of the cloned repo; falls back
-    to MNEME_BRANCH (set by the README's install command), then unified_mneme."""
+    to MNEME_BRANCH (set by the README's install command), then agent-harness."""
     if repo_root and os.path.isdir(os.path.join(repo_root, ".git")):
         r = run(f"git -C {repo_root} rev-parse --abbrev-ref HEAD", timeout=10)
         b = (r.stdout or "").strip()
         if b and b != "HEAD":  # detached HEAD (tarball install) -> fall back
             return b
-    return os.environ.get("MNEME_BRANCH", "unified_mneme")
+    return os.environ.get("MNEME_BRANCH", "agent-harness")
 
 
 def find_repo():
@@ -134,7 +134,7 @@ def find_repo():
         if c and os.path.exists(os.path.join(c, "proxy", "mneme_proxy.py")):
             return c
     print("\n  Mneme proxy code not found. Run the installer first:")
-    print("    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main bash")
+    print("    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/memory-only/scripts/install.sh | MNEME_BRANCH=memory-only bash")
     print("  ...or enter the repo path below (blank to git-clone it now).")
     path = input("  Repo path [clone]: ").strip()
     if path:
@@ -144,7 +144,7 @@ def find_repo():
         sys.exit(1)
     dest = os.path.expanduser("~/mneme/repo")
     print(f"  Cloning into {dest} ...")
-    _br = os.environ.get("MNEME_BRANCH", "unified_mneme")
+    _br = os.environ.get("MNEME_BRANCH", "agent-harness")
     r = run(f"git clone --depth 1 -b {_br} https://github.com/flyersean/Mneme.git {dest}", timeout=300)
     if r.returncode != 0:
         print(f"  ✗ Clone failed: {r.stderr[:300]}")
@@ -721,7 +721,7 @@ def _ensure_node():
     return False
 
 
-def setup_pi(ctx_size, branch="unified_mneme", port=8080):
+def setup_pi(ctx_size, branch="agent-harness", port=8080):
     """Install Pi + write its provider config pointing at this proxy. Returns True on success.
 
     `port` MUST be this instance's actual port — it is chosen before this runs.
@@ -1801,7 +1801,7 @@ def main():
     REPO_ROOT = find_repo()
     print(f"  Repo: {REPO_ROOT}")
     branch = detect_branch(REPO_ROOT)
-    memory_only = (branch == "main")
+    memory_only = (branch == "memory-only")
     if memory_only:
         print(f"  Branch: {branch} → memory-only build (strategy/learning layer off)")
     else:
