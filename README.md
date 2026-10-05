@@ -154,7 +154,7 @@ line at startup showing the final value of every setting.
 | `retrieval.strategy_min_similarity` | `0.40` | second, lower floor for the strategy layer |
 | `storage.memory_enabled` | `true` | master switch — `false` disables all memory |
 | `storage.inject_enabled` | `true` | `false` = save-only (no auto-injection, but saving + search keep working) |
-| `storage.memory_only` | `false` | `true` = turn off the experimental strategy layer (the `main`-branch default) |
+| `storage.memory_only` | `false` | `true` = turn off the experimental strategy layer (the `memory-only`-branch default) |
 | `harness.enabled` | `true` | the agent harness (runs) — `false` to disable it |
 | `runtime.hot_reload` | `true` | `false` = lock config/prompts until restart |
 | `mcp_servers` | `[]` | MCP servers to connect |
@@ -277,14 +277,14 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~386 tests)
 
 ## Branches
 
-- `agent-harness` — **the full build (this branch)**. Memory retrieval, provenance
-  grading, and the full toolset are always on. Two things additionally default **on**
-  here: the **strategy/self-improving layer** (`storage.memory_only: false`) and the
-  **agent harness** (`harness.enabled: true` — durable multi-step runs, the runs
-  dashboard, profiles, approvals, skills).
-- `main` — **the release branch**. Memory, provenance grading, and the full toolset, with
-  the experimental strategy layer off by default (`storage.memory_only: true`). It has no
-  agent harness — that subsystem lives only on `agent-harness`. Start here for a
-  conservative, memory-only setup.
+- `agent-harness` — **the full build (this branch, and the default on GitHub)**. Memory
+  retrieval, provenance grading, and the full toolset are always on. Two things
+  additionally default **on** here: the **strategy/self-improving layer**
+  (`storage.memory_only: false`) and the **agent harness** (`harness.enabled: true` —
+  durable multi-step runs, the runs dashboard, profiles, approvals, skills).
+- `memory-only` — **the release branch**. Memory, provenance grading, and the full
+  toolset, with the experimental strategy layer off by default (`storage.memory_only:
+  true`). It has no agent harness — that subsystem lives only on `agent-harness`. Start
+  here for a conservative, memory-only setup.
 - `unified_mneme` — the earlier full-build branch; superseded by `agent-harness`. Kept for
   history.
