@@ -61,6 +61,17 @@ backend:
   provider: openrouter  # which `providers:` entry to use (ignored when type=ollama)
   ollama_url: http://localhost:11434   # used only when type=ollama
 
+# Optional: run the embedder/labeler on a DIFFERENT provider than the chat model.
+# Unset -> they follow `backend.provider` (the old behaviour). Set these to a
+# provider name — a `providers:` entry, or a built-in catalog name (openrouter,
+# openai, anthropic, google, deepseek, groq, mistral, xai, together, routeway,
+# featherless, vllm, llamacpp, ollama) — to pin them elsewhere, e.g. embedder on
+# OpenRouter while chatting through Anthropic. The model NAMES come from the
+# top-level embed_model / label_model keys (see below), independent of the
+# connection.
+# embed_provider: openrouter
+# label_provider: openrouter
+
 # Providers. Adding a new OpenAI-standard provider (OpenAI, DeepSeek, Groq,
 # Together, Mistral, ...) is just a new block here — no code changes.
 providers:

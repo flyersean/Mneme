@@ -401,6 +401,7 @@ models:                              # per-model overrides; keyed by EXACT model
 |---|---|
 | `backend` | `type` (openai), `provider` (openrouter), `ollama_url` (http://localhost:11434) |
 | `providers.<name>` | `base_url`, `api_key_env`, `model`, `embed_model`, `label_model`, `headers` {}, `fallback_models` [], `provider` {}, `stream` true |
+| `embed_provider` / `label_provider` | optional — pin the embedder/labeler to a different provider than the chat model (a `providers:` name or catalog name). Unset = follow `backend.provider`. |
 | `sampling` | `temperature` 0.3, `top_p` 0.95, `top_k` 64, `ctx_tokens` 65536, `completion_reserve` 8192, `max_tokens` (unset), `reasoning_enabled` 0, `reasoning_effort` |
 | `timeouts` | `chat_timeout` 120, `ollama_chat_timeout` 120, `first_token_timeout` 45, `stale_chunk_timeout` 20, `novelty_timeout` 600, `embed_timeout` 60, `label_timeout` 30, `edge_failures` 2, `edge_ratio` 0.5 |
 | `storage` | `chunk_dir` ~/mneme/chunks, `db_path` <chunk_dir>/mneme.db, `port` 8080, `inject_system` true, `memory_only` false, `memory_enabled` true, `staging_turns` 1, `staging_idle` 120, `context_recent_extra` 14, `belief_evolution` false |
