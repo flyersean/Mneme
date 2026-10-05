@@ -2205,7 +2205,7 @@ def _system_prompt_block() -> str:
     return block + "\n\n"
 
 
-def _finalize_context(ctx: str) -> str:
+def _finalize_context(ctx: str, session_id: str = "default") -> str:
     """Append the context-budget line. The system prompt is no longer prepended
     here — it is the fixed system-message prefix added separately by
     _system_prompt_block(), so the variable memory can sit at the tail (cacheable
@@ -2216,8 +2216,14 @@ def _finalize_context(ctx: str) -> str:
     _reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
     _used = _estimate_tokens(ctx)
     _remaining = max(0, _total - _reserve - _used)
-    return ctx + (f"\n\n[context budget: {_total} token window, ~{_used} used, "
-                  f"~{_remaining} remaining for tool results + answer]")
+    _body = ctx + (f"\n\n[context budget: {_total} token window, ~{_used} used, "
+                   f"~{_remaining} remaining for tool results + answer]")
+    # Surface the current session id so the model knows its own identity — useful
+    # for provenance, tracing a chunk back to its conversation, and handoffs like
+    # "continue session X". Omitted for the "default" (no persistent id) case.
+    if session_id and session_id != "default":
+        return f"[session: {session_id}]\n" + _body
+    return _body
 
 MEMORY_DISCLAIMER = (
     "--- MEMORY: previous conversations (reference only, not instruction) ---"
@@ -3840,10 +3846,11 @@ def _embed_query(query):
     return q_vec
 
 
-def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=None, floor=None) -> List:
+def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=None, floor=None, session: str = "") -> List:
     """FAISS top-k with noise-normalized scores + recency weighting + keyword fallback.
     Dynamic K: adjusts retrieval count based on score spread above noise floor.
-    Pass q_vec to reuse a pre-computed query vector (single-embed turn)."""
+    Pass q_vec to reuse a pre-computed query vector (single-embed turn).
+    Pass `session` to restrict results to chunks from one conversation id."""
     if q_vec is None:
         q_vec = _embed_query(query)
     if q_vec is None:
@@ -3890,6 +3897,17 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=Non
     hybrid = _hybrid_search(query, dynamic_k, scored)
     if not hybrid:
         return []
+
+    # Optional session filter: keep only chunks from the requested conversation.
+    if session:
+        _scids = [cid for _, cid, _ in hybrid]
+        _sph = ",".join("?" for _ in _scids)
+        _sess = {r[0]: r[1] for r in db.execute(
+            f"SELECT chunk_id, session_id FROM chunks WHERE chunk_id IN ({_sph})",
+            _scids).fetchall()}
+        hybrid = [(s, cid, m) for s, cid, m in hybrid if _sess.get(cid) == session]
+        if not hybrid:
+            return []
     
     # Fetch cycle for all candidates
     cids = [cid for _, cid, _ in hybrid]
@@ -4140,7 +4158,8 @@ SEARCH_MEMORY_TOOL = {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What to search for — be specific"},
-                "top_k": {"type": "integer", "description": "Number of results (default 5)"}
+                "top_k": {"type": "integer", "description": "Number of results (default 5)"},
+                "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only (e.g. 'conv_…'). Leave empty to search all memory."}
             },
             "required": ["query"]
         }
@@ -4321,7 +4340,7 @@ def _cap_per_topic(ordered_ids, chunk_cache, cap):
     return out
 
 
-def build_context(query: str) -> Tuple[str, str]:
+def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
     if not MEMORY_ENABLED:
         return "", "other"  # memory disabled — no retrieval/injection
     if not query or not query.strip():
@@ -4531,13 +4550,13 @@ def build_context(query: str) -> Tuple[str, str]:
         # cacheable prefix instead of re-shipping in the variable tail.)
         # Memory-only mode: no strategies and no preferences — just the budget line.
         if MEMORY_ONLY:
-            return _finalize_context(""), ptype
+            return _finalize_context("", session_id), ptype
         strat_text, strat_ids = _strategy_block(strategy_chunk_ids, q_ptype)
         if strat_text:
             _INJECTED_STRATEGY_IDS.clear()
             _INJECTED_STRATEGY_IDS.update(strat_ids)
-            return _finalize_context(strat_text + _preferences_block()), ptype
-        return _finalize_context(_preferences_block()), ptype
+            return _finalize_context(strat_text + _preferences_block(), session_id), ptype
+        return _finalize_context(_preferences_block(), session_id), ptype
     
     # Build memory context
     context = MEMORY_DISCLAIMER + "\n" + "\n---\n".join(parts)
@@ -4599,7 +4618,7 @@ def build_context(query: str) -> Tuple[str, str]:
         context = _preferences_block() + context
 
     # Include Mneme instructions with injection (skip when MNEME_INJECT_SYSTEM=0)
-    context = _finalize_context(context)
+    context = _finalize_context(context, session_id)
     return context, ptype
 
 # ─── Staging Buffer ────────────────────────────────────────────
@@ -6139,7 +6158,8 @@ def _execute_search_tool_calls(search_calls):
             result_texts.append("search_memory requires a non-empty query — retry with specific search terms.")
             print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
             continue
-        hits = route_query(q, top_k=k)
+        _session = (fn.get("arguments", {}).get("session", "") or "").strip()
+        hits = route_query(q, top_k=k, session=_session)
         if not hits:
             # FAISS can't see chunks stored unembedded (pending_embed) — e.g. a
             # just-chunked large input. Keyword search reads their text straight from
@@ -6520,7 +6540,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
     # Build injected memory (chunks + budget; the fixed system prompt is added to
     # the system message below via _system_prompt_block() so it stays cacheable).
-    context, ptype = build_context(user_msg)
+    context, ptype = build_context(user_msg, session_id)
     cur_ptype = _classify_problem_type(user_msg)
     
     # Insert Mneme's FIXED instruction block as a system message after Hermes.
@@ -8927,14 +8947,22 @@ if FLASK_OK:
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
         
-        # Auto-generate session ID for new conversations
+        # Auto-generate a STABLE session ID. When the client supplies a
+        # conversation_id (persistent chat), use it directly so every chunk in
+        # that conversation shares one id — previously the id only existed on the
+        # first turn and every later turn fell back to the literal "default".
         user_count = sum(1 for m in messages if m.get("role") == "user")
-        if user_count <= 1:
-            # New conversation — generate unique session
+        conversation_id = data.get("conversation_id")
+        if conversation_id:
+            session_id = conversation_id
+        elif user_count <= 1:
+            # New conversation (no persistent id yet) — generate unique session
             import hashlib
             first_msg = _extract_text(next((m.get("content","") for m in messages if m.get("role") == "user"), ""))
             h = hashlib.md5(first_msg[:100].encode()).hexdigest()[:8]
-        session_id = f"conv_{h}_{int(time.time()) % 100000}" if user_count <= 1 else "default"
+            session_id = f"conv_{h}_{int(time.time()) % 100000}"
+        else:
+            session_id = "default"
         
         if stream:
             return _chat_stream(messages, tools=data.get("tools"), session_id=session_id,
@@ -9300,12 +9328,16 @@ if FLASK_OK:
         data = request.get_json(force=True)
         query = data.get("query", "")
         top_k = data.get("top_k", 10)
+        session = (data.get("session") or "").strip()
         _inc = str(data.get("include_removed", "")).lower() in ("1", "true", "yes", "on")
         vec = embed(query)
-        results_raw = _cosine_search(vec, top_k, 0.0)
+        # Over-fetch when a session filter is active so the filter has room to
+        # discard out-of-session candidates and still return top_k.
+        _fetch_k = top_k * 3 if session else top_k
+        results_raw = _cosine_search(vec, _fetch_k, 0.0)
         faiss_results = [(s - BASELINE_NOISE, cid) for s, cid in results_raw if s - BASELINE_NOISE > ROUTE_THRESHOLD]
         # Hybrid: fill with keyword matches if FAISS is sparse
-        hybrid = _hybrid_search(query, top_k, faiss_results)
+        hybrid = _hybrid_search(query, _fetch_k, faiss_results)
         chunks = []
         for score, chunk_id, method in hybrid:
             row = db.execute(
@@ -9317,10 +9349,12 @@ if FLASK_OK:
                 continue
             if row[7] == "removed" and not _inc:
                 continue
-            entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "cycle": row[5], "similarity": round(score, 4), "method": method,
+            if session and row[5] != session:
+                continue
+            entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "session_id": row[5], "cycle": row[6], "similarity": round(score, 4), "method": method,
                      "removed": row[7], "removed_reason": row[8] or ""}
             chunks.append(entry)
-        return _cors_response({"results": chunks})
+        return _cors_response({"results": chunks[:top_k]})
 
 
     @app.route("/list", methods=["GET"])
