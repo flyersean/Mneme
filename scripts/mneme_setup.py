@@ -50,6 +50,28 @@ OR_DEFAULT_LABEL = "meta-llama/llama-3.2-3b-instruct"  # non-thinking
 OL_DEFAULT_EMBED = "snowflake-arctic-embed2"   # 1024-dim
 OL_DEFAULT_LABEL = "qwen2.5:1.5b"              # small non-thinking labeler (better labels than 0.5b)
 
+# Hosted OpenAI-compatible providers (mirrors the proxy's PROVIDER_CATALOG). All
+# speak the same wire format — only base_url + key_env + model ids differ. Order
+# matters: index 0 is the default hosted pick.
+HOSTED_PROVIDERS = [
+    ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    ("openai",     "OpenAI",     "https://api.openai.com/v1",    "OPENAI_API_KEY"),
+    ("anthropic",  "Anthropic",  "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
+    ("google",     "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "GOOGLE_API_KEY"),
+    ("deepseek",   "DeepSeek",   "https://api.deepseek.com",      "DEEPSEEK_API_KEY"),
+    ("groq",       "Groq",       "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    ("mistral",    "Mistral",    "https://api.mistral.ai/v1",     "MISTRAL_API_KEY"),
+    ("xai",        "xAI",        "https://api.x.ai/v1",           "XAI_API_KEY"),
+    ("together",   "Together AI", "https://api.together.xyz/v1",  "TOGETHER_API_KEY"),
+    ("routeway",   "Routeway",   "https://api.routeway.ai/v1",    "ROUTEWAY_API_KEY"),
+    ("featherless","Featherless","https://api.featherless.ai/v1", "FEATHERLESS_API_KEY"),
+]
+# Local OpenAI-compatible servers (no key, models are pre-loaded at server start).
+LOCAL_OPENAI_PROVIDERS = [
+    ("vllm",     "vLLM (local)",     "http://localhost:8000/v1", ""),
+    ("llamacpp", "llama.cpp (local)", "http://localhost:8080/v1", ""),
+]
+
 
 def run(cmd, timeout=None):
     """Run a shell command. Never raises on timeout — returns a CompletedProcess
@@ -177,14 +199,14 @@ def load_saved_key():
     return ""
 
 
-def save_key(key):
+def save_key(key, key_env="OPENROUTER_API_KEY"):
     os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
     # Create with 0o600 from the start. Writing first and chmod-ing after leaves a
     # window where the API key sits on disk with default (world-readable)
     # permissions — an API key is exactly the thing not to leak that way.
     fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, f"OPENROUTER_API_KEY={key}\n".encode())
+        os.write(fd, f"{key_env}={key}\n".encode())
     finally:
         os.close(fd)
     # Belt and braces: if the file already existed with looser bits, os.open's mode
@@ -212,6 +234,16 @@ def ask_and_validate_key():
             save_key(key)
             return key
         print("  ✗ Invalid key — check it and try again.")
+
+
+def ask_key(provider_label, key_env):
+    """Prompt for + save an API key for a non-OpenRouter provider. No online
+    validation — only OpenRouter exposes a key-check endpoint."""
+    print(f"\n\033[1m{provider_label} API key\033[0m")
+    key = getpass.getpass(f"  {key_env} (input is hidden): ").strip()
+    if key:
+        save_key(key, key_env)
+    return key
 
 
 CTX_PRESETS = [
@@ -340,6 +372,21 @@ def setup_openrouter_models():
     _warn_if_model_dead(label_model, "label_model")
 
     ctx_size = pick_context_window()
+    return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
+
+
+def setup_hosted_models(provider, label):
+    """Pick chat/embed/label models for a non-OpenRouter hosted provider. Free-text
+    ids — the wizard can't validate arbitrary providers' endpoints. The chat model
+    can be changed later from the chat page; the embedder is pinned (set-once)."""
+    print(f"\n\033[1mModels (hosted on {label} — nothing downloaded)\033[0m")
+    print("  Tip: the chat model can be changed later from the chat page's model menu;")
+    print("       the embedder is set-once (it defines your memory index).")
+    model = ask(f"Chat model id", "").strip() or "gpt-4o-mini"
+    embed_model = ask(f"Embedder model id (must be 1024-dim)", "qwen/qwen3-embedding-8b").strip() or "qwen/qwen3-embedding-8b"
+    label_model = ask(f"Labeler model id (small, non-thinking)", "meta-llama/llama-3.2-3b-instruct").strip() or "meta-llama/llama-3.2-3b-instruct"
+    idx = choose("Context window (match the model's capability)", [c[0] for c in CTX_PRESETS])
+    ctx_size = CTX_PRESETS[idx][1] if CTX_PRESETS[idx][1] is not None else int(ask("Context size (tokens)", "64000"))
     return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
@@ -920,10 +967,15 @@ model: "@@MAIN@@"
 embed_model: "@@EMBED@@"
 label_model: "@@LABEL@@"
 
+# Backend models (embedder/labeler) — pin to a DIFFERENT provider than the chat
+# model (set once; the embedder defines your memory index). Empty = follow chat.
+embed_provider: "@@EMBED_PROV@@"
+label_provider: "@@LABEL_PROV@@"
+
 providers:
-  openrouter:
-    base_url: {OR_BASE}
-    api_key_env: OPENROUTER_API_KEY   # key read from this env var, never stored here
+  @@PROV@@:
+    base_url: "@@PROV_BASE@@"
+    api_key_env: "@@PROV_KEY@@"   # key read from this env var, never stored here
     model: "@@MAIN@@"
     embed_model: "@@EMBED@@"
     label_model: "@@LABEL@@"
@@ -1057,13 +1109,13 @@ runtime:
 """
 
 
-def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template=""):
+def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider=""):
     """Write mneme.yaml for the chosen backend into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     inject_s = "true" if str(inject) == "1" else "false"
     mo_s = "true" if memory_only else "false"
     if backend == "openrouter":
-        btype, bprov = "openai", "openrouter"
+        btype, bprov = "openai", provider
     else:
         btype, bprov = "ollama", ""
     # Named `cfg_text`, not `yaml` — a local called `yaml` shadows the imported
@@ -1073,6 +1125,11 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
     # json.dumps() escaping is YAML-compatible inside double-quoted scalars, so a
     # custom model id containing a quote/backslash can't produce malformed YAML.
     cfg_text = (cfg_text.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
+                .replace("@@PROV@@", json.dumps(provider)[1:-1])
+                .replace("@@PROV_BASE@@", json.dumps(base_url)[1:-1])
+                .replace("@@PROV_KEY@@", json.dumps(key_env)[1:-1])
+                .replace("@@EMBED_PROV@@", json.dumps(embed_provider)[1:-1])
+                .replace("@@LABEL_PROV@@", json.dumps(label_provider)[1:-1])
                 .replace("@@MAIN@@", json.dumps(models.get("model", ""))[1:-1])
                 .replace("@@EMBED@@", json.dumps(models.get("embed_model", ""))[1:-1])
                 .replace("@@LABEL@@", json.dumps(models.get("label_model", ""))[1:-1]))
@@ -1227,7 +1284,7 @@ def _port_free_lines():
     ]
 
 
-def write_start_script(backend, models, port, instance_dir):
+def write_start_script(backend, models, port, instance_dir, provider="openrouter", key_env="OPENROUTER_API_KEY", embed_provider="", label_provider=""):
     """Write a start script into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     path = os.path.join(instance_dir, "start_proxy.sh")
@@ -1239,12 +1296,10 @@ def write_start_script(backend, models, port, instance_dir):
     ]
     if backend == "openrouter":
         lines += [
-            "# Source the saved OpenRouter key unless one is already exported",
-            f'if [ -z "${{OPENROUTER_API_KEY:-}}" ] && [ -f "{KEY_FILE}" ]; then',
-            f'  export $(grep -v "^#" "{KEY_FILE}" | xargs)',
-            "fi",
+            "# Source saved API key(s) unless already exported",
+            f'if [ -f "{KEY_FILE}" ]; then export $(grep -v "^#" "{KEY_FILE}" | xargs) 2>/dev/null; fi',
             'export MNEME_BACKEND="openrouter"',
-            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM",
+            "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_PROVIDER EMBED_PROVIDER LABEL_PROVIDER MNEME_INJECT_SYSTEM",
         ]
     else:
         lines += [
@@ -1992,21 +2047,52 @@ def main():
             if reconf_port:
                 print(f"  Reconfiguring — reusing port {reconf_port} (old instance there will be stopped).")
 
-    # 1. Backend
-    print("\n\033[1mStep 1/4 — Backend\033[0m")
-    idx = choose("Which backend?", [
-        "OpenRouter (hosted — no GPU, no downloads; needs an API key)",
-        "Ollama (local — private, free; models run on this machine)",
-    ])
-    backend = "openrouter" if idx == 0 else "ollama"
+    # 1. Provider (chat) — the full catalog, not just OpenRouter/Ollama.
+    print("\n\033[1mStep 1/4 — Provider\033[0m")
+    _prov_opts = [f"{lbl} (hosted)" for _, lbl, _, _ in HOSTED_PROVIDERS]
+    _prov_opts += [lbl for _, lbl, _, _ in LOCAL_OPENAI_PROVIDERS]
+    _prov_opts += ["Ollama (local — private, free; models run on this machine)"]
+    _pidx = choose("Which provider?", _prov_opts)
+    if _pidx < len(HOSTED_PROVIDERS):
+        provider, provider_label, base_url, key_env = HOSTED_PROVIDERS[_pidx]
+        backend = "openrouter"          # hosted OpenAI-compatible
+    elif _pidx < len(HOSTED_PROVIDERS) + len(LOCAL_OPENAI_PROVIDERS):
+        provider, provider_label, base_url, key_env = LOCAL_OPENAI_PROVIDERS[_pidx - len(HOSTED_PROVIDERS)]
+        backend = "openrouter"          # local OpenAI-compatible server (keyless)
+    else:
+        provider, provider_label = "ollama", "Ollama"
+        base_url, key_env = "", ""
+        backend = "ollama"
 
-    # 2. Models
+    # 2. Models — chat model (change later), then backend models (embed/label).
     print("\n\033[1mStep 2/4 — Models\033[0m")
     if backend == "openrouter":
-        ask_and_validate_key()
-        models = setup_openrouter_models()
+        if key_env:
+            if provider == "openrouter":
+                ask_and_validate_key()
+            else:
+                ask_key(provider_label, key_env)
+        models = (setup_openrouter_models() if provider == "openrouter"
+                  else setup_hosted_models(provider, provider_label))
     else:
         models = setup_ollama_models()
+
+    # Backend models (embedder/labeler): same provider as chat, or a different one?
+    embed_provider = label_provider = ""   # empty = follow the chat provider
+    if backend == "openrouter":
+        _use_same = choose("Run the backend models (embedder/labeler) on the same provider?", [
+            "Yes — same provider as the chat model (default)",
+            "No — a different provider for the backend models",
+        ]) == 0
+        if not _use_same:
+            _bopts = [lbl for _, lbl, _, _ in HOSTED_PROVIDERS] + [lbl for _, lbl, _, _ in LOCAL_OPENAI_PROVIDERS] + ["Ollama (local)"]
+            _bidx = choose("Backend models provider?", _bopts)
+            if _bidx < len(HOSTED_PROVIDERS):
+                embed_provider = label_provider = HOSTED_PROVIDERS[_bidx][0]
+            elif _bidx < len(HOSTED_PROVIDERS) + len(LOCAL_OPENAI_PROVIDERS):
+                embed_provider = label_provider = LOCAL_OPENAI_PROVIDERS[_bidx - len(HOSTED_PROVIDERS)][0]
+            else:
+                embed_provider = label_provider = "ollama"
 
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
@@ -2077,9 +2163,9 @@ def main():
             port=port, instance_dir=instance_dir, shared=shared_weights)
 
     # Write config + start script, then launch.
-    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template)
+    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template, provider=provider, base_url=base_url, key_env=key_env, embed_provider=embed_provider, label_provider=label_provider)
     save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only, shared_weights=shared_weights)
-    start_script = write_start_script(backend, models, port, instance_dir)
+    start_script = write_start_script(backend, models, port, instance_dir, provider=provider, key_env=key_env, embed_provider=embed_provider, label_provider=label_provider)
     print(f"\n  Config:      {cfg_path}")
     print(f"  Start/stop:  {start_script}")
 
