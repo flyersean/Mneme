@@ -208,6 +208,8 @@ _CONFIG_ENV_MAP = {
     "embed_model": "EMBED_MODEL",
     "embed_dim": "EMBED_DIM",
     "label_model": "LABEL_MODEL",
+    "embed_provider": "EMBED_PROVIDER",
+    "label_provider": "LABEL_PROVIDER",
     "ollama_url": "MNEME_OLLAMA_URL",
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "openrouter_base_url": "OPENROUTER_BASE_URL",
@@ -582,6 +584,38 @@ def _aux_backend(override_env: str) -> str:
     return (os.environ.get(override_env)
             or os.environ.get("MNEME_BACKEND")
             or MNEME_BACKEND)
+
+
+def _aux_conn(kind: str) -> dict:
+    """Resolve the connection for an auxiliary model (`kind` = 'embed' | 'label').
+
+    Pinned to a specific provider via the top-level `embed_provider` /
+    `label_provider` config key (a PROVIDER_CATALOG name, or a `providers.<name>`
+    block). When unset, falls back to the chat backend's connection — backward
+    compatible with the old "embedder/labeler share the chat base_url" behaviour.
+
+    Returns {"base_url", "key", "kind", "headers"} with kind ∈ {"openai","ollama"}.
+    Read at call time so it reflects the config loaded by _resolve_provider."""
+    prov_name = os.environ.get("EMBED_PROVIDER" if kind == "embed" else "LABEL_PROVIDER", "") or ""
+    if prov_name:
+        cat = PROVIDER_CATALOG.get(prov_name)
+        if cat:
+            if cat.get("kind") == "ollama":
+                return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
+            ke = cat.get("key_env", "")
+            key = os.environ.get(ke, "") if ke else ""
+            return {"base_url": cat.get("base_url", "") or "", "key": key, "kind": "openai", "headers": {}}
+        prov = (CONFIG_DATA.get("providers") or {}).get(prov_name) or {}
+        if isinstance(prov, dict) and prov.get("base_url"):
+            ke = prov.get("api_key_env", "")
+            key = os.environ.get(ke, "") if ke else ""
+            return {"base_url": prov.get("base_url", "") or "", "key": key,
+                    "kind": "openai", "headers": prov.get("headers") or {}}
+    # No explicit aux provider — follow the chat backend (existing behaviour).
+    if _aux_backend(f"MNEME_{kind.upper()}_BACKEND") in ("openai", "openrouter"):
+        return {"base_url": OR_BASE_URL, "key": OR_API_KEY, "kind": "openai",
+                "headers": _PROVIDER_HEADERS or {}}
+    return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
 
 
 def _or_headers() -> dict:
@@ -1961,13 +1995,18 @@ def pool_embeddings(vectors: List[np.ndarray]) -> np.ndarray:
     return centroid / (np.linalg.norm(centroid) + 1e-8)
 
 def _embed_single(text: str) -> np.ndarray:
-    """Embed one chunk. Ollama /api/embeddings by default (the embed model is
-    always local snowflake-arctic-embed2, 1024-dim, so existing chunk vectors stay
-    valid even when the main chat model runs on OpenRouter). Raises on failure."""
-    if _aux_backend("MNEME_EMBED_BACKEND") in ("openai", "openrouter"):
+    """Embed one chunk. Uses the embedder's own connection (embed_provider, or the
+    chat backend as a fallback) — so the embed model can live on a different
+    provider than the chat model. Raises on failure."""
+    conn = _aux_conn("embed")
+    if conn["kind"] == "openai":
+        _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+        if conn["key"]:
+            _h["Authorization"] = f"Bearer {conn['key']}"
+        _h.update(conn["headers"])
         r = requests.post(
-            f"{OR_BASE_URL}/embeddings",
-            headers=_or_headers(),
+            f"{conn['base_url']}/embeddings",
+            headers=_h,
             json={"model": EMBED_MODEL, "input": text, "dimensions": DIM},
             timeout=EMBED_TIMEOUT,
         )
@@ -1975,7 +2014,7 @@ def _embed_single(text: str) -> np.ndarray:
         v = np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
     else:
         r = requests.post(
-            f"{OLLAMA_URL}/api/embeddings",
+            f"{conn['base_url']}/api/embeddings",
             json={"model": EMBED_MODEL, "prompt": text, "dimensions": DIM},
             timeout=EMBED_TIMEOUT,
         )
@@ -3699,18 +3738,24 @@ LABEL_PROMPT = (
 )
 
 def _llm_topic_label(text: str) -> str:
-    """Call qwen2.5:1.5b via Ollama to generate a semantic topic label.
-    
+    """Generate a semantic topic label using the labeler's own connection
+    (label_provider, or the chat backend as a fallback).
+
     Falls back to _generate_topic_label on any error.
     """
     clean = _clean_content(text)[:2000]
     if not clean.strip():
         return "untitled"
     try:
-        if _aux_backend("MNEME_LABEL_BACKEND") in ("openai", "openrouter"):
+        conn = _aux_conn("label")
+        if conn["kind"] == "openai":
+            _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+            if conn["key"]:
+                _h["Authorization"] = f"Bearer {conn['key']}"
+            _h.update(conn["headers"])
             r = requests.post(
-                f"{OR_BASE_URL}/chat/completions",
-                headers=_or_headers(),
+                f"{conn['base_url']}/chat/completions",
+                headers=_h,
                 json={
                     "model": LABEL_MODEL,
                     "messages": [{"role": "user", "content": LABEL_PROMPT + clean}],
@@ -3723,7 +3768,7 @@ def _llm_topic_label(text: str) -> str:
             label = ((r.json().get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
         else:
             r = requests.post(
-                f"{OLLAMA_URL}/api/generate",
+                f"{conn['base_url']}/api/generate",
                 json={
                     "model": LABEL_MODEL,
                     "prompt": LABEL_PROMPT + clean,
