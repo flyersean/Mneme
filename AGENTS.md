@@ -85,7 +85,7 @@ skills/, experiments/   scratch / support
   produced it (no hand taxonomy). Retrieval is two-floor; a D/F turn distills one
   imperative; **capability-edge tracking** routes a flagged `compute`/`live_data` task into
   **overcome mode** (build/reuse a tool or answer honestly). On by default on `agent-harness`,
-  off on `main` — the switch is `storage.memory_only`. Detail:
+  off on `memory-only` — the switch is `storage.memory_only`. Detail:
   `docs/strategy-retrieval-spec.md`.
 
 - **Harness (agent-harness).** Durable planned runs: goal → plan → worker steps → verify,
