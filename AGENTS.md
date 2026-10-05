@@ -259,8 +259,10 @@ Fields:
   exception: its `base_url` is the plain host (`http://localhost:11434`), no `/v1`.
 - `key_env` — the env var holding the API key. The picker prompts for this var and
   `POST /providers/key` persists it to the env file the start script sources. Leave `""`
-  for a keyless local backend (only Ollama does).
-- `kind` — `"openai"` for any OpenAI-compatible provider, `"ollama"` for local Ollama.
+  for a keyless local backend (Ollama, vLLM, llama.cpp) — the model list is then fetched
+  with no auth header.
+- `kind` — `"openai"` for any OpenAI-compatible provider, `"ollama"` for local Ollama. A
+  keyless local OpenAI server (vLLM / llama.cpp) is just `"openai"` with `key_env: ""`.
 
 For a provider to "just work" from a bare catalog entry it must speak the OpenAI wire
 format at `{base_url}/models` and `{base_url}/chat/completions` with
@@ -274,6 +276,12 @@ No other wiring is needed — these endpoints read the catalog directly:
 - `GET /providers/<name>/models` — that provider's model list, using the stored key.
 - `POST /providers/key` — save/update the key (prompted when `key_env` is unset).
 - `POST /providers/activate` — persist the chosen provider + model.
+
+Local servers (vLLM, llama.cpp) are just `kind: "openai"` + `key_env: ""`. Their catalog
+`base_url` records the server's *default* port (vLLM 8000, llama.cpp 8080), but the actual
+port is whatever you launched them on — and llama.cpp's default 8080 is also the proxy's
+conventional port, so point a `providers.llamacpp` config block at the real host:port (or
+run `llama-server --port 8081`) rather than trusting the catalog default.
 
 Verify: restart, then `curl localhost:<port>/providers` lists the new provider with
 `has_key: false`; `curl localhost:<port>/providers/<name>/models` returns `needs_key: true`

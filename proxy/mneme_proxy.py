@@ -305,7 +305,11 @@ PROVIDER_CATALOG = {
     "mistral":    {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "key_env": "MISTRAL_API_KEY", "kind": "openai"},
     "xai":        {"label": "xAI", "base_url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY", "kind": "openai"},
     "together":   {"label": "Together AI", "base_url": "https://api.together.xyz/v1", "key_env": "TOGETHER_API_KEY", "kind": "openai"},
+    "routeway":   {"label": "Routeway", "base_url": "https://api.routeway.ai/v1", "key_env": "ROUTEWAY_API_KEY", "kind": "openai"},
+    "featherless": {"label": "Featherless", "base_url": "https://api.featherless.ai/v1", "key_env": "FEATHERLESS_API_KEY", "kind": "openai"},
     "ollama":     {"label": "Ollama (local)", "base_url": "http://localhost:11434", "key_env": "", "kind": "ollama"},
+    "vllm":       {"label": "vLLM (local)", "base_url": "http://localhost:8000/v1", "key_env": "", "kind": "openai"},
+    "llamacpp":   {"label": "llama.cpp (local)", "base_url": "http://localhost:8080/v1", "key_env": "", "kind": "openai"},
 }
 
 
@@ -8075,12 +8079,16 @@ if FLASK_OK:
             return _cors_response({"models": []})
         key_env = info.get("key_env", "")
         key = os.environ.get(key_env, "") if key_env else ""
-        if not key:
+        if not key and key_env:
+            # A keyed provider with no key stored yet — prompt for it (hosted providers).
             return _cors_response({"models": [], "needs_key": True, "key_env": key_env})
+        # Keyless local server (empty key_env, e.g. vLLM / llama.cpp): fetch the
+        # model list without an Authorization header.
+        _hdrs = {"Accept-Encoding": "identity"}
+        if key:
+            _hdrs["Authorization"] = f"Bearer {key}"
         try:
-            r = requests.get(f"{info['base_url']}/models",
-                             headers={"Authorization": f"Bearer {key}", "Accept-Encoding": "identity"},
-                             timeout=15)
+            r = requests.get(f"{info['base_url']}/models", headers=_hdrs, timeout=15)
             if r.status_code == 200:
                 models = [{"id": m.get("id", ""), "name": m.get("name") or m.get("id", "") or m.get("id", "")}
                           for m in r.json().get("data", [])]
@@ -8116,6 +8124,8 @@ if FLASK_OK:
             key_env = info.get("key_env", "")
             if key_env:
                 OR_API_KEY = os.environ.get(key_env, "")
+            else:
+                OR_API_KEY = ""  # keyless local provider (vLLM / llama.cpp) — no key
             _persist_backend_type(MNEME_BACKEND)
         MODEL = model
         os.environ["MNEME_MODEL"] = model
