@@ -239,6 +239,50 @@ python3 proxy/mneme_proxy.py --config /tmp/mneme-test.yaml   # Ctrl-C to kill
 - **Endpoints:** hit them with `curl` first (`/health`, `/themes`, `/fs/list`, …) before
   clicking around the UI.
 
+### 2.6 Adding a provider to the model switcher
+
+The provider dropdown is driven by exactly one thing: `PROVIDER_CATALOG` in
+`proxy/mneme_proxy.py` (a dict of `name -> {label, base_url, key_env, kind}`, near the top).
+There is **no separate config to edit** — add an entry there and it appears in the picker on
+the next restart.
+
+```python
+# proxy/mneme_proxy.py, in PROVIDER_CATALOG
+"cerebras": {"label": "Cerebras", "base_url": "https://api.cerebras.ai/v1",
+             "key_env": "CEREBRAS_API_KEY", "kind": "openai"},
+```
+
+Fields:
+- `label` — the human name shown in the dropdown.
+- `base_url` — the OpenAI-compatible **base** root (the `/v1` path; the proxy appends
+  `/models` and `/chat/completions` itself, so do NOT include them). Ollama is the
+  exception: its `base_url` is the plain host (`http://localhost:11434`), no `/v1`.
+- `key_env` — the env var holding the API key. The picker prompts for this var and
+  `POST /providers/key` persists it to the env file the start script sources. Leave `""`
+  for a keyless local backend (only Ollama does).
+- `kind` — `"openai"` for any OpenAI-compatible provider, `"ollama"` for local Ollama.
+
+For a provider to "just work" from a bare catalog entry it must speak the OpenAI wire
+format at `{base_url}/models` and `{base_url}/chat/completions` with
+`Authorization: Bearer <key>`. Anything with non-Bearer auth or required extra headers
+(Azure, Bedrock, OpenRouter's HTTP-Referer/X-Title) is NOT a bare catalog row — those need
+a hand-written `providers.<name>` config block (`base_url`, `api_key_env`, `headers`) and
+the catalog fallback is irrelevant to them.
+
+No other wiring is needed — these endpoints read the catalog directly:
+- `GET /providers` — the dropdown list (label + key status).
+- `GET /providers/<name>/models` — that provider's model list, using the stored key.
+- `POST /providers/key` — save/update the key (prompted when `key_env` is unset).
+- `POST /providers/activate` — persist the chosen provider + model.
+
+Verify: restart, then `curl localhost:<port>/providers` lists the new provider with
+`has_key: false`; `curl localhost:<port>/providers/<name>/models` returns `needs_key: true`
+until a key is set, then the live model list.
+
+Keep the catalog **curated** — only add a provider you'd actually recommend. A bare entry
+is cheap, but every row shows up in the dropdown and implies it's supported; a provider
+whose auth doesn't fit the Bearer pattern needs a config block, not a catalog row.
+
 ---
 
 ## 3. `mneme.yaml` — full spec (proxy config)
