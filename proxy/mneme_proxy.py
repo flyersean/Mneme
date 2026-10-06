@@ -8890,6 +8890,18 @@ if FLASK_OK:
     def _conv_now():
         return datetime.now(timezone.utc).isoformat()
 
+    def _derive_conversation_title(messages):
+        """Derive a chat title from the first USER message (no LLM call — just a
+        deterministic truncation). Returns 'New chat' if there is no user message."""
+        for m in (messages or []):
+            if isinstance(m, dict) and m.get("role") == "user":
+                text = (m.get("content") or "").strip()
+                if not text:
+                    continue
+                text = " ".join(text.split())  # collapse newlines/whitespace
+                return (text[:50] + "…") if len(text) > 50 else text
+        return "New chat"
+
     def _persist_conversation(conv_id, messages, title=None):
         """Write a conversation straight to the DB (no HTTP round-trip). Used by the
         streaming worker so a turn's reply is persisted server-side even if the client
@@ -8899,16 +8911,23 @@ if FLASK_OK:
         conn = _conv_db()
         try:
             now = _conv_now()
-            exists = conn.execute("SELECT id FROM conversations WHERE id=?", (conv_id,)).fetchone()
+            exists = conn.execute("SELECT id, title FROM conversations WHERE id=?", (conv_id,)).fetchone()
             if not exists:
                 conn.execute("INSERT INTO conversations (id, title, messages, created_at, updated_at) "
                              "VALUES (?,?,?,?,?)",
-                             (conv_id, (title or "").strip() or "New chat",
+                             (conv_id, (title or "").strip() or _derive_conversation_title(messages) or "New chat",
                               json.dumps(messages or []), now, now))
             else:
                 if title is not None:
                     conn.execute("UPDATE conversations SET title=? WHERE id=?",
                                  ((title or "").strip() or "New chat", conv_id))
+                else:
+                    # Auto-title from the first user message ONLY while the title is
+                    # still the placeholder — never clobber a user-renamed title.
+                    if (exists[1] or "").strip() in ("", "New chat"):
+                        _t = _derive_conversation_title(messages)
+                        if _t != "New chat":
+                            conn.execute("UPDATE conversations SET title=? WHERE id=?", (_t, conv_id))
                 conn.execute("UPDATE conversations SET messages=?, updated_at=? WHERE id=?",
                              (json.dumps(messages or []), now, conv_id))
             conn.commit()
@@ -8959,9 +8978,9 @@ if FLASK_OK:
         conn = _conv_db()
         try:
             now = _conv_now()
-            exists = conn.execute("SELECT id FROM conversations WHERE id=?", (conv_id,)).fetchone()
+            exists = conn.execute("SELECT id, title FROM conversations WHERE id=?", (conv_id,)).fetchone()
             if not exists:
-                title = (body.get("title") or "").strip() or "New chat"
+                title = (body.get("title") or "").strip() or _derive_conversation_title(body.get("messages")) or "New chat"
                 conn.execute("INSERT INTO conversations (id, title, messages, created_at, updated_at) "
                              "VALUES (?,?,?,?,?)",
                              (conv_id, title, json.dumps(body.get("messages") or []), now, now))
@@ -8969,6 +8988,12 @@ if FLASK_OK:
                 if body.get("title") is not None:
                     conn.execute("UPDATE conversations SET title=? WHERE id=?",
                                  ((body.get("title") or "").strip() or "New chat", conv_id))
+                else:
+                    # Auto-title from the first user message while still the default.
+                    if (exists[1] or "").strip() in ("", "New chat"):
+                        _t = _derive_conversation_title(body.get("messages"))
+                        if _t != "New chat":
+                            conn.execute("UPDATE conversations SET title=? WHERE id=?", (_t, conv_id))
                 if body.get("messages") is not None:
                     conn.execute("UPDATE conversations SET messages=?, updated_at=? WHERE id=?",
                                  (json.dumps(body.get("messages")), now, conv_id))

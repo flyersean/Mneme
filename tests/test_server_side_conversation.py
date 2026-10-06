@@ -73,5 +73,63 @@ class TestServerSideConversation(unittest.TestCase):
             self.assertEqual(convs, [])
 
 
+@unittest.skipUnless(getattr(mp, "FLASK_OK", False), "flask not installed")
+class TestConversationTitles(unittest.TestCase):
+    """Chats must be auto-titled from the first user message and renamable."""
+
+    def setUp(self):
+        self.client = mp.app.test_client()
+        self._ids = []
+
+    def tearDown(self):
+        for cid in self._ids:
+            try:
+                self.client.delete(f"/conversations/{cid}")
+            except Exception:
+                pass
+
+    def _new_conv(self, messages=None, title=None):
+        cid = self.client.post("/conversations", json={}).get_json()["conversation"]["id"]
+        self._ids.append(cid)
+        if messages is not None or title is not None:
+            body = {}
+            if messages is not None:
+                body["messages"] = messages
+            if title is not None:
+                body["title"] = title
+            self.client.put(f"/conversations/{cid}", json=body)
+        return cid
+
+    def test_auto_title_from_first_user_message(self):
+        cid = self._new_conv(messages=[
+            {"role": "user", "content": "Help me write a CSV parser in Python"},
+            {"role": "assistant", "content": "sure"},
+        ])
+        title = self.client.get(f"/conversations/{cid}").get_json()["conversation"]["title"]
+        self.assertEqual(title, "Help me write a CSV parser in Python")
+
+    def test_long_title_truncated_with_ellipsis(self):
+        cid = self._new_conv(messages=[{"role": "user", "content": "x" * 80}])
+        title = self.client.get(f"/conversations/{cid}").get_json()["conversation"]["title"]
+        self.assertTrue(title.endswith("…"))
+        self.assertLessEqual(len(title), 51)  # 50 chars + ellipsis
+
+    def test_rename_not_clobbered_by_later_save(self):
+        cid = self._new_conv(messages=[{"role": "user", "content": "original topic"}])
+        self.client.put(f"/conversations/{cid}", json={"title": "My Custom Name"})
+        self.client.put(f"/conversations/{cid}", json={"messages": [
+            {"role": "user", "content": "original topic"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "follow up"},
+        ]})
+        title = self.client.get(f"/conversations/{cid}").get_json()["conversation"]["title"]
+        self.assertEqual(title, "My Custom Name")
+
+    def test_no_user_message_stays_new_chat(self):
+        cid = self._new_conv(messages=[{"role": "assistant", "content": "only assistant"}])
+        title = self.client.get(f"/conversations/{cid}").get_json()["conversation"]["title"]
+        self.assertEqual(title, "New chat")
+
+
 if __name__ == "__main__":
     unittest.main()

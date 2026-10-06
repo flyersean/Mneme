@@ -87,6 +87,8 @@
   .conv-time { color: var(--muted); font-size: 10px; }
   .conv-del { flex-shrink: 0; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 5px; }
   .conv-del:hover { color: var(--red, #dc2626); background: rgba(220,38,38,.10); }
+  .conv-edit { flex-shrink: 0; border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 5px; }
+  .conv-edit:hover { color: var(--accent); background: var(--accent-soft); }
   .conv-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
 
   #chat {
@@ -1520,6 +1522,21 @@ async function deleteConversation(id) {
   else refreshConvsList();
 }
 
+async function renameConversation(id, currentTitle) {
+  const name = prompt("Rename chat", currentTitle || "");
+  if (name === null) return;   // cancelled
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    await fetch("/conversations/" + id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: trimmed })
+    });
+  } catch (e) {}
+  refreshConvsList();
+}
+
 async function refreshConvsList() {
   const list = document.getElementById("convs-list");
   if (!list) return;
@@ -1531,10 +1548,12 @@ async function refreshConvsList() {
     list.innerHTML = convs.map(c =>
       `<div class="conv-item${c.id === convId ? " active" : ""}" data-id="${escAttr(c.id)}">
          <div class="conv-main"><span class="conv-title">${escAttr(c.title)}</span><span class="conv-time">${escAttr((c.updated_at || "").slice(0, 16).replace("T", " "))}</span></div>
+         <button class="conv-edit" title="Rename chat">✎</button>
          <button class="conv-del" title="Delete conversation">✕</button>
        </div>`).join("");
     list.querySelectorAll(".conv-item").forEach(it => {
       it.onclick = () => { loadConversation(it.dataset.id); convsPanel.classList.remove("open"); };
+      it.querySelector(".conv-edit").onclick = (e) => { e.stopPropagation(); renameConversation(it.dataset.id, it.querySelector(".conv-title").textContent); };
       it.querySelector(".conv-del").onclick = (e) => { e.stopPropagation(); deleteConversation(it.dataset.id); };
     });
   } catch (e) {}
