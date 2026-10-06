@@ -335,12 +335,42 @@
   #send:disabled { opacity: .5; cursor: not-allowed; }
   #send.stop { background: var(--red); }
   #send.stop:hover { background: var(--red); }
+  /* "Send when done" — hold the current draft and auto-send it once the in-flight
+     turn finishes. Hidden unless a turn is running; turns amber when armed so the
+     held state is obvious at a glance. */
+  #pending {
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 11px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #pending:hover { border-color: var(--accent); color: var(--accent); }
+  #pending.armed { background: var(--amber); border-color: var(--amber); color: #1a1a1a; }
+  #pending.armed:hover { background: var(--amber); color: #1a1a1a; }
+  /* chip above the composer showing what's held */
+  #pending-chip {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 6px 0;
+    padding: 5px 10px;
+    font-size: 12px;
+    background: var(--amber-soft);
+    border: 1px solid var(--amber);
+    border-radius: 8px;
+    color: var(--fg);
+  }
+  #pending-chip.show { display: inline-flex; }
+  #pending-chip .pc-text { max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pending-chip .pc-x { cursor: pointer; font-weight: 700; color: var(--muted); border: none; background: none; padding: 0 2px; }
+  #pending-chip .pc-x:hover { color: var(--red); }
 </style>
 <style>
-.mneme-nav{display:flex;flex-wrap:wrap;gap:6px;padding:8px 24px;margin:0 0 4px 0}
-.mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
-.mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
-.mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 </style>
 <style>
 /* harness panel + / command palette */
@@ -505,8 +535,13 @@ header .model:hover { color: var(--accent); }
   <div id="main">
     <div id="chat"><div class="inner" id="thread"></div></div>
     <footer>
+      <div id="pending-chip" title="Held message — will send automatically when the model finishes">
+        <span class="pc-text"></span>
+        <button class="pc-x" title="Cancel the held message">✕</button>
+      </div>
       <div class="composer">
         <textarea id="input" rows="1" placeholder="Ask something… (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button id="pending" title="Hold this message and send it automatically when the model finishes" style="display:none">Send when done</button>
         <button id="send">Send</button>
       </div>
     </footer>
@@ -549,6 +584,9 @@ const MODEL = "text-mneme:64k";
 const thread = document.getElementById("thread");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
+const pendingBtn = document.getElementById("pending");
+const pendingChip = document.getElementById("pending-chip");
+const pendingChipText = pendingChip.querySelector(".pc-text");
 const modelLabel = document.getElementById("model-label");
 const chat = document.getElementById("chat");
 const settingsPanel = document.getElementById("settings");
@@ -561,6 +599,7 @@ let history = [];   // [{role, content}]
 let convId = null;  // current conversation id (persistent chat)
 let busy = false;
 let controller = null;   // AbortController for the in-flight turn
+let pendingMsg = null;   // {text, files?} held while a turn runs; auto-sent when it ends
 
 // persisted display settings
 function loadSetting(key, def) {
@@ -655,6 +694,35 @@ function appendToolCalls(trace) {
 function setBusyUI(b) {
   sendBtn.textContent = b ? "Stop" : "Send";
   sendBtn.classList.toggle("stop", b);
+  // The "send when done" button only exists while a turn is running — there's
+  // nothing to wait for otherwise.
+  pendingBtn.style.display = b ? "" : "none";
+  if (!b) clearPending();   // a finished turn can't still be holding a message
+}
+
+// ── pending ("send when done") ───────────────────────────────────
+// Hold the current draft and release it as a fresh turn once the in-flight one
+// ends. This is a next-turn queue, NOT mid-turn injection — firing early would
+// change the request mid-stream and break prompt caching.
+function armPending() {
+  const text = input.value.trim();
+  if (!text) { input.focus(); return; }
+  pendingMsg = { text };
+  input.value = "";
+  input.style.height = "auto";
+  pendingBtn.classList.add("armed");
+  pendingBtn.textContent = "Will send when done ✓";
+  pendingChipText.textContent = text;
+  pendingChip.classList.add("show");
+  input.focus();
+}
+
+function clearPending() {
+  pendingMsg = null;
+  pendingBtn.classList.remove("armed");
+  pendingBtn.textContent = "Send when done";
+  pendingChip.classList.remove("show");
+  pendingChipText.textContent = "";
 }
 
 async function stopTurn() {
@@ -935,9 +1003,18 @@ async function send() {
   } finally {
     busy = false;
     controller = null;
+    // Capture any held message BEFORE setBusyUI(false) clears it, so we can
+    // release it as the next turn now that this one has ended.
+    const release = pendingMsg ? pendingMsg.text : null;
     setBusyUI(false);
     checkBlockedWrites();
     input.focus();
+    if (release) {
+      input.value = release;
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 160) + "px";
+      send();   // fire the held turn (send() re-enters this whole path cleanly)
+    }
   }
 }
 
@@ -946,6 +1023,13 @@ sendBtn.addEventListener("click", () => {
   if (busy) stopTurn();
   else send();
 });
+
+// "Send when done" — arm/disarm the held message while a turn runs.
+pendingBtn.addEventListener("click", () => {
+  if (pendingMsg) clearPending();   // click again to un-arm
+  else armPending();
+});
+pendingChip.querySelector(".pc-x").addEventListener("click", clearPending);
 
 input.addEventListener("keydown", (e) => {
   if (palette.classList.contains("open")) {
@@ -957,7 +1041,11 @@ input.addEventListener("keydown", (e) => {
   }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    send();
+    // While a turn is running, Enter holds the message instead of firing a
+    // second concurrent turn (the old code called send() unconditionally,
+    // which double-posted if you hit Enter mid-turn).
+    if (busy) armPending();
+    else send();
   }
 });
 
