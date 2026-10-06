@@ -136,6 +136,31 @@ standalone file.
 - Never hard-code a color in a page's inline `<style>` — use `var(--<name>)` (prefer a
   canonical name; if you must use a legacy name, add its alias in `theme.css`).
 - Don't re-add a `:root { … }` color block to any page — colors come from the theme files.
+- The nav bar styles (`.mneme-nav …`) live in `theme.css` — do not redefine them in a page's inline `<style>`.
+
+---
+
+## Page standard (reference, not enforced)
+
+A guide for making a new dashboard page (or an extension's page) match the existing
+ones. Nothing checks this — it exists so new pages look native with minimal effort.
+
+- **Location & serving:** put the page flat in `proxy/static/<name>.html` and add a Flask
+  route in `mneme_proxy.py` that reads the file and returns it as `text/html`
+  (e.g. `/memory` -> `memory.html`). No static directory — pages fetch data from the
+  proxy's own port.
+- **Head:** include `<link rel="stylesheet" href="/theme.css">` and
+  `<script src="/theme.js"></script>` (theme.js must load before first paint).
+- **Nav:** copy the `.mneme-nav` bar markup from an existing page (e.g. `dashboard.html`)
+  and add your link; its styles come from `theme.css` — don't redefine them.
+- **Colors:** only via `var(--<name>)` using the 18 canonical variables; never hard-code
+  hex values or add a `:root` block.
+- **Layout conventions:** single centered column (`max-width` ~1100px, `margin: 0 auto`),
+  cards/panels on `var(--panel)` with `1px solid var(--line)` and rounded corners,
+  muted secondary text on `var(--muted)`, status colors from `--green/--red/--amber`
+  (with their `-soft` variants for backgrounds).
+- **Data:** fetch JSON from the proxy's existing or new API endpoints; keep the page
+  self-contained (inline `<style>`/`<script>` is fine, matching current pages).
 
 ---
 
@@ -181,12 +206,28 @@ git clone https://github.com/flyersean/Mneme.git && cd Mneme
 ./scripts/install.sh          # installs Ollama (if needed) + systemd keep-alive
 ```
 
-Or use the interactive setup wizard, which asks for the DB dir, backend, models, port, and
-writes `mneme.yaml` + a start script for you:
+Or use the interactive setup wizard. It walks **three model roles** — chat, embedder,
+labeler — and asks the same three questions for each: **provider → API key (if the
+provider needs one) → model id**. The provider list is the full catalog (the same 14
+entries the chat page's model picker shows — see §2.6), models are free-text (Ollama chat
+is the one exception: it offers the pulled-model list plus "enter a name" and pulls the
+model if missing). Each role can pick a different provider. Then it asks the chat context
+window, and writes `mneme.yaml` + a start script for you:
 
 ```bash
 python3 scripts/mneme_setup.py
 ```
+
+**Keys** live in one shared env file (`~/mneme/env`, chmod 600) as `KEY_ENV=value` lines —
+one per provider. Per role the wizard offers any saved key ("use it? [Y/n]") or prompts
+for a new one; saving merges into the file and never clobbers another provider's key.
+Because an env var holds one value, two roles on the SAME provider share its key; two
+roles on DIFFERENT providers get different keys.
+
+**Embedder is set-once.** It defines the memory index (one DB = one embedder + dimension),
+so "add another instance" to an existing DB **locks** the embedder/labeler to that DB's
+original choice (the wizard says so and refuses to vary them). To run different backend
+models, use a separate DB — two proxies with two DBs may use different backends.
 
 ### 2.2 Config location + precedence
 
@@ -402,6 +443,7 @@ models:                              # per-model overrides; keyed by EXACT model
 | `backend` | `type` (openai), `provider` (openrouter), `ollama_url` (http://localhost:11434) |
 | `providers.<name>` | `base_url`, `api_key_env`, `model`, `embed_model`, `label_model`, `headers` {}, `fallback_models` [], `provider` {}, `stream` true |
 | `embed_provider` / `label_provider` | optional — pin the embedder/labeler to a different provider than the chat model (a `providers:` name or catalog name). Unset = follow `backend.provider`. |
+| `embed_backend` / `label_backend` | optional — the TRANSPORT (`openai` \| `ollama`) for the embedder/labeler when it differs from the chat backend (e.g. chat hosted, embedder on local Ollama). Unset = follow the chat backend. Distinct from `*_provider`: a Groq embedder still uses the `openai` transport. |
 | `sampling` | `temperature` 0.3, `top_p` 0.95, `top_k` 64, `ctx_tokens` 65536, `completion_reserve` 8192, `max_tokens` (unset), `reasoning_enabled` 0, `reasoning_effort` |
 | `timeouts` | `chat_timeout` 120, `ollama_chat_timeout` 120, `first_token_timeout` 45, `stale_chunk_timeout` 20, `novelty_timeout` 600, `embed_timeout` 60, `label_timeout` 30, `edge_failures` 2, `edge_ratio` 0.5 |
 | `storage` | `chunk_dir` ~/mneme/chunks, `db_path` <chunk_dir>/mneme.db, `port` 8080, `inject_system` true, `memory_only` false, `memory_enabled` true, `staging_turns` 1, `staging_idle` 120, `context_recent_extra` 14, `belief_evolution` false |
