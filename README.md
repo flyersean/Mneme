@@ -50,7 +50,7 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 | Script | Where | What it does |
 |---|---|---|
 | `install.sh` | host | Installs system + Python deps, Ollama, browser engines and the Hound MCP server, then clones the repo into `~/mneme/repo`. Idempotent. |
-| `mneme_setup.py` | host | Interactive wizard: pick the provider (hosted OpenAI-compatible, local vLLM/llama.cpp, or Ollama), chat/embed/label models, context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
+| `mneme_setup.py` | host | Interactive wizard. For each of the three model roles — chat, embedder, labeler — it asks the same three things: provider (the full catalog, same list as the chat page's picker), API key if the provider needs one (offers any saved key), and the model id (free-text; Ollama chat offers its pulled list + "enter a name"). Each role may use a different provider. Then: context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
 | `mneme_connect.py` | laptop | (Remote pod only.) Opens a stay-alive SSH tunnel and prints the local URLs. |
 
 **1. Install** (on the host):

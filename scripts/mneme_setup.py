@@ -68,9 +68,38 @@ HOSTED_PROVIDERS = [
 ]
 # Local OpenAI-compatible servers (no key, models are pre-loaded at server start).
 LOCAL_OPENAI_PROVIDERS = [
-    ("vllm",     "vLLM (local)",     "http://localhost:8000/v1", ""),
-    ("llamacpp", "llama.cpp (local)", "http://localhost:8080/v1", ""),
+    ("vllm",     "vLLM",      "http://localhost:8000/v1", ""),
+    ("llamacpp", "llama.cpp", "http://localhost:8080/v1", ""),
 ]
+
+# The full per-role provider menu = every catalog entry, in one list. This MUST
+# mirror the proxy's PROVIDER_CATALOG (proxy/mneme_proxy.py) — that dict is what
+# the chat page's model picker renders, and setup must offer the same list or the
+# two drift apart (the exact bug this wizard is fixing). Ollama is appended last
+# because it is the only entry with a custom (pull-list) model flow. Each entry
+# is (provider_id, label, base_url, key_env, kind).
+ALL_PROVIDERS = (
+    [(p, lbl, base, ke, "openai") for (p, lbl, base, ke) in HOSTED_PROVIDERS]
+    + [(p, lbl, base, ke, "openai") for (p, lbl, base, ke) in LOCAL_OPENAI_PROVIDERS]
+    + [("ollama", "Ollama (local — pulled to this machine)", "", "", "ollama")]
+)
+
+
+def _provider_menu():
+    """Labels for the per-role provider picker, in ALL_PROVIDERS order.
+
+    Hosted providers get a "(hosted)" tag and keyless local servers a "(local)"
+    tag; Ollama's label already says "(local — ...)" so it is left as-is."""
+    labels = []
+    for (_p, lbl, _b, ke, kind) in ALL_PROVIDERS:
+        if kind == "ollama":
+            labels.append(lbl)
+        elif ke:
+            labels.append(f"{lbl} (hosted)")
+        else:
+            labels.append(f"{lbl} (local)")
+    return labels
+
 
 
 def run(cmd, timeout=None):
@@ -186,64 +215,101 @@ def or_get(key, path):
         return None
 
 
-def load_saved_key():
+def load_saved_keys():
+    """Return {KEY_ENV: value} for every key currently in the env file.
+
+    The env file is shared across roles/providers, so it can hold several
+    KEY=value lines (e.g. OPENROUTER_API_KEY and ANTHROPIC_API_KEY). Read all of
+    them so the wizard can offer "use the saved key?" per role.
+    """
+    keys = {}
     if os.path.exists(KEY_FILE):
         try:
             with open(KEY_FILE) as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith("OPENROUTER_API_KEY="):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    name, val = line.split("=", 1)
+                    keys[name.strip()] = val.strip().strip('"').strip("'")
         except Exception:
             pass
-    return ""
+    return keys
+
+
+def load_saved_key(key_env="OPENROUTER_API_KEY"):
+    """Back-compat single-key accessor (used by the old OpenRouter path)."""
+    return load_saved_keys().get(key_env, "")
 
 
 def save_key(key, key_env="OPENROUTER_API_KEY"):
+    """Merge `key_env=key` into the env file, PRESERVING every other line.
+
+    This file is shared by all roles and providers, so it commonly holds several
+    distinct keys (chat on OpenAI, embedder on Anthropic, ...). The previous
+    implementation opened with O_TRUNC and wrote a single line, so saving a
+    second provider's key silently DELETED the first — breaking exactly the
+    multi-provider setups this wizard now supports. We now read-modify-write:
+    replace the matching KEY= line if present, else append, leaving the rest
+    untouched. Written atomically at 0600 so the key is never world-readable and
+    never half-written.
+    """
     os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
-    # Create with 0o600 from the start. Writing first and chmod-ing after leaves a
-    # window where the API key sits on disk with default (world-readable)
-    # permissions — an API key is exactly the thing not to leak that way.
-    fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    lines = []
+    if os.path.exists(KEY_FILE):
+        try:
+            with open(KEY_FILE) as f:
+                lines = f.read().splitlines()
+        except Exception:
+            lines = []
+    # Drop any existing line for this exact key name (handles re-entry/replace),
+    # keep every other key intact.
+    pat = re.compile(rf"^\s*(?:export\s+)?{re.escape(key_env)}\s*=")
+    kept = [ln for ln in lines if not pat.match(ln)]
+    kept.append(f"{key_env}={key}")
+    # Atomic write (temp + fsync + rename), created 0600 from the start.
+    tmp = KEY_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, f"{key_env}={key}\n".encode())
+        os.write(fd, ("\n".join(kept) + "\n").encode())
+        os.fsync(fd)
     finally:
         os.close(fd)
-    # Belt and braces: if the file already existed with looser bits, os.open's mode
-    # is ignored (it only applies on create), so enforce it here too.
+    os.replace(tmp, KEY_FILE)
+    # Belt and braces: if the file pre-existed with looser bits, os.open's mode
+    # only applies on create, so enforce 0600 here too.
     os.chmod(KEY_FILE, 0o600)
-    print(f"  Saved key to {KEY_FILE} (chmod 600).")
+    print(f"  Saved {key_env} to {KEY_FILE} (chmod 600).")
 
-
-def ask_and_validate_key():
-    saved = load_saved_key()
-    if saved:
-        info = or_get(saved, "/auth/key")
-        if info and "data" in info:
-            print("  ✓ Saved OpenRouter key is valid — keeping it.")
-            return saved
-        print("  Saved key is invalid — please re-enter.")
-    while True:
-        print("\n\033[1mOpenRouter API key\033[0m (create one at https://openrouter.ai/keys)")
-        key = getpass.getpass("  API key (input is hidden): ").strip()
-        if not key:
-            continue
-        info = or_get(key, "/auth/key")
-        if info and "data" in info:
-            print("  ✓ Valid key.")
-            save_key(key)
-            return key
-        print("  ✗ Invalid key — check it and try again.")
 
 
 def ask_key(provider_label, key_env):
-    """Prompt for + save an API key for a non-OpenRouter provider. No online
-    validation — only OpenRouter exposes a key-check endpoint."""
-    print(f"\n\033[1m{provider_label} API key\033[0m")
+    """Resolve the API key for a provider, offering a saved key first.
+
+    If `key_env` already has a value in the env file, ask ONCE whether to reuse
+    it (keys expire and a saved one may be stale, so the user always gets the
+    choice). Yes → reuse; No → prompt for a new one and overwrite the saved
+    value. No online validation: only OpenRouter exposes a key-check endpoint,
+    and validating some providers but not others is the inconsistency this
+    wizard exists to remove. Returns the key (or "" if none entered).
+    """
+    saved = load_saved_keys().get(key_env, "")
+    if saved:
+        print(f"\n\033[1m{provider_label} API key\033[0m")
+        ans = ask(f"  A saved {key_env} was found — use it? [Y/n]", "Y").strip().lower()
+        if ans not in ("n", "no"):
+            print(f"  ✓ Using saved {key_env}.")
+            return saved
+        print(f"  Entering a new {key_env} (replaces the saved one).")
+    else:
+        print(f"\n\033[1m{provider_label} API key\033[0m")
     key = getpass.getpass(f"  {key_env} (input is hidden): ").strip()
     if key:
         save_key(key, key_env)
-    return key
+        return key
+    # Nothing entered: fall back to any saved value rather than leaving it empty.
+    return saved
+
 
 
 CTX_PRESETS = [
@@ -329,65 +395,69 @@ def _warn_if_model_dead(model_id, label="model"):
         print(f"  ✓ {model_id} — {n} endpoint(s) live")
 
 
-def setup_openrouter_models():
-    """Pick main/embed/label models (OpenRouter IDs). Returns a dict."""
-    print("\n\033[1mModels (all hosted on OpenRouter — nothing downloaded)\033[0m")
-    # NOTE: ids in this list are suggestions, not fixtures — OpenRouter retires
-    # models and rotates stealth ones out. Each choice is checked for a live
-    # endpoint below, so a stale entry warns instead of silently shipping a broken
-    # config. 'Custom' is always available for anything newer.
-    main_opts = [
-        ("deepseek/deepseek-v4-flash  (cheapest thinking MoE)", "deepseek/deepseek-v4-flash"),
-        ("deepseek/deepseek-chat      (V3, non-thinking)", "deepseek/deepseek-chat"),
-        ("qwen/qwen3-32b              (open-weight)", "qwen/qwen3-32b"),
-        ("Custom (enter any OpenRouter model id)", "__custom__"),
-    ]
-    idx = choose("Main model", [m[0] for m in main_opts])
-    if main_opts[idx][1] == "__custom__":
-        model = ask("Enter OpenRouter model id", OR_DEFAULT_MAIN) or OR_DEFAULT_MAIN
+def _pick_role(role_label, default_model, allow_ollama_list=True):
+    """Collect (provider, base_url, key_env, model) for ONE model role.
+
+    Every role — chat, embedder, labeler — runs this identical three-step flow:
+
+      1. Provider: the full catalog (same list the chat page's picker shows).
+      2. Key: if the provider has a key_env, resolve it via ask_key() (offers any
+         saved key, else prompts). Local providers (vLLM/llama.cpp/Ollama) have
+         no key and skip this.
+      3. Model: free text. The ONLY exception is an Ollama CHAT pick, which uses
+         the pulled-list + "enter name" menu and pulls the model if it is not
+         already present (that flow works and is kept).
+
+    `default_model` is offered as the press-Enter default. `allow_ollama_list`
+    is False for the embedder/labeler, which are free-text-with-default even on
+    Ollama (pressing Enter takes the default; typing takes your choice).
+
+    Returns a dict: {provider, provider_label, base_url, key_env, model}.
+    """
+    print(f"\n\033[1m── {role_label} ──\033[0m")
+    idx = choose(f"{role_label} provider", _provider_menu())
+    provider, provider_label, base_url, key_env, kind = ALL_PROVIDERS[idx]
+
+    # 2. Key (hosted providers only).
+    if key_env:
+        ask_key(provider_label, key_env)
+
+    # 3. Model.
+    if kind == "ollama" and allow_ollama_list:
+        # Chat on Ollama: pulled-list + enter-name, then pull if missing.
+        model = setup_ollama_chat_model()
     else:
-        model = main_opts[idx][1]
-    _warn_if_model_dead(model, "model")
+        model = ask(f"{role_label} model id", default_model) or default_model
+    return {"provider": provider, "provider_label": provider_label,
+            "base_url": base_url, "key_env": key_env, "model": model}
 
-    embed_opts = [
-        ("voyageai/voyage-4-lite  (1024-dim, recommended)", "voyageai/voyage-4-lite"),
-        ("Custom (WARNING: must output 1024-dim)", "__custom__"),
+
+def setup_ollama_chat_model():
+    """Pick (and pull) an Ollama CHAT model via the pulled-list + enter-name menu.
+
+    Kept from the original local flow: models already pulled are listed for
+    one-tap reuse; anything not present is pulled on selection; "enter name"
+    takes an arbitrary Ollama model. Returns the model name."""
+    ensure_ollama()
+    pulled = get_pulled_models()
+    entries = []
+    if pulled:
+        entries.append(("── Already pulled ──", None))
+        for p in pulled:
+            entries.append((f"{p}  (pulled)", p))
+    entries.append(("── Pull a recommended model ──", None))
+    entries += [
+        ("qwen3:32b  (strong general model)", "qwen3:32b"),
+        ("qwen3:14b  (lighter)", "qwen3:14b"),
+        ("llama3.1:8b  (small)", "llama3.1:8b"),
     ]
-    idx = choose("Embedder (memory vectors)", [m[0] for m in embed_opts])
-    if embed_opts[idx][1] == "__custom__":
-        embed_model = ask("Enter embedder model id (1024-dim)", OR_DEFAULT_EMBED) or OR_DEFAULT_EMBED
-    else:
-        embed_model = embed_opts[idx][1]
-    _warn_if_model_dead(embed_model, "embed_model")
+    entries.append(("Enter a model name", "__custom__"))
+    model = _menu("Chat model", entries)
+    if model == "__custom__":
+        model = ask("Enter Ollama model name") or "qwen3:32b"
+    pull_model(model)   # no-op if already present
+    return model
 
-    label_opts = [
-        ("meta-llama/llama-3.2-3b-instruct  (small, non-thinking — recommended)", "meta-llama/llama-3.2-3b-instruct"),
-        ("Custom (WARNING: must be NON-thinking)", "__custom__"),
-    ]
-    idx = choose("Labeler (topic labels)", [m[0] for m in label_opts])
-    if label_opts[idx][1] == "__custom__":
-        label_model = ask("Enter labeler model id (non-thinking)", OR_DEFAULT_LABEL) or OR_DEFAULT_LABEL
-    else:
-        label_model = label_opts[idx][1]
-    _warn_if_model_dead(label_model, "label_model")
-
-    ctx_size = pick_context_window()
-    return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
-
-
-def setup_hosted_models(provider, label):
-    """Pick chat/embed/label models for a non-OpenRouter hosted provider. Free-text
-    ids — the wizard can't validate arbitrary providers' endpoints. The chat model
-    can be changed later from the chat page; the embedder is pinned (set-once)."""
-    print(f"\n\033[1mModels (hosted on {label} — nothing downloaded)\033[0m")
-    print("  Tip: the chat model can be changed later from the chat page's model menu;")
-    print("       the embedder is set-once (it defines your memory index).")
-    model = ask(f"Chat model id", "").strip() or "gpt-4o-mini"
-    embed_model = ask(f"Embedder model id (must be 1024-dim)", "qwen/qwen3-embedding-8b").strip() or "qwen/qwen3-embedding-8b"
-    label_model = ask(f"Labeler model id (small, non-thinking)", "meta-llama/llama-3.2-3b-instruct").strip() or "meta-llama/llama-3.2-3b-instruct"
-    idx = choose("Context window (match the model's capability)", [c[0] for c in CTX_PRESETS])
-    ctx_size = CTX_PRESETS[idx][1] if CTX_PRESETS[idx][1] is not None else int(ask("Context size (tokens)", "64000"))
-    return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
 # ── Ollama backend ──────────────────────────────────────────────
@@ -610,48 +680,6 @@ def _menu(prompt, entries):
         except ValueError:
             pass
         print(f"  Enter 1-{n}")
-
-
-def setup_ollama_models():
-    """Pick chat/embed/label models (Ollama names), pulling if needed. Returns a dict."""
-    ensure_ollama()
-    pulled = get_pulled_models()
-
-    print("\n\033[1mModels (local Ollama — pulled to this machine)\033[0m")
-    entries = []
-    if pulled:
-        entries.append(("── Already pulled ──", None))
-        for p in pulled:
-            entries.append((f"{p}  (pulled)", p))
-    entries.append(("── Pull a recommended model ──", None))
-    recommended = [
-        ("qwen3:32b  (strong general model)", "qwen3:32b"),
-        ("qwen3:14b  (lighter)", "qwen3:14b"),
-        ("llama3.1:8b  (small)", "llama3.1:8b"),
-    ]
-    entries.extend(recommended)
-    entries.append(("Custom (enter any Ollama model name)", "__custom__"))
-
-    model = _menu("Main (chat) model", entries)
-    if model == "__custom__":
-        model = ask("Enter Ollama model name") or "qwen3:32b"
-    pull_model(model)
-
-    embed_model = ask("Embedder model (1024-dim)", OL_DEFAULT_EMBED) or OL_DEFAULT_EMBED
-    pull_model(embed_model)
-    label_model = ask("Labeler model (non-thinking)", OL_DEFAULT_LABEL) or OL_DEFAULT_LABEL
-    pull_model(label_model)
-
-    ctx_size = pick_context_window()
-
-    # Pin the context window via a derived Modelfile so the model actually loads
-    # with num_ctx == ctx_size (matching sampling.ctx_tokens in the config).
-    # Without this, Ollama loads the model's default context and silently
-    # truncates when the proxy sends a longer prompt. The base model is already
-    # quantized (Ollama library models ship Q4_K_M by default).
-    model = create_context_modelfile(model, ctx_size)
-
-    return {"model": model, "embed_model": embed_model, "label_model": label_model, "ctx_size": ctx_size}
 
 
 _OLLAMA_MAX_NAME_LEN = 80  # measured: ollama 0.34.x rejects model names > 80 chars
@@ -972,6 +1000,12 @@ label_model: "@@LABEL@@"
 embed_provider: "@@EMBED_PROV@@"
 label_provider: "@@LABEL_PROV@@"
 
+# Backend transports — set only when a role's transport DIFFERS from the chat
+# backend (e.g. chat hosted on OpenAI, embedder on local Ollama). "openai" or
+# "ollama"; empty = follow the chat backend.
+embed_backend: "@@EMBED_BACKEND@@"
+label_backend: "@@LABEL_BACKEND@@"
+
 providers:
   @@PROV@@:
     base_url: "@@PROV_BASE@@"
@@ -1103,13 +1137,15 @@ runtime:
                                 # false = LOCKED — changes take effect only after a restart
 
 # Logging — the proxy owns its own per-port log at {instance_dir}/proxy-<port>.log (append mode).
-# Optional cap (unset = no limit, the default):
-#   logging:
-#     max_entries: 200    # 0 = logging off; N = keep newest N lines
+# max_entries caps EVERY log the proxy writes (proxy log, thinking.log, errors.log,
+# extension logs) to the newest N lines, so none grow without bound. Set to 0 to
+# turn logging off, or remove the block for no limit.
+logging:
+  max_entries: 200    # 0 = logging off; N = keep newest N lines
 """
 
 
-def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider=""):
+def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider="", embed_backend="", label_backend=""):
     """Write mneme.yaml for the chosen backend into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     inject_s = "true" if str(inject) == "1" else "false"
@@ -1124,12 +1160,17 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
     cfg_text = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template, models.get("embed_model", ""))
     # json.dumps() escaping is YAML-compatible inside double-quoted scalars, so a
     # custom model id containing a quote/backslash can't produce malformed YAML.
+    # EMBED_BACKEND / LABEL_BACKEND pin a role to a transport that DIFFERS from the
+    # chat backend (e.g. chat hosted, embedder on local Ollama). Empty means
+    # "follow the chat backend", which is the default.
     cfg_text = (cfg_text.replace("@@BTYPE@@", btype).replace("@@BPROV@@", bprov)
                 .replace("@@PROV@@", json.dumps(provider)[1:-1])
                 .replace("@@PROV_BASE@@", json.dumps(base_url)[1:-1])
                 .replace("@@PROV_KEY@@", json.dumps(key_env)[1:-1])
                 .replace("@@EMBED_PROV@@", json.dumps(embed_provider)[1:-1])
                 .replace("@@LABEL_PROV@@", json.dumps(label_provider)[1:-1])
+                .replace("@@EMBED_BACKEND@@", json.dumps(embed_backend)[1:-1])
+                .replace("@@LABEL_BACKEND@@", json.dumps(label_backend)[1:-1])
                 .replace("@@MAIN@@", json.dumps(models.get("model", ""))[1:-1])
                 .replace("@@EMBED@@", json.dumps(models.get("embed_model", ""))[1:-1])
                 .replace("@@LABEL@@", json.dumps(models.get("label_model", ""))[1:-1]))
@@ -1486,18 +1527,28 @@ def load_shared_config(memory_dir):
     return {}
 
 
-def save_shared_config(memory_dir, models, backend, port=None, inject=None, memory_only=None, shared_weights=None):
-    """Persist the shared settings (embedder/labeler + their backends) so a later
-    'add instance' locks them to this DB's original choice, and 'reconfigure' can
-    recover the original port + injection settings."""
+def save_shared_config(memory_dir, models, backend, port=None, inject=None, memory_only=None, shared_weights=None, embed_provider=None, label_provider=None, embed_backend=None, label_backend=None):
+    """Persist the shared settings (embedder/labeler + their backends/providers)
+    so a later 'add instance' locks them to this DB's original choice, and
+    'reconfigure' can recover the original port + injection settings.
+
+    embed_provider/label_provider are stored EXPLICITLY (resolved to the chat
+    provider when the wizard left them empty) so a sibling proxy re-pins the same
+    backend provider even if its own chat provider differs — the shared-DB match
+    rule depends on this. embed_backend/label_backend likewise record the
+    resolved transport ("openai" | "ollama")."""
     data = {
         "db_dir": memory_dir,
         "backend": backend,
         "embed_model": models.get("embed_model", ""),
-        "embed_backend": backend,
+        "embed_backend": embed_backend or backend,
         "label_model": models.get("label_model", ""),
-        "label_backend": backend,
+        "label_backend": label_backend or backend,
     }
+    if embed_provider is not None:
+        data["embed_provider"] = embed_provider
+    if label_provider is not None:
+        data["label_provider"] = label_provider
     if port is not None:
         data["port"] = int(port)
     if inject is not None:
@@ -1564,47 +1615,6 @@ def wipe_db(memory_dir):
     return removed
 
 
-def pick_chat_model(chat_backend):
-    """Pick (and pull, for Ollama) the chat model AND its context window for an
-    added instance. Returns (model_name, ctx_size). The embedder/labeler are
-    locked to the shared DB and are NOT asked here."""
-    if chat_backend == "openrouter":
-        main_opts = [
-            ("stealth/ox-alpha           (free frontier coder, 1M ctx, reasoning)", "stealth/ox-alpha"),
-            ("deepseek/deepseek-v4-flash  (cheapest thinking MoE)", "deepseek/deepseek-v4-flash"),
-            ("deepseek/deepseek-chat      (V3, non-thinking)", "deepseek/deepseek-chat"),
-            ("qwen/qwen3-32b              (open-weight)", "qwen/qwen3-32b"),
-            ("Custom (enter any OpenRouter model id)", "__custom__"),
-        ]
-        idx = choose("Chat model", [m[0] for m in main_opts])
-        if main_opts[idx][1] == "__custom__":
-            model = ask("Enter OpenRouter model id", OR_DEFAULT_MAIN) or OR_DEFAULT_MAIN
-        else:
-            model = main_opts[idx][1]
-        return model, pick_context_window()
-
-    ensure_ollama()
-    pulled = get_pulled_models()
-    entries = []
-    if pulled:
-        entries.append(("── Already pulled ──", None))
-        for p in pulled:
-            entries.append((f"{p}  (pulled)", p))
-    entries.append(("── Pull a recommended model ──", None))
-    entries += [
-        ("qwen3:32b  (strong general model)", "qwen3:32b"),
-        ("qwen3:14b  (lighter)", "qwen3:14b"),
-        ("llama3.1:8b  (small)", "llama3.1:8b"),
-    ]
-    entries.append(("Custom (enter any Ollama model name)", "__custom__"))
-    model = _menu("Chat model", entries)
-    if model == "__custom__":
-        model = ask("Enter Ollama model name") or "qwen3:32b"
-    pull_model(model)
-    ctx_size = pick_context_window()
-    return create_context_modelfile(model, ctx_size), ctx_size
-
-
 def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_model,
                                 embed_model, embed_backend, label_model, label_backend,
                                 inject, memory_only):
@@ -1630,8 +1640,9 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
     lines += [
         f'export MNEME_BACKEND="{chat_backend}"',
         "# Models are read from this instance's mneme.yaml (top-level model:) —",
-        "# clearing inherited values keeps the config authoritative.",
-        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM",
+        "# clearing inherited values keeps the config authoritative, so a stale env",
+        "# var from another instance/shell can't lock an old model or provider in.",
+        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM MNEME_PROVIDER EMBED_PROVIDER LABEL_PROVIDER MNEME_EMBED_BACKEND MNEME_LABEL_BACKEND",
     ]
     # Aux backends: only set when they differ from this instance's chat backend,
     # so the embedder/labeler keep running where the DB originally set them up.
@@ -1739,7 +1750,14 @@ def _ask_mcp_servers():
 
 
 def _add_instance(memory_dir, shared, memory_only):
-    """Add a new proxy instance to an existing shared DB."""
+    """Add a new proxy instance to an existing shared DB.
+
+    Same provider→key→model flow as a fresh install, but for the embedder and
+    labeler the choice is LOCKED: they define the memory index, so every proxy
+    sharing THIS DB must use the same embedder (and labeler). A user who wants
+    different backend models must run a separate DB (a second cluster) — the
+    wizard says so explicitly rather than letting them walk into a broken index.
+    """
     print("\n\033[1mAdd a proxy instance to the existing DB\033[0m")
     print(f"  Shared DB:  {memory_dir}")
     embed_model = shared.get("embed_model") or OL_DEFAULT_EMBED
@@ -1748,12 +1766,17 @@ def _add_instance(memory_dir, shared, memory_only):
     label_backend = shared.get("label_backend") or "ollama"
     print(f"  Embedder (locked): {embed_model}  ({embed_backend})")
     print(f"  Labeler  (locked): {label_model}  ({label_backend})")
+    print("  These are fixed by the DB — a proxy sharing this DB MUST use the same")
+    print("  embedder/labeler. To use different backend models, run a separate DB.")
 
-    idx = choose("Chat backend for this instance?", [
-        "OpenRouter (hosted — needs an API key)",
-        "Ollama (local — models run on this machine)",
-    ])
-    chat_backend = "openrouter" if idx == 0 else "ollama"
+    print("\n\033[1mChat model for this instance\033[0m")
+    print("  The chat model is per-instance and may differ from other proxies.")
+    chat = _pick_role("Chat", OR_DEFAULT_MAIN)
+    chat_backend = "ollama" if chat["provider"] == "ollama" else "openrouter"
+    chat_model = chat["model"]
+    chat_provider = chat["provider"]
+    chat_base_url = chat["base_url"]
+    chat_key_env = chat["key_env"]
 
     port = int(ask("Port for this instance", str(free_port(DEFAULT_PORT))) or DEFAULT_PORT)
     instance_dir = _instance_dir(memory_dir, port)
@@ -1768,16 +1791,17 @@ def _add_instance(memory_dir, shared, memory_only):
             print("  Cancelled — keeping the existing instance.")
             return 0
 
-    if chat_backend == "openrouter":
-        ask_and_validate_key()
-    chat_model, ctx_size = pick_chat_model(chat_backend)
+    # Context window applies to the CHAT model (per-instance).
+    ctx_size = pick_context_window()
 
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
 
-    # A template that ships a custom Modelfile must create its model from it
-    # (Ollama only) — this overrides the picked chat model + context window.
+    # Local Ollama chat: pin the context window via a derived Modelfile (see the
+    # fresh-install path for why). Then a template that ships a custom Modelfile
+    # overrides the picked chat model + context window.
     if chat_backend == "ollama":
+        chat_model = create_context_modelfile(chat_model, ctx_size)
         chat_model, ctx_size = _install_template_modelfile(
             model_template, chat_backend, chat_model, ctx_size,
             port=port, instance_dir=instance_dir,
@@ -1793,7 +1817,10 @@ def _add_instance(memory_dir, shared, memory_only):
     # register web/filesystem tools without hand-editing its config afterward.
     mcp_servers = _ask_mcp_servers()
 
-    # Per-instance config: this instance's own settings + the shared DB path.
+    # Per-instance config: this instance's own chat model + the shared DB path.
+    # The embedder/labeler are re-pinned to the DB's original providers (their
+    # backends too) so this proxy indexes into the same vector space as its
+    # siblings — the "sharing a DB must match" rule, enforced at write time.
     instance_models = {
         "model": chat_model,
         "embed_model": embed_model,
@@ -1801,7 +1828,11 @@ def _add_instance(memory_dir, shared, memory_only):
         "ctx_size": ctx_size,
     }
     cfg = write_config(chat_backend, instance_models, port, inject, memory_only,
-                       instance_dir, db_path, mcp_servers, model_template=model_template)
+                       instance_dir, db_path, mcp_servers, model_template=model_template,
+                       provider=chat_provider, base_url=chat_base_url, key_env=chat_key_env,
+                       embed_provider=shared.get("embed_provider", ""),
+                       label_provider=shared.get("label_provider", ""),
+                       embed_backend=embed_backend, label_backend=label_backend)
     script = write_instance_start_script(instance_dir, memory_dir, port, chat_backend, chat_model,
                                          embed_model, embed_backend, label_model, label_backend,
                                          inject, memory_only)
@@ -1915,8 +1946,16 @@ def add_instance_noninteractive(params):
         "label_model": label_model,
         "ctx_size": ctx_size,
     }
+    # Re-pin the DB's embed/label providers so this proxy indexes into the same
+    # vector space as its siblings (the sharing-a-DB match rule).
     cfg = write_config(chat_backend, instance_models, port, inject, memory_only,
-                       instance_dir, db_path, mcp_servers, model_template=model_template)
+                       instance_dir, db_path, mcp_servers, model_template=model_template,
+                       provider=params.get("chat_provider", "openrouter"),
+                       base_url=params.get("chat_base_url", OR_BASE),
+                       key_env=params.get("chat_key_env", "OPENROUTER_API_KEY"),
+                       embed_provider=shared.get("embed_provider", ""),
+                       label_provider=shared.get("label_provider", ""),
+                       embed_backend=embed_backend, label_backend=label_backend)
     script = write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_model,
                                          embed_model, embed_backend, label_model, label_backend,
                                          inject, memory_only)
@@ -2047,52 +2086,54 @@ def main():
             if reconf_port:
                 print(f"  Reconfiguring — reusing port {reconf_port} (old instance there will be stopped).")
 
-    # 1. Provider (chat) — the full catalog, not just OpenRouter/Ollama.
-    print("\n\033[1mStep 1/4 — Provider\033[0m")
-    _prov_opts = [f"{lbl} (hosted)" for _, lbl, _, _ in HOSTED_PROVIDERS]
-    _prov_opts += [lbl for _, lbl, _, _ in LOCAL_OPENAI_PROVIDERS]
-    _prov_opts += ["Ollama (local — private, free; models run on this machine)"]
-    _pidx = choose("Which provider?", _prov_opts)
-    if _pidx < len(HOSTED_PROVIDERS):
-        provider, provider_label, base_url, key_env = HOSTED_PROVIDERS[_pidx]
-        backend = "openrouter"          # hosted OpenAI-compatible
-    elif _pidx < len(HOSTED_PROVIDERS) + len(LOCAL_OPENAI_PROVIDERS):
-        provider, provider_label, base_url, key_env = LOCAL_OPENAI_PROVIDERS[_pidx - len(HOSTED_PROVIDERS)]
-        backend = "openrouter"          # local OpenAI-compatible server (keyless)
-    else:
-        provider, provider_label = "ollama", "Ollama"
-        base_url, key_env = "", ""
-        backend = "ollama"
+    # 1. Provider + models — SAME six steps for each of the three roles:
+    #      provider → key (if the provider has one) → model.
+    #    The three roles are fully independent: the chat model can run on one
+    #    provider while the embedder and labeler run on others. One key per
+    #    provider (an env var holds a single value), so a provider shared by two
+    #    roles reuses the same key; different providers get different keys.
+    print("\n\033[1mStep 1/4 — Chat model\033[0m")
+    print("  The chat model can be changed later from the chat page's model menu.")
+    chat = _pick_role("Chat", OR_DEFAULT_MAIN)
+    provider = chat["provider"]
+    provider_label = chat["provider_label"]
+    base_url = chat["base_url"]
+    key_env = chat["key_env"]
+    # The chat backend is "ollama" only when the chat model itself is local
+    # Ollama; every OpenAI-compatible provider (hosted OR local vLLM/llama.cpp)
+    # goes through the openrouter-style backend path.
+    backend = "ollama" if provider == "ollama" else "openrouter"
 
-    # 2. Models — chat model (change later), then backend models (embed/label).
-    print("\n\033[1mStep 2/4 — Models\033[0m")
-    if backend == "openrouter":
-        if key_env:
-            if provider == "openrouter":
-                ask_and_validate_key()
-            else:
-                ask_key(provider_label, key_env)
-        models = (setup_openrouter_models() if provider == "openrouter"
-                  else setup_hosted_models(provider, provider_label))
-    else:
-        models = setup_ollama_models()
+    print("\n\033[1mStep 2/4 — Backend models (embedder + labeler)\033[0m")
+    print("  The embedder is SET-ONCE: it defines your memory index (one DB = one")
+    print("  embedder + dimension). The labeler can differ; both may share the chat")
+    print("  provider or use their own.")
+    embedder = _pick_role("Embedder", OR_DEFAULT_EMBED, allow_ollama_list=False)
+    labeler = _pick_role("Labeler", OR_DEFAULT_LABEL, allow_ollama_list=False)
 
-    # Backend models (embedder/labeler): same provider as chat, or a different one?
-    embed_provider = label_provider = ""   # empty = follow the chat provider
-    if backend == "openrouter":
-        _use_same = choose("Run the backend models (embedder/labeler) on the same provider?", [
-            "Yes — same provider as the chat model (default)",
-            "No — a different provider for the backend models",
-        ]) == 0
-        if not _use_same:
-            _bopts = [lbl for _, lbl, _, _ in HOSTED_PROVIDERS] + [lbl for _, lbl, _, _ in LOCAL_OPENAI_PROVIDERS] + ["Ollama (local)"]
-            _bidx = choose("Backend models provider?", _bopts)
-            if _bidx < len(HOSTED_PROVIDERS):
-                embed_provider = label_provider = HOSTED_PROVIDERS[_bidx][0]
-            elif _bidx < len(HOSTED_PROVIDERS) + len(LOCAL_OPENAI_PROVIDERS):
-                embed_provider = label_provider = LOCAL_OPENAI_PROVIDERS[_bidx - len(HOSTED_PROVIDERS)][0]
-            else:
-                embed_provider = label_provider = "ollama"
+    # Context window applies to the CHAT model. Hosted providers suggest a default
+    # (their known window); local models need it set explicitly (Ollama pins
+    # num_ctx via the Modelfile below).
+    models = {
+        "model": chat["model"],
+        "embed_model": embedder["model"],
+        "label_model": labeler["model"],
+        "ctx_size": pick_context_window(),
+    }
+    # Backend-model providers: only pin when they DIFFER from the chat provider —
+    # empty means "follow the chat provider", which is the common case and keeps
+    # the config clean (backward-compatible with pre-decoupling installs).
+    embed_provider = "" if embedder["provider"] == provider else embedder["provider"]
+    label_provider = "" if labeler["provider"] == provider else labeler["provider"]
+    # Backend TRANSPORTS ("openai" | "ollama"), derived from each role's provider.
+    # The proxy's _aux_backend() expects a transport, not a provider id — e.g. an
+    # embedder on Groq still uses the "openai" transport. Empty = follow the chat
+    # backend (the default).
+    def _transport(role_provider):
+        return "ollama" if role_provider == "ollama" else "openai"
+    embed_backend = _transport(embedder["provider"]) if embed_provider else ""
+    label_backend = _transport(labeler["provider"]) if label_provider else ""
+
 
     # Model template (optional) — known-good generation settings for this model.
     model_template = choose_model_template()
@@ -2154,6 +2195,14 @@ def main():
             "No — per-proxy Modelfile (each proxy edits its own; more VRAM)",
         ]) == 0)
 
+    # Local Ollama chat: pin the context window via a derived Modelfile so the
+    # model actually loads with num_ctx == ctx_size (matching sampling.ctx_tokens).
+    # Without this, Ollama loads the model's default context and silently
+    # truncates when the proxy sends a longer prompt. (vLLM/llama.cpp take the
+    # context at server start, so they skip this.)
+    if backend == "ollama":
+        models["model"] = create_context_modelfile(models["model"], models.get("ctx_size", 64000))
+
     # A template that ships a custom Modelfile must create its model from it
     # (Ollama only). With shared_weights the derived name ignores the port (one
     # model per base+template); otherwise it's keyed on the port (per-proxy).
@@ -2163,8 +2212,15 @@ def main():
             port=port, instance_dir=instance_dir, shared=shared_weights)
 
     # Write config + start script, then launch.
-    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template, provider=provider, base_url=base_url, key_env=key_env, embed_provider=embed_provider, label_provider=label_provider)
-    save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject, memory_only=memory_only, shared_weights=shared_weights)
+    cfg_path = write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers, hot_reload, model_template, provider=provider, base_url=base_url, key_env=key_env, embed_provider=embed_provider, label_provider=label_provider, embed_backend=embed_backend, label_backend=label_backend)
+    # Persist the RESOLVED backend providers + transports (chat's when the role
+    # followed the chat) so a sibling proxy re-pins the same embedder/labeler even
+    # if its own chat provider differs — the shared-DB match rule depends on this.
+    save_shared_config(MEMORY_DIR, models, backend, port=port, inject=inject,
+                       memory_only=memory_only, shared_weights=shared_weights,
+                       embed_provider=embedder["provider"], label_provider=labeler["provider"],
+                       embed_backend=_transport(embedder["provider"]),
+                       label_backend=_transport(labeler["provider"]))
     start_script = write_start_script(backend, models, port, instance_dir, provider=provider, key_env=key_env, embed_provider=embed_provider, label_provider=label_provider)
     print(f"\n  Config:      {cfg_path}")
     print(f"  Start/stop:  {start_script}")

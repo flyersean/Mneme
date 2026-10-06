@@ -210,6 +210,10 @@ _CONFIG_ENV_MAP = {
     "label_model": "LABEL_MODEL",
     "embed_provider": "EMBED_PROVIDER",
     "label_provider": "LABEL_PROVIDER",
+    # Backend transports — pin a role to "openai" or "ollama" when it differs
+    # from the chat backend (e.g. chat hosted, embedder on local Ollama).
+    "embed_backend": "MNEME_EMBED_BACKEND",
+    "label_backend": "MNEME_LABEL_BACKEND",
     "ollama_url": "MNEME_OLLAMA_URL",
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "openrouter_base_url": "OPENROUTER_BASE_URL",
@@ -1095,6 +1099,15 @@ def _ext_spawn(manifest):
     for k, v in _ext_read_env(manifest["name"]).items():
         env[k] = v
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Cap the extension log at launch: trim any existing file to the newest
+    # `logging.max_entries` lines before the subprocess reopens it in append
+    # mode. Extension stdout is a raw subprocess stream (can't be line-capped
+    # live without a reader thread), so bounding at start keeps repeated
+    # start/stop cycles from growing these logs without limit.
+    from mneme.logfile import _trim_file, read_max_entries
+    _cap = read_max_entries()
+    if _cap:
+        _trim_file(_ext_logfile(manifest["name"]), _cap)
     logf = open(_ext_logfile(manifest["name"]), "a", encoding="utf-8")
     proc = subprocess.Popen(full, cwd=manifest["path"], env=env,
                             stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)

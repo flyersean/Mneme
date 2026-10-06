@@ -344,6 +344,8 @@ runtime:
   hot_reload: true
 
 # Logging — the proxy owns its own log at $MNEME_CHUNK_DIR/proxy.log (append mode,
-# so re-runs and restarts don't wipe it). To cap the size:
-#   logging:
-#     max_entries: 200    # unset/omit = no limit (default); 0 = logging off; N = keep newest N lines
+# so re-runs and restarts don't wipe it). `max_entries` caps EVERY log the proxy
+# writes (proxy log, thinking.log, errors.log, extension logs) to the newest N
+# lines so none grow without bound.
+logging:
+  max_entries: 200    # unset/omit = no limit; 0 = logging off; N = keep newest N lines

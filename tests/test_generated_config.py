@@ -185,7 +185,14 @@ class TestStartScript(unittest.TestCase):
         p = setup.write_start_script(
             "openrouter", {"model": "test-model", "embed_model": "test-embed",
                            "label_model": "test-label"}, 8080, d)
-        self.assertIn("unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM", self._body(p))
+        body = self._body(p)
+        # The unset line may carry extra vars (provider/backend pins); assert the
+        # intent — every model var is cleared — not an exact adjacency.
+        unset_lines = [ln for ln in body.splitlines() if ln.startswith("unset ")]
+        cleared = " ".join(unset_lines)
+        for var in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
+            self.assertIn(var, cleared)
+        self.assertNotIn("export MNEME_MODEL=", body)
 
     def test_instance_start_script_unsets_models(self):
         d = tempfile.mkdtemp()
