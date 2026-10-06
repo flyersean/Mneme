@@ -50,17 +50,24 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 | Script | Where | What it does |
 |---|---|---|
 | `install.sh` | host | Installs system + Python deps, Ollama, browser engines and the Hound MCP server, then clones the repo into `~/mneme/repo`. Idempotent. |
-| `mneme_setup.py` | host | Interactive wizard: pick the backend (OpenRouter or Ollama), chat/embed/label models, context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
+| `mneme_setup.py` | host | Interactive wizard: pick the provider (hosted OpenAI-compatible, local vLLM/llama.cpp, or Ollama), chat/embed/label models, context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
 | `mneme_connect.py` | laptop | (Remote pod only.) Opens a stay-alive SSH tunnel and prints the local URLs. |
 
+**1. Install** (on the host):
+
 ```bash
-# 1. install (on the host)
 curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash
+```
 
-# 2. configure (on the host)
+**2. Configure** (on the host):
+
+```bash
 curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_setup.py && MNEME_BRANCH=agent-harness python3 /tmp/setup.py
+```
 
-# 3. connect (your laptop — remote pod only)
+**3. Connect** (your laptop — remote pod only):
+
+```bash
 curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
@@ -286,5 +293,3 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~386 tests)
   toolset, with the experimental strategy layer off by default (`storage.memory_only:
   true`). It has no agent harness — that subsystem lives only on `agent-harness`. Start
   here for a conservative, memory-only setup.
-- `unified_mneme` — the earlier full-build branch; superseded by `agent-harness`. Kept for
-  history.
