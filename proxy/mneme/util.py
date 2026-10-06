@@ -175,13 +175,16 @@ def _to_ollama_messages(msgs):
 
 
 def _log_error(where: str, e: Exception):
-    """Append 'timestamp | where | type | message' to errors.log. Never raises."""
+    """Append 'timestamp | where | type | message' to errors.log. Never raises.
+
+    Capped to the newest `logging.max_entries` lines (same cap as the main proxy
+    log) so errors.log can't grow without bound."""
     try:
         cd = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
-        os.makedirs(cd, exist_ok=True)
-        with open(os.path.join(cd, "errors.log"), "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now(timezone.utc).isoformat()} | {where} | "
-                    f"{type(e).__name__} | {e}\n")
+        from mneme.logfile import capped_append
+        capped_append(os.path.join(cd, "errors.log"),
+                      f"{datetime.now(timezone.utc).isoformat()} | {where} | "
+                      f"{type(e).__name__} | {e}")
     except Exception:
         pass  # error log must never itself crash the proxy
     try:

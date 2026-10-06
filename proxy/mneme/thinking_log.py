@@ -43,23 +43,14 @@ def configure(enabled, path):
 def record(run_id, kind, text):
     """Append one token chunk (kind: reasoning|content) or an event marker.
 
-    No-op unless enabled and text is non-empty. Flushes each line so a crash or
-    restart never loses the last reasoning chunk."""
+    No-op unless enabled and text is non-empty. Capped to the newest
+    `logging.max_entries` lines (same cap as the main proxy log) so thinking.log
+    can't grow without bound."""
     if not _enabled or not _path or not text:
         return
-    global _fh
-    with _lock:
-        try:
-            if _fh is None:
-                d = os.path.dirname(_path)
-                if d:
-                    os.makedirs(d, exist_ok=True)
-                _fh = open(_path, "a", encoding="utf-8")
-            _fh.write(json.dumps({"t": round(time.time(), 3), "run": run_id,
-                                  "kind": kind, "text": text}) + "\n")
-            _fh.flush()
-        except Exception:
-            pass
+    from .logfile import capped_append
+    capped_append(_path, json.dumps({"t": round(time.time(), 3), "run": run_id,
+                                     "kind": kind, "text": text}))
 
 
 def enabled() -> bool:

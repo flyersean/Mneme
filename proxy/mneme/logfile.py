@@ -114,6 +114,79 @@ def read_max_entries():
         return None
 
 
+def capped_append(path, line):
+    """Append one line to ``path``, trimming to the newest N lines when over cap.
+
+    Shared by EVERY log the proxy writes (errors.log, thinking.log, extension
+    logs) so none grow without bound — the same ``logging.max_entries`` cap that
+    bounds the main proxy log applies here. A cap of 0 turns the log off (nothing
+    written); unset means unlimited.
+
+    PERF: thinking.log is written PER TOKEN, so we cannot re-scan/rewrite the
+    file on every append. Instead we memoize each file's line count and only pay
+    the trim (a read + rewrite) once the count actually exceeds the cap. `_state`
+    holds {path: line_count}; it self-heals if the file is removed (count resets
+    to 0 on a failed stat).
+
+    Never raises — a logging failure must not break the caller.
+    """
+    max_entries = read_max_entries()
+    if max_entries == 0:
+        return
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line if line.endswith("\n") else line + "\n")
+        if max_entries is None:
+            return
+        # Cheap accounting path: keep an in-memory count and only trim when the
+        # file has actually grown past the cap. On a slow path (count unknown or
+        # file replaced) fall back to a real count.
+        with _state_lock:
+            n = _state.get(path)
+            if n is None:
+                n = _count_lines(path)
+            n += 1
+            _state[path] = n
+            if n > max_entries:
+                _trim_file(path, max_entries)
+                _state[path] = max_entries
+    except Exception:
+        pass
+
+
+_state = {}
+_state_lock = threading.Lock()
+
+
+def _count_lines(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return 0
+
+
+def _trim_file(path, max_entries):
+    """Keep only the newest ``max_entries`` lines of ``path`` (best-effort)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        if len(lines) <= max_entries:
+            return
+        keep = lines[-max_entries:]
+        # Atomic-ish rewrite: write a temp then replace, so a concurrent reader
+        # never sees a truncated file.
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(keep)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def setup_logging(log_path):
     """Tee stdout/stderr into ``log_path`` (append, size-capped).
 
