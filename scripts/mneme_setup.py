@@ -1471,7 +1471,14 @@ def start_proxy(backend, models, port, instance_dir):
     env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if backend == "openrouter":
-        env["OPENROUTER_API_KEY"] = load_saved_key()
+        # Propagate EVERY saved provider key into the child process. The chat
+        # model may run on a non-OpenRouter provider (routeway/deepseek/…), and
+        # the embedder/labeler may run on their own providers — each needs its
+        # own key in the child env. Only OpenRouter was propagated before, so a
+        # non-OpenRouter chat key never reached the proxy (silent 401).
+        for _k, _v in load_saved_keys().items():
+            if _v:
+                env[_k] = _v
         env["MNEME_BACKEND"] = "openrouter"
     else:
         env["MNEME_BACKEND"] = "ollama"
@@ -1632,10 +1639,8 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
     ]
     if chat_backend == "openrouter":
         lines += [
-            "# Source the saved OpenRouter key unless one is already exported",
-            f'if [ -z "${{OPENROUTER_API_KEY:-}}" ] && [ -f "{KEY_FILE}" ]; then',
-            f'  export $(grep -v "^#" "{KEY_FILE}" | xargs)',
-            "fi",
+            "# Source ALL saved provider keys (chat may be on a non-OpenRouter provider).",
+            f'if [ -f "{KEY_FILE}" ]; then export $(grep -v "^#" "{KEY_FILE}" | xargs) 2>/dev/null; fi',
         ]
     lines += [
         f'export MNEME_BACKEND="{chat_backend}"',
@@ -1692,7 +1697,11 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
         env["MNEME_LABEL_BACKEND"] = label_backend
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     if chat_backend == "openrouter":
-        env["OPENROUTER_API_KEY"] = load_saved_key()
+        # Propagate EVERY saved provider key — the chat model may be on a
+        # non-OpenRouter provider and the (locked) embedder/labeler on their own.
+        for _k, _v in load_saved_keys().items():
+            if _v:
+                env[_k] = _v
     subprocess.Popen([sys.executable, "-uB", "proxy/mneme_proxy.py"],
                      cwd=REPO_ROOT, env=env, start_new_session=True)
     print(f"  Starting proxy on port {port}...", end=" ", flush=True)

@@ -107,6 +107,12 @@ _PROVIDER_HEADERS: Dict = {}     # extra headers from the active provider block
 _OR_FALLBACK_MODELS: list = []   # OpenRouter model fallbacks (the `models` array)
 _OR_PROVIDER_PREF: Dict = {}     # OpenRouter provider routing prefs (ignore/order/...)
 _OR_STREAM: bool = True          # OpenRouter stream toggle (non-streaming enables OR failover)
+# The raw OpenRouter key, preserved when the CHAT model runs on a DIFFERENT
+# provider. `_resolve_provider()` repoints OPENROUTER_API_KEY at the chat
+# provider's key; embed/label that still run on OpenRouter need the ORIGINAL
+# OpenRouter key, so we stash it here before the repoint and _aux_key() reads it.
+# Defined BEFORE load_config() so _resolve_provider's assignment isn't clobbered.
+_AUX_OR_KEY: str = ""
 
 # Flat map: "section.key" -> env var. Only keys listed here are honored from the
 # file; anything else fails loud (typo guard).
@@ -322,7 +328,7 @@ PROVIDER_CATALOG = {
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         # Ollama: the model is authoritative under the top-level `model:` key
@@ -355,7 +361,13 @@ def _resolve_provider():
     api_key_env = prov.get("api_key_env")
     if api_key_env:
         k = os.environ.get(api_key_env)
-        if k and os.environ.get("OPENROUTER_API_KEY") is None:
+        if k:
+            # OPENROUTER_API_KEY is the generic "chat key" carrier. When the chat
+            # provider is a DIFFERENT vendor (routeway/deepseek/…), the OpenRouter
+            # key is still needed by embed/label if they run on OpenRouter — so
+            # preserve it before repointing the carrier at the chat key.
+            if api_key_env != "OPENROUTER_API_KEY":
+                _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
             os.environ["OPENROUTER_API_KEY"] = k
     _PROVIDER_HEADERS = prov.get("headers") or {}
     # OpenRouter-specific reliability (only applied to OpenRouter requests, so
@@ -576,6 +588,19 @@ OR_API_KEY    = os.environ.get("OPENROUTER_API_KEY", "")
 OR_BASE_URL   = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 
+def _aux_key(ke: str) -> str:
+    """Resolve an auxiliary model's API key from its provider's key_env.
+
+    When the aux provider is OpenRouter but the CHAT provider is a different
+    vendor, OPENROUTER_API_KEY has been repointed at the chat key — so we return
+    the preserved OpenRouter key instead. Otherwise read the env var directly."""
+    if not ke:
+        return ""
+    if ke == "OPENROUTER_API_KEY" and _AUX_OR_KEY:
+        return _AUX_OR_KEY
+    return os.environ.get(ke, "")
+
+
 def _backend_is_openai() -> bool:
     return MNEME_BACKEND in ("openai", "openrouter")
 
@@ -607,12 +632,12 @@ def _aux_conn(kind: str) -> dict:
             if cat.get("kind") == "ollama":
                 return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
             ke = cat.get("key_env", "")
-            key = os.environ.get(ke, "") if ke else ""
+            key = _aux_key(ke)
             return {"base_url": cat.get("base_url", "") or "", "key": key, "kind": "openai", "headers": {}}
         prov = (CONFIG_DATA.get("providers") or {}).get(prov_name) or {}
         if isinstance(prov, dict) and prov.get("base_url"):
             ke = prov.get("api_key_env", "")
-            key = os.environ.get(ke, "") if ke else ""
+            key = _aux_key(ke)
             return {"base_url": prov.get("base_url", "") or "", "key": key,
                     "kind": "openai", "headers": prov.get("headers") or {}}
     # No explicit aux provider — follow the chat backend (existing behaviour).
