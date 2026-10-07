@@ -208,10 +208,12 @@ git clone https://github.com/flyersean/Mneme.git && cd Mneme
 ```
 
 The installer installs Python deps + the repo always; the three big downloads (Ollama,
-headless Chromium for the browser tools, and the Hound web stack) are each **auto-skipped
-when already installed**, otherwise asked `[y/N]`. Non-interactive runs default to skip —
-set `MNEME_YES=1` to install everything without prompting, or `MNEME_YES=0` to skip all.
-A macOS installer (`scripts/install_mac.sh`) exists but is **untested** (no Mac available).
+headless Chromium for the browser tools, and the Hound web stack) are each asked `[y/N]` —
+**install when missing, update/reinstall when present** (so a stale dependency can always
+be refreshed; no version checking, you decide). Non-interactive runs default to no — set
+`MNEME_YES=1` to install/update everything without prompting, or `MNEME_YES=0` to decline
+all. A macOS installer (`scripts/install_mac.sh`) exists but is **untested** (no Mac
+available).
 
 Or use the interactive setup wizard. It walks **three model roles** — chat, embedder,
 labeler — and asks the same three questions for each: **provider → API key (if the

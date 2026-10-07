@@ -4,12 +4,12 @@
 # ============================================================================
 #  Installs the proxy's Python dependencies + the repo, idempotently, then
 #  offers the BIG optional components one at a time (same as the Linux
-#  installer — each auto-skipped when already present, otherwise asked [y/N]):
+#  installer — asked [y/N]: install when missing, update when present):
 #    1. Python dependencies  (flask / faiss / numpy / requests / pyyaml / ddgs /
 #       mcp / playwright / patchright) — always installed
-#    2. Ollama        (local model backend)  — asked y/N, skipped if present
-#    3. Chromium      (headless browser)      — asked y/N, skipped if present
-#    4. Hound MCP     (web stack + OCR/PDF)   — asked y/N, skipped if present
+#    2. Ollama        (local model backend)  — asked update/install y/N
+#    3. Chromium      (headless browser)      — asked update/install y/N
+#    4. Hound MCP     (web stack + OCR/PDF)   — asked update/install y/N
 #    then clones the proxy code into ~/mneme/repo (branch from MNEME_BRANCH).
 #
 #  KNOWN macOS DIFFERENCES vs the Linux installer (these are the untested bits):
@@ -27,8 +27,9 @@
 #    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 #
 #  Flags (same as the Linux installer):
-#    MNEME_YES=1                      install all optional components
-#    MNEME_INSTALL_OLLAMA / _CHROMIUM / _HOUND =1|0
+#    MNEME_YES=1                      install/update all optional components
+#    MNEME_INSTALL_OLLAMA / _CHROMIUM / _HOUND =1|0   (install when missing)
+#    MNEME_UPDATE_OLLAMA / _CHROMIUM / _HOUND =1|0    (update when present)
 # ============================================================================
 set -e
 
@@ -98,7 +99,14 @@ echo; echo "[2/4] Chromium (browser tools)"
 if ! (python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 2>/dev/null); then
   echo "  ⚠ playwright/patchright not importable — skipping Chromium (browser tools need: pip install playwright patchright)"
 elif chromium_present; then
-  echo "  ✓ headless Chromium already downloaded — skipping"
+  if answer_yn MNEME_UPDATE_CHROMIUM "Chromium already installed — update/reinstall it?"; then
+    echo "  installing browser Chromium (idempotent, ~150MB each)..."
+    python3 -m patchright install chromium 2>/dev/null || true
+    python3 -m playwright install chromium 2>/dev/null || true
+    echo "  ✓ browser chromium ready (patchright + playwright)"
+  else
+    echo "  ✓ keeping existing Chromium"
+  fi
 elif answer_yn MNEME_INSTALL_CHROMIUM "Install headless Chromium (browser tools, ~150MB each)?"; then
   echo "  installing browser Chromium (idempotent, ~150MB each)..."
   python3 -m patchright install chromium 2>/dev/null || true
@@ -111,7 +119,14 @@ fi
 # ── 3. Hound MCP (opt-in) ─────────────────────────────────────────────
 echo; echo "[3/4] Hound MCP (web/OCR/crawl stack)"
 if command -v hound >/dev/null 2>&1; then
-  echo "  ✓ hound CLI already installed — skipping"
+  if answer_yn MNEME_UPDATE_HOUND "Hound already installed — update/reinstall it?"; then
+    python3 -m pip install --break-system-packages "hound-mcp[all]" \
+      || python3 -m pip install --user "hound-mcp[all]" \
+      || echo "  ⚠ hound-mcp[all] install failed — web/OCR/crawl tools unavailable until fixed."
+    command -v hound >/dev/null 2>&1 && echo "  ✓ hound CLI ready" || echo "  ⚠ hound CLI not on PATH (find it: python3 -m pip show -f hound-mcp | grep -i hound)"
+  else
+    echo "  ✓ keeping existing Hound"
+  fi
 elif answer_yn MNEME_INSTALL_HOUND "Install Hound MCP (web/OCR/crawl stack)?"; then
   python3 -m pip install --break-system-packages "hound-mcp[all]" \
     || python3 -m pip install --user "hound-mcp[all]" \
@@ -129,7 +144,15 @@ export OLLAMA_SCHED_SPREAD=1
 
 if command -v ollama >/dev/null 2>&1; then
   _VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  echo "  ✓ ollama already installed (${_VER:-unknown})"
+  if answer_yn MNEME_UPDATE_OLLAMA "Ollama already installed (${_VER:-unknown}) — update/reinstall it?"; then
+    echo "  installing Ollama (native macOS app)..."
+    # The official installer supports macOS directly (no zstd/systemd needed here).
+    curl -fsSL https://ollama.com/install.sh | sh
+    command -v ollama >/dev/null 2>&1 && echo "  ✓ ollama installed" || echo "  ⚠ install failed — run: curl -fsSL https://ollama.com/install.sh | sh"
+    echo "  ⓘ On macOS Ollama is not started as a service — run \`ollama serve\` (or open the Ollama app) before pulling a model."
+  else
+    echo "  ✓ keeping existing ollama (${_VER:-unknown})"
+  fi
 elif answer_yn MNEME_INSTALL_OLLAMA "Install Ollama (local model backend, ~1GB+ download)?"; then
   echo "  installing Ollama (native macOS app)..."
   # The official installer supports macOS directly (no zstd/systemd needed here).
