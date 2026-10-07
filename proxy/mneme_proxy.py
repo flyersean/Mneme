@@ -1916,13 +1916,16 @@ def grade_priority(chunk_id: str) -> int:
 
 # ─── FAISS Index ───────────────────────────────────────────────
 
-# snowflake-arctic-embed2 produces 1024-dim embeddings (nomic-embed-text was 768).
-# NOTE: existing vectors in the DB are 768-dim and incompatible. Wipe
-# mneme/chunks/mneme.db (or run a migration) before starting with
-# the new embedder, otherwise FAISS will reject add/search on shape mismatch.
+# Default embedder: qwen3-embedding-8b — available on BOTH OpenRouter
+# (qwen/qwen3-embedding-8b) and Ollama (qwen3-embedding:8b), so a DB can move
+# between backends without re-embedding. MRL-truncated to 1024-dim (see DIM).
+# NOTE: existing vectors are keyed to whatever embedder created them — switch
+# embedders and FAISS will reject add/search on shape mismatch. The startup
+# health check re-embeds mismatched chunks, but a deliberate embedder change is
+# cleaner on a fresh DB.
 # EMBED_MODEL is env-overridable so a DB can move between machines with
 # different embedders (the startup health check re-embeds mismatched chunks).
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "snowflake-arctic-embed2")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "qwen/qwen3-embedding-8b")
 # Embedding dimension. MRL models (Qwen3-Embedding, bge-m3) can emit a truncated
 # dim, so the FAISS index dimension and the requested output dim are the same knob.
 try:
@@ -2095,7 +2098,7 @@ def _embed_single(text: str) -> np.ndarray:
     return v / (np.linalg.norm(v) + 1e-8)
 
 def embed(text: str):
-    """Embed text via snowflake-arctic-embed2 with chunk+pool for long input.
+    """Embed text via EMBED_MODEL with chunk+pool for long input.
 
     - Short text (<= CHUNK_CHARS): single embedding call.
     - Long text: split into overlapping windows, embed each, mean-pool to
@@ -3809,7 +3812,7 @@ def _clean_content(text: str) -> str:
     return text
 
 
-LABEL_MODEL = os.environ.get("LABEL_MODEL", "qwen2.5:1.5b")
+LABEL_MODEL = os.environ.get("LABEL_MODEL", "meta-llama/llama-3.2-3b-instruct")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
