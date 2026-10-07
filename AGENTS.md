@@ -59,8 +59,9 @@ proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
                         CodeMirror), static/themes/ + theme.css + theme.js (the theming
                         system — see the "Theming" section), system_prompt*.md (the injected
                         instructions), mneme/harness/ (the agent harness — core, not an extension)
-scripts/                install.sh + install_mac.sh (installers), mneme_setup.py
-                        (install + add-instance wizard), calibrate_similarity.py,
+scripts/                install.sh + install_mac.sh (installers), mneme (start an
+                        instance from its dir), mneme_setup.py (install +
+                        add-instance wizard), calibrate_similarity.py,
                         benchmark.py, start_gateway.sh, …
 extensions/             HTTP consumers, NOT part of the proxy: gateways/, swarm/, pi/,
                         + README.md (the contract + the extension.yaml manifest spec)
@@ -214,6 +215,14 @@ be refreshed; no version checking, you decide). Non-interactive runs default to 
 `MNEME_YES=1` to install/update everything without prompting, or `MNEME_YES=0` to decline
 all. A macOS installer (`scripts/install_mac.sh`) exists but is **untested** (no Mac
 available).
+
+The installer also puts a `mneme` launcher on PATH. Start an instance later by `cd`ing
+into its directory and running `mneme` (foreground, Ctrl-C to stop; re-running cleanly
+restarts it):
+
+```bash
+cd ~/mneme/chunks/instances/8080 && mneme
+```
 
 Or use the interactive setup wizard. It walks **three model roles** — chat, embedder,
 labeler — and asks the same three questions for each: **provider → API key (if the

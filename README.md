@@ -94,6 +94,14 @@ needs none of them. Prefer to read first? `git clone` and run `./scripts/install
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/`, chat UI at
 `/chat`, OpenAI-compatible API at `/v1`.
 
+To start an installed instance later, `cd` into its directory and run `mneme` (it starts
+in the foreground — Ctrl-C to stop; the dashboard's "Shut down this proxy" button also
+stops it). Re-running `mneme` cleanly restarts it:
+
+```bash
+cd ~/mneme/chunks/instances/8080 && mneme
+```
+
 ## What you get
 
 | URL | Page |
@@ -291,7 +299,7 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
 | Path | What it is |
 |---|---|
 | `proxy/` | The proxy — `mneme_proxy.py` + the `mneme/` modules (tools, curation, templates, chat commands) |
-| `scripts/` | `install.sh` (Linux) + `install_mac.sh` (macOS, untested), `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel) |
+| `scripts/` | `install.sh` (Linux) + `install_mac.sh` (macOS, untested), `mneme` (start an instance from its dir), `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel) |
 | `extensions/` | HTTP clients: `swarm/`, `pi/`, `gateways/` |
 | `docs/` | Harness guide/spec, model notes, provenance + strategy specs |
 | `tests/` | The deterministic suite |

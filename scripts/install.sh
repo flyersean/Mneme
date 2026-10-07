@@ -9,7 +9,9 @@
 #    2. Ollama        (local model backend, ~1GB+)   — asked update/install y/N
 #    3. Chromium      (headless browser, ~150MB each) — asked update/install y/N
 #    4. Hound MCP     (web stack + OCR/PDF)           — asked update/install y/N
-#    then clones the proxy code into ~/mneme/repo (branch from MNEME_BRANCH).
+#    then clones the proxy code into ~/mneme/repo (branch from MNEME_BRANCH) and
+#    installs the `mneme` launcher on PATH so `cd …/instances/<port> && mneme`
+#    starts that instance.
 #
 #  Each optional component is asked [y/N]: "update/reinstall?" when already
 #  installed, "install?" when missing — so a stale dependency can always be
@@ -23,7 +25,7 @@
 #    curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/install.sh && bash /tmp/install.sh
 #    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 #
-#  Pass the branch explicitly when it's not unified_mneme:
+#  Pass the branch explicitly when it's not agent-harness:
 #    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
 #
 #  Safe to re-run — every step checks first and only fills in what's missing.
@@ -373,6 +375,33 @@ else
   fi
 fi
 
+# ── 3b. `mneme` launcher on PATH ─────────────────────────────────────
+# Install the `mneme` command so you can cd into an instance directory and type
+# `mneme` to start that proxy. User installs go to ~/.local/bin; root installs
+# go to /usr/local/bin.
+echo; echo "[3b/3] `mneme` launcher"
+if [ -f "$REPO_DIR/scripts/mneme" ]; then
+  if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
+    _MNEME_BIN=/usr/local/bin
+  else
+    _MNEME_BIN="$HOME/.local/bin"
+    mkdir -p "$_MNEME_BIN"
+  fi
+  cp "$REPO_DIR/scripts/mneme" "$_MNEME_BIN/mneme"
+  chmod +x "$_MNEME_BIN/mneme"
+  case ":$PATH:" in
+    *":$_MNEME_BIN:"*) ;;
+    *) export PATH="$_MNEME_BIN:$PATH" ;;
+  esac
+  if command -v mneme >/dev/null 2>&1; then
+    echo "  ✓ mneme on PATH ($_MNEME_BIN/mneme)"
+  else
+    echo "  ⚠ installed to $_MNEME_BIN/mneme — add it to your PATH: export PATH=\"$_MNEME_BIN:\$PATH\""
+  fi
+else
+  echo "  ⚠ scripts/mneme not found in the repo — skipping launcher install"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────
 echo
 echo "══════════════════════════════════════════════════════════════"
@@ -387,4 +416,6 @@ echo "  Next, run the setup wizard to pick your backend and models:"
 echo "    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/$BRANCH/scripts/mneme_setup.py && python3 /tmp/setup.py"
 echo
 echo "  (Setup asks: OpenRouter or Ollama → models → Pi yes/no → port.)"
+echo
+echo "  To start an instance later:  cd ~/mneme/chunks/instances/<port> && mneme"
 echo "══════════════════════════════════════════════════════════════"

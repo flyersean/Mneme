@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+mneme — start the Mneme proxy for the current instance directory.
+
+Usage:
+    cd ~/mneme/chunks/instances/8080     # (or wherever the instance lives)
+    mneme
+
+An "instance" is the directory holding mneme.yaml (instances live at
+<shared-DB-dir>/instances/<port>/). `mneme` finds it by walking up from the
+current directory, then starts that instance's proxy in the FOREGROUND
+(Ctrl-C to stop). It:
+
+  * exports saved API keys from the shared env file (~/mneme/env, or
+    $MNEME_KEY_FILE),
+  * clears inherited model env vars so the instance's mneme.yaml is the single
+    source of truth for model identity,
+  * stops any Mneme proxy already on the port first, so re-running `mneme` is a
+    clean restart rather than a bind conflict.
+
+The repo checkout (holding proxy/mneme_proxy.py) is found by walking up from the
+instance directory; override with $MNEME_REPO_DIR.
+"""
+import os
+import re
+import sys
+import time
+import signal
+import subprocess
+
+
+def _find_up(start, *names):
+    """Return the first path of `names` found in `start` or any ancestor."""
+    d = os.path.abspath(start)
+    while True:
+        for n in names:
+            p = os.path.join(d, n)
+            if os.path.isfile(p):
+                return p
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _find_repo(start):
+    """Find the checkout that holds proxy/mneme_proxy.py, walking up from `start`."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isfile(os.path.join(d, "proxy", "mneme_proxy.py")):
+            return d
+        if os.path.isfile(os.path.join(d, "repo", "proxy", "mneme_proxy.py")):
+            return os.path.join(d, "repo")
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _parse_yaml(path):
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return None
+
+
+def _pid_on_port(port):
+    try:
+        out = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if re.search(r":%s\s" % port, line):
+            m = re.search(r"pid=(\d+)", line)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _stop_existing(port):
+    pid = _pid_on_port(port)
+    if pid is None:
+        return
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            cmdline = f.read().decode("utf-8", "replace")
+    except Exception:
+        cmdline = ""
+    if "mneme_proxy.py" not in cmdline:
+        print("mneme: port %s is held by a non-Mneme process (pid %s) — NOT stopping it."
+              % (port, pid), file=sys.stderr)
+        sys.exit(1)
+    print("mneme: stopping existing proxy on port %s (pid %s) ..." % (port, pid))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    for _ in range(50):
+        time.sleep(0.1)
+        if _pid_on_port(port) is None:
+            return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    time.sleep(1)
+
+
+def main():
+    cfg_path = _find_up(os.getcwd(), "mneme.yaml", "mneme.json")
+    if not cfg_path:
+        print("mneme: no mneme.yaml (or mneme.json) here or in any parent directory.",
+              file=sys.stderr)
+        print("       cd into an instance directory (e.g. ~/mneme/chunks/instances/8080)"
+              " and re-run.", file=sys.stderr)
+        sys.exit(1)
+
+    inst_dir = os.path.dirname(cfg_path)
+    cfg = _parse_yaml(cfg_path) or {}
+
+    # Port: the instance directory is named after its port; fall back to the
+    # config's storage.port, then 8080.
+    port = os.path.basename(inst_dir.rstrip("/"))
+    if not port.isdigit():
+        port = str((cfg.get("storage") or {}).get("port") or 8080)
+
+    # Repo checkout (holds proxy/mneme_proxy.py).
+    repo = (os.environ.get("MNEME_REPO_DIR")
+            or _find_repo(inst_dir)
+            or _find_repo(os.getcwd()))
+    if not repo or not os.path.isfile(os.path.join(repo, "proxy", "mneme_proxy.py")):
+        fallback = os.path.expanduser("~/mneme/repo")
+        if os.path.isfile(os.path.join(fallback, "proxy", "mneme_proxy.py")):
+            repo = fallback
+    if not repo:
+        print("mneme: can't locate the Mneme checkout (proxy/mneme_proxy.py).",
+              file=sys.stderr)
+        print("       Set MNEME_REPO_DIR to the checkout directory.", file=sys.stderr)
+        sys.exit(1)
+
+    # Backend type — env wins, else the config's backend.type, else ollama.
+    backend = (os.environ.get("MNEME_BACKEND")
+               or (cfg.get("backend") or {}).get("type")
+               or "ollama")
+
+    env = os.environ.copy()
+    # Export saved API keys from the shared env file (KEY=VALUE lines).
+    key_file = os.environ.get("MNEME_KEY_FILE") or os.path.expanduser("~/mneme/env")
+    if os.path.isfile(key_file):
+        for line in open(key_file, "r", encoding="utf-8"):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if k.startswith("export "):
+                k = k[len("export "):].strip()
+            if k and k not in env:
+                env[k] = v.strip().strip('"').strip("'")
+
+    env["MNEME_CHUNK_DIR"] = inst_dir
+    env["MNEME_PORT"] = str(port)
+    env["MNEME_CONFIG"] = cfg_path
+    env["MNEME_BACKEND"] = backend
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # The instance's mneme.yaml is authoritative for model identity — clear any
+    # inherited model env vars.
+    for mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
+        env.pop(mv, None)
+
+    print("mneme: starting proxy on port %s (backend=%s) ..." % (port, backend),
+          flush=True)
+    _stop_existing(port)
+
+    os.chdir(repo)
+    os.execvpe(sys.executable, [sys.executable, "-uB", "proxy/mneme_proxy.py"], env)
+
+
+if __name__ == "__main__":
+    main()
