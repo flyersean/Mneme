@@ -92,15 +92,19 @@ install/update them all without prompting with `MNEME_YES=1` (or the per-compone
 needs none of them. Prefer to read first? `git clone` and run `./scripts/install.sh`.
 
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/`, chat UI at
-`/chat`, OpenAI-compatible API at `/v1`.
+`/chat`, OpenAI-compatible API at `/v1`. A fresh install starts with **no chat model set**
+— open the chat page and pick one from the model picker (it's saved to `mneme.yaml`).
 
-To start an installed instance later, `cd` into its directory and run `mneme` (it starts
-in the foreground — Ctrl-C to stop; the dashboard's "Shut down this proxy" button also
-stops it). Re-running `mneme` cleanly restarts it:
+**Starting and stopping.** The installer puts a `mneme` command on your PATH. To start an
+instance, `cd` into its directory and run `mneme` — it runs in the foreground (Ctrl-C to
+stop), and re-running it cleanly restarts it. Instances live at
+`~/mneme/chunks/instances/<port>/`:
 
 ```bash
 cd ~/mneme/chunks/instances/8080 && mneme
 ```
+
+Stop it with Ctrl-C, or the dashboard's "Shut down this proxy" button.
 
 ## What you get
 
@@ -175,7 +179,7 @@ line at startup showing the final value of every setting.
 | Setting | Default | What it does |
 |---|---|---|
 | `backend.type` / `backend.provider` | `openai` / `openrouter` | which backend + which `providers:` entry |
-| `providers.<name>.model` | `deepseek/deepseek-v4-flash` | chat model |
+| `model` | *(blank)* | chat model — pick one in the chat page's model picker (persisted to `model:`) |
 | `providers.<name>.embed_model` | `qwen/qwen3-embedding-8b` | embedding model (1024-dim) |
 | `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (non-thinking) |
 | `sampling.temperature` | `0.2` | creativity — lower is more deterministic |

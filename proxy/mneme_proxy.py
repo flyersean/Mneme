@@ -601,7 +601,7 @@ if _mcp_cfgs:
     print(f"  [MCP] configured {len(_mcp_cfgs)} server(s): {[c.get('name') for c in _mcp_cfgs]}", flush=True)
 
 OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
-MODEL       = os.environ.get("MNEME_MODEL", "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:latest")
+MODEL       = os.environ.get("MNEME_MODEL", "")  # blank until the user picks a model in the chat page
 
 # Hot-reload master switch. Read ONCE at startup (never re-read on config mtime):
 # when false, config + prompts + swarm_config are frozen and any change requires a
@@ -2811,6 +2811,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     message.reasoning; tool-call arguments arrive as JSON strings and are
     json.loads'd back to dicts to match the Ollama path."""
     _model = model or MODEL
+    if not _model:
+        return {"content": "[no model] Pick a model from the model picker in the chat page (or set `model:` in mneme.yaml).",
+                "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "stop"}
     msgs = _serialize_tool_call_arguments(msgs)
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
@@ -3194,6 +3197,9 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     calls (judge, label) on local Ollama while the main model runs on OpenRouter.
     """
     _model = model or MODEL
+    if not _model:
+        return {"content": "[no model] Pick a model from the model picker in the chat page (or set `model:` in mneme.yaml).",
+                "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "stop"}
     # Per-call backend override (default: global MNEME_BACKEND). Auxiliary calls
     # (judge/label) pass backend="ollama" so they never follow the main model onto
     # OpenRouter — they run on the local pod models.
