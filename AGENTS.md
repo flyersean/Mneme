@@ -531,6 +531,7 @@ IGNORED — the proxy does not silently override its own config.
 | POST | `/providers/activate`, `/providers/key` | Switch model; save/update a provider API key |
 | GET | `/overview`, `/overview/config/<port>` | Dashboard + per-proxy config editor |
 | POST | `/admin/reload` | Hot-reload config from disk |
+| POST | `/shutdown` | Shut down THIS proxy (the dashboard's "Shut down this proxy" button) |
 | GET | `/memory`, `/memory/*` | Memory browser endpoints |
 | GET | `/extensions`, `/extensions/*` | Extension management UI (run/kill/config/log) |
 | POST | `/setup`, `/setup/<job_id>` | Background setup job + log tail |

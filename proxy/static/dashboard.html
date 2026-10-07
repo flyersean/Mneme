@@ -42,6 +42,8 @@
   button.start:hover { border-color:var(--green); }
   button.stop { color:var(--red); margin-left:6px; }
   button.stop:hover { border-color:var(--red); }
+  button.danger { color:#fff; background:var(--red); border-color:var(--red); font-weight:600; padding:7px 16px; }
+  button.danger:hover { background:var(--red); border-color:var(--red); filter:brightness(1.12); }
 
   .status { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
   .row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); font-size:14px; }
@@ -119,6 +121,7 @@
   <section>
     <h2>This proxy</h2>
     <div class="status" id="status">Loading…</div>
+    <p style="margin-top:14px;"><button class="danger" id="shutdownBtn">Shut down this proxy</button></p>
   </section>
 </main>
 <div class="modal-overlay" id="setupModal">
@@ -197,7 +200,7 @@ async function loadInstances() {
       const dash = `<button class="dash" onclick="window.open('http://localhost:${it.port}/','_blank')">Dashboard</button>`;
       const cfg = `<button class="config" onclick="openConfig(${it.port})">Config</button>`;
       const lifecycle = it.self
-        ? ''
+        ? `<button class="stop" onclick="shutdownSelf()">Shutdown</button>`
         : (it.running
             ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
             : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
@@ -217,6 +220,17 @@ async function act(action, port) {
     if (j.error) { alert(j.error); }
     setTimeout(loadInstances, 800);
   } catch (e) { alert(e.message); }
+}
+
+async function shutdownSelf() {
+  if (!confirm('Shut down this proxy? It will stop serving on its port immediately.')) return;
+  try {
+    await fetch('/shutdown', { method:'POST' });
+  } catch (e) { /* the connection drops as the proxy dies — expected */ }
+  document.body.innerHTML =
+    '<div style="padding:70px 24px;text-align:center;font-family:system-ui,-apple-system,sans-serif">' +
+    '<h2 style="margin:0 0 8px">Proxy shut down.</h2>' +
+    '<p style="color:#888">The proxy has stopped. You can close this tab.</p></div>';
 }
 
 async function loadStatus() {
@@ -399,6 +413,8 @@ document.getElementById('cfgFormat').addEventListener('click', () => {
   catch (e) { alert('Cannot format: ' + e.message); }
 });
 document.getElementById('cfgModal').addEventListener('click', (e) => { if (e.target === document.getElementById('cfgModal')) closeCfg(); });
+
+document.getElementById('shutdownBtn').addEventListener('click', shutdownSelf);
 
 loadInstances();
 loadStatus();

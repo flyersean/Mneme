@@ -8392,6 +8392,18 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
+    @app.route("/shutdown", methods=["POST"])
+    def shutdown():
+        # Kill THIS proxy. The process can't kill itself synchronously and still
+        # answer, so schedule a hard exit in a background thread just long enough
+        # for this HTTP response to flush, then os._exit(0) tears down the whole
+        # process (no signal handler / atexit interference).
+        def _die():
+            time.sleep(0.5)
+            os._exit(0)
+        threading.Thread(target=_die, daemon=True).start()
+        return _cors_response({"ok": True, "message": "shutting down"})
+
     # ── Per-proxy config editor (dashboard) ──
     @app.route("/overview/config/<int:port>", methods=["GET"])
     def overview_config_get(port):

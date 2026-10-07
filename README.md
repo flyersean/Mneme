@@ -258,6 +258,7 @@ work well, some don't work at all. Tuning is part of using it. See
 | POST | `/runs`, GET `/runs`, `/runs/<id>` | Create / list / inspect agent runs |
 | GET | `/models`, `/v1/models` | List models |
 | GET | `/mcp/servers`, POST/DELETE `/mcp/servers[/<name>]` | MCP server management |
+| POST | `/shutdown` | Shut down this proxy (also the dashboard's "Shut down" button) |
 
 Plus the web pages above (`/`, `/chat`, `/memory`, `/templates`, `/ollama`, `/runs`,
 `/strategies`, `/extensions`) and their JSON endpoints. The full list lives in
