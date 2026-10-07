@@ -29,6 +29,12 @@
   header .title { font-weight: 600; font-size: 16px; }
   header .model { font-size: 12px; color: var(--muted); }
   header .spacer { flex: 1; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); vertical-align: middle; flex-shrink: 0; }
+  .status-dot.ok { background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.18); }
+  .status-dot.err { background: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,.18); }
+  .backend-row { display: flex; align-items: center; gap: 10px; margin-top: 3px; font-size: 10px; color: var(--muted); }
+  .bmodel { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .bmodel .bname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
   header button {
     border: 1px solid var(--border);
     background: var(--panel);
@@ -475,7 +481,11 @@ header .model:hover { color: var(--accent); }
     <div class="title">Mneme</div>
     <div class="model-row">
       <div class="model" id="model-label">connecting…</div>
-      <button id="model-btn" title="Select a different model">Select model ▾</button>
+      <button id="model-btn" title="Select a different model"><span class="status-dot" id="chat-dot" title="chat provider status"></span> Select model ▾</button>
+    </div>
+    <div class="backend-row" id="backend-row" style="display:none">
+      <span class="bmodel" title="embedder"><span class="status-dot" id="embed-dot"></span><span class="bname" id="embed-name">…</span></span>
+      <span class="bmodel" title="labeler"><span class="status-dot" id="label-dot"></span><span class="bname" id="label-name">…</span></span>
     </div>
   </div>
   <div class="spacer"></div>
@@ -1805,6 +1815,52 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// ── provider/backend status indicators ──────────────────────────
+function setDot(el, ok) {
+  if (!el) return;
+  el.classList.remove("ok", "err");
+  if (ok === true) el.classList.add("ok");
+  else if (ok === false) el.classList.add("err");
+}
+
+function renderStatus(d) {
+  if (!d) return;
+  const chatDot = document.getElementById("chat-dot");
+  if (d.chat) {
+    setDot(chatDot, d.chat.ok);
+    const parts = [d.chat.provider, d.chat.model].filter(Boolean).join(" · ");
+    const state = d.chat.ok === false ? "PROBLEM — " : (d.chat.ok === true ? "connected — " : "unknown — ");
+    chatDot.title = state + parts + (d.chat.error ? "\n" + d.chat.error : "");
+  }
+  const embedDot = document.getElementById("embed-dot");
+  const labelDot = document.getElementById("label-dot");
+  let showBackends = false;
+  if (d.embed && d.embed.model) {
+    setDot(embedDot, d.embed.ok);
+    document.getElementById("embed-name").textContent = d.embed.model;
+    embedDot.title = (d.embed.ok === false ? "embedder PROBLEM — " : "embedder — ") +
+      d.embed.model + (d.embed.error ? "\n" + d.embed.error : "");
+    showBackends = true;
+  }
+  if (d.label && d.label.model) {
+    setDot(labelDot, d.label.ok);
+    document.getElementById("label-name").textContent = d.label.model;
+    labelDot.title = (d.label.ok === false ? "labeler PROBLEM — " : "labeler — ") +
+      d.label.model + (d.label.error ? "\n" + d.label.error : "");
+    showBackends = true;
+  }
+  document.getElementById("backend-row").style.display = showBackends ? "" : "none";
+}
+
+async function pollStatus() {
+  try {
+    const r = await fetch("/status");
+    renderStatus(await r.json());
+  } catch (e) {}
+}
+
+setInterval(pollStatus, 10000);
+
 // ── boot ─────────────────────────────────────────────────────────
 async function boot() {
   try {
@@ -1816,6 +1872,7 @@ async function boot() {
     modelLabel.textContent = MODEL;
   }
   await initConversation();
+  pollStatus();
   input.focus();
 }
 boot();

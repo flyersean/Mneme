@@ -114,6 +114,36 @@ _OR_STREAM: bool = True          # OpenRouter stream toggle (non-streaming enabl
 # Defined BEFORE load_config() so _resolve_provider's assignment isn't clobbered.
 _AUX_OR_KEY: str = ""
 
+# Last-known connectivity for the chat provider, embedder, and labeler. Updated on
+# each real request (chat turn, embedding, topic-label) and surfaced via /status so
+# the chat header can show a green/red dot per model without doing its own probes.
+_PROVIDER_STATUS = {
+    "chat":  {"ok": None, "error": "", "at": ""},
+    "embed": {"ok": None, "error": "", "at": ""},
+    "label": {"ok": None, "error": "", "at": ""},
+}
+
+
+def _set_status(kind: str, ok: bool, error: str = ""):
+    st = _PROVIDER_STATUS.get(kind)
+    if not st:
+        return
+    st["ok"] = bool(ok)
+    st["error"] = (error or "")[:200]
+    st["at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _record_chat_status(result):
+    """Update the chat provider's status from a query_model result dict."""
+    if not isinstance(result, dict):
+        return
+    content = result.get("content") or ""
+    tool_calls = result.get("tool_calls") or []
+    done = result.get("done_reason") or ""
+    ok = bool(content) or bool(tool_calls) or done in ("stop", "length", "tool_calls", "max_tokens")
+    err = result.get("error") or ("" if ok else (done or "no response"))
+    _set_status("chat", ok, err)
+
 # Flat map: "section.key" -> env var. Only keys listed here are honored from the
 # file; anything else fails loud (typo guard).
 _CONFIG_ENV_MAP = {
@@ -2080,15 +2110,19 @@ def embed(text: str):
     try:
         chunks = chunk_text(text)
         if len(chunks) == 1:
-            return _embed_single(chunks[0])
+            _v = _embed_single(chunks[0])
+            _set_status("embed", True)
+            return _v
         vecs = [_embed_single(c) for c in chunks]
         pooled = pool_embeddings(vecs)
         print(f"  [EMBED] chunked {len(text)} chars into {len(chunks)} windows "
               f"-> pooled centroid", flush=True)
+        _set_status("embed", True)
         return pooled
     except Exception as e:
         print(f"  [EMBED][ERROR] {type(e).__name__}: {e} — returning None (pending_embed)",
               flush=True)
+        _set_status("embed", False, f"{type(e).__name__}: {e}")
         return None
 
 
@@ -3825,9 +3859,11 @@ def _llm_topic_label(text: str) -> str:
         label = re.sub(r'["\']', '', label)
         label = re.sub(r'\s+', ' ', label).strip()
         if label and len(label) >= 3:
+            _set_status("label", True)
             return label[:60]
     except Exception as e:
         print(f"  [LABEL][ERROR] {type(e).__name__}: {e} — falling back to heuristic", flush=True)
+        _set_status("label", False, f"{type(e).__name__}: {e}")
     return _generate_topic_label(text)
 
 
@@ -6315,6 +6351,7 @@ def _query_retry_timeout(msgs, tools=None, timeout=None, options=None, max_token
         result = query_model(msgs, tools=tools, timeout=timeout,
                              options=options, max_tokens=max_tokens)
         if not _provider_failure_retryable(result):
+            _record_chat_status(result)
             return result
         # Retryable failure: remember the best partial so a failed chain
         # returns it rather than the last (possibly emptier) attempt.
@@ -6336,11 +6373,15 @@ def _query_retry_timeout(msgs, tools=None, timeout=None, options=None, max_token
             while time.time() < _sleep_until:
                 if _turn_cancel_event().is_set():
                     print("  [CANCEL] user stopped the turn — aborting retry wait", flush=True)
-                    return best if best is not None else result
+                    _final = best if best is not None else result
+                    _record_chat_status(_final)
+                    return _final
                 time.sleep(min(0.25, max(0.0, _sleep_until - time.time())))
     print(f"  [RETRY] all {attempts} attempts failed — returning best partial "
           f"(content={len((best or {}).get('content') or '')}c)", flush=True)
-    return best if best is not None else result
+    _final = best if best is not None else result
+    _record_chat_status(_final)
+    return _final
 
 
 _SHRUG_TOKENS = {
@@ -9430,6 +9471,20 @@ if FLASK_OK:
             "model": FAKE_MODEL_ID,
             "backend": MODEL,
             "chunks": len(_id_map),
+        })
+
+    @app.route("/status", methods=["GET"])
+    def status():
+        """Live connectivity for the chat header: chat provider + the two backend
+        models (embedder + labeler), each with ok/error/last-checked."""
+        def _p(kind):
+            st = _PROVIDER_STATUS.get(kind, {})
+            return {"ok": st.get("ok"), "error": st.get("error", ""), "at": st.get("at", "")}
+        return _cors_response({
+            "chat":  {"provider": os.environ.get("MNEME_PROVIDER", "openrouter"),
+                      "model": MODEL, **_p("chat")},
+            "embed": {"model": EMBED_MODEL, **_p("embed")},
+            "label": {"model": LABEL_MODEL, **_p("label")},
         })
 
     # ── Save: force-flush the staging buffer ──
