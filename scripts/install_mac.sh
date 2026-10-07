@@ -38,7 +38,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 
-BRANCH="${MNEME_BRANCH:-unified_mneme}"
+BRANCH="${MNEME_BRANCH:-agent-harness}"
 
 # Self-update: always run the latest version from the repo (cache-busted).
 if [ -z "${MNEME_INSTALL_UPDATED:-}" ]; then

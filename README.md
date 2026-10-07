@@ -49,7 +49,7 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 
 | Script | Where | What it does |
 |---|---|---|
-| `install.sh` | host | Installs Python deps + the repo, then offers the big optional components (Ollama, Chromium, Hound MCP) one at a time — asked `[y/N]` to install when missing, or update/reinstall when already present. Idempotent. |
+| `install.sh` | host | Installs Python deps + the repo; the big downloads (Ollama, Chromium, Hound MCP) are opt-in. Idempotent. |
 | `mneme_setup.py` | host | Interactive wizard. For each of the three model roles — chat, embedder, labeler — it asks the same three things: provider (the full catalog, same list as the chat page's picker), API key if the provider needs one (offers any saved key), and the model id (free-text; Ollama chat offers its pulled list + "enter a name"). Each role may use a different provider. Then: context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
 | `mneme_connect.py` | laptop | (Remote pod only.) Opens a stay-alive SSH tunnel and prints the local URLs. |
 
@@ -248,11 +248,13 @@ work well, some don't work at all. Tuning is part of using it. See
 |---|---|---|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat (memory, tools, grading all happen proxy-side) |
 | POST | `/search` | Direct memory retrieval without a generation |
-| GET | `/health` | `{"status": "ok", "chunks": N, "backend": "model"}` |
+| GET | `/health` | `{"status": "ok", "backend": "<model>", "chunks": N}` |
+| GET | `/status` | chat / embedder / labeler connectivity (`ok` + last error) — feeds the header status dots |
 | GET | `/list`, `/detail/<chunk_id>` | Browse stored memory |
 | POST | `/memory/chunks/<id>/remove`, `/memory/chunks/<id>/bad` | Curation — set the removed/bad flags (reversible) |
 | GET | `/memory/log` | Audit log of curation actions |
 | GET/POST | `/instructions` | Read/edit the injected prompts |
+| GET/POST/PUT/DELETE | `/conversations`, `/conversations/<id>` | Persistent chat history (auto-titled from the first message, renamable) |
 | POST | `/runs`, GET `/runs`, `/runs/<id>` | Create / list / inspect agent runs |
 | GET | `/models`, `/v1/models` | List models |
 | GET | `/mcp/servers`, POST/DELETE `/mcp/servers[/<name>]` | MCP server management |
@@ -280,7 +282,7 @@ real SQLite/FAISS paths):
 
 ```bash
 python3 tests/test_tool_loop.py          # 88 tests: tool loop, retrieval, provenance
-for t in tests/test_*.py; do python3 "$t"; done   # full suite (~386 tests)
+for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
 ```
 
 ## Repository layout
@@ -307,3 +309,5 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~386 tests)
   toolset, with the experimental strategy layer off by default (`storage.memory_only:
   true`). It has no agent harness — that subsystem lives only on `agent-harness`. Start
   here for a conservative, memory-only setup.
+- `unified_mneme` — **legacy** full-build branch, superseded by `agent-harness`. Still
+  around for history only; new installs should use `agent-harness`.

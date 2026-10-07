@@ -98,11 +98,10 @@ chromium_install() {
   echo "  ✓ browser chromium ready (patchright + playwright)"
 }
 
-# Which repo branch to install. The README passes this (main vs unified_mneme);
-# it drives the self-update URL, the clone, and the tarball fallback so that
-# following the `main` README installs the memory-only build and following the
-# `unified_mneme` README installs the full build.
-BRANCH="${MNEME_BRANCH:-unified_mneme}"
+# Which repo branch to install (agent-harness = full build, the default on
+# GitHub; memory-only = the release build). It drives the self-update URL, the
+# clone, and the tarball fallback. The README passes MNEME_BRANCH explicitly.
+BRANCH="${MNEME_BRANCH:-agent-harness}"
 
 # Self-update: always run the latest version from the repo (cache-busted).
 if [ -z "${MNEME_INSTALL_UPDATED:-}" ]; then

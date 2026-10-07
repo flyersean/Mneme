@@ -506,8 +506,10 @@ IGNORED — the proxy does not silently override its own config.
 | POST | `/v1/chat/completions` | OpenAI-compatible chat |
 | POST | `/save` | Flush staging buffer to storage |
 | POST | `/search` | Debug search `{"query": "...", "top_k": 3}` |
-| GET | `/health` | `{"status":"ok","chunks":N,"backend":"model"}` |
+| GET | `/health` | `{"status":"ok","backend":"<model>","chunks":N}` |
+| GET | `/status` | chat / embedder / labeler connectivity (`ok` + last error) — feeds the chat header dots |
 | GET | `/` `/chat` | Built-in chat UI |
+| GET/POST/PUT/DELETE | `/conversations`, `/conversations/<id>` | Persistent chat history (auto-titled from first message, renamable) |
 | GET | `/instructions` | Prompt reference + editor |
 | GET | `/list` | List all chunks + metadata |
 | GET/POST | `/capabilities` | Capability-edge records |
