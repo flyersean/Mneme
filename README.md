@@ -49,14 +49,24 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 
 | Script | Where | What it does |
 |---|---|---|
-| `install.sh` | host | Installs system + Python deps, Ollama, browser engines and the Hound MCP server, then clones the repo into `~/mneme/repo`. Idempotent. |
+| `install.sh` | host | Installs Python deps + the repo, then offers the big optional components (Ollama, Chromium, Hound MCP) one at a time — each auto-skipped when already installed, otherwise asked `[y/N]`. Idempotent. |
 | `mneme_setup.py` | host | Interactive wizard. For each of the three model roles — chat, embedder, labeler — it asks the same three things: provider (the full catalog, same list as the chat page's picker), API key if the provider needs one (offers any saved key), and the model id (free-text; Ollama chat offers its pulled list + "enter a name"). Each role may use a different provider. Then: context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
 | `mneme_connect.py` | laptop | (Remote pod only.) Opens a stay-alive SSH tunnel and prints the local URLs. |
 
 **1. Install** (on the host):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash
+# Interactive — asks y/N for each big download (Ollama, Chromium, Hound):
+curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh && MNEME_BRANCH=agent-harness bash /tmp/install.sh
+
+# Or non-interactive, install everything (the old one-liner behaviour):
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
+```
+
+**macOS** (⚠ untested — no Mac was available to verify):
+
+```bash
+curl -sSL -o /tmp/install_mac.sh https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install_mac.sh && MNEME_BRANCH=agent-harness bash /tmp/install_mac.sh
 ```
 
 **2. Configure** (on the host):
@@ -71,11 +81,14 @@ curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/age
 curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
-The installer is more than a `pip install`: it installs system packages, two Chromium
-builds for the browser tools, and Ollama. Privileged steps (apt cleanup, a systemd
-keep-alive drop-in, a `/usr/local/bin` helper) are skipped automatically when you're not
-root — the proxy itself needs none of them. Prefer to read first? `git clone` and run
-`./scripts/install.sh`.
+The installer always installs Python deps and the repo; the big downloads — Ollama, two
+Chromium builds for the browser tools, and the Hound web stack — are opt-in. Each is
+skipped automatically when already installed, and otherwise asked `[y/N]`. Skip them all
+with `MNEME_YES=0`, or install them all without prompting with `MNEME_YES=1` (or the
+per-component `MNEME_INSTALL_OLLAMA` / `_CHROMIUM` / `_HOUND` flags). Privileged steps
+(apt cleanup, a systemd keep-alive drop-in, a `/usr/local/bin` helper) are skipped
+automatically when you're not root — the proxy itself needs none of them. Prefer to read
+first? `git clone` and run `./scripts/install.sh`.
 
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/`, chat UI at
 `/chat`, OpenAI-compatible API at `/v1`.
@@ -274,7 +287,7 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~386 tests)
 | Path | What it is |
 |---|---|
 | `proxy/` | The proxy — `mneme_proxy.py` + the `mneme/` modules (tools, curation, templates, chat commands) |
-| `scripts/` | `install.sh`, `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel) |
+| `scripts/` | `install.sh` (Linux) + `install_mac.sh` (macOS, untested), `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel) |
 | `extensions/` | HTTP clients: `swarm/`, `pi/`, `gateways/` |
 | `docs/` | Harness guide/spec, model notes, provenance + strategy specs |
 | `tests/` | The deterministic suite |

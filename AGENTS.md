@@ -59,8 +59,9 @@ proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
                         CodeMirror), static/themes/ + theme.css + theme.js (the theming
                         system — see the "Theming" section), system_prompt*.md (the injected
                         instructions), mneme/harness/ (the agent harness — core, not an extension)
-scripts/                mneme_setup.py (install + add-instance wizard),
-                        calibrate_similarity.py, benchmark.py, start_gateway.sh, …
+scripts/                install.sh + install_mac.sh (installers), mneme_setup.py
+                        (install + add-instance wizard), calibrate_similarity.py,
+                        benchmark.py, start_gateway.sh, …
 extensions/             HTTP consumers, NOT part of the proxy: gateways/, swarm/, pi/,
                         + README.md (the contract + the extension.yaml manifest spec)
 docs/                   specs: harness/ (SPEC.md, USER_GUIDE.md, adr/),
@@ -203,8 +204,14 @@ A proxy needs: the code, a backend, and a config file. The single source of trut
 
 ```bash
 git clone https://github.com/flyersean/Mneme.git && cd Mneme
-./scripts/install.sh          # installs Ollama (if needed) + systemd keep-alive
+./scripts/install.sh          # Python deps + repo; asks y/N for Ollama / Chromium / Hound
 ```
+
+The installer installs Python deps + the repo always; the three big downloads (Ollama,
+headless Chromium for the browser tools, and the Hound web stack) are each **auto-skipped
+when already installed**, otherwise asked `[y/N]`. Non-interactive runs default to skip —
+set `MNEME_YES=1` to install everything without prompting, or `MNEME_YES=0` to skip all.
+A macOS installer (`scripts/install_mac.sh`) exists but is **untested** (no Mac available).
 
 Or use the interactive setup wizard. It walks **three model roles** — chat, embedder,
 labeler — and asks the same three questions for each: **provider → API key (if the

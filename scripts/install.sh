@@ -2,18 +2,27 @@
 # ============================================================================
 #  Mneme — unified installer (one command, every environment)
 # ============================================================================
-#  Installs the three things the proxy needs, idempotently and with no prompts:
-#    1. Python dependencies + browser engine + Hound MCP (flask / faiss / numpy /
-#       requests / pyyaml / playwright / patchright / hound-mcp[all])
-#    2. Ollama (installed + started — harmless even if you use a hosted backend)
-#    3. The proxy code (cloned into ~/mneme/repo, branch from MNEME_BRANCH)
+#  Installs the proxy's Python dependencies + the repo, idempotently, then
+#  offers the three BIG optional components one at a time:
+#    1. Python dependencies (flask / faiss / numpy / requests / pyyaml / ddgs /
+#       mcp / playwright / patchright)  — always installed (small, required)
+#    2. Ollama        (local model backend, ~1GB+)   — asked y/N, skipped if present
+#    3. Chromium      (headless browser, ~150MB each) — asked y/N, skipped if present
+#    4. Hound MCP     (web stack + OCR/PDF)           — asked y/N, skipped if present
+#    then clones the proxy code into ~/mneme/repo (branch from MNEME_BRANCH).
 #
-#  Run it once, then run the setup wizard to choose your backend and models:
-#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/install.sh | bash
+#  Each optional component is AUTO-SKIPPED when already installed, so re-running
+#  never re-downloads. When it's missing the installer asks `[y/N]` (default:
+#  skip). Non-interactive runs (curl | bash) also default to skip — set
+#  MNEME_YES=1 to install all optional components without prompting, or use the
+#  per-component flags MNEME_INSTALL_OLLAMA / _CHROMIUM / _HOUND =1|0.
+#
+#  Run it, then run the setup wizard to choose your backend and models:
+#    curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/install.sh && bash /tmp/install.sh
 #    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 #
 #  Pass the branch explicitly when it's not unified_mneme:
-#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness bash
+#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
 #
 #  Safe to re-run — every step checks first and only fills in what's missing.
 # ============================================================================
@@ -45,6 +54,35 @@ maybe_root() {
   else
     return 1
   fi
+}
+
+# ── Optional-component prompts (big downloads are opt-in) ────────────────
+# Ollama / Chromium / Hound are large and often already installed, so each is
+# auto-skipped when detected. Otherwise the installer asks [y/N] (default:
+# skip). Pre-answer with MNEME_INSTALL_OLLAMA / _CHROMIUM / _HOUND =1|0, or
+# install everything non-interactively with MNEME_YES=1.
+
+# answer_yn <env_var> <question>   ->  0 = install, 1 = skip (default skip)
+answer_yn() {
+  local _ev="$1" _q="$2"
+  if [ -n "${!_ev}" ]; then
+    case "${!_ev}" in 1|y|Y|yes|YES|true|True) return 0;; *) return 1;; esac
+  fi
+  if [ -n "${MNEME_YES:-}" ]; then
+    case "$MNEME_YES" in 1|y|Y|yes|YES|true|True) return 0;; *) return 1;; esac
+  fi
+  if [ -t 0 ]; then
+    local _a
+    printf "%s [y/N] " "$_q"
+    read -r _a
+    case "$_a" in [Yy]*) return 0;; *) return 1;; esac
+  fi
+  return 1  # non-interactive and no flag -> skip
+}
+
+# Is a headless Chromium already downloaded by playwright/patchright?
+chromium_present() {
+  [ -d "$HOME/.cache/ms-playwright" ] && ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -qi chromium
 }
 
 # Which repo branch to install. The README passes this (main vs unified_mneme);
@@ -108,7 +146,11 @@ fi
 # other tool) and download both Chromium binaries. A headless pod is missing the
 # shared libraries the browser needs, so refresh apt lists first, then install
 # the system deps (best-effort — a host that can't apt still gets the binaries).
-if python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 2>/dev/null; then
+if ! (python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 2>/dev/null); then
+  echo "  ⚠ playwright/patchright not importable — skipping Chromium (browser tools need: pip install playwright patchright)"
+elif chromium_present; then
+  echo "  ✓ headless Chromium already downloaded — skipping"
+elif answer_yn MNEME_INSTALL_CHROMIUM "Install headless Chromium (browser tools, ~150MB each)?"; then
   echo "  installing browser Chromium (idempotent, ~150MB each)..."
   apt-get update -qq 2>/dev/null || true
   python3 -m patchright install chromium 2>/dev/null || true
@@ -117,7 +159,7 @@ if python3 -c "import patchright" 2>/dev/null || python3 -c "import playwright" 
   python3 -m playwright install-deps chromium 2>/dev/null || true
   echo "  ✓ browser chromium ready (patchright + playwright)"
 else
-  echo "  ⚠ patchright/playwright not importable — skipping browser install (install manually: pip install playwright patchright && patchright install chromium)"
+  echo "  ⓘ skipping Chromium — web tools fetch without JS rendering (later: pip install playwright patchright && patchright install chromium)"
 fi
 
 # ── 1c. Hound MCP (full) ─────────────────────────────────────────────
@@ -126,15 +168,21 @@ fi
 # onnxruntime, pdfplumber, pypdfium2, tokenizers) on top of the patchright/
 # playwright packages installed above. Its `hound` CLI lands in the same bin as
 # python3's pip, so a proxy MCP entry `command: hound` resolves with no extra
-# PATH setup. (Hardcoded for now — becomes an optional-dependency checkbox later.)
+# PATH setup.
 echo; echo "[1c/3] Hound MCP (full web stack)"
-python3 -m pip install --break-system-packages "hound-mcp[all]" \
-  || echo "  ⚠ hound-mcp[all] install failed (see error above) — web/OCR/crawl tools unavailable until fixed."
 if command -v hound >/dev/null 2>&1; then
-  echo "  ✓ hound CLI ready ($(hound --version 2>/dev/null | head -1))"
+  echo "  ✓ hound CLI already installed — skipping ($(hound --version 2>/dev/null | head -1))"
+elif answer_yn MNEME_INSTALL_HOUND "Install Hound MCP (web/OCR/crawl stack)?"; then
+  python3 -m pip install --break-system-packages "hound-mcp[all]" \
+    || echo "  ⚠ hound-mcp[all] install failed (see error above) — web/OCR/crawl tools unavailable until fixed."
+  if command -v hound >/dev/null 2>&1; then
+    echo "  ✓ hound CLI ready ($(hound --version 2>/dev/null | head -1))"
+  else
+    echo "  ⚠ hound CLI not on PATH — the proxy MCP entry \`command: hound\` needs it."
+    echo "    locate it: python3 -m pip show -f hound-mcp | grep -i hound"
+  fi
 else
-  echo "  ⚠ hound CLI not on PATH — the proxy MCP entry \`command: hound\` needs it."
-  echo "    locate it: python3 -m pip show -f hound-mcp | grep -i hound"
+  echo "  ⓘ skipping Hound MCP — web tools fall back to the built-in fetch_url (later: pip install hound-mcp[all])"
 fi
 
 # ── 2. Ollama ─────────────────────────────────────────────────────────
@@ -164,8 +212,10 @@ export OLLAMA_SCHED_SPREAD=1
 
 if command -v ollama >/dev/null 2>&1; then
   _VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  echo "  ✓ ollama found (${_VER:-unknown})"
-else
+  echo "  ✓ ollama already installed (${_VER:-unknown})"
+  _DO_OLLAMA=1
+elif answer_yn MNEME_INSTALL_OLLAMA "Install Ollama (local model backend, ~1GB+ download)?"; then
+  _DO_OLLAMA=1
   echo "  installing Ollama..."
   # Ollama's installer now serves a zstd-compressed tarball and refuses to run
   # without a `zstd` binary. apt-get can fail silently (stale package lists, or
@@ -218,12 +268,20 @@ EOF
   echo "  ✓ zstd ready"
   curl -fsSL https://ollama.com/install.sh | sh
   command -v ollama >/dev/null 2>&1 && echo "  ✓ ollama installed" || echo "  ⚠ install failed — run: curl -fsSL https://ollama.com/install.sh | sh"
+else
+  _DO_OLLAMA=0
+  echo "  ⓘ skipping Ollama — a hosted backend (OpenRouter/Routeway/…) doesn't need it"
 fi
 
+# Pin keep-alive + start Ollama only when it's actually in play (installed or
+# just-installed). Skipped entirely when the user opted out, so we don't fire a
+# 20s `nohup ollama serve` on a host that never installed it.
+#
 # Pin keep-alive as the server DEFAULT via a systemd drop-in. The exports above
 # only reach a `nohup ollama serve` child; the official installer runs Ollama as
 # a systemd service with a clean environment, so without this the running server
 # keeps the 5m default and unloads models between swarm steps. Idempotent.
+if [ "${_DO_OLLAMA:-0}" -eq 1 ]; then
 if systemctl cat ollama.service >/dev/null 2>&1; then
   if [ "$MNEME_HAVE_ROOT" -eq 1 ]; then
     mkdir -p /etc/systemd/system/ollama.service.d
@@ -263,6 +321,7 @@ if ! curl -s --max-time 2 http://localhost:11434 >/dev/null 2>&1; then
 else
   echo "  ✓ ollama already running"
 fi
+fi
 
 # ── 3. Proxy code ─────────────────────────────────────────────────────
 echo; echo "[3/3] Proxy code ($BRANCH)"
@@ -292,6 +351,11 @@ fi
 echo
 echo "══════════════════════════════════════════════════════════════"
 echo "  Install complete."
+echo
+echo "  Skipped (re-run and answer 'y', or set MNEME_YES=1) if you need them:"
+if [ "${_DO_OLLAMA:-0}" -ne 1 ]; then echo "    - Ollama (local backend)"; fi
+if ! chromium_present; then echo "    - headless Chromium (browser tools)"; fi
+if ! command -v hound >/dev/null 2>&1; then echo "    - Hound MCP (web/OCR/crawl)"; fi
 echo
 echo "  Next, run the setup wizard to pick your backend and models:"
 echo "    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/$BRANCH/scripts/mneme_setup.py && python3 /tmp/setup.py"
