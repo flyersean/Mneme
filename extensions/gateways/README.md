@@ -31,8 +31,13 @@ python3 extensions/gateways/cli.py --once "/runs"
 ```bash
 export MNEME_TELEGRAM_TOKEN=123456:ABC...        # from @BotFather
 export MNEME_TELEGRAM_ALLOWED=11111111           # your numeric Telegram user id(s) — REQUIRED
+export MNEME_TOKEN=abc123...                     # a user's API token (from `adduser`) — REQUIRED once auth is on
 python3 extensions/gateways/telegram.py --url http://localhost:8080 --plain run
 ```
+
+If the proxy has auth enabled, the gateway must send a valid token (`MNEME_TOKEN`,
+a user's API token from `python3 proxy/mneme/auth.py adduser`); without it every
+call returns 401 and the bot replies "unauthorized".
 
 Runs can execute `bash` and `write` with the proxy's privileges, so the Telegram
 gateway has three safeguards:

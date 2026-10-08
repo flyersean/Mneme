@@ -18,6 +18,7 @@ is notified when one finishes or needs approval.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -40,16 +41,27 @@ class Message:
 class HarnessClient:
     """Minimal HTTP client for the proxy. `session` is injectable for tests."""
 
-    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 600, session=None):
+    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 600, session=None, token: Optional[str] = None):
         self.base = base_url.rstrip("/")
         self.timeout = timeout
         self.http = session or requests.Session()
+        # Authenticate to the proxy (now multi-user). MNEME_TOKEN is a user's API
+        # token from `python3 proxy/mneme/auth.py adduser`; without it every call
+        # 401s (and .json() on the plain-text body raised a confusing JSONDecodeError).
+        self.token = token or os.environ.get("MNEME_TOKEN", "")
+        if self.token:
+            self.http.headers["Authorization"] = f"Bearer {self.token}"
 
     def command(self, text: str, actor: str) -> str:
         r = self.http.post(f"{self.base}/harness/command", json={"text": text, "actor": actor}, timeout=60)
-        body = r.json() if r.content else {}
+        try:
+            body = r.json() if r.content else {}
+        except ValueError:
+            body = {}
         if r.status_code == 200:
             return body.get("reply", "")
+        if r.status_code == 401:
+            return "unauthorized — set MNEME_TOKEN to a user's API token (from `adduser`)"
         return body.get("error") or f"HTTP {r.status_code}"
 
     def chat(self, text: str, history: Optional[List[dict]] = None) -> str:
@@ -57,12 +69,17 @@ class HarnessClient:
         r = self.http.post(f"{self.base}/v1/chat/completions", json={"model": "default", "messages": msgs},
                            timeout=self.timeout)
         if r.status_code != 200:
+            if r.status_code == 401:
+                raise RuntimeError("unauthorized — set MNEME_TOKEN to a user's API token (from `adduser`)")
             raise RuntimeError(f"chat failed: HTTP {r.status_code} {r.text[:200]}")
         return r.json()["choices"][0]["message"]["content"]
 
     def run_status(self, run_id: str) -> Optional[dict]:
         r = self.http.get(f"{self.base}/runs/{run_id}", timeout=30)
-        return r.json().get("run") if r.status_code == 200 else None
+        try:
+            return r.json().get("run") if r.status_code == 200 else None
+        except ValueError:
+            return None
 
 
 class Gateway:

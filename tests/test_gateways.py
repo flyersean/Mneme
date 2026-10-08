@@ -127,5 +127,36 @@ class TestGateway(unittest.TestCase):
         self.assertEqual([len(p[1]["text"]) for p in sends], [4000, 4000, 1000])
 
 
+class TestHarnessClientAuth(unittest.TestCase):
+    def test_token_adds_auth_header(self):
+        import requests as _r
+        s = _r.Session()
+        HarnessClient("http://x", session=s, token="tok-1")
+        self.assertEqual(s.headers.get("Authorization"), "Bearer tok-1")
+
+    def test_no_token_no_header(self):
+        import requests as _r
+        s = _r.Session()
+        HarnessClient("http://x", session=s)
+        self.assertNotIn("Authorization", s.headers)
+
+    def test_command_401_is_clear_not_json_error(self):
+        class RawResp:
+            status_code = 401
+            content = b"unauthorized"
+            text = "unauthorized"
+            def json(self):
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+        class RawHTTP:
+            def post(self, url, json=None, timeout=None):
+                return RawResp()
+
+        c = HarnessClient("http://x", session=RawHTTP(), token="tok-1")
+        reply = c.command("/status", "u1")
+        self.assertIn("unauthorized", reply)
+        self.assertNotIn("JSONDecodeError", reply)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@
 
     export MNEME_TELEGRAM_TOKEN=123:abc            # from @BotFather
     export MNEME_TELEGRAM_ALLOWED=11111111,2222    # numeric Telegram user ids allowed (REQUIRED)
+    export MNEME_TOKEN=abc123...                   # a user's API token from `adduser` (REQUIRED once auth is on)
     python3 extensions/gateways/telegram.py [--url http://localhost:8080] [--plain run|chat]
 
 Security: Mneme runs execute tools (bash/write) with the proxy's privileges, so
@@ -42,7 +43,7 @@ class TelegramGateway(Gateway):
                               params={"offset": self.offset, "timeout": self.poll_timeout},
                               timeout=self.poll_timeout + 10)
             updates = r.json().get("result", []) if r.status_code == 200 else []
-        except requests.RequestException:
+        except (requests.RequestException, ValueError):
             return []
         out = []
         for u in updates:
