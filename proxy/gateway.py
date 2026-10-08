@@ -77,7 +77,7 @@ def _authorize():
         return None
 
     return Response("unauthorized", status=401,
-                    headers={"WWW-Authenticate": 'Basic realm="mneme", Bearer'})
+                    headers={"WWW-Authenticate": 'Basic realm="mneme"'})
 
 
 # ── instance discovery (mirrors the proxy's overview) ───────────────────────

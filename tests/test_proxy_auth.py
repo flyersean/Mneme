@@ -46,7 +46,9 @@ class TestProxyAuthOn(unittest.TestCase):
         return mp.app.test_client()
 
     def test_protected_when_user_exists(self):
-        self.assertEqual(self._c().get("/").status_code, 401)
+        r = self._c().get("/")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.headers.get("WWW-Authenticate"), 'Basic realm="mneme"')
         self.assertEqual(self._c().get("/chat").status_code, 401)
 
     def test_health_stays_open(self):

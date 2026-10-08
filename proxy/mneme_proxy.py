@@ -7870,7 +7870,7 @@ if FLASK_OK:
                          request.cookies.get("mneme_token")):
             return None
         return Response("unauthorized", status=401,
-                        headers={"WWW-Authenticate": 'Basic realm="mneme", Bearer'})
+                        headers={"WWW-Authenticate": 'Basic realm="mneme"'})
     
     def _cors_response(body, status=200):
         """Ensure CORS headers on every response."""

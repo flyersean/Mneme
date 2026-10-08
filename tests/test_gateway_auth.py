@@ -98,7 +98,10 @@ class _AuthorizeBase(unittest.TestCase):
 
 class TestGatewayAuthorizeOn(_AuthorizeBase):
     def test_401_without_credentials(self):
-        self.assertEqual(self._client().get("/health").status_code, 401)
+        r = self._client().get("/health")
+        self.assertEqual(r.status_code, 401)
+        # A clean Basic challenge is what makes browsers show the login prompt.
+        self.assertEqual(r.headers.get("WWW-Authenticate"), 'Basic realm="mneme"')
 
     def test_bearer_token(self):
         c = self._client()
