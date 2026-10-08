@@ -174,6 +174,9 @@ async function openCfg(name) {
     } else {
       html += `<input type="text" id="cfg_${esc(key)}" value="${esc(cur)}" />`;
     }
+    if (c.generate) {
+      html += `<button type="button" style="margin-top:6px" onclick="genToken('${esc(key)}')">Generate</button>`;
+    }
     html += `</div>`;
   }
   if (j.config_file) {
@@ -209,6 +212,18 @@ async function saveCfg() {
   const j = await r.json();
   if (j.ok) document.getElementById('cfgModal').classList.remove('open');
   else alert(j.error || 'failed to save');
+}
+
+async function genToken(key) {
+  const r = await fetch('/extensions/generate-token', { method: 'POST' });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (j.ok && j.token) {
+    const el = document.getElementById('cfg_' + key);
+    if (el) el.value = j.token;
+  } else {
+    alert(j.error || 'failed to generate token');
+  }
 }
 
 let cmEditor = null;

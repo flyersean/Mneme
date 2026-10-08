@@ -8006,6 +8006,17 @@ if FLASK_OK:
                 f.write(data["config_file_content"])
         return _cors_response({"ok": True})
 
+    @app.route("/extensions/generate-token", methods=["POST"])
+    def extensions_generate_token():
+        """Mint a fresh proxy token for a dedicated 'gateway' user and return it,
+        so an extension can be configured from the UI without running `adduser` by
+        hand. Still subject to the auth guard: open while auth is off, login
+        required once a user exists (a logged-in browser already sends creds)."""
+        import secrets
+        from mneme.auth import add_user
+        entry = add_user(AUTH.users_file, "gateway", secrets.token_urlsafe(24), admin=True)
+        return _cors_response({"ok": True, "token": entry["token"]})
+
     @app.route("/dashboard/status", methods=["GET"])
     def dashboard_status():
         try:
