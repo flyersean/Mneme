@@ -229,7 +229,14 @@ def _cli():
 
     if args.cmd == "adduser":
         username = (args.username or input("  username: ")).strip()
-        password = args.password or getpass.getpass(f"  password for {username}: ")
+        if args.password:
+            password = args.password
+        else:
+            password = getpass.getpass(f"  password for {username}: ")
+            confirm = getpass.getpass("  confirm password: ")
+            if password != confirm:
+                print("  passwords don't match — nothing written", file=sys.stderr)
+                sys.exit(1)
         users_file = os.path.join(args.config_dir, USERS_FILENAME)
         entry = add_user(users_file, username, password, token=args.token,
                          admin=not args.no_admin)
