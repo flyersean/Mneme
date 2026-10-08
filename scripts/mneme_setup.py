@@ -2265,6 +2265,9 @@ def main():
     print("  Ollama panel:   http://localhost:%d/ollama" % port)
     print("  OpenAI API:     http://localhost:%d/v1" % port)
     print("  Health:         http://localhost:%d/health" % port)
+    print("\n  First run: open http://localhost:%d/ in a browser and it will prompt you" % port)
+    print("  to create your admin account (username + password). For a headless box,")
+    print("  run:  python3 proxy/mneme/auth.py adduser")
     if backend == "openrouter":
         print("\n  The API key lives only in ~/mneme/env (chmod 600).")
     print()

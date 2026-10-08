@@ -55,7 +55,7 @@ it through the UI. Never work around it, and never claim a blocked action succee
 ```text
 proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
                         gateway.py (reverse proxy + multi-user auth), mneme/ (extracted
-                        modules: tools, curation, templates, chatcmd, auth, …),
+                        modules: tools, curation, templates, chatcmd, auth, auth_ui, …),
                         static/*.html (chat/dashboard/
                         extensions/strategies/runs/memory UIs), static/vendor/ (self-hosted
                         CodeMirror), static/themes/ + theme.css + theme.js (the theming

@@ -16,7 +16,9 @@ os.makedirs(os.environ["MNEME_CHUNK_DIR"], exist_ok=True)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "proxy"))
 
-from mneme.auth import AuthStore, add_user, sign_session, verify_session  # noqa: E402
+from mneme.auth import (AuthStore, add_user, sign_session, verify_session,
+                        delete_user, reset_password, add_token, revoke_token,
+                        list_users)  # noqa: E402
 import gateway as gw  # noqa: E402
 
 
@@ -31,12 +33,13 @@ class TestAuthStore(unittest.TestCase):
     def test_add_user_hashes_and_mints_token(self):
         e = add_user(self.uf, "alice", "hunter2")
         self.assertEqual(e["username"], "alice")
-        self.assertTrue(e["token"])
+        self.assertTrue(e["tokens"])
+        self.assertTrue(e["tokens"][0]["value"])
         self.assertTrue(e["password_hash"].startswith(("pbkdf2:", "scrypt:")))
 
     def test_add_user_uses_explicit_token(self):
         e = add_user(self.uf, "bob", "s3cret", token="tok-1")
-        self.assertEqual(e["token"], "tok-1")
+        self.assertEqual(e["tokens"][0]["value"], "tok-1")
 
     def test_add_user_updates_existing(self):
         add_user(self.uf, "alice", "oldpw", token="tok-old")
@@ -68,6 +71,55 @@ class TestAuthStore(unittest.TestCase):
         self.assertIsNone(s.check_token("tok-c"))
         add_user(self.uf, "carol", "pw", token="tok-c")  # same path, new mtime
         self.assertEqual(s.check_token("tok-c")["username"], "carol")
+
+    def test_delete_user_removes_and_cascades_tokens(self):
+        add_user(self.uf, "alice", "hunter2", token="tok-a")
+        add_user(self.uf, "bob", "s3cret", token="tok-b")
+        self.assertTrue(delete_user(self.uf, "alice"))
+        s = AuthStore(self.uf)
+        self.assertIsNone(s.check_token("tok-a"))  # token revoked with account
+        self.assertIsNone(s.check_password("alice", "hunter2"))
+        self.assertIsNotNone(s.check_token("tok-b"))  # other user unaffected
+
+    def test_delete_user_missing(self):
+        self.assertFalse(delete_user(self.uf, "nobody"))
+
+    def test_reset_password_preserves_token(self):
+        add_user(self.uf, "alice", "oldpw", token="tok-a")
+        self.assertTrue(reset_password(self.uf, "alice", "newpw"))
+        s = AuthStore(self.uf)
+        self.assertIsNotNone(s.check_password("alice", "newpw"))
+        self.assertIsNone(s.check_password("alice", "oldpw"))
+        self.assertIsNotNone(s.check_token("tok-a"))  # token untouched
+
+    def test_add_and_revoke_token(self):
+        add_user(self.uf, "alice", "hunter2")
+        tok = add_token(self.uf, "alice", label="telegram")
+        s = AuthStore(self.uf)
+        self.assertEqual(s.check_token(tok["value"])["username"], "alice")
+        self.assertTrue(revoke_token(self.uf, tok["value"]))
+        s = AuthStore(self.uf)
+        self.assertIsNone(s.check_token(tok["value"]))
+
+    def test_placeholder_fields_default(self):
+        add_user(self.uf, "alice", "hunter2", token="tok-a")
+        u = AuthStore(self.uf).get_user("alice")
+        self.assertEqual(u["email"], "")
+        self.assertEqual(u["full_name"], "")
+        self.assertEqual(u["totp_secret"], "")
+        self.assertFalse(u["totp_enabled"])
+
+    def test_legacy_single_token_field_migrates(self):
+        with open(self.uf, "w", encoding="utf-8") as f:
+            f.write("users:\n  - username: legacy\n    password_hash: x\n    token: old-tok\n")
+        s = AuthStore(self.uf)
+        self.assertEqual(s.check_token("old-tok")["username"], "legacy")
+
+    def test_list_users(self):
+        add_user(self.uf, "alice", "hunter2", token="tok-a")
+        add_user(self.uf, "bob", "s3cret", token="tok-b", admin=False)
+        usernames = {u["username"] for u in list_users(self.uf)}
+        self.assertEqual(usernames, {"alice", "bob"})
 
 
 class TestSessionCookie(unittest.TestCase):

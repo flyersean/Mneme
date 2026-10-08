@@ -150,6 +150,22 @@ one port. Binding the proxy itself wider is a deliberate opt-out:
 MNEME_BIND=0.0.0.0   # reachable from the network; starts with a warning
 ```
 
+**Accounts: one admin, then as many users as you need.** The first account you
+create is the admin; only it can add or revoke other accounts (via the `/users` page
+in the browser, or the CLI `deluser` / `resetpw`). Every account — admin and user
+alike — gets a `/tokens` page to mint, list, and revoke API tokens for agents and
+extensions. Deleting an account revokes all of its tokens immediately. Account
+creation is localhost-only, so the first-run "create your account" page can't be
+claimed by a remote client even if the port is later exposed.
+
+**Multiple proxies sharing a database.** Users are global (one `mneme_users.yaml`,
+shared by every proxy and the gateway), but each proxy's memory DB is separate by
+default. If you point two proxies at the *same* `storage.db_path`, anyone who can
+authenticate to either proxy can read and write that shared memory — the DB has no
+access control of its own. Keep one users file per shared DB, or keep the DBs
+separate. Sharing a DB across proxies with *different* users files (e.g. a laptop and
+a VPS both reading a synced DB) means each machine's users can see the other's memory.
+
 **Running a self-editing agent? Lock the config** so it can't rewrite its own
 instructions on a live proxy:
 

@@ -127,7 +127,7 @@ debug:
 # Where things live and how memory is staged.
 storage:
   chunk_dir: ~/mneme/chunks      # per-instance dir (prompts, tools, logs); config is found via --config/MNEME_CONFIG
-  db_path: ~/mneme/chunks/mneme.db  # the memory DB file; FAISS index lives beside it (portable/shared). Independent of chunk_dir — set it explicitly for a shared/external DB (unset falls back to <chunk_dir>/mneme.db with a warning).
+  db_path: ~/mneme/chunks/mneme.db  # the memory DB file; FAISS index lives beside it (portable/shared). Independent of chunk_dir — set it explicitly for a shared/external DB (unset falls back to <chunk_dir>/mneme.db with a warning). SECURITY: the DB has no access control of its own — if two proxies share this path, anyone who can log in to either proxy can read/write the shared memory. Use one users file per shared DB, or keep DBs separate.
   port: 8080                 # HTTP port the proxy listens on
   inject_system: true        # prepend Mneme's system instructions (system_prompt.md) to the prompt
   memory_only: false         # true = memory-only build: the EXPERIMENTAL strategy/self-improving layer is OFF by
