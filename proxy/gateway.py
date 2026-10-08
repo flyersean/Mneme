@@ -33,12 +33,11 @@ import re
 import sys
 import time
 import json
-import base64
 import subprocess
 
 from flask import Flask, request, Response, stream_with_context
 
-from mneme.auth import AuthStore
+from mneme.auth import AuthStore, check_request
 
 try:
     import requests
@@ -68,39 +67,13 @@ HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
 
 
 # ── auth seam (off until users exist or MNEME_GATEWAY_TOKEN is set) ──────────
-def _token_ok(tok):
-    if not tok:
-        return False
-    if AUTH.check_token(tok):
-        return True
-    return bool(GATEWAY_TOKEN) and tok == GATEWAY_TOKEN
-
-
 @app.before_request
 def _authorize():
     if not AUTH and not GATEWAY_TOKEN:
         return None  # auth off
 
-    auth = request.headers.get("Authorization", "")
-
-    # 1. Bearer token (agents / API clients)
-    if auth.lower().startswith("bearer "):
-        if _token_ok(auth[7:].strip()):
-            return None
-
-    # 2. HTTP Basic (browser prompt / curl -u): username:password
-    elif auth.lower().startswith("basic "):
-        try:
-            decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", "replace")
-            username, _, password = decoded.partition(":")
-            if AUTH.check_password(username, password):
-                return None
-        except Exception:
-            pass
-
-    # 3. ?token= query param or mneme_token cookie
-    tok = request.args.get("token") or request.cookies.get("mneme_token")
-    if _token_ok(tok):
+    if check_request(AUTH, request.headers, request.args.get("token"),
+                     request.cookies.get("mneme_token"), GATEWAY_TOKEN):
         return None
 
     return Response("unauthorized", status=401,

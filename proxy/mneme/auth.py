@@ -29,6 +29,7 @@ import os
 import sys
 import getpass
 import secrets
+import base64
 
 import yaml
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -125,6 +126,33 @@ class AuthStore:
     def __bool__(self):
         self._ensure_loaded()
         return bool(self.users)
+
+
+def check_request(auth_store, headers, query_token="", cookie_token="", legacy_token=""):
+    """Return True if the request carries a valid credential.
+
+    Checks a Bearer token, then HTTP Basic, then a ``?token=`` / cookie token.
+    ``legacy_token`` (optional) is also accepted as a Bearer / ``?token=`` value
+    for backward compatibility with the old single gateway token. Used by both
+    the gateway and the proxy so they enforce the exact same rules.
+    """
+    auth_header = headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        tok = auth_header[7:].strip()
+        if auth_store.check_token(tok) or (legacy_token and tok == legacy_token):
+            return True
+    if auth_header.lower().startswith("basic "):
+        try:
+            decoded = base64.b64decode(auth_header[6:].strip()).decode("utf-8", "replace")
+            username, _, password = decoded.partition(":")
+            if auth_store.check_password(username, password):
+                return True
+        except Exception:
+            pass
+    tok = query_token or cookie_token
+    if tok and (auth_store.check_token(tok) or (legacy_token and tok == legacy_token)):
+        return True
+    return False
 
 
 # ── signed session cookies (for the future login form; secret comes from the

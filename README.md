@@ -130,12 +130,13 @@ hardened service. When enabled, it can expose capabilities equivalent to giving 
 a shell on the host — `bash`, `write`, `read_file`, configured MCP servers, and
 model-directed tool use. None of this is sandboxed.
 
-**The proxy itself has no authentication and binds to `127.0.0.1` by default — keep
-it that way.** For remote access, either use an SSH tunnel (`mneme_connect.py` does
-this) / a VPN, or run the gateway (`proxy/gateway.py`), which fronts every instance on
-one port and adds multi-user auth from a static `mneme_users.yaml` — add a user with
-`python3 proxy/mneme/auth.py adduser` (auth is OFF until you do). Binding the proxy
-itself wider is a deliberate opt-out:
+**There's no authentication until you add a user, and the proxy binds to `127.0.0.1`
+by default — keep both that way.** Multi-user auth comes from one static
+`mneme_users.yaml` (in `~/mneme/gateway/` by default) that both the proxy and the
+gateway enforce; add a user with `python3 proxy/mneme/auth.py adduser`. Until you do,
+everything is open. For remote access, use an SSH tunnel (`mneme_connect.py` does
+this), a VPN, or the gateway (`proxy/gateway.py`), which fronts every instance on one
+port. Binding the proxy itself wider is a deliberate opt-out:
 
 ```bash
 MNEME_BIND=0.0.0.0   # reachable from the network; starts with a warning
@@ -286,9 +287,9 @@ Plus the web pages above (`/`, `/chat`, `/memory`, `/templates`, `/ollama`, `/ru
   gateways. An optional `extension.yaml` manifest makes an extension manageable from the
   `/extensions` page. See [`extensions/README.md`](extensions/README.md).
 - **Gateway** — `proxy/gateway.py` is an optional reverse proxy that fronts every instance
-  on one port and is the auth choke-point: multi-user auth from a static
-  `mneme_users.yaml` (see Security). It accepts a Bearer token, HTTP Basic,
-  `?token=`, or a `mneme_token` cookie; auth is off until a user is added.
+  on one port and enforces the same multi-user auth as the proxy: a static
+  `mneme_users.yaml` (see Security), accepting a Bearer token, HTTP Basic, `?token=`,
+  or a `mneme_token` cookie; auth is off until a user is added.
 - **Multiple instances** — several proxies can share one memory DB, each on its own port
   with its own chat model. Rule: **same embedder everywhere** (vectors live in one
   semantic space), and cross-machine sharing needs a real shared filesystem (NFSv4+).

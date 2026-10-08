@@ -7849,8 +7849,28 @@ def _model_scope() -> str:
 
 
 if FLASK_OK:
+    from mneme.auth import AuthStore, check_request
+
     app = Flask(__name__)
     CORS(app)
+
+    # ── multi-user auth (off until a user is added to the users file) ────────
+    # Same users file + rules as the gateway (mneme.auth). Auth is OFF while the
+    # file has no users, so existing installs are unchanged. /health and CORS
+    # preflight (OPTIONS) stay open — the gateway and clients probe /health.
+    AUTH = AuthStore()
+
+    @app.before_request
+    def _authorize():
+        if not AUTH:
+            return None
+        if request.method == "OPTIONS" or request.path == "/health":
+            return None
+        if check_request(AUTH, request.headers, request.args.get("token"),
+                         request.cookies.get("mneme_token")):
+            return None
+        return Response("unauthorized", status=401,
+                        headers={"WWW-Authenticate": 'Basic realm="mneme", Bearer'})
     
     def _cors_response(body, status=200):
         """Ensure CORS headers on every response."""
@@ -10089,18 +10109,24 @@ if __name__ == "__main__":
     if FLASK_OK:
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep
-        # Bind to localhost by default. Mneme has NO AUTHENTICATION and exposes
-        # `bash`, `write`, filesystem reads and arbitrary MCP tools — a
-        # network-reachable instance is remote code execution for anyone who can
-        # reach the port. Opt in to a wider bind EXPLICITLY and knowingly:
+        # Bind to localhost by default. Mneme's proxy has no auth unless a user
+        # is configured (mneme.auth — a users file in the gateway config dir);
+        # it exposes `bash`, `write`, filesystem reads and arbitrary MCP tools —
+        # a network-reachable instance is remote code execution for anyone who
+        # can reach the port. Opt in to a wider bind EXPLICITLY and knowingly:
         #     MNEME_BIND=0.0.0.0
-        # Only do that behind a tunnel/VPN/firewall. See the Security section of
-        # the README.
+        # Only do that behind a tunnel/VPN/firewall, or with auth enabled. See
+        # the Security section of the README.
         _bind = os.environ.get("MNEME_BIND", "127.0.0.1").strip() or "127.0.0.1"
         if _bind not in ("127.0.0.1", "localhost", "::1"):
-            print(f"  [WARN] binding to {_bind} — Mneme has no auth and exposes "
-                  f"bash/file tools. Only do this behind a tunnel or firewall.",
+            print(f"  [WARN] binding to {_bind} — Mneme exposes bash/file tools. "
+                  f"Only do this behind a tunnel or firewall.",
                   flush=True)
+        if AUTH:
+            n = len(AUTH.users)
+            print(f"  [AUTH] ON ({n} user{'s' if n != 1 else ''}) — login required", flush=True)
+        else:
+            print("  [AUTH] OFF (open) — add a user: python3 proxy/mneme/auth.py adduser", flush=True)
         app.run(host=_bind, port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",
