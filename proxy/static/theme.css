@@ -48,3 +48,32 @@ html { zoom: 1.25; }
 .mneme-nav a{padding:5px 12px;border-radius:7px;text-decoration:none;color:var(--fg);font-size:13px;background:var(--panel);border:1px solid var(--line)}
 .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
 .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ── Mobile layout (shared standard) ────────────────────────────────
+ * Breakpoint: 720px. Every page gets the generic rules below for free.
+ * Page-specific mobile tweaks live in that page's own <style> under the
+ * same @media (max-width: 720px) block (e.g. chat's sidebar overlay). */
+@media (max-width: 720px) {
+  /* Undo the desktop 125% zoom — phones scale via the viewport meta tag. */
+  html { zoom: 1; }
+
+  /* Compact page chrome. Pages use different padding values, so override. */
+  header, main { padding-left: 14px !important; padding-right: 14px !important; }
+  header { padding-top: 12px !important; padding-bottom: 12px !important; }
+
+  /* Nav: tighter gaps, bigger tap targets. */
+  .mneme-nav { padding: 6px 10px; gap: 4px; }
+  .mneme-nav a { padding: 8px 10px; }
+
+  /* Inputs at 16px prevent iOS Safari's zoom-on-focus. */
+  input, select, textarea { font-size: 16px; }
+
+  /* Two-column layouts collapse to one. */
+  .grid, .kv { grid-template-columns: 1fr !important; }
+
+  /* Toolbars wrap instead of overflowing. */
+  .toolbar, .tabs, .pull { flex-wrap: wrap; }
+
+  /* Wide tables scroll horizontally instead of blowing out the page. */
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}

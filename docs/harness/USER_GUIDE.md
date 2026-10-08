@@ -590,7 +590,7 @@ python3 extensions/gateways/cli.py --once "/runs"
 # Telegram (create a bot with @BotFather; find your numeric user id with @userinfobot)
 export MNEME_TELEGRAM_TOKEN=123456:ABC...
 export MNEME_TELEGRAM_ALLOWED=11111111          # REQUIRED allow-list
-python3 extensions/gateways/telegram.py --url http://localhost:8080 --plain run
+python3 extensions/gateways/telegram.py --url http://localhost:8080 --plain chat
 ```
 
 The Telegram gateway refuses to start without an allow-list, answers only private

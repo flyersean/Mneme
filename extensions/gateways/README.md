@@ -32,7 +32,7 @@ python3 extensions/gateways/cli.py --once "/runs"
 export MNEME_TELEGRAM_TOKEN=123456:ABC...        # from @BotFather
 export MNEME_TELEGRAM_ALLOWED=11111111           # your numeric Telegram user id(s) — REQUIRED
 export MNEME_TOKEN=abc123...                     # a user's API token (from `adduser`) — REQUIRED once auth is on
-python3 extensions/gateways/telegram.py --url http://localhost:8080 --plain run
+python3 extensions/gateways/telegram.py --url http://localhost:8080 --plain chat
 ```
 
 If the proxy has auth enabled, the gateway must send a valid token (`MNEME_TOKEN`,

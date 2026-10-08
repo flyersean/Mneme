@@ -380,6 +380,22 @@
   #pending-chip .pc-text { max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #pending-chip .pc-x { cursor: pointer; font-weight: 700; color: var(--muted); border: none; background: none; padding: 0 2px; }
   #pending-chip .pc-x:hover { color: var(--red); }
+
+  /* ── Mobile (chat-specific) ── */
+  @media (max-width: 720px) {
+    #layout { flex-direction: column; }
+    #sidebar {
+      width: 100% !important;
+      max-height: 38vh;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      order: -1;
+    }
+    #sb-resize { display: none; }
+    .inner, .composer { max-width: 100%; }
+    header { padding: 10px 14px; }
+    footer { padding: 10px 14px; }
+  }
 </style>
 <style>
 </style>

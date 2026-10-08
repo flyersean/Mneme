@@ -18,7 +18,7 @@ name: telegram-gateway
 description: Reach Mneme from Telegram (private chats, allow-listed users)
 
 command: ["python3", "telegram.py"]
-args: ["--url", "http://localhost:{port}", "--plain", "run"]
+args: ["--url", "http://localhost:{port}", "--plain", "chat"]
 
 config:
   - key: MNEME_TELEGRAM_TOKEN
