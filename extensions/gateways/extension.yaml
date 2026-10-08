@@ -29,3 +29,7 @@ config:
     label: Allowed user ID(s), comma-separated
     type: string
     required: true
+  - key: MNEME_TOKEN
+    label: Mneme user API token (proxy auth — from `adduser`)
+    type: secret
+    required: false
