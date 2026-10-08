@@ -106,6 +106,8 @@
   <a href="/runs/ui">Runs</a>
   <a href="/strategies/ui">Strategies</a>
   <a href="/extensions">Extensions</a>
+  <a href="/tokens">Tokens</a>
+  <a href="/users" id="users-link">Users</a>
 </nav>
 <main>
   <section>
@@ -415,6 +417,14 @@ document.getElementById('cfgFormat').addEventListener('click', () => {
 document.getElementById('cfgModal').addEventListener('click', (e) => { if (e.target === document.getElementById('cfgModal')) closeCfg(); });
 
 document.getElementById('shutdownBtn').addEventListener('click', shutdownSelf);
+
+// Hide the admin-only "Users" nav link for non-admin accounts.
+fetch('/auth/me').then(r => r.json()).then(d => {
+  if (d.username && !d.admin) {
+    const ul = document.getElementById('users-link');
+    if (ul) ul.style.display = 'none';
+  }
+}).catch(() => {});
 
 loadInstances();
 loadStatus();

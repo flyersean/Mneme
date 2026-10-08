@@ -176,6 +176,14 @@ def register(app, get_auth, cors_response):
         resp.delete_cookie(_SESSION_COOKIE)
         return resp
 
+    # ── who am I (for pages that branch on the signed-in user) ───────────────
+    @app.route("/auth/me", methods=["GET"])
+    def auth_me():
+        username = _session_user()
+        if not username:
+            return cors_response({"username": None, "admin": False}, status=401)
+        return cors_response({"username": username, "admin": get_auth().is_admin(username)})
+
     # ── first-run account creation (localhost only) ──────────────────────────
     def _create_form():
         return ('<form method="post">'

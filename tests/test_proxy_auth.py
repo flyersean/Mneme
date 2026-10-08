@@ -256,6 +256,15 @@ class TestProxyUsersPage(unittest.TestCase):
         c.post("/users", data={"action": "remove", "username": "alice"})
         self.assertTrue(mp.AUTH.has_user("alice"))
 
+    def test_auth_me(self):
+        self.assertEqual(mp.app.test_client().get("/auth/me").status_code, 401)
+        d = self._login("alice", "hunter2").get("/auth/me").get_json()
+        self.assertEqual(d["username"], "alice")
+        self.assertTrue(d["admin"])
+        d2 = self._login("bob", "s3cret").get("/auth/me").get_json()
+        self.assertEqual(d2["username"], "bob")
+        self.assertFalse(d2["admin"])
+
 
 if __name__ == "__main__":
     unittest.main()
