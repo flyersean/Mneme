@@ -53,13 +53,17 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 | `mneme_setup.py` | host | Interactive wizard. For each of the three model roles — chat, embedder, labeler — it asks the same three things: provider (the full catalog, same list as the chat page's picker), API key if the provider needs one (offers any saved key), and the model id (free-text; Ollama chat offers its pulled list + "enter a name"). Each role may use a different provider. Then: context window, optional Pi, and port. Writes config + start script, launches and health-checks the proxy. |
 | `mneme_connect.py` | laptop | (Remote pod only.) Opens a stay-alive SSH tunnel and prints the local URLs. |
 
-**1. Install** (on the host):
+**1. Install** (on the host) — pick **one** of these two:
+
+Interactive — asks `y/N` for each big download (Ollama, Chromium, Hound):
 
 ```bash
-# Interactive — asks y/N for each big download (Ollama, Chromium, Hound):
 curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh && MNEME_BRANCH=agent-harness bash /tmp/install.sh
+```
 
-# Or non-interactive, install everything (the old one-liner behaviour):
+Non-interactive — install everything without prompting (the old one-liner):
+
+```bash
 curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
 ```
 

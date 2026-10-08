@@ -207,8 +207,8 @@ A proxy needs: the code, a backend, and a config file. The single source of trut
 ### 2.1 Install
 
 ```bash
-git clone https://github.com/flyersean/Mneme.git && cd Mneme
-./scripts/install.sh          # Python deps + repo; asks y/N for Ollama / Chromium / Hound
+# Clones the repo and installs (asks y/N for Ollama / Chromium / Hound):
+git clone https://github.com/flyersean/Mneme.git && cd Mneme && ./scripts/install.sh
 ```
 
 The installer installs Python deps + the repo always; the three big downloads (Ollama,
