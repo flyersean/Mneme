@@ -49,7 +49,7 @@
 #    wizard picks one interactively and writes this line for you.
 #
 #  NOTE: the values below are tuned for the OpenRouter lineup
-#  (deepseek/deepseek-v4-flash + voyage-4-lite + llama-3.2-3b-instruct), informed
+#  (deepseek/deepseek-v4-flash + qwen3-embedding-8b + llama-3.2-3b-instruct), informed
 #  by asking the model itself. A global max_tokens cap is intentionally OMITTED —
 #  it truncated thorough document summaries. Anti-hang is enforced by timeouts.
 # ============================================================================
@@ -189,6 +189,7 @@ retrieval:
                                # ⚠ EMBEDDER-DEPENDENT — every embedding model has its own
                                # similarity scale, so tune this per embedder, not once. Measure it by
                                # embedding a few obviously-relevant vs obviously-irrelevant queries.
+                               #   qwen3-embedding-8b (default): use ~0.45
                                #   voyage-4-lite:            noise ~0.48, relevant ~0.70 -> use ~0.62
                                #   snowflake-arctic-embed2:  noise ~0.32, relevant ~0.40 -> use ~0.45
                                # RAISE = stricter/fewer; LOWER = more recall (and more noise).

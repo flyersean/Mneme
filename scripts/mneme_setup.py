@@ -43,11 +43,11 @@ REPO_ROOT = _REPO_DERIVED  # overwritten by main() → find_repo() (resolves sta
 # OpenRouter defaults (hosted)
 OR_BASE = "https://openrouter.ai/api/v1"
 OR_DEFAULT_MAIN = "deepseek/deepseek-v4-flash"
-OR_DEFAULT_EMBED = "voyageai/voyage-4-lite"          # 1024-dim
+OR_DEFAULT_EMBED = "qwen/qwen3-embedding-8b"          # 1024-dim (MRL-truncatable)
 OR_DEFAULT_LABEL = "meta-llama/llama-3.2-3b-instruct"  # non-thinking
 
 # Ollama defaults (local)
-OL_DEFAULT_EMBED = "snowflake-arctic-embed2"   # 1024-dim
+OL_DEFAULT_EMBED = "qwen3-embedding:8b"   # 1024-dim (MRL-truncatable)
 OL_DEFAULT_LABEL = "qwen2.5:1.5b"              # small non-thinking labeler (better labels than 0.5b)
 
 # Hosted OpenAI-compatible providers (mirrors the proxy's PROVIDER_CATALOG). All
@@ -876,15 +876,15 @@ def _embedder_floor(embed_model):
     """Pick an initial `inject_min_similarity` for the chosen embedder.
 
     This MUST be embedder-dependent: every embedding model has its own similarity
-    scale, so a value that works for one injects noise for another. Shipping a
-    flat 0.45 was wrong for the OpenRouter default (voyage-4-lite has a noise
-    floor near 0.48, so 0.45 lets noise straight through).
+    scale, so a value that works for one injects noise for another.
 
     These are measured starting points, not tuned values — the README tells users
     to tune per embedder. Returns (value, note) where note documents the reasoning
     in the generated config.
     """
     m = (embed_model or "").lower()
+    if "qwen" in m:
+        return 0.45, "qwen3-embedding-8b — 0.45 measured starting point"
     if "voyage" in m:
         return 0.62, "voyage ~0.48 noise / ~0.70 relevant — 0.62 measured starting point"
     if "snowflake" in m:
