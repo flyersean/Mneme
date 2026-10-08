@@ -11,6 +11,7 @@ _TMP = tempfile.mkdtemp(prefix="mneme_gateway_")
 os.environ["MNEME_CHUNK_DIR"] = _TMP
 os.environ["MNEME_GATEWAY_PORT"] = "18001"
 os.environ["MNEME_GATEWAY_HOST"] = "127.0.0.1"
+os.environ["MNEME_GATEWAY_CONFIG_DIR"] = os.path.join(_TMP, "gwconfig")
 os.environ.pop("MNEME_GATEWAY_TOKEN", None)
 
 # one fake instance dir

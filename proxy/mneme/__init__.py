@@ -9,4 +9,6 @@ point).
 Modules:
   util        — shared helpers with no heavy dependencies (import-safe anywhere)
   tool_trail  — deterministic tool-outcome observation + the failure nudge
+  auth        — gateway multi-user auth (mneme_users.yaml, token/password
+                check, adduser CLI); imported by the gateway, not the proxy
 """

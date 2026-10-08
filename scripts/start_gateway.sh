@@ -7,16 +7,19 @@
 # reserved 8001 (https://<pod>-8001.proxy.runpod.net).
 #
 # Env:
-#   MNEME_CHUNK_DIR     shared dir holding instances/   (default ~/mneme/chunks)
-#   MNEME_GATEWAY_HOST  bind address                    (default 127.0.0.1)
-#   MNEME_GATEWAY_PORT  internal port                   (default 8000)
-#   MNEME_GATEWAY_TOKEN optional bearer token; set it to require auth (default off)
+#   MNEME_CHUNK_DIR          shared dir holding instances/   (default ~/mneme/chunks)
+#   MNEME_GATEWAY_HOST       bind address                    (default 127.0.0.1)
+#   MNEME_GATEWAY_PORT       internal port                   (default 8000)
+#   MNEME_GATEWAY_TOKEN      optional legacy bearer token    (default off)
+#   MNEME_GATEWAY_CONFIG_DIR gateway config dir holding mneme_users.yaml
+#                            (default ~/mneme/gateway)
 set -e
 cd "$(dirname "$0")/.."
 
 : "${MNEME_CHUNK_DIR:=$HOME/mneme/chunks}"
 : "${MNEME_GATEWAY_HOST:=127.0.0.1}"
 : "${MNEME_GATEWAY_PORT:=8000}"
-export MNEME_CHUNK_DIR MNEME_GATEWAY_HOST MNEME_GATEWAY_PORT
+: "${MNEME_GATEWAY_CONFIG_DIR:=$HOME/mneme/gateway}"
+export MNEME_CHUNK_DIR MNEME_GATEWAY_HOST MNEME_GATEWAY_PORT MNEME_GATEWAY_CONFIG_DIR
 
 exec python3 proxy/gateway.py

@@ -1,0 +1,21 @@
+# Mneme gateway users — one entry per user.
+#
+#   username       login name (used by the browser's username/password prompt)
+#   password_hash  a PBKDF2 hash — NEVER a plaintext password. Generate with:
+#                    python3 proxy/mneme/auth.py adduser
+#   token          the API token for agents. Send it as:
+#                    Authorization: Bearer <token>   (or ?token=<token>)
+#   admin          unused for now — everyone is an admin.
+#
+# Auth is OFF while this file has no users (or is absent). The running gateway
+# re-reads it whenever it changes, so no restart is needed.
+#
+# To enable auth, copy this file to ~/mneme/gateway/mneme_users.yaml and add a
+# real user below (or just run `python3 proxy/mneme/auth.py adduser`, which
+# creates the file and hashes the password for you).
+#
+# users:
+#   - username: alice
+#     password_hash: pbkdf2:sha256:600000$...   # paste from `hash-password`
+#     token: a-long-random-string               # agents send this as Bearer
+#     admin: true

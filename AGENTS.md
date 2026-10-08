@@ -54,7 +54,9 @@ it through the UI. Never work around it, and never claim a blocked action succee
 
 ```text
 proxy/                  the server: mneme_proxy.py (all routes + the tool loop),
-                        gateway.py (reverse proxy), static/*.html (chat/dashboard/
+                        gateway.py (reverse proxy + multi-user auth), mneme/ (extracted
+                        modules: tools, curation, templates, chatcmd, auth, …),
+                        static/*.html (chat/dashboard/
                         extensions/strategies/runs/memory UIs), static/vendor/ (self-hosted
                         CodeMirror), static/themes/ + theme.css + theme.js (the theming
                         system — see the "Theming" section), system_prompt*.md (the injected
@@ -70,6 +72,7 @@ docs/                   specs: harness/ (SPEC.md, USER_GUIDE.md, adr/),
                         model-notes.md
 strategies.yaml         shipped strategy library (the self-improving layer)
 mneme.yaml.example      THE authoritative proxy config (every key + comment)
+mneme_users.yaml.example  gateway users template (username / password_hash / token)
 model_templates.yaml    model templates
 tests/                  unittest suite (NOT pytest): python3 -m unittest tests.test_<name>
 skills/, experiments/   scratch / support

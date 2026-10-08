@@ -16,13 +16,16 @@ the reserved 8001 (https://<pod>-8001.proxy.runpod.net).
                            instance's root-relative links/fetches stay under its
                            ``/<port>/`` prefix.
 
-This is the future auth choke-point: the instances stay 127.0.0.1 / no-auth;
-a single token check here (see ``_authorize``) gates everything. Set
-``MNEME_GATEWAY_TOKEN`` to require a Bearer token / ``?token=`` / ``mneme_token``
-cookie on every request (off when unset).
+This is the auth choke-point: the instances stay 127.0.0.1 / no-auth; every
+request is gated here (see ``_authorize``). Auth is OFF while no users are
+configured and ``MNEME_GATEWAY_TOKEN`` is unset. Multi-user auth lives in
+``mneme.auth`` — a ``mneme_users.yaml`` file of {username, password_hash,
+token} under the gateway config dir. Requests authenticate via a Bearer token,
+HTTP Basic, ``?token=``, or a ``mneme_token`` cookie.
 
 Config (env): MNEME_GATEWAY_HOST (127.0.0.1), MNEME_GATEWAY_PORT (8000),
-MNEME_CHUNK_DIR (shared dir holding instances/), MNEME_GATEWAY_TOKEN ("").
+MNEME_CHUNK_DIR (shared dir holding instances/), MNEME_GATEWAY_TOKEN (""),
+MNEME_GATEWAY_CONFIG_DIR (gateway config dir, default ~/mneme/gateway).
 """
 
 import os
@@ -30,9 +33,12 @@ import re
 import sys
 import time
 import json
+import base64
 import subprocess
 
 from flask import Flask, request, Response, stream_with_context
+
+from mneme.auth import AuthStore
 
 try:
     import requests
@@ -47,6 +53,8 @@ GATEWAY_TOKEN = os.environ.get("MNEME_GATEWAY_TOKEN", "").strip()
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+AUTH = AuthStore()
+
 app = Flask(__name__)
 
 # Headers that must NOT be forwarded between hops (handled per-connection).
@@ -59,23 +67,44 @@ HOP_BY_HOP = {
 HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
 
 
-# ── auth seam (off until MNEME_GATEWAY_TOKEN is set) ─────────────────────────
+# ── auth seam (off until users exist or MNEME_GATEWAY_TOKEN is set) ──────────
+def _token_ok(tok):
+    if not tok:
+        return False
+    if AUTH.check_token(tok):
+        return True
+    return bool(GATEWAY_TOKEN) and tok == GATEWAY_TOKEN
+
+
 @app.before_request
 def _authorize():
-    if not GATEWAY_TOKEN:
+    if not AUTH and not GATEWAY_TOKEN:
+        return None  # auth off
+
+    auth = request.headers.get("Authorization", "")
+
+    # 1. Bearer token (agents / API clients)
+    if auth.lower().startswith("bearer "):
+        if _token_ok(auth[7:].strip()):
+            return None
+
+    # 2. HTTP Basic (browser prompt / curl -u): username:password
+    elif auth.lower().startswith("basic "):
+        try:
+            decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", "replace")
+            username, _, password = decoded.partition(":")
+            if AUTH.check_password(username, password):
+                return None
+        except Exception:
+            pass
+
+    # 3. ?token= query param or mneme_token cookie
+    tok = request.args.get("token") or request.cookies.get("mneme_token")
+    if _token_ok(tok):
         return None
-    tok = request.headers.get("Authorization", "")
-    if tok.lower().startswith("bearer "):
-        tok = tok[7:].strip()
-    elif request.args.get("token"):
-        tok = request.args["token"]
-    elif request.cookies.get("mneme_token"):
-        tok = request.cookies["mneme_token"]
-    else:
-        tok = ""
-    if tok != GATEWAY_TOKEN:
-        return Response("unauthorized", status=401,
-                        headers={"WWW-Authenticate": "Bearer"})
+
+    return Response("unauthorized", status=401,
+                    headers={"WWW-Authenticate": 'Basic realm="mneme", Bearer'})
 
 
 # ── instance discovery (mirrors the proxy's overview) ───────────────────────
@@ -317,5 +346,10 @@ def proxy(port, path):
 if __name__ == "__main__":
     print(f"  [GATEWAY] chunk dir: {CHUNK_DIR}", flush=True)
     print(f"  [GATEWAY] serving on http://{GATEWAY_HOST}:{GATEWAY_PORT}", flush=True)
-    print(f"  [GATEWAY] auth: {'token required' if GATEWAY_TOKEN else 'OFF (open)'}", flush=True)
+    if AUTH.users or GATEWAY_TOKEN:
+        n = len(AUTH.users)
+        extra = " + legacy token" if GATEWAY_TOKEN else ""
+        print(f"  [GATEWAY] auth: ON ({n} user{'s' if n != 1 else ''}{extra})", flush=True)
+    else:
+        print("  [GATEWAY] auth: OFF (open)", flush=True)
     app.run(host=GATEWAY_HOST, port=GATEWAY_PORT, threaded=True)
