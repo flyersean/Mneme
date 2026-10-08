@@ -7339,7 +7339,7 @@ FAKE_CONTEXT   = 65536
 # ─── Flask Proxy ───────────────────────────────────────────────
 
 try:
-    from flask import Flask, request, jsonify, Response, stream_with_context
+    from flask import Flask, request, jsonify, Response, stream_with_context, redirect
     from flask_cors import CORS
     FLASK_OK = True
 except ImportError:
@@ -7849,7 +7849,7 @@ def _model_scope() -> str:
 
 
 if FLASK_OK:
-    from mneme.auth import AuthStore, check_request
+    from mneme.auth import AuthStore, check_request, sign_session, verify_session, add_user
 
     app = Flask(__name__)
     CORS(app)
@@ -7860,15 +7860,65 @@ if FLASK_OK:
     # preflight (OPTIONS) stay open — the gateway and clients probe /health.
     AUTH = AuthStore()
 
+    # Session secret — stable across restarts so logins survive. Env override,
+    # else a persisted random file next to the users file.
+    def _session_secret():
+        s = os.environ.get("MNEME_SESSION_SECRET")
+        if s:
+            return s
+        p = os.path.join(os.path.dirname(AUTH.users_file), "session_secret")
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+        import secrets as _sec
+        v = _sec.token_urlsafe(32)
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(v)
+        except OSError:
+            pass
+        return v
+
+    app.secret_key = _session_secret()
+
+    _PUBLIC_PATHS = ("/login", "/create-account")
+
+    def _wants_html():
+        return "text/html" in (request.headers.get("Accept") or "")
+
+    def _session_user():
+        val = request.cookies.get("mneme_session")
+        if not val:
+            return None
+        sess = verify_session(app.secret_key, val)
+        if not sess:
+            return None
+        username = sess.get("username")
+        return username if username and AUTH.has_user(username) else None
+
     @app.before_request
     def _authorize():
-        if not AUTH:
-            return None
         if request.method == "OPTIONS" or request.path == "/health":
             return None
-        if check_request(AUTH, request.headers, request.args.get("token"),
-                         request.cookies.get("mneme_token")):
+        if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
             return None
+        if not AUTH:
+            # No users yet: API stays open (backward compatible); browsers get
+            # the first-run create-account page.
+            if _wants_html():
+                return redirect("/create-account")
+            return None
+        if _session_user() or check_request(AUTH, request.headers, request.args.get("token"),
+                                            request.cookies.get("mneme_token")):
+            return None
+        if _wants_html():
+            from urllib.parse import quote
+            return redirect("/login?next=" + quote(request.path))
         return Response("unauthorized", status=401,
                         headers={"WWW-Authenticate": 'Basic realm="mneme"'})
     
@@ -7879,7 +7929,90 @@ if FLASK_OK:
         resp.headers["Access-Control-Allow-Headers"] = "*"
         resp.headers["Access-Control-Allow-Methods"] = "*"
         return resp, status
-    
+
+    # ── login / first-run account creation ───────────────────────────────────
+    _AUTH_STYLE = (
+        "body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+        "Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);display:flex;"
+        "align-items:center;justify-content:center;min-height:100vh}"
+        ".card{background:var(--panel);border:1px solid var(--line);border-radius:12px;"
+        "padding:32px;width:min(360px,90vw)}"
+        "h1{font-size:18px;margin:0 0 2px}"
+        ".sub{color:var(--muted);font-size:13px;margin:0 0 20px}"
+        "label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 4px}"
+        "input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:7px;"
+        "font:inherit;font-size:14px;background:var(--bg);color:var(--fg)}"
+        "input:focus{outline:none;border-color:var(--accent)}"
+        "button{width:100%;margin-top:18px;padding:10px;background:var(--accent);color:#fff;"
+        "border:none;border-radius:7px;font-weight:600;font-size:14px;cursor:pointer}"
+        ".err{color:var(--red);font-size:13px;margin-top:12px}"
+    )
+
+    def _auth_page(subtitle, form_html, error=""):
+        import html
+        esc = html.escape
+        err = f'<div class="err">{esc(error)}</div>' if error else ""
+        return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+                f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+                f'<link rel="stylesheet" href="/static/theme.css"><style>{_AUTH_STYLE}</style>'
+                f'<title>Mneme — {esc(subtitle)}</title></head><body>'
+                f'<div class="card"><h1>Mneme</h1><p class="sub">{esc(subtitle)}</p>'
+                f'{form_html}{err}</div></body></html>')
+
+    def _login_form(nxt):
+        import html
+        return (f'<form method="post"><input type="hidden" name="next" value="{html.escape(nxt)}">'
+                f'<label>Username</label><input name="username" autofocus>'
+                f'<label>Password</label><input type="password" name="password">'
+                f'<button type="submit">Sign in</button></form>')
+
+    def _create_form():
+        return ('<form method="post">'
+                '<label>Username</label><input name="username" autofocus>'
+                '<label>Password</label><input type="password" name="password">'
+                '<label>Confirm password</label><input type="password" name="confirm">'
+                '<button type="submit">Create account</button></form>')
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not AUTH:
+            return redirect("/create-account")
+        nxt = request.form.get("next") or request.args.get("next") or "/"
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            if AUTH.check_password(username, password):
+                resp = redirect(nxt)
+                resp.set_cookie("mneme_session", sign_session(app.secret_key, username),
+                                httponly=True, max_age=7 * 86400, samesite="Lax")
+                return resp
+            return _auth_page("Sign in", _login_form(nxt), "Invalid username or password")
+        return _auth_page("Sign in", _login_form(nxt), "")
+
+    @app.route("/create-account", methods=["GET", "POST"])
+    def create_account():
+        if AUTH:
+            return redirect("/login")
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            confirm = request.form.get("confirm") or ""
+            if not username or not password:
+                return _auth_page("Create your account", _create_form(),
+                                  "Username and password are required")
+            if password != confirm:
+                return _auth_page("Create your account", _create_form(),
+                                  "Passwords don't match")
+            if len(password) < 6:
+                return _auth_page("Create your account", _create_form(),
+                                  "Password must be at least 6 characters")
+            add_user(AUTH.users_file, username, password, admin=True)
+            resp = redirect("/")
+            resp.set_cookie("mneme_session", sign_session(app.secret_key, username),
+                            httponly=True, max_age=7 * 86400, samesite="Lax")
+            return resp
+        return _auth_page("Create your account", _create_form(), "")
+
     # ── Dashboard: single entry point linking out to every page ──
     _DASHBOARD_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html")
     _CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "chat.html")

@@ -78,5 +78,96 @@ class TestProxyAuthOff(unittest.TestCase):
         self.assertEqual(mp.app.test_client().get("/").status_code, 200)
 
 
+@unittest.skipUnless(getattr(mp, "FLASK_OK", False), "flask not installed")
+class TestProxyLoginFlow(unittest.TestCase):
+    def setUp(self):
+        self.uf = os.path.join(tempfile.mkdtemp(), "mneme_users.yaml")
+        add_user(self.uf, "alice", "hunter2", token="tok-a")
+        self._orig = mp.AUTH
+        mp.AUTH = AuthStore(self.uf)
+
+    def tearDown(self):
+        mp.AUTH = self._orig
+
+    def _c(self):
+        return mp.app.test_client()
+
+    def _login_cookie(self):
+        r = self._c().post("/login", data={"username": "alice", "password": "hunter2", "next": "/chat"})
+        assert r.status_code == 302, r.status_code
+        sc = r.headers.get("Set-Cookie", "")
+        assert "mneme_session=" in sc
+        return sc.split("mneme_session=")[1].split(";")[0]
+
+    def test_login_sets_cookie_and_redirects(self):
+        r = self._c().post("/login", data={"username": "alice", "password": "hunter2", "next": "/chat"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/chat", r.headers.get("Location", ""))
+        self.assertIn("mneme_session=", r.headers.get("Set-Cookie", ""))
+        self.assertIn("HttpOnly", r.headers.get("Set-Cookie", ""))
+
+    def test_login_wrong_password_shows_error(self):
+        r = self._c().post("/login", data={"username": "alice", "password": "wrong", "next": "/"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Invalid", r.data)
+
+    def test_session_cookie_authenticates(self):
+        ck = self._login_cookie()
+        c = self._c()
+        c.set_cookie("mneme_session", ck)
+        r = c.get("/")
+        self.assertEqual(r.status_code, 200)
+
+    def test_browser_redirects_to_login(self):
+        r = self._c().get("/", headers={"Accept": "text/html"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/login", r.headers.get("Location", ""))
+
+    def test_api_returns_401_not_redirect(self):
+        r = self._c().get("/", headers={"Accept": "application/json"})
+        self.assertEqual(r.status_code, 401)
+
+
+@unittest.skipUnless(getattr(mp, "FLASK_OK", False), "flask not installed")
+class TestProxyFirstRun(unittest.TestCase):
+    def setUp(self):
+        self.uf = os.path.join(tempfile.mkdtemp(), "mneme_users.yaml")  # absent → no users
+        self._orig = mp.AUTH
+        mp.AUTH = AuthStore(self.uf)
+
+    def tearDown(self):
+        mp.AUTH = self._orig
+
+    def _c(self):
+        return mp.app.test_client()
+
+    def test_browser_redirects_to_create_account(self):
+        r = self._c().get("/", headers={"Accept": "text/html"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/create-account", r.headers.get("Location", ""))
+
+    def test_api_stays_open_when_no_users(self):
+        self.assertEqual(self._c().get("/", headers={"Accept": "application/json"}).status_code, 200)
+
+    def test_create_account(self):
+        r = self._c().post("/create-account", data={"username": "bob", "password": "secret1", "confirm": "secret1"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("mneme_session=", r.headers.get("Set-Cookie", ""))
+        self.assertTrue(mp.AUTH.has_user("bob"))
+        # auth is now on — an unauthenticated API call is refused
+        self.assertEqual(self._c().get("/", headers={"Accept": "application/json"}).status_code, 401)
+
+    def test_create_account_password_mismatch(self):
+        r = self._c().post("/create-account", data={"username": "bob", "password": "secret1", "confirm": "different"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"match", r.data)
+        self.assertFalse(mp.AUTH.has_user("bob"))
+
+    def test_login_redirects_to_create_when_no_users(self):
+        r = self._c().get("/login")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/create-account", r.headers.get("Location", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,10 @@ class AuthStore:
                     return u
         return None
 
+    def has_user(self, username):
+        self._ensure_loaded()
+        return any(u["username"] == username for u in self.users)
+
     def __bool__(self):
         self._ensure_loaded()
         return bool(self.users)
