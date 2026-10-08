@@ -134,13 +134,17 @@ hardened service. When enabled, it can expose capabilities equivalent to giving 
 a shell on the host — `bash`, `write`, `read_file`, configured MCP servers, and
 model-directed tool use. None of this is sandboxed.
 
-**There's no authentication until you add a user, and the proxy binds to `127.0.0.1`
-by default — keep both that way.** Multi-user auth comes from one static
+**Auth is off until you create a user, and the proxy binds to `127.0.0.1` by
+default — keep both that way.** Multi-user auth comes from one static
 `mneme_users.yaml` (in `~/mneme/gateway/` by default) that both the proxy and the
-gateway enforce; add a user with `python3 proxy/mneme/auth.py adduser`. Until you do,
-everything is open. For remote access, use an SSH tunnel (`mneme_connect.py` does
-this), a VPN, or the gateway (`proxy/gateway.py`), which fronts every instance on one
-port. Binding the proxy itself wider is a deliberate opt-out:
+gateway enforce. On first use, opening the proxy in a browser redirects to a
+**create-account** page (username + password, no email); after that you sign in at
+`/login`, and a signed session cookie keeps you authenticated. Scripts and agents
+authenticate with a user's token (`Authorization: Bearer <token>`, or `?token=<token>`);
+you can also add users from the CLI with `python3 proxy/mneme/auth.py adduser`. Until
+a user exists, the API is open. For remote access, use an SSH tunnel (`mneme_connect.py`
+does this), a VPN, or the gateway (`proxy/gateway.py`), which fronts every instance on
+one port. Binding the proxy itself wider is a deliberate opt-out:
 
 ```bash
 MNEME_BIND=0.0.0.0   # reachable from the network; starts with a warning

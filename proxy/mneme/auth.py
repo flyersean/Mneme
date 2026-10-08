@@ -7,10 +7,11 @@ dir. Each user has:
   password_hash  a PBKDF2 hash — never a plaintext password
   token          the API token for agents: ``Authorization: Bearer <token>``
 
-No signup, no email, no password-reset. The admin adds users with the ``adduser``
-helper (which hashes the password and can mint a token for you), and the running
-gateway re-reads the file on the next request whenever its mtime changes — so no
-restart is needed after adding a user.
+No email, no password-reset. Users are created by the proxy's first-run
+create-account page (username + password) or the ``adduser`` helper (which hashes
+the password and can mint a token for you). The running gateway/proxy re-reads the
+file on the next request whenever its mtime changes — so no restart is needed
+after adding a user.
 
 Auth is OFF while the file is absent or has no users. Backward compatible with
 the old single ``MNEME_GATEWAY_TOKEN`` (still honoured by the gateway).
