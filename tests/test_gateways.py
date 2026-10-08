@@ -149,6 +149,8 @@ class TestHarnessClientAuth(unittest.TestCase):
                 raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
         class RawHTTP:
+            def __init__(self):
+                self.headers = {}
             def post(self, url, json=None, timeout=None):
                 return RawResp()
 
