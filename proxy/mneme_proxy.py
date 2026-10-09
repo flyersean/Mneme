@@ -975,8 +975,14 @@ def _persist_model_scope(path: str) -> bool:
             text = f.read()
         new_text, n = re.subn(r'(?m)^  model_scope:\s*.*$', f'  model_scope: "{path}"', text, count=1)
         if n == 0:
-            print("  [FS-SCOPE] no `  model_scope:` line to replace", flush=True)
-            return False
+            # No `  model_scope:` line yet — insert one instead of bailing. If the
+            # config already has a `filesystem:` block, add the line right under it;
+            # otherwise append a fresh `filesystem:` block at the end of the file.
+            line = f'  model_scope: "{path}"'
+            if re.search(r'(?m)^filesystem:\s*$', text):
+                new_text, _ = re.subn(r'(?m)^(filesystem:\s*)$', r'\1\n' + line, text, count=1)
+            else:
+                new_text = text.rstrip("\n") + "\n\nfilesystem:\n" + line + "\n"
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(new_text)
@@ -6956,6 +6962,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             else:
                 _repeat_streak = 1
                 _last_round_sig = _sig
+            if _repeat_streak == 2:
+                # Soft nudge before the hard stop: the model just re-issued the
+                # identical call. Point out the repeat so it can stop on its own
+                # instead of grinding to the redundancy stop.
+                followup.append({"role": "user", "content":
+                    "You just issued the same tool call again with the same arguments. "
+                    "If you already have what you need from the earlier result, stop "
+                    "calling tools and give your final answer now. If the earlier result "
+                    "was empty or blocked, check what it actually returned before retrying."})
+                print("  [REPEAT-NUDGE] identical call 2x in a row — nudging", flush=True)
             if _repeat_streak >= _REDUNDANCY_LIMIT:
                 print(f"  [REDUNDANCY] identical tool call {_repeat_streak}x in a row — stopping loop", flush=True)
                 followup.append({"role": "user", "content":
