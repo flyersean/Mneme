@@ -93,12 +93,17 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertIn(rid, [x["run_id"] for x in self.c.get("/runs").get_json()["runs"]])
 
     def test_pause_resume_cancel_via_http(self):
-        rid = self.c.post("/runs", json={"goal": "g", "start": False}).get_json()["run"]["run_id"]
+        rid = self.c.post("/runs", json={"goal": "g", "start": False, "free_form": False}).get_json()["run"]["run_id"]
         self.assertEqual(self.c.post(f"/runs/{rid}/pause").get_json()["run"]["status"], "paused")
         self.c.post(f"/runs/{rid}/resume")
         self.assertEqual(wait_status(self.c, rid, {"completed"})["status"], "completed")
         self.assertEqual(self.c.post(f"/runs/{rid}/cancel").status_code, 409)
         self.assertEqual(self.c.post(f"/runs/{rid}/checkpoint").status_code, 200)
+
+    def test_freeform_default_via_http(self):
+        # no plan/tasks/free_form -> the default is now a free-form goal session
+        r = self.c.post("/runs", json={"goal": "refactor canvas", "start": False}).get_json()["run"]
+        self.assertTrue((r.get("meta") or {}).get("free_form"))
 
     def test_failure_rules_then_retry(self):
         self.fake.replies += [
@@ -136,7 +141,7 @@ class TestHarnessProxy(unittest.TestCase):
         seq = [plan_reply, write_reply]
         FakeChat.__call__ = lambda s, m, **kw: (seq.pop(0)(m, **kw) if seq else orig_call(s, m, **kw))
         try:
-            rid = self.c.post("/runs", json={"goal": "make out.txt"}).get_json()["run"]["run_id"]
+            rid = self.c.post("/runs", json={"goal": "make out.txt", "plan": True}).get_json()["run"]["run_id"]
             run = wait_status(self.c, rid, {"completed", "failed"})
         finally:
             FakeChat.__call__ = orig_call

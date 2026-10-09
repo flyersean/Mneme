@@ -318,6 +318,8 @@ def build_freeform_messages(engine, run, transcript, turn: int, budget_remaining
             lines.append(f"Turn {t['turn']}: {content}")
             if t.get("tool_summary"):
                 lines.append(f"  (you ran: {t['tool_summary']})")
+            if t.get("repeated"):
+                lines.append("  ⚠ you repeated the same actions as the previous turn — stop and change approach.")
             if t.get("judge_feedback"):
                 lines.append(f"  (verifier: {t['judge_feedback'][:400]})")
         transcript_text = "Progress so far:\n" + "\n".join(lines) + "\n\n"

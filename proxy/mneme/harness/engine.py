@@ -382,6 +382,7 @@ class RunEngine:
 
             transcript = [{"turn": i + 1, "content": s.get("output") or "",
                            "tool_summary": (s.get("meta") or {}).get("tool_summary") or "",
+                           "repeated": bool((s.get("meta") or {}).get("repeated")),
                            "judge_feedback": (s.get("meta") or {}).get("judge_feedback") or ""}
                           for i, s in enumerate(prior)]
 
@@ -434,8 +435,10 @@ class RunEngine:
             self.ledger.update_run(run_id, usage=usage)
 
             done = self._freeform_done(content)
-            meta = {"turn": turn, "done": bool(done),
-                    "tool_summary": self._tool_summary(tool_trace)}
+            cur_summary = self._tool_summary(tool_trace)
+            meta = {"turn": turn, "done": bool(done), "tool_summary": cur_summary}
+            if cur_summary and prior and (prior[-1].get("meta") or {}).get("tool_summary") == cur_summary:
+                meta["repeated"] = True
             if done and self.judge is not None:
                 ok, why = self._freeform_judge(run, content, tool_trace)
                 meta["judge_ok"] = bool(ok)

@@ -57,6 +57,16 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
             tasks = data.get("tasks")
             if tasks is not None and not isinstance(tasks, list):
                 raise LedgerError("tasks must be a list")
+            # free-form is the default for new runs; structured (planner/verify) is
+            # opt-in via explicit `plan`, `tasks`, or `free_form: false`.
+            ff = data.get("free_form")
+            plan_val = data.get("plan")
+            if ff is not None:
+                free_form = bool(ff)
+            elif plan_val is not None or tasks is not None:
+                free_form = False
+            else:
+                free_form = True
             run = eng.create(
                 data.get("goal") or "", tasks, budget=data.get("budget") or {},
                 profile=str(data.get("profile") or ""), session_id=str(data.get("session_id") or ""),
@@ -64,8 +74,8 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
                 permissions=data.get("permissions") or {},
                 created_by=str(data.get("created_by") or "user"),
                 start=bool(data.get("start", True)),
-                plan=(None if data.get("plan") is None else bool(data.get("plan"))),
-                free_form=bool(data.get("free_form", False)),
+                plan=(None if plan_val is None else bool(plan_val)),
+                free_form=free_form,
             )
             return respond({"run": run}, 201)
         return _guard(go)
