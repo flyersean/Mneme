@@ -287,7 +287,7 @@ INSTRUCTION_META = {
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
-    "harness_judge": ("a harness task has an llm_judge verify check", "{{criteria}} {{output}}", "_harness_judge"),
+    "harness_judge": ("a harness task has an llm_judge verify check (or an appeal over a failed deterministic check)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),
     "harness_reflect": ("a harness run failed or needed recovery (harness.reflect: true)", "{{goal}} {{outcome}} {{tasks}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),
