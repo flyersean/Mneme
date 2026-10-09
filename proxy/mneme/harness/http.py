@@ -65,6 +65,7 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
                 created_by=str(data.get("created_by") or "user"),
                 start=bool(data.get("start", True)),
                 plan=(None if data.get("plan") is None else bool(data.get("plan"))),
+                free_form=bool(data.get("free_form", False)),
             )
             return respond({"run": run}, 201)
         return _guard(go)

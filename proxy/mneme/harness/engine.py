@@ -40,6 +40,7 @@ from mneme.harness.failures import classify as _classify_failure
 
 DEFAULT_BUDGET = {
     "max_steps": 100,        # hard safety cap on steps per run
+    "max_turns": None,       # free-form goal sessions: model turns before giving up
     "max_failures": 3,       # failed steps before the run fails
     "max_model_calls": None,
     "max_tool_calls": None,
@@ -137,6 +138,7 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
+                 freeform_turn: Optional[Callable] = None,
                  capabilities=None, skills=None, judge=None, diagnostics=None, evolution=None, profiles=None,
                  runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
@@ -144,6 +146,7 @@ class RunEngine:
         self.ledger = ledger
         self.executor = executor
         self.planner = planner
+        self.freeform_turn = freeform_turn  # (engine, run, transcript, turn, remaining, note, cancel_event) -> dict
         self.capabilities = capabilities     # CapabilityContext (Phase 4) — optional
         self.skills = skills                 # SkillRegistry (Phase 3) — optional
         self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
@@ -168,9 +171,12 @@ class RunEngine:
     # ── creation ─────────────────────────────────────────────────────────
 
     def create(self, goal: str, tasks: Optional[List] = None, *, budget: Optional[dict] = None,
-               start: bool = False, plan: Optional[bool] = None, **kw) -> dict:
+               start: bool = False, plan: Optional[bool] = None, free_form: bool = False, **kw) -> dict:
         """plan=None: let the planner produce tasks when none are given (if a planner
         is configured); plan=True forces planning; plan=False never plans.
+        free_form=True: a durable goal session — one task = the goal, no planner, no
+        deterministic verification; the model drives toward the goal across turns and
+        the judge checks the result when it declares done.
         profile=<name> merges that profile's budget/grant/skills/approval defaults
         UNDER the explicit arguments."""
         if kw.get("profile"):
@@ -179,6 +185,10 @@ class RunEngine:
             budget, kw["permissions"], kw["meta"], plan = self.profiles.apply_to(
                 kw["profile"], budget=budget, permissions=kw.get("permissions"),
                 meta=kw.get("meta"), plan=plan)
+        if free_form:
+            plan = False
+            kw["meta"] = {**(kw.get("meta") or {}), "free_form": True}
+            budget = {**(budget or {}), "max_turns": (budget or {}).get("max_turns", 20)}
         defer = (not tasks and self.planner is not None) if plan is None else bool(plan)
         if defer and self.planner is None:
             raise LedgerError("plan requested but this engine has no planner")
@@ -270,7 +280,10 @@ class RunEngine:
                 self.ledger.transition(run_id, "running",
                                        event="run_resumed" if resumed else "run_started",
                                        data={"owner": self.owner, "attempt": run.get("attempt", 1)})
-            self._loop(run_id)
+            if (run.get("meta") or {}).get("free_form"):
+                self._free_form_loop(run_id)
+            else:
+                self._loop(run_id)
         finally:
             hb_stop.set()
             self.ledger.release(run_id, self.owner)
@@ -334,6 +347,132 @@ class RunEngine:
                 return self.ledger.get_run(run_id)
 
             self._run_one_step(run, task, tasks, usage)
+
+    def _free_form_loop(self, run_id: str) -> dict:
+        """Free-form goal session: the model drives toward the goal across turns. The
+        harness records each turn, enforces a turn budget, and runs the judge as a final
+        check when the model declares done. No task graph, no deterministic verification."""
+        segment_start = time.monotonic()
+        while True:
+            run = self.ledger.require_run(run_id)
+            if run["status"] not in ACTIVE_STATES:
+                return run
+            usage = {**_USAGE_ZERO, **(run.get("usage") or {})}
+            usage["runtime_s"] = round(usage["runtime_s"] + (time.monotonic() - segment_start), 3)
+            segment_start = time.monotonic()
+            self.ledger.update_run(run_id, usage=usage)
+            run["usage"] = usage
+
+            control = run.get("control") or ""
+            if control == "pause":
+                self.ledger.update_run(run_id, control="")
+                self.checkpoint(run_id, reason="pause")
+                return self.ledger.transition(run_id, "paused")
+            if control == "cancel":
+                return self._finish_cancel(run_id)
+
+            budget = run.get("budget") or {}
+            max_turns = budget.get("max_turns") or 20
+            prior = [s for s in self.ledger.list_steps(run_id) if s.get("kind") == "freeform"]
+            turn = len(prior) + 1
+            if turn > max_turns:
+                return self._end(run_id, "failed",
+                                 error=f"reached max_turns ({max_turns}) without completing the goal",
+                                 data={"reason": "max_turns"})
+
+            transcript = [{"turn": i + 1, "content": s.get("output") or "",
+                           "judge_feedback": (s.get("meta") or {}).get("judge_feedback") or ""}
+                          for i, s in enumerate(prior)]
+
+            note = ""
+            plan = run.get("plan") or {}
+            if plan.get("pending_note"):
+                note = plan["pending_note"]
+                self.ledger.update_run(run_id, plan={k: v for k, v in plan.items() if k != "pending_note"})
+
+            step = self.ledger.start_step(run_id, kind="freeform", input={"turn": turn, "goal": run["goal"]})
+            self.ledger.update_run(run_id, current_step_id=step["step_id"])
+
+            stop = threading.Event()
+
+            def watch():
+                while not stop.wait(0.5):
+                    try:
+                        if (self.ledger.get_run(run_id) or {}).get("control"):
+                            stop.set()
+                            return
+                    except Exception:
+                        return
+            watcher = threading.Thread(target=watch, name="mneme-ff-watch", daemon=True)
+            watcher.start()
+
+            try:
+                if self.freeform_turn is None:
+                    raise LedgerError("free-form run but no freeform_turn executor configured")
+                r = self.freeform_turn(self, run, transcript, turn,
+                                       {"max_turns": max(0, max_turns - turn + 1)},
+                                       note, cancel_event=stop) or {}
+            except Exception as e:
+                self.ledger.finish_step(step["step_id"], "failed", error=f"{type(e).__name__}: {e}")
+                self.ledger.emit(run_id, "engine_error", {"error": f"{type(e).__name__}: {e}",
+                                                          "traceback": traceback.format_exc()[-1500:]})
+                return self._end(run_id, "failed", error=f"turn crashed: {e}")
+            finally:
+                stop.set()
+
+            content = (r.get("content") or "").strip()
+            tool_trace = r.get("tool_trace") or []
+            for tc in tool_trace:
+                self.ledger.record_tool_call(run_id, str(tc.get("tool") or "?"), tc.get("args") or {},
+                                             result=str(tc.get("result") or "")[:_RESULT_PREVIEW],
+                                             status=tc.get("status") or "",
+                                             elapsed_ms=int(tc.get("elapsed_ms") or 0),
+                                             task_id="", step_id=step["step_id"])
+            usage["model_calls"] = usage.get("model_calls", 0) + 1
+            usage["tool_calls"] = usage.get("tool_calls", 0) + len(tool_trace)
+            self.ledger.update_run(run_id, usage=usage)
+
+            done = self._freeform_done(content)
+            meta = {"turn": turn, "done": bool(done)}
+            if done and self.judge is not None:
+                ok, why = self._freeform_judge(run, content, tool_trace)
+                meta["judge_ok"] = bool(ok)
+                meta["judge_feedback"] = why or ""
+                if not ok:
+                    done = False
+            self.ledger.finish_step(step["step_id"], "completed", output=content, meta=meta)
+            self.checkpoint(run_id, reason="turn")
+
+            if done:
+                for t in self.ledger.list_tasks(run_id):
+                    if t["status"] in ("pending", "running"):
+                        self.ledger.update_task(t["task_id"], status="completed", result=content or "",
+                                                error="", finished_at=_now(), event="task_completed",
+                                                data={"title": t["title"]})
+                return self._end(run_id, "completed", result=content, data={"turns": turn})
+
+    def _freeform_done(self, content: str) -> bool:
+        """The model declares completion by ending its reply with a lone DONE line."""
+        if not content:
+            return False
+        lines = [l.strip() for l in content.splitlines() if l.strip()]
+        if not lines:
+            return False
+        last = lines[-1].lower().rstrip(".! ")
+        return last in ("done", "complete", "finished", "goal complete", "goal achieved")
+
+    def _freeform_judge(self, run: dict, content: str, tool_trace: List[dict]):
+        """Final check: the judge decides whether the work is a correct bug fix or is
+        aligned with the goal — never just 'it ran without error'."""
+        if self.judge is None:
+            return True, ""
+        evidence = _verify._tool_evidence(tool_trace or [])
+        try:
+            ok, why = self.judge(run["goal"], content, evidence=evidence, failed="")
+            return bool(ok), why or ""
+        except Exception as e:
+            self.ledger.emit(run["run_id"], "judge_error", {"error": f"{type(e).__name__}: {e}"})
+            return True, f"judge errored ({type(e).__name__}) — accepting the model's DONE"
 
     def _run_one_step(self, run: dict, task: dict, tasks: List[dict], usage: dict) -> None:
         run_id = run["run_id"]

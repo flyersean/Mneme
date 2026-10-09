@@ -7811,7 +7811,7 @@ def _init_harness():
         return
     try:
         from mneme.harness import Ledger, RunEngine
-        from mneme.harness.chat_executor import make_chat_executor, make_chat_planner, make_chat_reflector
+        from mneme.harness.chat_executor import make_chat_executor, make_chat_planner, make_chat_reflector, make_chat_freeform_executor
         from mneme.harness import evolution as _evo
         _hdb = os.path.expanduser(os.environ.get("MNEME_HARNESS_DB") or os.path.join(DB_DIR, "harness.db"))
         # Run workspaces MUST share a root with the tools' writable RUNS_ROOT
@@ -7848,6 +7848,7 @@ def _init_harness():
             (t.get("function") or {}).get("name", "") for t in mntools.assemble_tools(None)])
         HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
+                            freeform_turn=make_chat_freeform_executor(_scoped_process_chat, lock=_hlock),
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
                             diagnostics=mntools._bash_log_tail,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,

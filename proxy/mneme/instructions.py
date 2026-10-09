@@ -237,14 +237,30 @@ DEFAULT_INSTRUCTIONS = {
         "VERIFY: file_contains notes.txt :: 3.13"
     ),
     "harness_judge": (
-        "You are a strict verifier. Decide whether the task below actually SUCCEEDED.\n"
-        "Judge the EVIDENCE (what the model actually did) against the expected outcome — "
-        "a claim that something was done is not evidence it was done.\n\n"
-        "EXPECTED OUTCOME:\n{{criteria}}\n\n"
-        "WHAT THE MODEL DID (tool trace):\n{{evidence}}\n\n"
-        "MODEL'S FINAL ANSWER:\n{{output}}\n\n"
+        "You are a verifier. Decide whether the work below is CORRECT. First decide which of "
+        "two questions applies, then judge the EVIDENCE (tool trace) — never the agent's claim.\n\n"
+        "A. BUG FIX — the work fixes a specific bug/error. PASS only if the evidence shows the "
+        "bug is actually resolved. \"Runs without error\" is not enough: the specific failure "
+        "must be gone.\n"
+        "B. OBJECTIVE ALIGNMENT — the work builds toward the goal. PASS only if it moves toward "
+        "the goal. \"Runs without error\" is not enough: code can execute cleanly yet miss the goal.\n\n"
+        "GOAL / EXPECTED OUTCOME:\n{{criteria}}\n\n"
+        "WHAT THE AGENT DID (tool trace):\n{{evidence}}\n\n"
+        "AGENT'S OWN CLAIM:\n{{output}}\n\n"
         "FAILED CHECK(S) TO RECONSIDER:\n{{failed}}\n\n"
-        "Reply with PASS or FAIL on the first line, then one sentence explaining why."
+        "Reply PASS or FAIL on the first line, then one short line naming A or B and why."
+    ),
+    "harness_freeform_context": (
+        "=== MNEME GOAL SESSION ===\n"
+        "You are working toward a goal. You are in control of the approach: explore, build, "
+        "and TEST your work as you go — do not wait to be told. Use your tools freely.\n\n"
+        "Goal: {{goal}}\n"
+        "Workspace (use absolute paths): {{workspace}}\n"
+        "{{transcript}}"
+        "Remaining turns: {{budget}}\n\n"
+        "Work on the goal now. When you believe it is achieved, end your reply with a single "
+        "line containing only the word DONE. If you are not done, just continue working and do "
+        "NOT say DONE. If you hit a real blocker, say plainly what it is."
     ),
     "harness_reflect": (
         "A task run just ended. Look at what happened and extract what is worth keeping "
@@ -290,7 +306,8 @@ INSTRUCTION_META = {
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
-    "harness_judge": ("a harness task has an llm_judge verify check (or an appeal over a failed deterministic check)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),
+    "harness_judge": ("a harness verifier judges whether work is correct (bug fix vs objective alignment)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),
+    "harness_freeform_context": ("a harness free-form goal session (model drives toward the goal)", "{{goal}} {{workspace}} {{transcript}} {{budget}}", "harness.chat_executor"),
     "harness_reflect": ("a harness run failed or needed recovery (harness.reflect: true)", "{{goal}} {{outcome}} {{tasks}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),

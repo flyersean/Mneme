@@ -298,3 +298,52 @@ def make_chat_reflector(process_chat: Callable, *, lock: Optional[threading.Lock
         engine.ledger.emit(run["run_id"], "reflected", {"lessons": len(lessons), "skills": len(skills)})
 
     return reflect
+
+
+def build_freeform_messages(engine, run, transcript, turn: int, budget_remaining, note: str = "",
+                            _load_instruction: Optional[Callable] = None) -> list:
+    """Free-form goal session: the model drives toward the goal across turns. Each
+    turn gets the goal + the accumulated progress transcript, so it remembers what it
+    already tried without the harness prescribing tasks or verification."""
+    if _load_instruction is None:
+        from mneme.instructions import _load_instruction
+    ws = engine.workspace(run["run_id"])
+    transcript_text = ""
+    if transcript:
+        lines = []
+        for t in transcript:
+            content = " ".join((t.get("content") or "").split())
+            if len(content) > 700:
+                content = content[:700] + " …"
+            lines.append(f"Turn {t['turn']}: {content}")
+            if t.get("judge_feedback"):
+                lines.append(f"  (verifier: {t['judge_feedback'][:400]})")
+        transcript_text = "Progress so far:\n" + "\n".join(lines) + "\n\n"
+    system = _load_instruction("harness_freeform_context", vars={
+        "goal": run["goal"],
+        "workspace": _workspace_dir(ws) + _artifacts_note(ws),
+        "transcript": transcript_text,
+        "budget": _budget_line(budget_remaining),
+    })
+    msgs = [{"role": "system", "content": system},
+            {"role": "user", "content": f"Goal: {run['goal']}"}]
+    if note:
+        msgs.append({"role": "user", "content": "Note from the user:\n" + note})
+    return msgs
+
+
+def make_chat_freeform_executor(process_chat: Callable, *, lock: Optional[threading.Lock] = None,
+                                _load_instruction: Optional[Callable] = None) -> Callable:
+    """Free-form turn executor: one process_chat call per turn (the full agent turn
+    with its own tool loop), sharing the executor's lock."""
+    lock = lock or threading.Lock()
+
+    def turn(engine, run, transcript, turn_num: int, budget_remaining, note: str = "",
+             cancel_event=None) -> dict:
+        messages = build_freeform_messages(engine, run, transcript, turn_num,
+                                           budget_remaining, note, _load_instruction)
+        with lock:
+            return process_chat(messages, session_id=f"run:{run['run_id']}", tools=None,
+                                cancel_event=cancel_event or threading.Event(),
+                                tool_grant=run_grant(run)) or {}
+    return turn
