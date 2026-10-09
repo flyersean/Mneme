@@ -387,7 +387,15 @@
 
   /* ── Mobile (chat-specific) ── */
   @media (max-width: 720px) {
-    #layout { flex-direction: column; }
+    /* Fixed chrome + inner scroll. chat.html has no <main>, so set the
+       flex/scroll chain explicitly here (theme.css targets <main>). The
+       100dvh override beats the desktop `html,body{height:100%}` above. */
+    html, body { height: 100%; }
+    body { height: 100dvh; overflow: hidden; }
+
+    #layout { flex-direction: column; min-height: 0; }
+    #main { min-height: 0; }
+    #chat { min-height: 0; }
 
     /* Commands sidebar becomes an off-canvas slide-over drawer. */
     #sidebar {
