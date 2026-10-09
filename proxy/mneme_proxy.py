@@ -6859,6 +6859,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _build_calls = 0  # native WRITE executions this turn (bounded by BUILD_MAX_ITERATIONS)
     _MAX_SERVER_ROUNDS = int(os.environ.get("MNEME_MAX_SERVER_ROUNDS", MAX_SERVER_ROUNDS))  # round ceiling — config caps.max_server_rounds overrides
     _REDUNDANCY_LIMIT = 4  # identical tool-call signature this many rounds in a row = stuck loop
+    _BLOCKED_LIMIT = 3     # out-of-scope / permission-denied results this turn before the scope nudge
     _native_names = mntools.native_exec_names(tools)  # {"bash","write"} when native
     _readonly_names = mntools.enabled_readonly_names()  # per-tool flags applied
     # Curation tools (flag_bad_memory / clear_bad_memory_flag / remove_memory) execute
@@ -6882,6 +6883,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _bash_resources = {}  # resource key -> set of distinct bash sigs (structural-grind signal)
     _script_nudged = False  # one-time "write a script" nudge sent
     _step_back_level = 0   # step-back ladder rung reached this turn (0 = none yet)
+    _blocked_count = 0     # out-of-scope / permission-denied results this turn (scope-loop signal)
+    _blocked_nudged = False  # one-time "stop hitting out-of-scope files" nudge sent
 
     def _bash_resource_key(command):
         """Coarse grouping key for a bash command: which resource is it touching?
@@ -7055,6 +7058,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     _mark_call(nm, args)
                     _t0 = time.time()
                     res = mntools.execute_native_tool(nm, args)
+                    if isinstance(res, str) and ("blocked" in res.lower() or "permission denied" in res.lower()):
+                        _blocked_count += 1
                     if _run_id:
                         _run_live.publish(_run_id, "tool_call", {
                             "tool": nm, "args": args, "result": res,
@@ -7137,6 +7142,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _nudged = True
             followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
             print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
+
+        # Scope-loop nudge: the model keeps hitting files it cannot access (out of
+        # scope / permission denied). The redundancy stop can't see this because the
+        # model varies the path each try and a `write` clears the signature set. A
+        # hard stop here would drop the turn; instead we tell it plainly to stop.
+        if _blocked_count >= _BLOCKED_LIMIT and not _blocked_nudged:
+            _blocked_nudged = True
+            followup.append({"role": "user", "content":
+                "You have hit files you cannot access several times (\"blocked\" / "
+                "\"permission denied\"). Those paths are outside your scope and will keep "
+                "failing no matter how many times you retry. Stop retrying them — work "
+                "entirely within your writable scope, or tell the user plainly what "
+                "access you need."})
+            print(f"  [BLOCKED-NUDGE] {_blocked_count} out-of-scope results — nudging", flush=True)
 
         # Compact tool-state summary (suggestion #2): show the model what it just
         # tried and the outcome, so it doesn't repeat a call that already failed.
