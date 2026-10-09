@@ -18,6 +18,7 @@ A bare string is shorthand for a command check.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -74,13 +75,31 @@ def _resolve(base: str, path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(base, path)
 
 
-def run_check(check: dict, output: str, base_dir: str, judge=None) -> Tuple[bool, str]:
+def _tool_evidence(tool_calls) -> str:
+    """Compact text summary of a step's tool trace for the verification judge."""
+    if not tool_calls:
+        return ""
+    lines = []
+    for tc in tool_calls:
+        tool = tc.get("tool") or "?"
+        args = tc.get("args") or {}
+        if isinstance(args, dict):
+            a = args.get("command") or args.get("path") or json.dumps(args)[:200]
+        else:
+            a = str(args)[:200]
+        res = (tc.get("result") or "")[:400]
+        status = tc.get("status") or ""
+        lines.append(f"[{tool}] {a}\n    -> {status}: {res}")
+    return "\n".join(lines)
+
+
+def run_check(check: dict, output: str, base_dir: str, judge=None, evidence: str = "") -> Tuple[bool, str]:
     kind = check["type"]
     try:
         if kind == "llm_judge":
             if judge is None:
                 return False, "no judge configured for llm_judge"
-            ok, why = judge(check["criteria"], output or "")
+            ok, why = judge(check["criteria"], output or "", evidence=evidence)
             return bool(ok), f"judge: {why}"[:_DETAIL]
         if kind == "command":
             p = subprocess.run(check["command"], shell=True, cwd=base_dir, capture_output=True,
@@ -120,9 +139,11 @@ def run_check(check: dict, output: str, base_dir: str, judge=None) -> Tuple[bool
 
 
 def run_checks(checks: List[dict], output: str, base_dir: Optional[str],
-               judge=None) -> Tuple[bool, List[dict]]:
-    """Deterministic checks run first; an llm_judge check only runs if they all pass
-    (a judge must never rescue work that failed an objective check)."""
+               judge=None, evidence: str = "", criteria: str = "") -> Tuple[bool, List[dict]]:
+    """Deterministic checks run first. An explicit llm_judge check confirms a pass.
+    When a deterministic check FAILS and a judge is available, the judge is run as an
+    APPEAL over the evidence — a false-negative check (e.g. ``output_contains`` on the
+    narration) must not turn a successful step into a spin-out."""
     base = base_dir or os.getcwd()
     os.makedirs(base, exist_ok=True)
     results = []
@@ -131,9 +152,20 @@ def run_checks(checks: List[dict], output: str, base_dir: Optional[str],
         if c["type"] == "llm_judge" and not all(r["passed"] for r in results):
             results.append({"check": c, "passed": False, "detail": "skipped: a deterministic check failed"})
             continue
-        ok, detail = run_check(c, output, base, judge)
+        ok, detail = run_check(c, output, base, judge, evidence)
         results.append({"check": c, "passed": ok, "detail": detail})
-    return all(r["passed"] for r in results), results
+    all_pass = all(r["passed"] for r in results)
+    # Appeal: only when a DETERMINISTIC check failed (an llm_judge failure is already
+    # a model verdict — appealing it with the same judge is pointless). The appeal
+    # gives the judge the full evidence so it can overturn a false negative.
+    det_failed = any(not r["passed"] and r["check"].get("type") != "llm_judge" for r in results)
+    if det_failed and judge is not None:
+        failed_summary = summarize_failures(results)
+        ok, why = judge(criteria, output or "", evidence=evidence, failed=failed_summary)
+        results.append({"check": {"type": "judge_appeal", "text": failed_summary[:200]},
+                        "passed": bool(ok), "detail": f"appeal: {why}"[:_DETAIL]})
+        all_pass = bool(ok)
+    return all_pass, results
 
 
 def summarize_failures(results: List[dict]) -> str:

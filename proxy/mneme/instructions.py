@@ -234,11 +234,13 @@ DEFAULT_INSTRUCTIONS = {
         "VERIFY: file_contains notes.txt :: 3.13"
     ),
     "harness_judge": (
-        "You are a strict verifier. Decide whether the WORK below meets the CRITERIA. "
-        "Judge only what is actually shown — a claim that something was done is not "
-        "evidence that it was done.\n\n"
-        "CRITERIA:\n{{criteria}}\n\n"
-        "WORK:\n{{output}}\n\n"
+        "You are a strict verifier. Decide whether the task below actually SUCCEEDED.\n"
+        "Judge the EVIDENCE (what the model actually did) against the expected outcome — "
+        "a claim that something was done is not evidence it was done.\n\n"
+        "EXPECTED OUTCOME:\n{{criteria}}\n\n"
+        "WHAT THE MODEL DID (tool trace):\n{{evidence}}\n\n"
+        "MODEL'S FINAL ANSWER:\n{{output}}\n\n"
+        "FAILED CHECK(S) TO RECONSIDER:\n{{failed}}\n\n"
         "Reply with PASS or FAIL on the first line, then one sentence explaining why."
     ),
     "harness_reflect": (

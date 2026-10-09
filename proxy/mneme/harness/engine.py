@@ -371,7 +371,8 @@ class RunEngine:
         if result.ok and result.done:
             checks = (task.get("meta") or {}).get("verify") or []
             if checks:
-                passed, detail = self._verify(run_id, task, step, result.output or "", checks)
+                passed, detail = self._verify(run_id, task, step, result.output or "", checks,
+                                              tool_calls=result.tool_calls)
                 result.meta = {**(result.meta or {}), "verification": detail}
                 if not passed:
                     result.ok = False
@@ -444,12 +445,16 @@ class RunEngine:
 
     # ── verification ─────────────────────────────────────────────────────
 
-    def _verify(self, run_id: str, task: dict, step: dict, output: str, checks: List[dict]):
+    def _verify(self, run_id: str, task: dict, step: dict, output: str, checks: List[dict],
+                tool_calls: Optional[List[dict]] = None):
         ws = self.workspace(run_id)
         base = ws.ensure().dir("workspace") if ws else None
         self.ledger.transition(run_id, "verifying", event="verification_started",
                                data={"task_id": task["task_id"], "checks": len(checks)})
-        passed, detail = _verify.run_checks(checks, output, base, judge=self.judge)
+        evidence = _verify._tool_evidence(tool_calls or [])
+        criteria = (task.get("instructions") or "").strip() or (task.get("title") or "")
+        passed, detail = _verify.run_checks(checks, output, base, judge=self.judge,
+                                            evidence=evidence, criteria=criteria)
         self.ledger.emit(run_id, "verification_passed" if passed else "verification_failed",
                          {"results": detail}, task_id=task["task_id"], step_id=step["step_id"])
         self.ledger.transition(run_id, "running", event="verification_finished",

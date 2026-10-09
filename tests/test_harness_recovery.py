@@ -41,17 +41,19 @@ class TestJudge(unittest.TestCase):
         d = tempfile.mkdtemp()
         calls = []
 
-        def judge(criteria, output):
+        def judge(criteria, output, evidence="", failed=""):
             calls.append(criteria)
             return ("good" in output), "looked at it"
         checks = V.normalize([{"type": "llm_judge", "criteria": "is it good"}, "true"])
         self.assertTrue(V.run_checks(checks, "good work", d, judge=judge)[0])
         self.assertFalse(V.run_checks(checks, "bad work", d, judge=judge)[0])
+        # deterministic command fails -> judge now runs as an APPEAL over the evidence
         bad = V.normalize([{"type": "llm_judge", "criteria": "c"}, "false"])
-        ok, res = V.run_checks(bad, "good", d, judge=judge)
-        self.assertFalse(ok)
-        self.assertEqual(len(calls), 2)                    # judge NOT consulted when a command failed
-        self.assertIn("skipped", res[-1]["detail"])
+        ok, res = V.run_checks(bad, "good", d, judge=judge, criteria="be good")
+        self.assertTrue(ok)                              # appeal judge overturns the failed command
+        self.assertIn("appeal", res[-1]["detail"])
+        self.assertEqual(len(calls), 3)                  # 2 llm_judge + 1 appeal
+        # no judge -> a failed deterministic check still fails
         self.assertFalse(V.run_checks(V.normalize([{"type": "llm_judge", "criteria": "c"}]), "x", d)[0])
 
 
@@ -79,7 +81,7 @@ class TestEngineRecovery(Case):
 
     def test_engine_judge(self):
         e = self.eng(lambda c: StepResult(output="summary: short"),
-                     judge=lambda crit, out: ("short" in out, "ok"))
+                     judge=lambda crit, out, evidence="", failed="": ("short" in out, "ok"))
         rid = e.create("g", [{"title": "t", "verify": [{"type": "llm_judge", "criteria": "is short"}]}])["run_id"]
         self.assertEqual(e.execute(rid)["status"], "completed")
         self.assertIn("verification_passed", self.types(rid))

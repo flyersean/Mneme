@@ -7747,10 +7747,16 @@ def _reset_memory():
 HARNESS = None
 
 
-def _harness_judge(criteria: str, output: str):
-    """llm_judge verify check: a short PASS/FAIL verdict from the configured model."""
-    prompt = _load_instruction("harness_judge", vars={"criteria": (criteria or "")[:1500],
-                                                     "output": (output or "")[:6000]})
+def _harness_judge(criteria: str, output: str, evidence: str = "", failed: str = ""):
+    """Verification judge: a fresh, context-free PASS/FAIL verdict from the main
+    model. Judges the EVIDENCE (tool trace) against the expected outcome — not the
+    model's narration — so a false-negative deterministic check can be overridden."""
+    prompt = _load_instruction("harness_judge", vars={
+        "criteria": (criteria or "")[:1500],
+        "output": (output or "")[:4000],
+        "evidence": (evidence or "(no tool trace recorded)")[:8000],
+        "failed": (failed or "")[:2000],
+    })
     r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
     text = (r.get("content") or "").strip()
     m = re.search(r"\b(PASS|FAIL)\b", text.upper())
