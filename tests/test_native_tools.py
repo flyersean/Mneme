@@ -38,10 +38,13 @@ class TestNativeToolPathConsistency(unittest.TestCase):
         self.assertTrue(os.path.exists(target))
 
     def test_bash_cwd_is_tools_dir(self):
-        with mock.patch.object(mntools.subprocess, "run") as run:
-            run.return_value = mock.Mock(stdout="", stderr="", returncode=0)
+        with mock.patch.object(mntools.subprocess, "Popen") as popen:
+            proc = mock.Mock()
+            proc.wait.return_value = None
+            proc.returncode = 0
+            popen.return_value = proc
             mntools.execute_native_tool("bash", {"command": "pwd"})
-            self.assertEqual(os.path.abspath(run.call_args.kwargs["cwd"]),
+            self.assertEqual(os.path.abspath(popen.call_args.kwargs["cwd"]),
                              os.path.abspath(self.tmp))
 
     def test_descriptions_mention_shared_tools_dir(self):

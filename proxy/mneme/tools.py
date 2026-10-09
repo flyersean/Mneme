@@ -19,6 +19,7 @@ import os
 import json
 import shutil
 import subprocess
+import time
 import re as _re
 from html import unescape as _unescape
 
@@ -638,10 +639,35 @@ def is_native_exec_name(name, client_tools):
 
 # ─── Native execution (server-side) ─────────────────────────────────────
 
+def _bash_log_path() -> str:
+    """Persistent log for every bash call. Background processes (servers started
+    with ``&``) inherit this fd and keep writing after the foreground exits, so
+    their stderr is never lost to a dead pipe. Lives in TOOLS_DIR (a --bind-mounted
+    writable root), NOT /tmp — bwrap re-mounts /tmp as a fresh tmpfs per call, so a
+    file the model writes to /tmp is invisible to its next command."""
+    return os.path.join(TOOLS_DIR, "bash_output.log")
+
+
+def _bash_log_tail(limit: int = 4000) -> str:
+    """Last `limit` chars of the bash output log (for injecting into a failure)."""
+    try:
+        with open(_bash_log_path(), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _exec_bash(command):
     """Run a shell command inside a bubblewrap sandbox: the filesystem is
     read-only except for the model's writable roots (TOOLS_DIR + MODEL_SCOPE).
-    Falls back to a plain subprocess when bwrap is unavailable."""
+    Falls back to a plain subprocess when bwrap is unavailable.
+
+    stdout+stderr are redirected to a persistent log file (not a pipe) so that
+    background processes — servers the model starts with `&` — keep writing to a
+    place the model can `cat` after this call returns (see ``_bash_log_path``)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
         os.makedirs(MODEL_SCOPE, exist_ok=True)
@@ -663,16 +689,31 @@ def _exec_bash(command):
                     "--chdir", TOOLS_DIR, "bash", "-c", command]
         else:
             cmd = ["bash", "-c", command]
-        p = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=BASH_TIMEOUT, cwd=TOOLS_DIR, env=env,
-        )
-        out = (p.stdout or "").rstrip()
-        if p.stderr:
-            out += ("\n[stderr] " + p.stderr.rstrip()) if out else ("[stderr] " + p.stderr.rstrip())
-        return f"[exit {p.returncode}]\n{out}" if out else f"[exit {p.returncode}] (no output)"
-    except subprocess.TimeoutExpired:
-        return f"[bash timeout after {BASH_TIMEOUT}s]"
+
+        log_path = _bash_log_path()
+        header = ("\n===== bash %s :: %s =====\n" % (time.strftime("%H:%M:%S"), command[:200])).encode("utf-8", "replace")
+        with open(log_path, "ab") as logf:
+            logf.write(header)
+            logf.flush()
+            start = logf.tell()
+            p = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
+                                 cwd=TOOLS_DIR, env=env)
+            try:
+                p.wait(timeout=BASH_TIMEOUT)
+                code = p.returncode
+            except subprocess.TimeoutExpired:
+                try:
+                    p.kill()
+                    p.wait()
+                except Exception:
+                    pass
+                code = -1
+        with open(log_path, "rb") as f:
+            f.seek(start)
+            out = f.read().decode("utf-8", errors="replace").rstrip()
+        if code == -1:
+            return f"[bash timeout after {BASH_TIMEOUT}s — full output in bash_output.log]"
+        return f"[exit {code}]\n{out}" if out else f"[exit {code}] (no output)"
     except Exception as e:
         return f"[bash error: {type(e).__name__}: {e}]"
 

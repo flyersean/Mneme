@@ -74,20 +74,26 @@ class TestScopeEnforcement(unittest.TestCase):
 
     def test_bash_uses_bwrap_when_available(self):
         with mock.patch.object(mntools.shutil, "which", return_value="/usr/bin/bwrap"), \
-             mock.patch.object(mntools.subprocess, "run") as run:
-            run.return_value = mock.Mock(stdout="", stderr="", returncode=0)
+             mock.patch.object(mntools.subprocess, "Popen") as popen:
+            proc = mock.Mock()
+            proc.wait.return_value = None
+            proc.returncode = 0
+            popen.return_value = proc
             mntools.execute_native_tool("bash", {"command": "pwd"})
-            cmd = run.call_args.args[0]
+            cmd = popen.call_args.args[0]
             self.assertEqual(cmd[0], "/usr/bin/bwrap")
             self.assertIn("--ro-bind", cmd)
             self.assertIn("--bind", cmd)
 
     def test_bash_falls_back_without_bwrap(self):
         with mock.patch.object(mntools.shutil, "which", return_value=None), \
-             mock.patch.object(mntools.subprocess, "run") as run:
-            run.return_value = mock.Mock(stdout="", stderr="", returncode=0)
+             mock.patch.object(mntools.subprocess, "Popen") as popen:
+            proc = mock.Mock()
+            proc.wait.return_value = None
+            proc.returncode = 0
+            popen.return_value = proc
             mntools.execute_native_tool("bash", {"command": "pwd"})
-            cmd = run.call_args.args[0]
+            cmd = popen.call_args.args[0]
             self.assertEqual(cmd[:2], ["bash", "-c"])
 
 

@@ -7849,6 +7849,7 @@ def _init_harness():
         HARNESS = RunEngine(_hledger, make_chat_executor(_scoped_process_chat, lock=_hlock),
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
+                            diagnostics=mntools._bash_log_tail,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
         from mneme.harness.jobs import JobStore, Scheduler

@@ -137,7 +137,7 @@ def merge_budget(budget: Optional[dict]) -> dict:
 
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
-                 capabilities=None, skills=None, judge=None, evolution=None, profiles=None,
+                 capabilities=None, skills=None, judge=None, diagnostics=None, evolution=None, profiles=None,
                  runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
@@ -147,6 +147,7 @@ class RunEngine:
         self.capabilities = capabilities     # CapabilityContext (Phase 4) — optional
         self.skills = skills                 # SkillRegistry (Phase 3) — optional
         self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
+        self.diagnostics = diagnostics       # () -> str; extra failure context (e.g. bash log tail)
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         self.evolution = evolution            # Evolution (Phase 6) — optional
         self.profiles = profiles              # ProfileStore (Phase 7) — optional
@@ -377,6 +378,13 @@ class RunEngine:
                 if not passed:
                     result.ok = False
                     result.error = "verification failed: " + _verify.summarize_failures(detail)
+                    if self.diagnostics:
+                        try:
+                            extra = self.diagnostics()
+                        except Exception:
+                            extra = ""
+                        if extra:
+                            result.error += "\n\nRecent bash output (incl. background processes):\n" + extra
 
         if (result.meta or {}).get("interrupted"):
             # Stopped mid-step by pause/cancel: not a success, not a failure. The task
