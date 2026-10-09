@@ -7331,10 +7331,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
 
 # ─── Model Spoofing (for Hermes compatibility) ──────────────────
 
-# Hermes requires models with >= 64001 context. We report a fake ID
-# that includes this suffix so Hermes accepts the model.
-FAKE_MODEL_ID = f"text-mneme:64k"
-FAKE_CONTEXT   = 65536
+# Hermes requires models with >= 64001 context. We report a fake ID whose
+# suffix tracks the real context budget — but clamped to a 64k floor, since
+# Hermes will refuse to load a model that reports less than ~64k.
+def _spoofed_ctx_label() -> str:
+    tokens = int(os.environ.get("MNEME_CTX_TOKENS", "65536"))
+    return "%dk" % (max(tokens, 65536) // 1024)
+
+FAKE_MODEL_ID = "text-mneme:" + _spoofed_ctx_label()
+FAKE_CONTEXT   = max(int(os.environ.get("MNEME_CTX_TOKENS", "65536")), 65536)
 
 # ─── Flask Proxy ───────────────────────────────────────────────
 
