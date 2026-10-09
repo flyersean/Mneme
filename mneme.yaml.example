@@ -95,7 +95,7 @@ providers:
 
 # Default generation settings. Per-model overrides under `models:` beat these.
 sampling:
-  temperature: 0.2      # randomness; 0.2 = fairly deterministic (less repetition)
+  temperature: 0.7      # randomness; 0.7 = good balance — too low (e.g. 0.2) risks repetition collapse
   top_p: 0.9            # nucleus sampling — cut off the improbable tail
   top_k: 64             # ollama only (ignored by the openai path)
   ctx_tokens: 65536     # context window size handed to the model — MUST match the model's num_ctx
