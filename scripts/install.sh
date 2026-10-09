@@ -135,8 +135,12 @@ else
 fi
 
 # Install from pip. --break-system-packages handles PEP 668 (Ubuntu 22.04+).
-# --ignore-installed bypasses any lingering pinned system packages.
-if python3 -m pip install --break-system-packages --ignore-installed flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright 2>/dev/null; then
+# NOTE: do NOT add --ignore-installed here — it breaks pip's cross-package
+# version resolution and produced a pydantic (2.13.x) / pydantic-core (2.46.x)
+# mismatch on fresh installs. The apt-get remove above already clears the
+# conflicting system packages (root case); non-root still shadows via the
+# user/site-packages precedence.
+if python3 -m pip install --break-system-packages flask flask-cors faiss-cpu numpy requests pyyaml ddgs mcp playwright patchright 2>/dev/null; then
   echo "  ✓ pip install OK"
 else
   echo "  pip (--break-system-packages) failed — retrying plain install..."
