@@ -33,7 +33,8 @@ class TestCommands(unittest.TestCase):
         self.eng = RunEngine(self.led, lambda c: StepResult(output="done it",
                              tool_calls=[{"tool": "bash", "status": "success"}]),
                              planner=planner, skills=self.skills, profiles=ProfileStore(self.led),
-                             evolution=Evolution(self.led), runs_root=os.path.join(tmp, "runs"), log=lambda m: None)
+                             evolution=Evolution(self.led), runs_root=os.path.join(tmp, "runs"), log=lambda m: None,
+                             freeform_turn=lambda *a, **k: {"content": "done it\nDONE", "tool_trace": []})
         self.h = lambda t: handle(t, self.eng)
 
     def test_not_commands(self):
@@ -43,7 +44,7 @@ class TestCommands(unittest.TestCase):
         self.assertIn("/approve", self.h("/help"))
 
     def test_run_lifecycle_via_commands(self):
-        out = self.h("/run write a haiku")
+        out = self.h("/run --plan write a haiku")
         self.assertIn("started run_", out)
         rid = self.led.list_runs(limit=1)[0]["run_id"]
         self.eng.wait(rid, 10)
@@ -56,6 +57,14 @@ class TestCommands(unittest.TestCase):
         self.assertEqual(self.h("/runs failed"), "no runs")
         self.assertIn("no such run", self.h("/status zzzz"))
         self.assertIn("nothing to pause", self.h(f"/pause {rid}"))
+
+    def test_run_defaults_to_freeform(self):
+        out = self.h("/run write a haiku")
+        self.assertIn("goal session", out)
+        rid = self.led.list_runs(limit=1)[0]["run_id"]
+        self.eng.wait(rid, 10)
+        self.assertTrue((self.led.get_run(rid).get("meta") or {}).get("free_form"))
+        self.assertIn("[completed]", self.h(f"/status {rid}"))
 
     def test_approval_and_replan_commands(self):
         rid = self.eng.create("g", [{"title": "risky", "requires_approval": True}])["run_id"]

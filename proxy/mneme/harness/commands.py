@@ -16,10 +16,12 @@ from typing import Callable, Dict, Optional
 from mneme.harness.ledger import InvalidTransition, LedgerError
 
 HELP = """Harness commands (typed by you, handled by Mneme — the model never sees them):
-  /run <goal>                 start a planned run            /runs [status]      list runs
-  /status [run]               run status (default: last)     /plan <run>         current plan
-  /tasks <run>                tasks + state                  /log <run> [n]      last n events
-  /files <run>                artifacts                      /metrics            harness metrics
+  /run <goal>                 start a goal session (free-form, model drives)
+  /run --plan <goal>          start a structured (planner/verify) run [legacy]
+  /runs [status]              list runs                     /status [run]  status (default: last)
+  /plan <run>                 current plan                  /tasks <run>   tasks + state
+  /log <run> [n]              last n events                 /files <run>   artifacts
+  /metrics                    harness metrics
   /pause|/resume|/cancel|/retry <run>
   /replan <run> [reason]      replan the remaining work
   /note <run> <text>          inject a note into the next step (steer w/o replan)
@@ -87,9 +89,14 @@ def handle(text: str, engine, extras: Optional[Dict[str, Callable]] = None, acto
             return HELP
         if word == "run":
             if not arg:
+                return "usage: /run <goal>  (or /run --plan <goal> for a structured plan)"
+            structured = arg.startswith("--plan")
+            goal = arg[len("--plan"):].strip() if structured else arg
+            if not goal:
                 return "usage: /run <goal>"
-            r = engine.create(arg, start=True, created_by=actor)
-            return f"started {r['run_id']} — /status {r['run_id'][-8:]}"
+            r = engine.create(goal, start=True, created_by=actor, free_form=not structured)
+            mode = "structured plan" if structured else "goal session"
+            return f"started {r['run_id']} ({mode}) — /status {r['run_id'][-8:]}"
         if word == "runs":
             runs = engine.ledger.list_runs(status=[arg] if arg else None, limit=20)
             return "\n".join(_run_line(r) for r in runs) or "no runs"
