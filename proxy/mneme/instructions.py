@@ -269,13 +269,14 @@ DEFAULT_INSTRUCTIONS = {
     ),
     "harness_freeform_plan": (
         "=== MNEME GOAL SESSION — PLANNING ===\n"
-        "You are about to work toward a goal. Before you start building or editing anything, "
-        "write a CONCISE PLAN: 4 to 7 numbered steps, one line each. Each step states what you "
-        "will do and how you will VERIFY it worked. You may read files to inform the plan, but "
-        "do NOT start editing, writing, or building yet.\n\n"
+        "You are about to work toward a goal. Before you start, write a CONCISE PLAN.\n\n"
+        "Output ONLY a numbered plan of 4 to 7 steps, one line per step. Each step states "
+        "what you will do and how you will VERIFY it worked.\n\n"
+        "Do NOT narrate, do NOT say \"let me look at X\", do NOT explore or use tools, and "
+        "do NOT write anything except the numbered plan itself.\n\n"
         "Goal: {{goal}}\n"
         "Workspace (use absolute paths): {{workspace}}\n\n"
-        "Write only the plan now — numbered steps, one line per step."
+        "The plan (numbered steps only):"
     ),
     "harness_reflect": (
         "A task run just ended. Look at what happened and extract what is worth keeping "

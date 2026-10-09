@@ -152,6 +152,13 @@ def _extract_plan_tasks(plan_text: str) -> List[str]:
     return tasks
 
 
+_DEFAULT_PLAN = (
+    "1. Read the relevant code and understand the current state.\n"
+    "2. Implement the change.\n"
+    "3. Verify it works (test it) and confirm the goal is met."
+)
+
+
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
                  freeform_turn: Optional[Callable] = None,
@@ -511,6 +518,12 @@ class RunEngine:
         finally:
             stop.set()
         tasks = _extract_plan_tasks(plan_text)
+        if not tasks:
+            # The model narrated ("let me look at X") instead of writing a plan. Fall
+            # back to a generic plan so the run keeps structure instead of carrying a
+            # useless narration as its "plan".
+            plan_text = _DEFAULT_PLAN
+            tasks = _extract_plan_tasks(plan_text)
         self.ledger.update_run(run_id, plan={"source": "self-plan", "version": 1,
                                              "raw": plan_text, "tasks": tasks})
         return plan_text
