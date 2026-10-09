@@ -123,9 +123,20 @@ Stop it with Ctrl-C, or the dashboard's "Shut down this proxy" button.
 | `/runs` | **Agent harness** — durable multi-step runs, events, skills, profiles, approvals. |
 | `/strategies` | **Strategy layer** — the self-improving memory's learned strategies. |
 | `/extensions` | **Extensions** — discover, configure, run and stop HTTP extensions. |
+| `/tokens` | **API tokens** — mint, list, and revoke API tokens for this account (agents and extensions). |
+| `/users` | **Accounts** (admin only) — add and remove accounts, reset passwords. |
 
 The UI ships with **light and dark themes** (and supports custom ones — a theme is one
 CSS file in `static/themes/`, listed by `GET /themes` and picked from the nav dropdown).
+
+## Mobile
+
+The UI is responsive: on screens up to ~720px wide the pages switch to a compact mobile
+layout — a pinned header + nav bar with the content scrolling in its own area, an
+off-canvas command sidebar on the chat page, collapsible filter/intro blocks, and larger
+touch targets. **This is new and still rough around the edges** — it's under active
+development, so the mobile layout will keep changing; the desktop layout remains the
+polished reference.
 
 ## Security — read this first
 
@@ -140,7 +151,7 @@ default — keep both that way.** Multi-user auth comes from one static
 gateway enforce. On first use, opening the proxy in a browser redirects to a
 **create-account** page (username + password, no email); after that you sign in at
 `/login`, and a signed session cookie keeps you authenticated. Scripts and agents
-authenticate with a user's token (`Authorization: Bearer <token>`, or `?token=<token>`);
+authenticate with a user's token (`Authorization: Bearer <token>` or `?token=<token>`);
 you can also add users from the CLI with `python3 proxy/mneme/auth.py adduser`. Until
 a user exists, the API is open. For remote access, use an SSH tunnel (`mneme_connect.py`
 does this), a VPN, or the gateway (`proxy/gateway.py`), which fronts every instance on
