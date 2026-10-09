@@ -50,3 +50,19 @@
     }).catch(function () {});
   });
 })();
+
+/* Collapsible intro/help blocks (see theme.css .intro / .intro-btn).
+ * Pages add <div class="intro" id="..."> around their header description and a
+ * button that calls toggleIntro(id). Expanded on desktop; collapsed by default
+ * on mobile so the header chrome stays compact. */
+window.toggleIntro = function (id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle("collapsed");
+};
+document.addEventListener("DOMContentLoaded", function () {
+  if (window.innerWidth <= 720) {
+    document.querySelectorAll(".intro").forEach(function (el) {
+      el.classList.add("collapsed");
+    });
+  }
+});

@@ -36,12 +36,15 @@ def _is_loopback(addr):
 
 _AUTH_STYLE = (
     "body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
-    "Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);display:flex;"
-    "align-items:center;justify-content:center;min-height:100vh;padding:16px;"
-    "box-sizing:border-box}"
+    "Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);box-sizing:border-box}"
+    "header{background:var(--panel);border-bottom:1px solid var(--line);"
+    "padding:16px 28px;display:flex;align-items:center;justify-content:space-between;gap:12px}"
+    "header h1{margin:0;font-size:20px;font-weight:650}"
+    "header a{color:var(--accent);font-size:13px;text-decoration:none}"
+    "header a:hover{text-decoration:underline}"
+    "main{max-width:860px;margin:0 auto;padding:24px 28px 80px;box-sizing:border-box}"
     ".card{background:var(--panel);border:1px solid var(--line);border-radius:12px;"
-    "padding:28px;width:min(560px,94vw);box-sizing:border-box}"
-    "h1{font-size:18px;margin:0 0 2px}"
+    "padding:28px;width:min(560px,94vw);box-sizing:border-box;margin:24px auto}"
     ".sub{color:var(--muted);font-size:13px;margin:0 0 18px}"
     "label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:12px 0 4px}"
     "input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:7px;"
@@ -64,20 +67,39 @@ _AUTH_STYLE = (
     ".tokbox{border:1px dashed var(--accent);border-radius:8px;padding:12px;margin:12px 0}"
     "form.inline{display:inline;margin:0}"
     "form.inline input{width:auto}"
-    ".nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}"
-    ".nav a{color:var(--accent);font-size:13px;text-decoration:none}"
     "h2{font-size:13px;margin:18px 0 8px;color:var(--muted);font-weight:600}"
     ".empty{color:var(--muted);font-size:13px;padding:8px 0}"
 )
 
+# Shared nav (matches the other pages) so the account pages feel like part of the
+# same site rather than an isolated modal.
+_SITE_NAV = ('<nav class="mneme-nav">'
+             '<a href="/">Dashboard</a>'
+             '<a href="/chat">Chat</a>'
+             '<a href="/memory">Memory</a>'
+             '<a href="/instructions">Instructions</a>'
+             '<a href="/templates">Templates</a>'
+             '<a href="/ollama">Ollama</a>'
+             '<a href="/runs/ui">Runs</a>'
+             '<a href="/strategies/ui">Strategies</a>'
+             '<a href="/extensions">Extensions</a>'
+             '</nav>')
 
-def _page(title, body):
+
+def _page(title, body, nav=False, signout=False):
     esc = html.escape
+    hdr = f'<header><h1>{esc(title)}</h1>'
+    if signout:
+        hdr += '<a href="/logout">Sign out</a>'
+    hdr += '</header>'
+    nav_html = _SITE_NAV if nav else ""
     return (f'<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<link rel="stylesheet" href="/static/theme.css"><style>{_AUTH_STYLE}</style>'
+            f'<link rel="stylesheet" href="/static/theme.css">'
+            f'<script src="/static/theme.js"></script>'
+            f'<style>{_AUTH_STYLE}</style>'
             f'<title>Mneme — {esc(title)}</title></head><body>'
-            f'<div class="card">{body}</div></body></html>')
+            f'{hdr}{nav_html}<main>{body}</main></body></html>')
 
 
 def register(app, get_auth, cors_response):
@@ -164,11 +186,11 @@ def register(app, get_auth, cors_response):
             password = request.form.get("password") or ""
             if get_auth().check_password(username, password):
                 return _set_session(redirect(nxt), username)
-            return _page("Sign in",
-                         f'<h1>Mneme</h1><p class="sub">Sign in</p>'
+            return _page("Mneme",
+                         f'<div class="card"><p class="sub">Sign in</p>'
                          f'{_login_form(nxt)}'
-                         f'<div class="err">Invalid username or password</div>')
-        return _page("Sign in", f'<h1>Mneme</h1><p class="sub">Sign in</p>{_login_form(nxt)}')
+                         f'<div class="err">Invalid username or password</div></div>')
+        return _page("Mneme", f'<div class="card"><p class="sub">Sign in</p>{_login_form(nxt)}</div>')
 
     @app.route("/logout")
     def logout():
@@ -204,24 +226,24 @@ def register(app, get_auth, cors_response):
             password = request.form.get("password") or ""
             confirm = request.form.get("confirm") or ""
             if not username or not password:
-                return _page("Create your account",
-                             f'<h1>Mneme</h1><p class="sub">Create your account</p>'
+                return _page("Mneme",
+                             f'<div class="card"><p class="sub">Create your account</p>'
                              f'{_create_form()}'
-                             f'<div class="err">Username and password are required</div>')
+                             f'<div class="err">Username and password are required</div></div>')
             if password != confirm:
-                return _page("Create your account",
-                             f'<h1>Mneme</h1><p class="sub">Create your account</p>'
+                return _page("Mneme",
+                             f'<div class="card"><p class="sub">Create your account</p>'
                              f'{_create_form()}'
-                             f'<div class="err">Passwords don\'t match</div>')
+                             f'<div class="err">Passwords don\'t match</div></div>')
             if len(password) < 6:
-                return _page("Create your account",
-                             f'<h1>Mneme</h1><p class="sub">Create your account</p>'
+                return _page("Mneme",
+                             f'<div class="card"><p class="sub">Create your account</p>'
                              f'{_create_form()}'
-                             f'<div class="err">Password must be at least 6 characters</div>')
+                             f'<div class="err">Password must be at least 6 characters</div></div>')
             add_user(get_auth().users_file, username, password, admin=True)
             return _set_session(redirect("/"), username)
-        return _page("Create your account",
-                     f'<h1>Mneme</h1><p class="sub">Create your account</p>{_create_form()}')
+        return _page("Mneme",
+                     f'<div class="card"><p class="sub">Create your account</p>{_create_form()}</div>')
 
     # ── tokens page (every signed-in user) ───────────────────────────────────
     @app.route("/tokens", methods=["GET", "POST"])
@@ -257,7 +279,6 @@ def register(app, get_auth, cors_response):
                 f'<button type="submit" class="danger inline">Revoke</button></form></div>'
             )
         body = (
-            f'<div class="nav"><h1>Tokens</h1><a href="/">back</a></div>'
             f'<p class="sub">API tokens authenticate agents and extensions against this '
             f'Mneme. Send one as <code>Authorization: Bearer &lt;token&gt;</code>.</p>'
         )
@@ -270,7 +291,7 @@ def register(app, get_auth, cors_response):
                  f'<label>Label (what is this for?)</label>'
                  f'<input name="label" placeholder="e.g. telegram-gateway">'
                  f'<button type="submit">Generate token</button></form>')
-        return _page("Tokens", body)
+        return _page("Tokens", body, nav=True, signout=True)
 
     # ── users page (admin only) ──────────────────────────────────────────────
     @app.route("/users", methods=["GET", "POST"])
@@ -324,8 +345,7 @@ def register(app, get_auth, cors_response):
                 f'<input type="hidden" name="username" value="{esc(u["username"])}">'
                 f'<button type="submit" class="danger inline">Remove</button></form></div>'
             )
-        body = f'<div class="nav"><h1>Users</h1><a href="/">back</a></div>'
-        body += f'<p class="sub">This admin account can create and revoke other accounts.</p>'
+        body = f'<p class="sub">This admin account can create and revoke other accounts.</p>'
         if message:
             body += f'<div class="tokbox">{message}</div>'
         body += f'<h2>Accounts</h2>{"".join(rows)}'
@@ -339,7 +359,7 @@ def register(app, get_auth, cors_response):
                  f'<label>Username</label><input name="username" autocomplete="off">'
                  f'<label>New password</label><input type="password" name="password">'
                  f'<button type="submit">Reset password</button></form>')
-        return _page("Users", body)
+        return _page("Users", body, nav=True, signout=True)
 
     # ── extensions: mint a token for a dedicated 'gateway' user ──────────────
     @app.route("/extensions/generate-token", methods=["POST"])

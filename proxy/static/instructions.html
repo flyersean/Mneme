@@ -77,8 +77,10 @@
 </head>
 <body>
 <header>
-  <h1>Mneme — Injected Instructions</h1>
-  <p>Every prompt Mneme injects into the model, in the order they fire during a conversation. Edit a box and click <b>Save</b> to change that prompt — it writes straight back to its file (the <code># when / vars / used_by</code> header is metadata, not part of the prompt). Delete a file to revert to the built-in default.</p>
+  <h1>Mneme — Injected Instructions <button class="intro-btn" type="button" onclick="toggleIntro('instructions-intro')" title="Help" aria-label="Toggle help">?</button></h1>
+  <div class="intro" id="instructions-intro">
+    <p>Every prompt Mneme injects into the model, in the order they fire during a conversation. Edit a box and click <b>Save</b> to change that prompt — it writes straight back to its file (the <code># when / vars / used_by</code> header is metadata, not part of the prompt). Delete a file to revert to the built-in default.</p>
+  </div>
 </header>
 <nav class="mneme-nav">
   <a href="/">Dashboard</a>

@@ -381,19 +381,47 @@
   #pending-chip .pc-x { cursor: pointer; font-weight: 700; color: var(--muted); border: none; background: none; padding: 0 2px; }
   #pending-chip .pc-x:hover { color: var(--red); }
 
+  /* Off-canvas drawer toggle (hidden on desktop; shown on mobile). */
+  #sb-open { display: none; }
+  #sb-backdrop { display: none; }
+
   /* ── Mobile (chat-specific) ── */
   @media (max-width: 720px) {
     #layout { flex-direction: column; }
+
+    /* Commands sidebar becomes an off-canvas slide-over drawer. */
     #sidebar {
-      width: 100% !important;
-      max-height: 38vh;
-      border-right: none;
-      border-bottom: 1px solid var(--border);
-      order: -1;
+      position: fixed;
+      top: 0; bottom: 0; left: 0;
+      width: min(320px, 85vw) !important;
+      max-height: none;
+      border-right: 1px solid var(--border);
+      border-bottom: none;
+      order: 0;
+      z-index: 60;
+      transform: translateX(-100%);
+      transition: transform .2s ease;
+      box-shadow: 0 0 24px rgba(0,0,0,.2);
     }
+    body.sb-open #sidebar { transform: translateX(0); }
     #sb-resize { display: none; }
+
+    /* Hamburger toggle + dimmed backdrop. */
+    #sb-open { display: inline-flex; }
+    #sb-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(15,23,42,.4);
+      z-index: 59;
+    }
+    body.sb-open #sb-backdrop { display: block; }
+
+    /* Compact header: single scrollable row, keep dots + model + title. */
+    header { padding: 10px 12px; gap: 8px; flex-wrap: nowrap; overflow-x: auto; }
+    header .model { display: none; }
+    header .btn-label { display: none; }
+    header #harness-btn { display: none; }
+
     .inner, .composer { max-width: 100%; }
-    header { padding: 10px 14px; }
     footer { padding: 10px 14px; }
   }
 </style>
@@ -495,6 +523,7 @@ header .model:hover { color: var(--accent); }
 <body>
 
 <header>
+  <button id="sb-open" title="Open commands sidebar" aria-label="Open commands sidebar">☰</button>
   <div class="title">Mneme</div>
   <div class="model" id="model-label">connecting…</div>
   <button id="model-btn" title="Select a different model"><span class="status-dot" id="chat-dot" title="chat provider status"></span> Select model ▾</button>
@@ -544,6 +573,8 @@ header .model:hover { color: var(--accent); }
   <div id="harness-cmds"></div>
   <div class="harness-foot"><a href="/runs/ui">Open Runs page →</a></div>
 </div>
+
+<div id="sb-backdrop" title="Close sidebar"></div>
 
 <div id="layout">
   <aside id="sidebar">
@@ -1212,6 +1243,12 @@ try {
     sbToggle.textContent = "»";
   }
 } catch (e) {}
+
+// ── mobile slide-over sidebar (off-canvas drawer) ──
+const sbOpen = document.getElementById("sb-open");
+const sbBackdrop = document.getElementById("sb-backdrop");
+if (sbOpen) sbOpen.addEventListener("click", () => document.body.classList.add("sb-open"));
+if (sbBackdrop) sbBackdrop.addEventListener("click", () => document.body.classList.remove("sb-open"));
 
 // ── sidebar resize handle ────────────────────────────────────────
 const sbResize = document.getElementById("sb-resize");

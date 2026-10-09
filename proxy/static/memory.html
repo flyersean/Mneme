@@ -41,6 +41,14 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px; margin-bottom: 16px;
   }
+  /* Collapsible filter set: a compact always-visible bar (keyword + search +
+     toggle) and an expandable body holding the full option set. */
+  .filters-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filters-bar .f.grow { flex: 1 1 auto; }
+  .filters-bar .f.grow input { min-width: 0; width: 100%; }
+  .filters-toggle { white-space: nowrap; }
+  .filters-extra { margin-top: 10px; }
+  .filters-extra.collapsed { display: none; }
   .frow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
   .f { display: flex; flex-direction: column; gap: 4px; }
   .f label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
@@ -151,27 +159,35 @@
   .kv dd { margin: 0; word-break: break-word; }
   .sect { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 18px 0 8px; }
   .lineage-row { border-left: 3px solid var(--accent); padding: 5px 0 5px 10px; margin-bottom: 6px; font-size: 13px; }
+
+  /* Mobile: keep the search bar pinned at the top of the scrolling results. */
+  @media (max-width: 720px) {
+    .filters { position: sticky; top: 0; z-index: 5; }
+    .filters-bar { gap: 6px; }
+  }
 </style>
 <style>
 </style>
 </head>
 <body>
 <header>
-  <h1>Memory Management</h1>
-  <p>
-    Review stored chunks and set the <b>injectable</b> / <b>removed</b> flag.
-    Removing a chunk does <b>not</b> delete it — the content stays and stays readable here.
-    It only changes what Mneme uses: removed chunks are skipped by injection and by the
-    model's memory search. Reversible at any time.
-  </p>
-  <div class="keyrow">
-    <span><b>Bad chunk</b> — a marker, not a decision. It flags a chunk as suspected-wrong
-    and changes nothing about what Mneme uses. Click it to toggle.</span>
-  </div>
-  <div class="keyrow">
-    <span><span class="swatch dash"></span>not flagged</span>
-    <span><span class="swatch amber"></span>flagged <b>by the model</b> — worth evaluating</span>
-    <span><span class="swatch red"></span>flagged <b>by you</b> — you already made the call</span>
+  <h1>Memory Management <button class="intro-btn" type="button" onclick="toggleIntro('memory-intro')" title="Help" aria-label="Toggle help">?</button></h1>
+  <div class="intro" id="memory-intro">
+    <p>
+      Review stored chunks and set the <b>injectable</b> / <b>removed</b> flag.
+      Removing a chunk does <b>not</b> delete it — the content stays and stays readable here.
+      It only changes what Mneme uses: removed chunks are skipped by injection and by the
+      model's memory search. Reversible at any time.
+    </p>
+    <div class="keyrow">
+      <span><b>Bad chunk</b> — a marker, not a decision. It flags a chunk as suspected-wrong
+      and changes nothing about what Mneme uses. Click it to toggle.</span>
+    </div>
+    <div class="keyrow">
+      <span><span class="swatch dash"></span>not flagged</span>
+      <span><span class="swatch amber"></span>flagged <b>by the model</b> — worth evaluating</span>
+      <span><span class="swatch red"></span>flagged <b>by you</b> — you already made the call</span>
+    </div>
   </div>
 </header>
 <nav class="mneme-nav">
@@ -195,61 +211,63 @@
   <div class="err" id="err"></div>
 
   <div class="filters">
-    <div class="frow">
+    <div class="filters-bar">
       <div class="f grow">
-        <label for="keyword">Keyword (content or topic)</label>
-        <input id="keyword" placeholder="e.g. price, pizza, model name" autocomplete="off">
+        <input id="keyword" placeholder="Search memory (content or topic)…" autocomplete="off">
       </div>
-      <div class="f">
-        <label for="removed">Removed state</label>
-        <select id="removed">
-          <option value="">All chunks</option>
-          <option value="injectable">Injectable only</option>
-          <option value="removed">Removed only</option>
-        </select>
-      </div>
-      <div class="f">
-        <label for="source">Source</label>
-        <select id="source"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="model">Model</label>
-        <select id="model"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="grade">Grade</label>
-        <select id="grade"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="trust">Trust</label>
-        <select id="trust"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="since">Saved on/after</label>
-        <input id="since" type="date">
-      </div>
-      <div class="f">
-        <label for="until">Saved on/before</label>
-        <input id="until" type="date">
-      </div>
-      <div class="f">
-        <label for="order">Sort</label>
-        <select id="order">
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-        </select>
-      </div>
-      <div class="f">
-        <button class="primary" id="apply">Search</button>
-      </div>
-      <div class="f">
-        <button id="clear">Clear</button>
-      </div>
+      <button class="primary" id="apply">Search</button>
+      <button type="button" class="filters-toggle" id="ftoggle" onclick="toggleFilters()">Filters ▾</button>
     </div>
-    <div class="checks">
-      <label><input type="checkbox" id="proposed"> Flagged as bad chunk</label>
-      <label><input type="checkbox" id="self_confirm"> Self-confirming (echoes its own output)</label>
-      <label><input type="checkbox" id="uncorroborated"> Never corroborated</label>
+    <div class="filters-extra" id="fextra">
+      <div class="frow">
+        <div class="f">
+          <label for="removed">Removed state</label>
+          <select id="removed">
+            <option value="">All chunks</option>
+            <option value="injectable">Injectable only</option>
+            <option value="removed">Removed only</option>
+          </select>
+        </div>
+        <div class="f">
+          <label for="source">Source</label>
+          <select id="source"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="model">Model</label>
+          <select id="model"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="grade">Grade</label>
+          <select id="grade"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="trust">Trust</label>
+          <select id="trust"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="since">Saved on/after</label>
+          <input id="since" type="date">
+        </div>
+        <div class="f">
+          <label for="until">Saved on/before</label>
+          <input id="until" type="date">
+        </div>
+        <div class="f">
+          <label for="order">Sort</label>
+          <select id="order">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </div>
+        <div class="f">
+          <button id="clear">Clear</button>
+        </div>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="proposed"> Flagged as bad chunk</label>
+        <label><input type="checkbox" id="self_confirm"> Self-confirming (echoes its own output)</label>
+        <label><input type="checkbox" id="uncorroborated"> Never corroborated</label>
+      </div>
     </div>
   </div>
 
@@ -607,6 +625,17 @@ $("dflag").addEventListener("click", async () => {
   await flag([f.dataset.id], f.dataset.to === "removed");
   closeDrawer();
 });
+
+// ── collapsible filters (collapsed on mobile, expanded on desktop) ──
+function toggleFilters() {
+  const extra = $("fextra");
+  extra.classList.toggle("collapsed");
+  $("ftoggle").textContent = extra.classList.contains("collapsed") ? "Filters ▸" : "Filters ▾";
+}
+if (window.innerWidth <= 720) {
+  $("fextra").classList.add("collapsed");
+  $("ftoggle").textContent = "Filters ▸";
+}
 
 loadSources().then(search);
 </script>

@@ -37,6 +37,13 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px; margin-bottom: 16px;
   }
+  /* Collapsible filter set: compact bar (keyword + toggle) + expandable body. */
+  .filters-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filters-bar .f.grow { flex: 1 1 auto; }
+  .filters-bar .f.grow input { min-width: 0; width: 100%; }
+  .filters-toggle { white-space: nowrap; }
+  .filters-extra { margin-top: 10px; }
+  .filters-extra.collapsed { display: none; }
   .frow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
   .f { display: flex; flex-direction: column; gap: 4px; }
   .f label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
@@ -131,19 +138,27 @@
     border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
     font-size: 13px; background: var(--panel); color: var(--text); min-width: 130px; font-family: inherit;
   }
+
+  /* Mobile: keep the search bar pinned at the top of the scrolling results. */
+  @media (max-width: 720px) {
+    .filters { position: sticky; top: 0; z-index: 5; }
+    .filters-bar { gap: 6px; }
+  }
 </style>
 <style>
 </style>
 </head>
 <body>
 <header>
-  <h1>Strategies</h1>
-  <p>
-    Problem-solving playbooks, keyed by problem type. They inject on matching turns (and on
-    failed harness steps), never into unrelated problems. <b>Shipped</b> strategies live in
-    <code id="shippedPath">strategies.yaml</code>; <b>user</b> strategies (promoted via "Ship")
-    in <code id="userPath">strategies.user.yaml</code> — both survive a DB reset.
-  </p>
+  <h1>Strategies <button class="intro-btn" type="button" onclick="toggleIntro('strategies-intro')" title="Help" aria-label="Toggle help">?</button></h1>
+  <div class="intro" id="strategies-intro">
+    <p>
+      Problem-solving playbooks, keyed by problem type. They inject on matching turns (and on
+      failed harness steps), never into unrelated problems. <b>Shipped</b> strategies live in
+      <code id="shippedPath">strategies.yaml</code>; <b>user</b> strategies (promoted via "Ship")
+      in <code id="userPath">strategies.user.yaml</code> — both survive a DB reset.
+    </p>
+  </div>
 </header>
 <nav class="mneme-nav">
   <a href="/">Dashboard</a>
@@ -165,45 +180,49 @@
   <div class="err" id="err"></div>
 
   <div class="filters">
-    <div class="frow">
+    <div class="filters-bar">
       <div class="f grow">
-        <label for="keyword">Keyword (playbook or type)</label>
-        <input id="keyword" placeholder="e.g. price, verify, live_data" autocomplete="off">
+        <input id="keyword" placeholder="Search strategies (playbook or type)…" autocomplete="off">
       </div>
-      <div class="f">
-        <label for="ptype">Problem type</label>
-        <select id="ptype"><option value="">All types</option></select>
+      <button type="button" class="filters-toggle" id="ftoggle" onclick="toggleFilters()">Filters ▾</button>
+    </div>
+    <div class="filters-extra" id="fextra">
+      <div class="frow">
+        <div class="f">
+          <label for="ptype">Problem type</label>
+          <select id="ptype"><option value="">All types</option></select>
+        </div>
+        <div class="f">
+          <label for="src">Source</label>
+          <select id="src"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="grade">Grade</label>
+          <select id="grade"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="retired">Retired state</label>
+          <select id="retired">
+            <option value="">All strategies</option>
+            <option value="active">Active only</option>
+            <option value="retired">Retired only</option>
+          </select>
+        </div>
+        <div class="f">
+          <label for="order">Sort</label>
+          <select id="order">
+            <option value="uses">Most used</option>
+            <option value="success">Most successful</option>
+            <option value="rate">Best success rate</option>
+            <option value="type">By problem type</option>
+            <option value="grade">By grade</option>
+          </select>
+        </div>
+        <div class="f"><button id="clear">Clear</button></div>
+        <div class="f"><button id="exportAll" title="Download all strategies as JSON">⭳ Export all</button></div>
+        <div class="f"><button id="importBtn" title="Import strategies from a previously exported JSON file">⭱ Import…</button></div>
+        <input type="file" id="importFile" accept=".json,application/json" style="display:none">
       </div>
-      <div class="f">
-        <label for="src">Source</label>
-        <select id="src"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="grade">Grade</label>
-        <select id="grade"><option value="">Any</option></select>
-      </div>
-      <div class="f">
-        <label for="retired">Retired state</label>
-        <select id="retired">
-          <option value="">All strategies</option>
-          <option value="active">Active only</option>
-          <option value="retired">Retired only</option>
-        </select>
-      </div>
-      <div class="f">
-        <label for="order">Sort</label>
-        <select id="order">
-          <option value="uses">Most used</option>
-          <option value="success">Most successful</option>
-          <option value="rate">Best success rate</option>
-          <option value="type">By problem type</option>
-          <option value="grade">By grade</option>
-        </select>
-      </div>
-      <div class="f"><button id="clear">Clear</button></div>
-      <div class="f"><button id="exportAll" title="Download all strategies as JSON">⭳ Export all</button></div>
-      <div class="f"><button id="importBtn" title="Import strategies from a previously exported JSON file">⭱ Import…</button></div>
-      <input type="file" id="importFile" accept=".json,application/json" style="display:none">
     </div>
   </div>
 
@@ -546,6 +565,17 @@ $("dexport").addEventListener("click", exportOne);
 $("dretire").addEventListener("click", retireCurrent);
 $("ddelete").addEventListener("click", deleteCurrent);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+// ── collapsible filters (collapsed on mobile, expanded on desktop) ──
+function toggleFilters() {
+  const extra = $("fextra");
+  extra.classList.toggle("collapsed");
+  $("ftoggle").textContent = extra.classList.contains("collapsed") ? "Filters ▸" : "Filters ▾";
+}
+if (window.innerWidth <= 720) {
+  $("fextra").classList.add("collapsed");
+  $("ftoggle").textContent = "Filters ▸";
+}
 
 load();
 </script>

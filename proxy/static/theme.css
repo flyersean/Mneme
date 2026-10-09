@@ -49,21 +49,78 @@ html { zoom: 1.25; }
 .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
 .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 
+/* Collapsible intro/help text — pages wrap their header description in
+ * <div class="intro" id="..."> and add a toggle button that calls
+ * theme.js's toggleIntro(id). Expanded by default on desktop; theme.js
+ * collapses it by default on mobile. */
+.intro { display: block; }
+.intro.collapsed { display: none; }
+.intro-btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  border-radius: 50%;
+  width: 22px; height: 22px;
+  line-height: 1;
+  font-size: 13px;
+  cursor: pointer;
+  vertical-align: middle;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+.intro-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ── Mobile layout (shared standard) ────────────────────────────────
  * Breakpoint: 720px. Every page gets the generic rules below for free.
+ * Fixed top chrome + inner-scroll content: <body> is a full-height flex
+ * column, header + nav stay pinned, <main> is the single scroll region.
  * Page-specific mobile tweaks live in that page's own <style> under the
  * same @media (max-width: 720px) block (e.g. chat's sidebar overlay). */
 @media (max-width: 720px) {
   /* Undo the desktop 125% zoom — phones scale via the viewport meta tag. */
   html { zoom: 1; }
 
+  /* Fixed chrome + inner scroll (100dvh tracks the mobile address bar). */
+  html, body { height: 100%; }
+  body {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    margin: 0;
+  }
+  header { flex: none; }
+  .mneme-nav { flex: none; }
+  main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
   /* Compact page chrome. Pages use different padding values, so override. */
   header, main { padding-left: 14px !important; padding-right: 14px !important; }
   header { padding-top: 12px !important; padding-bottom: 12px !important; }
 
-  /* Nav: tighter gaps, bigger tap targets. */
-  .mneme-nav { padding: 6px 10px; gap: 4px; }
-  .mneme-nav a { padding: 8px 10px; }
+  /* Nav: single horizontally-scrollable row, hidden scrollbar, ≥44px targets. */
+  .mneme-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 6px 10px;
+    gap: 4px;
+  }
+  .mneme-nav::-webkit-scrollbar { display: none; }
+  .mneme-nav { scrollbar-width: none; }
+  .mneme-nav a {
+    flex: none;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
 
   /* Inputs at 16px prevent iOS Safari's zoom-on-focus. */
   input, select, textarea { font-size: 16px; }
