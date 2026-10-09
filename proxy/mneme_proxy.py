@@ -63,6 +63,7 @@ from mneme.overcome import (
     BUILD_MAX_ITERATIONS,
     BUILD_MAX_TOOL_CALLS,
     MAX_SERVER_ROUNDS,
+    TOOL_ROUND_NUDGE,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -153,6 +154,8 @@ _CONFIG_ENV_MAP = {
     "sampling.temperature": "MNEME_TEMPERATURE",
     "sampling.top_p": "MNEME_TOP_P",
     "sampling.top_k": "MNEME_TOP_K",
+    "sampling.frequency_penalty": "MNEME_FREQUENCY_PENALTY",
+    "sampling.presence_penalty": "MNEME_PRESENCE_PENALTY",
     "sampling.ctx_tokens": "MNEME_CTX_TOKENS",
     "sampling.completion_reserve": "MNEME_COMPLETION_RESERVE",
     "sampling.max_tokens": "MNEME_MAX_TOKENS",
@@ -531,6 +534,8 @@ _SAMPLING_ENV_MAP = {
     "temperature": "MNEME_TEMPERATURE",
     "top_p": "MNEME_TOP_P",
     "top_k": "MNEME_TOP_K",
+    "frequency_penalty": "MNEME_FREQUENCY_PENALTY",
+    "presence_penalty": "MNEME_PRESENCE_PENALTY",
     "ctx_tokens": "MNEME_CTX_TOKENS",
     "completion_reserve": "MNEME_COMPLETION_RESERVE",
     "max_tokens": "MNEME_MAX_TOKENS",
@@ -2831,6 +2836,11 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "messages": msgs,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
+        # Anti-repetition (OpenAI-style). Previously only the Ollama path mapped
+        # repeat/presence penalties; the OpenRouter path sent neither, so a model
+        # at low temperature could degenerate into repeating one sentence.
+        "frequency_penalty": opts.get("frequency_penalty"),
+        "presence_penalty": opts.get("presence_penalty"),
     }
     # Reasoning is OFF by default — a reasoning model (e.g. Qwen3.6) can
     # runaway-think on a trivial ask. Opt back in with either:
@@ -3273,6 +3283,11 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "top_k": int(os.environ.get("MNEME_TOP_K", "64")),
         "num_predict": _num_predict,
         "num_ctx": _num_ctx,
+        # Anti-repetition defaults. Degenerate repetition ("the same sentence
+        # x50") is a real failure mode at low temperature; frequency_penalty is
+        # the standard defense (penalizes tokens by how often they've appeared).
+        "frequency_penalty": float(os.environ.get("MNEME_FREQUENCY_PENALTY", "0.5")),
+        "presence_penalty": float(os.environ.get("MNEME_PRESENCE_PENALTY", "0.3")),
     }
     # Per-model sampling overrides. A reasoning model's non-thinking mode often
     # wants a DIFFERENT recipe than the global default (Qwen3.8 non-thinking:
@@ -3284,7 +3299,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     # repetition loop is never discouraged (observed: a model degenerating into
     # "or way or way ..." for 65k tokens). Accept both spellings in config and
     # always send the name Ollama actually honors.
-    for _k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty"):
+    for _k in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "frequency_penalty"):
         if _model_cfg.get(_k) is not None:
             opts[_k] = float(_model_cfg[_k])
     for _alias in ("repeat_penalty", "repetition_penalty"):
@@ -7114,11 +7129,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 print(f"  [MCP] {nm} -> {res[:90]!r}", flush=True)
                 followup.append({"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"})
 
-        # (Mid-loop interruption machinery removed: write-script nudge, redundancy
-        # hard-stop, step-back ladder, and wrap-up nudge. These injected coaching
-        # messages interrupted the model's natural tool use and were misfiring. The
-        # loop now simply runs the model's tool calls until it produces a final
-        # answer or hits the MAX_SERVER_ROUNDS cap.)
+        # Wrap-up nudge: after TOOL_ROUND_NUDGE successful tool rounds without a
+        # final answer, nudge the model (once) to synthesize. This catches the
+        # grinding pattern — many DIFFERENT small tool calls with no narration —
+        # which the identical-call redundancy stop above cannot see.
+        if not _nudged and _tool_rounds >= TOOL_ROUND_NUDGE:
+            _nudged = True
+            followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
+            print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
 
         # Compact tool-state summary (suggestion #2): show the model what it just
         # tried and the outcome, so it doesn't repeat a call that already failed.

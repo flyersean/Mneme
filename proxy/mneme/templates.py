@@ -54,7 +54,7 @@ ALLOWED_TIMEOUT_KEYS = {
 # key would be a silent no-op.
 ALLOWED_MODEL_KEYS = {
     "temperature", "top_p", "top_k", "min_p", "presence_penalty",
-    "repetition_penalty", "repeat_penalty", "num_ctx", "num_predict",
+    "frequency_penalty", "repetition_penalty", "repeat_penalty", "num_ctx", "num_predict",
     "reasoning", "reasoning_effort",
 }
 # The optional modelfile block — an Ollama-side chat-template recipe. Only
