@@ -316,6 +316,8 @@ def build_freeform_messages(engine, run, transcript, turn: int, budget_remaining
             if len(content) > 700:
                 content = content[:700] + " …"
             lines.append(f"Turn {t['turn']}: {content}")
+            if t.get("tool_summary"):
+                lines.append(f"  (you ran: {t['tool_summary']})")
             if t.get("judge_feedback"):
                 lines.append(f"  (verifier: {t['judge_feedback'][:400]})")
         transcript_text = "Progress so far:\n" + "\n".join(lines) + "\n\n"

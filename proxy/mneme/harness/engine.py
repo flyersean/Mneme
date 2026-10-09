@@ -381,6 +381,7 @@ class RunEngine:
                                  data={"reason": "max_turns"})
 
             transcript = [{"turn": i + 1, "content": s.get("output") or "",
+                           "tool_summary": (s.get("meta") or {}).get("tool_summary") or "",
                            "judge_feedback": (s.get("meta") or {}).get("judge_feedback") or ""}
                           for i, s in enumerate(prior)]
 
@@ -433,7 +434,8 @@ class RunEngine:
             self.ledger.update_run(run_id, usage=usage)
 
             done = self._freeform_done(content)
-            meta = {"turn": turn, "done": bool(done)}
+            meta = {"turn": turn, "done": bool(done),
+                    "tool_summary": self._tool_summary(tool_trace)}
             if done and self.judge is not None:
                 ok, why = self._freeform_judge(run, content, tool_trace)
                 meta["judge_ok"] = bool(ok)
@@ -460,6 +462,20 @@ class RunEngine:
             return False
         last = lines[-1].lower().rstrip(".! ")
         return last in ("done", "complete", "finished", "goal complete", "goal achieved")
+
+    def _tool_summary(self, tool_trace: List[dict], max_chars: int = 700) -> str:
+        """Compact record of what a turn actually DID (tools + commands), so the next
+        turn can see the work even when the model's narration left it out."""
+        parts = []
+        for tc in (tool_trace or [])[-12:]:
+            tool = tc.get("tool") or "?"
+            args = tc.get("args") or {}
+            a = args.get("command") if isinstance(args, dict) else ""
+            if not a and isinstance(args, dict):
+                a = args.get("path") or ""
+            a = " ".join(str(a or "").split())[:100]
+            parts.append(f"{tool}({a})" if a else tool)
+        return "; ".join(parts)[:max_chars]
 
     def _freeform_judge(self, run: dict, content: str, tool_trace: List[dict]):
         """Final check: the judge decides whether the work is a correct bug fix or is
