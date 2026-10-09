@@ -122,8 +122,12 @@ def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] 
         "completed": completed, "retry_note": retry_note,
         "budget": _budget_line(ctx.budget_remaining),
     })
-    return [{"role": "system", "content": system},
+    msgs = [{"role": "system", "content": system},
             {"role": "user", "content": ctx.task.get("instructions") or ctx.task["title"]}]
+    if ctx.note:
+        # A user note injected via /note — steer the model without replanning.
+        msgs.append({"role": "user", "content": "Note from the user:\n" + ctx.note})
+    return msgs
 
 
 def make_chat_executor(process_chat: Callable, *, lock: Optional[threading.Lock] = None,

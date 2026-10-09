@@ -84,6 +84,7 @@ class StepContext:
     observations: List[dict]     # results of the run's completed tasks, in order
     budget_remaining: Dict
     attempt: int
+    note: str = ""              # pending user note (from /note) to inject this step
 
     def emit(self, type: str, data: Optional[dict] = None) -> int:
         return self.engine.ledger.emit(self.run["run_id"], type, data,
@@ -343,12 +344,20 @@ class RunEngine:
         step = self.ledger.start_step(run_id, task["task_id"], kind="model",
                                       input={"task": task["title"], "attempt": task["attempts"]})
         self.ledger.update_run(run_id, current_task_id=task["task_id"], current_step_id=step["step_id"])
+        # A pending user note (from /note) is injected into this step's context and
+        # then cleared, so it reaches the next step exactly once.
+        _note = ""
+        _plan = run.get("plan") or {}
+        if _plan.get("pending_note"):
+            _note = _plan["pending_note"]
+            self.ledger.update_run(run_id, plan={k: v for k, v in _plan.items() if k != "pending_note"})
         ctx = StepContext(
             engine=self, run=run, task=task, step=step, workspace=self.workspace(run_id),
             observations=[{"task_id": t["task_id"], "title": t["title"], "result": t["result"]}
                           for t in tasks if t["status"] == "completed"],
             budget_remaining=self._remaining(run.get("budget") or {}, usage),
             attempt=task["attempts"],
+            note=_note,
         )
         try:
             result = self.executor(ctx)
@@ -702,6 +711,24 @@ class RunEngine:
         plan = dict(run.get("plan") or {})
         plan["pending_replan"] = f"requested by {actor}: {reason or 'no reason given'}"
         self.ledger.update_run(run_id, plan=plan)
+        if self._executing_now(run) or run["status"] == "awaiting_approval":
+            return self.ledger.get_run(run_id)
+        return self.resume(run_id, actor=actor)
+
+    def add_note(self, run_id: str, text: str = "", actor: str = "user") -> dict:
+        """Inject a user note into the next task step's context (applied at the next
+        step boundary). A lighter-weight alternative to /replan: the note is handed
+        to the running model as a user message without restructuring the plan."""
+        run = self.ledger.require_run(run_id)
+        if run["status"] in TERMINAL_STATES:
+            raise InvalidTransition(f"run {run_id} is {run['status']} — nothing to note")
+        text = (text or "").strip()
+        if not text:
+            raise LedgerError("note text is required")
+        plan = dict(run.get("plan") or {})
+        plan["pending_note"] = text
+        self.ledger.update_run(run_id, plan=plan)
+        self.ledger.emit(run_id, "note_added", {"text": text}, actor=actor)
         if self._executing_now(run) or run["status"] == "awaiting_approval":
             return self.ledger.get_run(run_id)
         return self.resume(run_id, actor=actor)

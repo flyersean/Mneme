@@ -22,6 +22,7 @@ HELP = """Harness commands (typed by you, handled by Mneme — the model never s
   /files <run>                artifacts                      /metrics            harness metrics
   /pause|/resume|/cancel|/retry <run>
   /replan <run> [reason]      replan the remaining work
+  /note <run> <text>          inject a note into the next step (steer w/o replan)
   /approve <run> [note]       /reject <run> [reason]         approve/reject a waiting task
   /skills [query]             /tools                         /profiles
   /strategies                 /memory|/search <query>        /evolution [status]
@@ -120,6 +121,12 @@ def handle(text: str, engine, extras: Optional[Dict[str, Callable]] = None, acto
             rid = _resolve(engine, first)
             engine.request_replan(rid, rest or "requested by user", actor=actor)
             return f"replan requested for {rid}"
+        if word == "note":
+            if not rest:
+                return "usage: /note <run> <text>"
+            rid = _resolve(engine, first)
+            engine.add_note(rid, rest, actor=actor)
+            return f"note queued for {rid} — injected into the next task step"
         if word == "approve":
             rid = _resolve(engine, first)
             engine.approve(rid, actor=actor, note=rest)
