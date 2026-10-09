@@ -80,13 +80,15 @@ html { zoom: 1.25; }
   /* Undo the desktop 125% zoom — phones scale via the viewport meta tag. */
   html { zoom: 1; }
 
-  /* Fixed chrome + inner scroll (100dvh tracks the mobile address bar). */
-  html, body { height: 100%; }
+  /* Fixed chrome + inner scroll (100dvh tracks the mobile address bar).
+     overflow:hidden on BOTH html and body is the bulletproof way to stop
+     the document itself from scrolling — overflow on body alone relies on
+     viewport propagation, which some mobile browsers get wrong. */
+  html, body { height: 100%; overflow: hidden; }
   body {
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
     margin: 0;
   }
   header { flex: none; }
