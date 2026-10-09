@@ -260,11 +260,22 @@ DEFAULT_INSTRUCTIONS = {
         "bash_output.log in your working directory. When a command or server fails, `cat "
         "bash_output.log` to see the actual error/traceback (NOT /tmp/*.log — /tmp is a "
         "fresh sandbox per command, so files you write there vanish).\n"
+        "{{plan}}"
         "{{transcript}}"
         "Remaining turns: {{budget}}\n\n"
-        "Work on the goal now. When you believe it is achieved, end your reply with a single "
-        "line containing only the word DONE. If you are not done, just continue working and do "
-        "NOT say DONE. If you hit a real blocker, say plainly what it is."
+        "Work through your plan. When you believe the goal is achieved, end your reply with a "
+        "single line containing only the word DONE. If you are not done, just continue working "
+        "and do NOT say DONE. If you hit a real blocker, say plainly what it is."
+    ),
+    "harness_freeform_plan": (
+        "=== MNEME GOAL SESSION — PLANNING ===\n"
+        "You are about to work toward a goal. Before you start building or editing anything, "
+        "write a CONCISE PLAN: 4 to 7 numbered steps, one line each. Each step states what you "
+        "will do and how you will VERIFY it worked. You may read files to inform the plan, but "
+        "do NOT start editing, writing, or building yet.\n\n"
+        "Goal: {{goal}}\n"
+        "Workspace (use absolute paths): {{workspace}}\n\n"
+        "Write only the plan now — numbered steps, one line per step."
     ),
     "harness_reflect": (
         "A task run just ended. Look at what happened and extract what is worth keeping "
@@ -311,7 +322,8 @@ INSTRUCTION_META = {
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
     "harness_judge": ("a harness verifier judges whether work is correct (bug fix vs objective alignment)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),
-    "harness_freeform_context": ("a harness free-form goal session (model drives toward the goal)", "{{goal}} {{workspace}} {{transcript}} {{budget}}", "harness.chat_executor"),
+    "harness_freeform_context": ("a harness free-form goal session (model drives toward the goal)", "{{goal}} {{workspace}} {{plan}} {{transcript}} {{budget}}", "harness.chat_executor"),
+    "harness_freeform_plan": ("a harness free-form goal session asks the model to write a plan first", "{{goal}} {{workspace}}", "harness.chat_executor"),
     "harness_reflect": ("a harness run failed or needed recovery (harness.reflect: true)", "{{goal}} {{outcome}} {{tasks}}", "harness.chat_executor"),
     "meta_principles_header": ("always — header above the meta-principles", "", "_meta_principles_block"),
     "user_preferences_header": ("stored preferences exist", "", "_preferences_block"),

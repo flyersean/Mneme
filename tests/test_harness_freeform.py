@@ -34,7 +34,9 @@ class FreeFormCase(unittest.TestCase):
                          runs_root=self.runs, log=lambda m: None, **kw)
 
     def test_freeform_completes_on_done(self):
-        def turn(engine, run, transcript, turn_num, remaining, note="", cancel_event=None):
+        def turn(engine, run, transcript, turn_num, remaining, note="", cancel_event=None, plan=False, plan_text=""):
+            if plan:
+                return {"content": "1. Build it\n2. Verify it", "tool_trace": []}
             return {"content": "Fixed and verified.\nDONE" if turn_num == 2 else "Working...",
                     "tool_trace": [{"tool": "bash", "args": {"command": "x"}, "result": "ok",
                                     "status": "success", "elapsed_ms": 1}]}
@@ -49,7 +51,9 @@ class FreeFormCase(unittest.TestCase):
     def test_judge_rejects_then_accepts(self):
         seen = {"n": 0}
 
-        def turn(engine, run, transcript, turn_num, remaining, note="", cancel_event=None):
+        def turn(engine, run, transcript, turn_num, remaining, note="", cancel_event=None, plan=False, plan_text=""):
+            if plan:
+                return {"content": "1. Build it\n2. Verify alignment", "tool_trace": []}
             had_feedback = any(t.get("judge_feedback") for t in transcript)
             return {"content": "Fixed the misalignment.\nDONE" if had_feedback else "Built it.\nDONE",
                     "tool_trace": []}
@@ -70,6 +74,25 @@ class FreeFormCase(unittest.TestCase):
         r = _wait(self.led, run["run_id"])
         self.assertEqual(r["status"], "failed")
         self.assertIn("max_turns", r.get("error") or "")
+
+    def test_plan_is_written_first(self):
+        captured = {}
+
+        def turn(engine, run, transcript, turn_num, remaining, note="", cancel_event=None, plan=False, plan_text=""):
+            if plan:
+                captured["planned"] = True
+                return {"content": "1. Build the feature\n2. Test it end to end", "tool_trace": []}
+            captured["plan_text_seen"] = plan_text
+            return {"content": "done\nDONE", "tool_trace": []}
+        e = self.eng(turn, judge=lambda c, o, evidence="", failed="": (True, ""))
+        run = e.create("Goal", free_form=True, start=True)
+        r = _wait(self.led, run["run_id"])
+        self.assertEqual(r["status"], "completed")
+        self.assertTrue(captured.get("planned"))
+        self.assertIn("Build the feature", captured.get("plan_text_seen", ""))
+        plan = r.get("plan") or {}
+        self.assertEqual(plan.get("source"), "self-plan")
+        self.assertEqual(plan.get("tasks"), ["Build the feature", "Test it end to end"])
 
 
 if __name__ == "__main__":

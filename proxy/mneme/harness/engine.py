@@ -27,6 +27,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -134,6 +135,21 @@ def merge_budget(budget: Optional[dict]) -> dict:
                 raise LedgerError(f"budget {k} must be >= 0")
         out[k] = v
     return out
+
+
+def _extract_plan_tasks(plan_text: str) -> List[str]:
+    """Extract numbered/bulleted steps from a free-form self-plan text."""
+    tasks = []
+    for line in (plan_text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r'^(?:\d+[.)]\s*|[-*•]\s+)(.*)$', line)
+        if m:
+            task = m.group(1).strip()
+            if task and task not in tasks:
+                tasks.append(task)
+    return tasks
 
 
 class RunEngine:
@@ -371,6 +387,13 @@ class RunEngine:
             if control == "cancel":
                 return self._finish_cancel(run_id)
 
+            # Planning phase (once): ask the model for a plan before it starts grinding.
+            plan = run.get("plan") or {}
+            if plan.get("source") != "self-plan":
+                self._freeform_plan(run_id)
+                continue  # re-read the run (now has a plan) and start execution
+            plan_text = (plan.get("raw") or "").strip()
+
             budget = run.get("budget") or {}
             max_turns = budget.get("max_turns") or 20
             prior = [s for s in self.ledger.list_steps(run_id) if s.get("kind") == "freeform"]
@@ -413,7 +436,7 @@ class RunEngine:
                     raise LedgerError("free-form run but no freeform_turn executor configured")
                 r = self.freeform_turn(self, run, transcript, turn,
                                        {"max_turns": max(0, max_turns - turn + 1)},
-                                       note, cancel_event=stop) or {}
+                                       note, cancel_event=stop, plan_text=plan_text) or {}
             except Exception as e:
                 self.ledger.finish_step(step["step_id"], "failed", error=f"{type(e).__name__}: {e}")
                 self.ledger.emit(run_id, "engine_error", {"error": f"{type(e).__name__}: {e}",
@@ -455,6 +478,42 @@ class RunEngine:
                                                 error="", finished_at=_now(), event="task_completed",
                                                 data={"title": t["title"]})
                 return self._end(run_id, "completed", result=content, data={"turns": turn})
+
+    def _freeform_plan(self, run_id: str) -> str:
+        """Run the one-shot planning turn and store the plan on the run. Returns the
+        raw plan text ("" if the plan turn failed — execution proceeds unplanned)."""
+        run = self.ledger.require_run(run_id)
+        step = self.ledger.start_step(run_id, kind="plan", input={"goal": run["goal"]})
+        self.ledger.update_run(run_id, current_step_id=step["step_id"])
+
+        stop = threading.Event()
+
+        def watch():
+            while not stop.wait(0.5):
+                try:
+                    if (self.ledger.get_run(run_id) or {}).get("control"):
+                        stop.set()
+                        return
+                except Exception:
+                    return
+        watcher = threading.Thread(target=watch, name="mneme-ff-plan-watch", daemon=True)
+        watcher.start()
+
+        plan_text = ""
+        try:
+            r = self.freeform_turn(self, run, [], 0, {}, "", cancel_event=stop, plan=True) or {}
+            plan_text = (r.get("content") or "").strip()
+            self.ledger.finish_step(step["step_id"], "completed", output=plan_text)
+        except Exception as e:
+            self.ledger.finish_step(step["step_id"], "failed", error=f"{type(e).__name__}: {e}")
+            self.ledger.emit(run_id, "engine_error", {"error": f"plan turn crashed: {e}"})
+            plan_text = ""
+        finally:
+            stop.set()
+        tasks = _extract_plan_tasks(plan_text)
+        self.ledger.update_run(run_id, plan={"source": "self-plan", "version": 1,
+                                             "raw": plan_text, "tasks": tasks})
+        return plan_text
 
     def _freeform_done(self, content: str) -> bool:
         """The model declares completion by ending its reply with a lone DONE line."""
