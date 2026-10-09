@@ -100,10 +100,10 @@ class TestHarnessProxy(unittest.TestCase):
         self.assertEqual(self.c.post(f"/runs/{rid}/cancel").status_code, 409)
         self.assertEqual(self.c.post(f"/runs/{rid}/checkpoint").status_code, 200)
 
-    def test_freeform_default_via_http(self):
-        # no plan/tasks/free_form -> the default is now a free-form goal session
+    def test_structured_default_via_http(self):
+        # no plan/tasks/free_form -> the default is now a structured (planner/verify) run
         r = self.c.post("/runs", json={"goal": "refactor canvas", "start": False}).get_json()["run"]
-        self.assertTrue((r.get("meta") or {}).get("free_form"))
+        self.assertFalse((r.get("meta") or {}).get("free_form"))
 
     def test_failure_rules_then_retry(self):
         self.fake.replies += [

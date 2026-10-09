@@ -44,7 +44,7 @@ class TestCommands(unittest.TestCase):
         self.assertIn("/approve", self.h("/help"))
 
     def test_run_lifecycle_via_commands(self):
-        out = self.h("/run --plan write a haiku")
+        out = self.h("/run write a haiku")
         self.assertIn("started run_", out)
         rid = self.led.list_runs(limit=1)[0]["run_id"]
         self.eng.wait(rid, 10)
@@ -58,9 +58,17 @@ class TestCommands(unittest.TestCase):
         self.assertIn("no such run", self.h("/status zzzz"))
         self.assertIn("nothing to pause", self.h(f"/pause {rid}"))
 
-    def test_run_defaults_to_freeform(self):
+    def test_run_defaults_to_structured(self):
         out = self.h("/run write a haiku")
-        self.assertIn("goal session", out)
+        self.assertIn("structured plan", out)
+        rid = self.led.list_runs(limit=1)[0]["run_id"]
+        self.eng.wait(rid, 10)
+        self.assertFalse((self.led.get_run(rid).get("meta") or {}).get("free_form"))
+        self.assertIn("[completed]", self.h(f"/status {rid}"))
+
+    def test_run_free_form_opt_in(self):
+        out = self.h("/run --free write a haiku")
+        self.assertIn("free-form session", out)
         rid = self.led.list_runs(limit=1)[0]["run_id"]
         self.eng.wait(rid, 10)
         self.assertTrue((self.led.get_run(rid).get("meta") or {}).get("free_form"))

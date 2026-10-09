@@ -250,6 +250,14 @@ DEFAULT_INSTRUCTIONS = {
         "FAILED CHECK(S) TO RECONSIDER:\n{{failed}}\n\n"
         "Reply PASS or FAIL on the first line, then one short line naming A or B and why."
     ),
+    "harness_plan_judge": (
+        "You are reviewing a PLAN for a run. Decide whether the plan below will achieve "
+        "the stated goal.\n\n"
+        "GOAL:\n{{goal}}\n\n"
+        "PLAN (steps):\n{{plan}}\n\n"
+        "Reply PASS on the first line if the plan is complete and would achieve the goal, "
+        "FAIL if it misses the goal or has a gap. If FAIL, name the gap in one short line."
+    ),
     "harness_freeform_context": (
         "=== MNEME GOAL SESSION ===\n"
         "You are working toward a goal. You are in control of the approach: explore, build, "
@@ -323,6 +331,7 @@ INSTRUCTION_META = {
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
     "harness_judge": ("a harness verifier judges whether work is correct (bug fix vs objective alignment)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),
+    "harness_plan_judge": ("a harness judge approves a plan before execution (will it achieve the goal)", "{{goal}} {{plan}}", "_harness_plan_judge"),
     "harness_freeform_context": ("a harness free-form goal session (model drives toward the goal)", "{{goal}} {{workspace}} {{plan}} {{transcript}} {{budget}}", "harness.chat_executor"),
     "harness_freeform_plan": ("a harness free-form goal session asks the model to write a plan first", "{{goal}} {{workspace}}", "harness.chat_executor"),
     "harness_reflect": ("a harness run failed or needed recovery (harness.reflect: true)", "{{goal}} {{outcome}} {{tasks}}", "harness.chat_executor"),

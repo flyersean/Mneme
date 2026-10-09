@@ -16,8 +16,8 @@ from typing import Callable, Dict, Optional
 from mneme.harness.ledger import InvalidTransition, LedgerError
 
 HELP = """Harness commands (typed by you, handled by Mneme — the model never sees them):
-  /run <goal>                 start a goal session (free-form, model drives)
-  /run --plan <goal>          start a structured (planner/verify) run [legacy]
+  /run <goal>                 start a structured (planner/verify) run
+  /run --free <goal>          start a free-form goal session (model drives)
   /runs [status]              list runs                     /status [run]  status (default: last)
   /plan <run>                 current plan                  /tasks <run>   tasks + state
   /log <run> [n]              last n events                 /files <run>   artifacts
@@ -89,13 +89,13 @@ def handle(text: str, engine, extras: Optional[Dict[str, Callable]] = None, acto
             return HELP
         if word == "run":
             if not arg:
-                return "usage: /run <goal>  (or /run --plan <goal> for a structured plan)"
-            structured = arg.startswith("--plan")
-            goal = arg[len("--plan"):].strip() if structured else arg
+                return "usage: /run <goal>  (or /run --free <goal> for a free-form session)"
+            free = arg.startswith("--free")
+            goal = arg[len("--free"):].strip() if free else arg
             if not goal:
                 return "usage: /run <goal>"
-            r = engine.create(goal, start=True, created_by=actor, free_form=not structured)
-            mode = "structured plan" if structured else "goal session"
+            r = engine.create(goal, start=True, created_by=actor, free_form=free)
+            mode = "free-form session" if free else "structured plan"
             return f"started {r['run_id']} ({mode}) — /status {r['run_id'][-8:]}"
         if word == "runs":
             runs = engine.ledger.list_runs(status=[arg] if arg else None, limit=20)

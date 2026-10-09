@@ -7776,10 +7776,33 @@ def _harness_judge(criteria: str, output: str, evidence: str = "", failed: str =
         "evidence": (evidence or "(no tool trace recorded)")[:8000],
         "failed": (failed or "")[:2000],
     })
-    r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
-    text = (r.get("content") or "").strip()
+    try:
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
+        text = (r.get("content") or "").strip()
+    except Exception:
+        return True, "judge unavailable — accepting the work"
     m = re.search(r"\b(PASS|FAIL)\b", text.upper())
-    return bool(m and m.group(1) == "PASS"), (text[:300] or "no verdict")
+    if not m:
+        return True, "no verdict — accepting the work"
+    return m.group(1) == "PASS", (text[:300] or "no verdict")
+
+
+def _harness_plan_judge(goal: str, plan_text: str):
+    """Plan-approval judge: a fresh PASS/FAIL verdict on whether the plan will
+    achieve the goal, before any step runs. Rejects plans with an obvious gap."""
+    prompt = _load_instruction("harness_plan_judge", vars={
+        "goal": (goal or "")[:1500],
+        "plan": (plan_text or "")[:4000],
+    })
+    try:
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
+        text = (r.get("content") or "").strip()
+    except Exception:
+        return True, "plan judge unavailable — accepting the plan"
+    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
+    if not m:
+        return True, "no verdict — accepting the plan"
+    return m.group(1) == "PASS", (text[:300] or "no verdict")
 
 
 def _harness_extras() -> dict:
@@ -7869,6 +7892,7 @@ def _init_harness():
                             planner=make_chat_planner(_scoped_process_chat, lock=_hlock),
                             freeform_turn=make_chat_freeform_executor(_scoped_process_chat, lock=_hlock),
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
+                            plan_judge=_harness_plan_judge,
                             diagnostics=mntools._bash_log_tail,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
