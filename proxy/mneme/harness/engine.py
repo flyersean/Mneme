@@ -616,17 +616,16 @@ class RunEngine:
                             extra = ""
                         if extra:
                             result.error += "\n\nRecent bash output (incl. background processes):\n" + extra
-            elif self.judge is not None:
-                # No explicit checks: the judge is the default verification. It
-                # confirms the step is actually done as planned, judging the EVIDENCE
-                # (tool trace) — not the model's narration — so a bare "done" with no
-                # tool work can't pass.
-                passed, detail = self._judge_step(run, task, step, result.output or "",
-                                                  result.tool_calls)
-                result.meta = {**(result.meta or {}), "verification": detail}
-                if not passed:
+            # The judge is the authoritative step confirmation, on EVERY step — it
+            # judges the EVIDENCE (tool trace), not the model's narration. Deterministic
+            # checks above are only a fast objective pre-gate.
+            if result.ok and self.judge is not None:
+                ok, why = self._judge_step(run, task, step, result.output or "",
+                                           result.tool_calls)
+                result.meta = {**(result.meta or {}), "judge_verdict": why}
+                if not ok:
                     result.ok = False
-                    result.error = "judge rejected the step: " + (detail or "no reason")
+                    result.error = "judge rejected the step: " + (why or "no reason")
 
         if (result.meta or {}).get("interrupted"):
             # Stopped mid-step by pause/cancel: not a success, not a failure. The task
@@ -713,13 +712,11 @@ class RunEngine:
 
     def _judge_step(self, run: dict, task: dict, step: dict, output: str,
                     tool_calls: Optional[List[dict]] = None):
-        """Default step verification: the judge confirms the step is completed as
-        planned, judging the EVIDENCE (tool trace), not the model's narration. A bare
-        'done' with no tool work cannot pass."""
+        """Authoritative step confirmation: the judge decides whether the step is
+        completed as planned, judging the EVIDENCE (tool trace), not the model's
+        narration. A bare 'done' with no tool work cannot pass."""
         criteria = (task.get("instructions") or "").strip() or (task.get("title") or "")
         evidence = _verify._tool_evidence(tool_calls or [])
-        self.ledger.transition(run["run_id"], "verifying", event="verification_started",
-                               data={"task_id": task["task_id"], "kind": "judge"})
         try:
             ok, why = self.judge(criteria, output or "", evidence=evidence, failed="")
             ok, why = bool(ok), (why or "")[:500]
@@ -728,8 +725,6 @@ class RunEngine:
             ok, why = True, f"judge errored ({type(e).__name__}) — accepting the step"
         self.ledger.emit(run["run_id"], "verification_passed" if ok else "verification_failed",
                          {"judge": why}, task_id=task["task_id"], step_id=step["step_id"])
-        self.ledger.transition(run["run_id"], "running", event="verification_finished",
-                               data={"passed": ok})
         return ok, why
 
     def _judge_plan(self, run: dict, plan: dict):
