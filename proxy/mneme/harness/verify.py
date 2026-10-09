@@ -76,7 +76,10 @@ def _resolve(base: str, path: str) -> str:
 
 
 def _tool_evidence(tool_calls) -> str:
-    """Compact text summary of a step's tool trace for the verification judge."""
+    """Compact text summary of a step's tool trace for the verification judge.
+    Tool results are kept long enough that the judge can actually see WHAT was
+    written/run — a 400-char cut hid file contents and made the judge reject
+    work it couldn't verify."""
     if not tool_calls:
         return ""
     lines = []
@@ -87,7 +90,7 @@ def _tool_evidence(tool_calls) -> str:
             a = args.get("command") or args.get("path") or json.dumps(args)[:200]
         else:
             a = str(args)[:200]
-        res = (tc.get("result") or "")[:400]
+        res = (tc.get("result") or "")[:2000]
         status = tc.get("status") or ""
         lines.append(f"[{tool}] {a}\n    -> {status}: {res}")
     return "\n".join(lines)

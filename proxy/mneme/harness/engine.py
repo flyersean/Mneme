@@ -162,7 +162,7 @@ _DEFAULT_PLAN = (
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
                  freeform_turn: Optional[Callable] = None,
-                 capabilities=None, skills=None, judge=None, plan_judge=None, diagnostics=None, evolution=None, profiles=None,
+                 capabilities=None, skills=None, judge=None, plan_judge=None, step_judge=None, diagnostics=None, evolution=None, profiles=None,
                  runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
@@ -172,8 +172,9 @@ class RunEngine:
         self.freeform_turn = freeform_turn  # (engine, run, transcript, turn, remaining, note, cancel_event) -> dict
         self.capabilities = capabilities     # CapabilityContext (Phase 4) — optional
         self.skills = skills                 # SkillRegistry (Phase 3) — optional
-        self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks
+        self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks + appeal
         self.plan_judge = plan_judge         # (goal, plan_text) -> (bool, why) — approves a plan before execution
+        self.step_judge = step_judge         # (criteria, output, evidence) -> (bool, why) — confirms a checkless step
         self.diagnostics = diagnostics       # () -> str; extra failure context (e.g. bash log tail)
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         self.evolution = evolution            # Evolution (Phase 6) — optional
@@ -616,10 +617,9 @@ class RunEngine:
                             extra = ""
                         if extra:
                             result.error += "\n\nRecent bash output (incl. background processes):\n" + extra
-            # The judge is the authoritative step confirmation, on EVERY step — it
-            # judges the EVIDENCE (tool trace), not the model's narration. Deterministic
-            # checks above are only a fast objective pre-gate.
-            if result.ok and self.judge is not None:
+            elif self.step_judge is not None:
+                # No deterministic checks: the step judge confirms the step is DONE
+                # as planned, judging the EVIDENCE (tool trace), not the narration.
                 ok, why = self._judge_step(run, task, step, result.output or "",
                                            result.tool_calls)
                 result.meta = {**(result.meta or {}), "judge_verdict": why}
@@ -712,13 +712,13 @@ class RunEngine:
 
     def _judge_step(self, run: dict, task: dict, step: dict, output: str,
                     tool_calls: Optional[List[dict]] = None):
-        """Authoritative step confirmation: the judge decides whether the step is
-        completed as planned, judging the EVIDENCE (tool trace), not the model's
-        narration. A bare 'done' with no tool work cannot pass."""
+        """Step confirmation for a step with NO deterministic checks: the step judge
+        decides whether the step is DONE as planned, judging the EVIDENCE (tool trace),
+        not the model's narration."""
         criteria = (task.get("instructions") or "").strip() or (task.get("title") or "")
         evidence = _verify._tool_evidence(tool_calls or [])
         try:
-            ok, why = self.judge(criteria, output or "", evidence=evidence, failed="")
+            ok, why = self.step_judge(criteria, output or "", evidence=evidence, failed="")
             ok, why = bool(ok), (why or "")[:500]
         except Exception as e:
             self.ledger.emit(run["run_id"], "judge_error", {"error": f"{type(e).__name__}: {e}"})

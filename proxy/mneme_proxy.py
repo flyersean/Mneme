@@ -7805,6 +7805,25 @@ def _harness_plan_judge(goal: str, plan_text: str):
     return m.group(1) == "PASS", (text[:300] or "no verdict")
 
 
+def _harness_step_judge(criteria: str, output: str, evidence: str = "", failed: str = ""):
+    """Step-confirmation judge: a fresh PASS/FAIL on whether a single step is DONE
+    as planned, judging the tool-trace evidence (with full file/command output)."""
+    prompt = _load_instruction("harness_step_judge", vars={
+        "criteria": (criteria or "")[:1500],
+        "evidence": (evidence or "(no tool trace recorded)")[:8000],
+        "output": (output or "")[:3000],
+    })
+    try:
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
+        text = (r.get("content") or "").strip()
+    except Exception:
+        return True, "step judge unavailable — accepting the step"
+    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
+    if not m:
+        return True, "no verdict — accepting the step"
+    return m.group(1) == "PASS", (text[:300] or "no verdict")
+
+
 def _harness_extras() -> dict:
     """Proxy-side data sources for harness commands (/strategies, /memory, /config, ...)."""
     def strategies(_arg=""):
@@ -7893,6 +7912,7 @@ def _init_harness():
                             freeform_turn=make_chat_freeform_executor(_scoped_process_chat, lock=_hlock),
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
                             plan_judge=_harness_plan_judge,
+                            step_judge=_harness_step_judge,
                             diagnostics=mntools._bash_log_tail,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))
