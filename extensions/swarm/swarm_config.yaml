@@ -196,3 +196,40 @@ steps:
   - name: promote
     move_dir: output/story.txt
     move_to: published
+
+# ---------------------------------------------------------------------------
+# DECIDE + RUN STEPS (classifier models + background harness runs)
+# ---------------------------------------------------------------------------
+# `decide` calls the proxy's /decide endpoint — the System One / classifier
+# models (Jev et al) — instead of a generation call. Its output is the answers
+# as `name: ANSWER (prob)` lines, so a string `if` branches on it. Requires a
+# `harness:` block (or a step `port:`) so the orchestrator knows which proxy to
+# ask.
+#
+#   - name: classify
+#     decide:
+#       questions:
+#         is_bug:
+#           type: noul
+#           instructions: "Is the text below a bug report?"
+#           criteria: { true: "it describes a bug", false: "it is not a bug" }
+#     read_dir: pass2
+#     write_dir: pass2/verdict.txt
+#     if:
+#       condition: contains
+#       value: "YES"
+#       then: fix_bug
+#       else: finalize
+#
+# `run` starts a BACKGROUND harness run on the proxy (POST /runs with start=True)
+# and returns its run id — the harness plans and executes it on its own thread,
+# so the swarm can fan out long jobs without blocking on them.
+#
+#   - name: kick_off_refactor
+#     run:
+#       goal: "Refactor the util module and run its tests"
+#     read_dir: input
+#     write_dir: output/run_id.txt
+#
+# Both step types need the proxy's token, which Mneme injects as MNEME_API_TOKEN
+# when it spawns the extension; the orchestrator sends it as a Bearer header.
