@@ -272,3 +272,13 @@ Deferred work (carried over from earlier sessions, not started):
   tokens, webhook keys, etc.), an admin-only `/secrets` page (list/add/delete
   with masked values), and `${secret:NAME}` reference resolution wired into MCP
   server `env`/`args`. Provider API keys remain in the env file.
+- Added a **`start_run` tool** — the chat model can start a background harness
+  run (structured or free-form) and check it via `inspect_run`. Bound via
+  `mntools.engine`; gated by `tools.start_run`. Added a **`POST /decide`**
+  endpoint so extensions call the classifier/decision models (Jev) over HTTP,
+  and gave the **swarm** a `decide` step (classifier) + `run` step (background
+  harness run) + `MNEME_API_TOKEN` auth on its proxy calls.
+- The VPS agent (z-ai/glm-5.3) self-edits on its own branch
+  `feature/agent-save-tool` (a `save_tool` registry-write tool + a stream
+  repetition loop-guard + the no_new_privs/sudo doc). That branch is pushed to
+  GitHub; merge it into `classification-models` after review.
