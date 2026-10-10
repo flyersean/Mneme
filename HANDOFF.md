@@ -122,19 +122,21 @@ mneme/
 
 - **`classification-models`** — the ACTIVE dev branch. Everything lives here:
   harness + canvas + Jev decision layer + backend/model decoupling + provider
-  fixes. Latest commit: `f60d442` ("docs(config): note the MNEME_BACKEND
-  start-script override as a TODO").
+  fixes. Latest commit: `cdecf7b` ("docs: add development handoff …").
 - **`agent-harness`** — an older baseline (LLM-only harness + canvas, pre-Jev).
-  Superseded by `classification-models`; do not start new work on it.
+  Superseded by `classification-models`; do not start new work on it. (GitHub's
+  default branch is still `agent-harness` — see §7.)
 
 Repo locations:
 
-- **Local**: `/home/sean/mneme/repo`, branch `classification-models` @ `f60d442`,
-  clean working tree.
-- **VPS**: `/home/ubuntu/mneme/repo`. **⚠️ The VPS branch pointer is tangled** —
-  it reports `agent-harness` but actually contains `classification-models`
-  commits, currently at `267857c` (one commit behind — missing the `f60d442`
-  docs commit). See §8 for the fix.
+- **Local**: `/home/sean/mneme/repo`, branch `classification-models`, clean
+  working tree.
+- **VPS**: `/home/ubuntu/mneme/repo`, branch `classification-models`, tracking
+  `origin/classification-models`, clean. (Was previously tangled on
+  `agent-harness`; untangled — the fetch refspec was limited to `agent-harness`
+  and the stale local branch was deleted.)
+
+(Commit hashes are point-in-time; run `git log -1` for the true latest.)
 
 ---
 
@@ -190,7 +192,11 @@ key if it also drives its own embedding). Never commit these keys — they live 
    Fix = drop the export from `scripts/mneme_setup.py` and the generated start
    script, then re-sync the `MNEME_BACKEND` global from `os.environ` after
    config load (else it silently falls back to `ollama`).
-2. **VPS branch tangle** (see §4). Fix with a checkout.
+2. **GitHub's default branch is still `agent-harness`** (`origin/HEAD`). Harmless
+   day-to-day (the VPS now tracks `classification-models` directly), but switch
+   it to `classification-models` in the repo settings if you want a clean
+   default. Also: a **`memory-only` branch** exists on origin — uninvestigated;
+   check whether it's stale or meant to be the default.
 3. **DeepSeek `deepseek-flash` is a reasoning model** — it returns
    `content: ""` with the answer in `reasoning_content`. The streaming path
    already falls back `content = thinking`, but double-check any non-streaming
@@ -203,31 +209,23 @@ key if it also drives its own embedding). Never commit these keys — they live 
 
 ## 8. Next steps / suggested plan for the move
 
-1. **Fix the VPS branch first** (do this before any new work):
-   ```
-   cd /home/ubuntu/mneme/repo
-   git fetch origin
-   git checkout classification-models
-   git pull origin classification-models
-   ```
-   This lands the one missing commit (`f60d442`) and untangles the branch.
-2. **Give the new agent a dedicated Hermes profile on the VPS** with
+1. **Give the new agent a dedicated Hermes profile on the VPS** with
    `/home/ubuntu/mneme/repo` as its working directory, so `AGENTS.md` and the
    repo context load automatically.
-3. **Point the new agent's model at DeepSeek v4 pro through Mneme.** The Mneme
+2. **Point the new agent's model at DeepSeek v4 pro through Mneme.** The Mneme
    proxy is OpenAI-compatible — configure the agent with a custom provider
    pointing at `http://localhost:8080/v1` and model `deepseek-v4-pro`. That way
    the agent gets the model AND memory injection in one endpoint. (Alternatively
    point it at DeepSeek directly and use Mneme purely for memory.)
-4. **Develop in `/home/ubuntu/mneme/repo`**; the running proxy/canvas use the
+3. **Develop in `/home/ubuntu/mneme/repo`**; the running proxy/canvas use the
    same repo, so `git pull` + restart is the deploy. Restart is safe — memory is
    in SQLite, not RAM. (Deploy idiom: `cd .../8080 && rm -f restart.log &&
    (setsid ./start_proxy.sh > ./restart.log 2>&1 </dev/null &)`.)
-5. **Test before/after:** `python3 -m pytest tests/` in the repo. Note these
+4. **Test before/after:** `python3 -m pytest tests/` in the repo. Note these
    suites are known-failing and pre-existing (do not treat as regressions):
    `test_generated_config` (5 failures), `test_tool_loop` (13 session-kwarg
    mock failures), `test_harness_proxy` (2 mock-planner drift failures).
-6. **Keep the decision layer optional** so a local (no-cloud) Mneme still works.
+5. **Keep the decision layer optional** so a local (no-cloud) Mneme still works.
 
 Deferred work (carried over from earlier sessions, not started):
 
@@ -258,3 +256,7 @@ Deferred work (carried over from earlier sessions, not started):
 - Canvas: CodeMirror editor (same viewer as the YAML config pages), collapsible
   panes, fixed reversed resize sliders, Send→Stop button + thinking indicator,
   threaded server, taller chat input.
+- Untangled the VPS repo: fixed the fetch refspec (was limited to
+  `agent-harness`), fetched `classification-models`, checked it out (tracking
+  `origin/classification-models`), and deleted the stale local `agent-harness`
+  branch. The VPS now cleanly tracks the active dev branch.
