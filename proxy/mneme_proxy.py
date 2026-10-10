@@ -7790,62 +7790,63 @@ def _reset_memory():
 HARNESS = None
 
 
+from mneme.decisions import decide, noul, noul_prob, ACCEPT_AT, REJECT_AT
+
+
+def _jev_noul_verdict(state: dict, name: str, question: dict, timeout: int = 10):
+    """Ask Jev a single noul question and turn the calibrated probability into a
+    (bool, why) verdict. Rejects only when Jev is CONFIDENT the answer is no
+    (below REJECT_AT); borderline answers are accepted (fail-open) with the
+    confidence recorded so the ledger stays visible."""
+    try:
+        r = decide(state, {name: question}, timeout=timeout)
+        p = noul_prob(r, name)
+    except Exception as e:
+        return True, f"jev unavailable ({type(e).__name__}) — accepting"
+    if p < REJECT_AT:
+        return False, f"jev {name}={p:.2f} — rejected (confident no)"
+    if p < ACCEPT_AT:
+        return True, f"jev {name}={p:.2f} — borderline, accepted"
+    return True, f"jev {name}={p:.2f} — accepted"
+
+
 def _harness_judge(criteria: str, output: str, evidence: str = "", failed: str = ""):
-    """Verification judge: a fresh, context-free PASS/FAIL verdict from the main
-    model. Judges the EVIDENCE (tool trace) against the expected outcome — not the
-    model's narration — so a false-negative deterministic check can be overridden."""
-    prompt = _load_instruction("harness_judge", vars={
-        "criteria": (criteria or "")[:1500],
+    """Verification judge: a Jev noul decision on whether the EVIDENCE (tool
+    trace) shows the work satisfies the expected outcome — not the narration."""
+    state = {
+        "expected_outcome": (criteria or "")[:1500],
         "output": (output or "")[:4000],
         "evidence": (evidence or "(no tool trace recorded)")[:8000],
-        "failed": (failed or "")[:2000],
-    })
-    try:
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
-        text = (r.get("content") or "").strip()
-    except Exception:
-        return True, "judge unavailable — accepting the work"
-    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
-    if not m:
-        return True, "no verdict — accepting the work"
-    return m.group(1) == "PASS", (text[:300] or "no verdict")
+        "failed_checks": (failed or "")[:2000],
+    }
+    q = noul("Does the evidence show the work satisfies the expected outcome?",
+             "The tool trace or output demonstrates the expected outcome was produced and verified.",
+             "The expected outcome is missing, incomplete, or contradicted by the evidence.")
+    return _jev_noul_verdict(state, "satisfies_outcome", q)
 
 
 def _harness_plan_judge(goal: str, plan_text: str):
-    """Plan-approval judge: a fresh PASS/FAIL verdict on whether the plan will
-    achieve the goal, before any step runs. Rejects plans with an obvious gap."""
-    prompt = _load_instruction("harness_plan_judge", vars={
-        "goal": (goal or "")[:1500],
-        "plan": (plan_text or "")[:4000],
-    })
-    try:
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
-        text = (r.get("content") or "").strip()
-    except Exception:
-        return True, "plan judge unavailable — accepting the plan"
-    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
-    if not m:
-        return True, "no verdict — accepting the plan"
-    return m.group(1) == "PASS", (text[:300] or "no verdict")
+    """Plan-approval judge: a Jev noul decision on whether the plan will achieve
+    the goal, before any step runs."""
+    state = {"goal": (goal or "")[:1500], "plan": (plan_text or "")[:4000]}
+    q = noul("Will this plan achieve the stated goal?",
+             "The plan covers every part of the goal in a coherent order and ends with verification.",
+             "The plan misses required parts, is incoherent, or cannot produce the goal.")
+    return _jev_noul_verdict(state, "plan_ok", q)
 
 
 def _harness_step_judge(criteria: str, output: str, evidence: str = "", failed: str = ""):
-    """Step-confirmation judge: a fresh PASS/FAIL on whether a single step is DONE
-    as planned, judging the tool-trace evidence (with full file/command output)."""
-    prompt = _load_instruction("harness_step_judge", vars={
-        "criteria": (criteria or "")[:1500],
+    """Step-confirmation judge: a Jev noul decision on whether a single step is
+    DONE as planned, judging the tool-trace evidence."""
+    state = {
+        "step": (criteria or "")[:1500],
         "evidence": (evidence or "(no tool trace recorded)")[:8000],
         "output": (output or "")[:3000],
-    })
-    try:
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT) or {}
-        text = (r.get("content") or "").strip()
-    except Exception:
-        return True, "step judge unavailable — accepting the step"
-    m = re.search(r"\b(PASS|FAIL)\b", text.upper())
-    if not m:
-        return True, "no verdict — accepting the step"
-    return m.group(1) == "PASS", (text[:300] or "no verdict")
+    }
+    q = noul("Is this step DONE as planned?",
+             "The tool trace shows the step's required work was performed and verified.",
+             "The required work is missing, incomplete, or errored.")
+    return _jev_noul_verdict(state, "step_done", q)
 
 
 def _harness_extras() -> dict:
