@@ -143,3 +143,29 @@ templates:
         presence_penalty: 0.0
         num_ctx: 32768           # Gemma 4 trains at 32k
         num_predict: 3072        # hard cap: bounds a runaway
+
+  # ── GLM-5.3 anti-loop (strip prior reasoning from history) ─────────────
+  # GLM-5.3/Flash is known to degenerate into repetition loops when its own
+  # prior reasoning content is re-fed into the prompt (upstream fix: flip
+  # clear_thinking default to true in chat_template.jinja — see
+  # huggingface.co/zai-org/GLM-5.3-Flash/discussions/47 and
+  # huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/discussions/7).
+  # We run GLM via OpenRouter so we can't edit the server template; instead
+  # the proxy strips `reasoning`/`thinking` fields from assistant history
+  # messages before sending (mneme_proxy.py `_strip_history_reasoning`,
+  # gated on models.<model>.strip_reasoning). This template enables that
+  # gate per-model plus anti-loop sampling. Models not using this template
+  # are completely unaffected.
+  glm5.3-loop:
+    description: "GLM-5.3 — strip prior reasoning from history + anti-loop sampling"
+    notes: "strip_reasoning is the client-side clear_thinking fix; frequency_penalty dampens loop onset. Raise to 0.8 if loops recur."
+    sampling:
+      frequency_penalty: 0.7
+      temperature: 0.9
+      top_p: 0.95
+    models:
+      "{model}":
+        strip_reasoning: true     # proxy strips reasoning/thinking from assistant history
+        frequency_penalty: 0.7
+        temperature: 0.9
+        top_p: 0.95

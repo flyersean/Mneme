@@ -2660,6 +2660,22 @@ def _parse_text_tool_calls(content):
     return [], content
 
 
+def _strip_history_reasoning(msgs: list) -> list:
+    """Drop reasoning/thinking fields from assistant messages before sending.
+
+    Mirrors the upstream GLM 'clear_thinking' chat-template fix, applied
+    client-side: some models (notably GLM-5.3) degenerate into repetition
+    loops when their own prior reasoning is re-fed in history.  Gated by the
+    per-model config key  models.<model>.strip_reasoning: true  (settable
+    via a model_template), so models that don't opt in are unaffected."""
+    out = []
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            m = {k: v for k, v in m.items() if k not in ("reasoning", "thinking")}
+        out.append(m)
+    return out
+
+
 def _serialize_tool_call_arguments(msgs: list) -> list:
     """Return a copy of msgs with assistant tool_call arguments re-encoded as JSON
     strings (OpenAI spec). _query_openrouter parses the model's string arguments
@@ -2854,6 +2870,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     if not _model:
         return {"content": "[no model] Pick a model from the model picker in the chat page (or set `model:` in mneme.yaml).",
                 "thinking": "", "tool_calls": [], "eval_count": 0, "done_reason": "stop"}
+    _mset = (CONFIG_DATA.get("models", {}) or {}).get(_model, {}) or {}
+    if isinstance(_mset, dict) and _mset.get("strip_reasoning"):
+        msgs = _strip_history_reasoning(msgs)
     msgs = _serialize_tool_call_arguments(msgs)
     if timeout is None: timeout = CHAT_TIMEOUT
     payload = {
