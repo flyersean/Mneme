@@ -817,6 +817,8 @@ class RunEngine:
                 self.ledger.emit(run_id, "plan_rejected", {"reason": why, "mode": mode})
                 self.ledger.update_run(run_id, plan={**plan, "pending_replan":
                                                      f"plan rejected by judge: {why}"})
+            else:
+                self.ledger.emit(run_id, "plan_approved", {"verdict": why, "mode": mode})
         self.ledger.transition(run_id, "running", event="planning_finished",
                                data={"tasks": len(specs), "version": plan["version"]})
         self.checkpoint(run_id, reason="plan")
