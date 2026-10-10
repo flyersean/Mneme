@@ -1154,7 +1154,24 @@ def _ext_write_env(name, values):
         f.write("\n".join(lines) + ("\n" if lines else ""))
 
 
-def _ext_spawn(manifest):
+def _gateway_api_token(auth=None):
+    """Return a valid token for the dedicated 'gateway' machine user, minting the
+    user and a token if needed. Extensions use this to authenticate their
+    server-to-proxy calls (e.g. the canvas chat -> /v1/chat/completions)."""
+    import secrets
+    from mneme.auth import AuthStore, add_user, add_token
+    auth = auth or AuthStore()
+    if not auth.has_user("gateway"):
+        add_user(auth.users_file, "gateway", secrets.token_urlsafe(24), admin=False)
+    user = AuthStore(auth.users_file).get_user("gateway") or {}
+    for t in (user.get("tokens") or []):
+        if t.get("value"):
+            return t["value"]
+    tok = add_token(auth.users_file, "gateway", label="gateway")
+    return tok["value"]
+
+
+def _ext_spawn(manifest, auth=None):
     """Launch an extension process (its `command` + `args`, with {port}/{url}
     substituted) from its own directory, inheriting the saved env config."""
     cmd = list(manifest.get("command") or [])
@@ -1165,6 +1182,13 @@ def _ext_spawn(manifest):
     for k, v in _ext_read_env(manifest["name"]).items():
         env[k] = v
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Give the extension a machine token so it can authenticate its
+    # server-to-proxy calls (the proxy has auth on). Failures are ignored so a
+    # broken auth store never blocks an extension from launching.
+    try:
+        env["MNEME_API_TOKEN"] = _gateway_api_token(auth)
+    except Exception:
+        pass
     # Cap the extension log at launch: trim any existing file to the newest
     # `logging.max_entries` lines before the subprocess reopens it in append
     # mode. Extension stdout is a raw subprocess stream (can't be line-capped
@@ -8057,7 +8081,7 @@ if FLASK_OK:
         if _ext_is_running(name):
             return _cors_response({"ok": False, "error": f"{name} is already running"})
         try:
-            pid = _ext_spawn(m)
+            pid = _ext_spawn(m, auth=AUTH)
             return _cors_response({"ok": True, "pid": pid})
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
