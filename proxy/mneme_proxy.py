@@ -7849,6 +7849,26 @@ def _harness_step_judge(criteria: str, output: str, evidence: str = "", failed: 
     return _jev_noul_verdict(state, "step_done", q)
 
 
+def _harness_goal_aligned(state: dict):
+    """Goal-alignment judge: a Jev noul on whether the recent activity still serves
+    the overall goal, or has drifted into a sub-task / loop. Fired after every step
+    (completion OR failure). Drift is flagged aggressively (below ACCEPT_AT, not
+    REJECT_AT) because a refocus nudge is cheap while a missed drift burns the
+    whole step budget."""
+    q = noul("Is the recent activity still aligned with the overall goal?",
+             "The step's work and tool calls directly serve the stated goal.",
+             "The model has drifted into a sub-task or loop that does not serve the goal "
+             "(e.g. endlessly searching for a deleted file it should just recreate).")
+    try:
+        r = decide(state, {"goal_aligned": q}, timeout=10)
+        p = noul_prob(r, "goal_aligned")
+    except Exception as e:
+        return True, f"jev unavailable ({type(e).__name__}) — assuming aligned"
+    if p < ACCEPT_AT:
+        return False, f"jev goal_aligned={p:.2f} — possible drift"
+    return True, f"jev goal_aligned={p:.2f} — aligned"
+
+
 def _harness_extras() -> dict:
     """Proxy-side data sources for harness commands (/strategies, /memory, /config, ...)."""
     def strategies(_arg=""):
@@ -7938,6 +7958,7 @@ def _init_harness():
                             capabilities=_caps, skills=_skills, judge=_harness_judge,
                             plan_judge=_harness_plan_judge,
                             step_judge=_harness_step_judge,
+                            goal_judge=_harness_goal_aligned,
                             diagnostics=mntools._bash_log_tail,
                             evolution=_evolution, profiles=_profiles, runs_root=_hruns,
                             lease_seconds=float(os.environ.get("MNEME_HARNESS_LEASE", "120")))

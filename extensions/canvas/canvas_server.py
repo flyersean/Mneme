@@ -2118,6 +2118,7 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
     # Shared state set by create_server
     workspace_dir = ""
     run_lock = threading.Lock()
+    last_run_result = {}  # most recent /api/run output, injected into chat context
     proxy_url = "http://localhost:8080"  # overridden by --proxy-url when extension-managed
 
     # Silence default logging (we do our own)
@@ -2360,6 +2361,28 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
                 self._send_error("'conversation_id' must be a string", 400)
                 return
 
+            # Canvas-aware system prompt: the model needs to know it's operating
+            # in a shared file workspace, where files live, what the canvas can
+            # do, and the last run's console output — otherwise it can't reason
+            # about paths/features or debug without the user copy-pasting.
+            sys_parts = [
+                "You are the canvas assistant in Mneme — a shared file workspace.",
+                f"Workspace directory: {self.workspace_dir}",
+                "Canvas features: file tree, code editor, live preview, version "
+                "history (auto-snapshot on save), and a run console (POST /api/run "
+                "runs a workspace file and captures stdout/stderr/exit code).",
+            ]
+            lr = getattr(self, "last_run_result", None) or {}
+            if lr.get("path"):
+                lr_block = ("Most recent run in the canvas (debug from this; no need "
+                            "for the user to paste it):\n"
+                            f"  path: {lr.get('path')}\n"
+                            f"  exit code: {lr.get('returncode')}\n"
+                            f"  stdout:\n{lr.get('stdout', '') or '(none)'}\n"
+                            f"  stderr:\n{lr.get('stderr', '') or '(none)'}")
+                sys_parts.append(lr_block)
+            messages = [{"role": "system", "content": "\n\n".join(sys_parts)}] + messages
+
             # The running proxy is the authority on the active chat model. Read
             # it for each turn so provider/model switches take effect immediately.
             base = self.proxy_url.rstrip("/")
@@ -2495,6 +2518,15 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
                         "timed_out": False,
                     }
 
+            # Remember the last run so the chat can inject the console output and
+            # the model can debug without the user copy-pasting every time.
+            type(self).last_run_result = {
+                "path": file_path,
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
+                "returncode": result.get("returncode"),
+                "timed_out": result.get("timed_out", False),
+            }
             self._send_json(result)
 
         elif endpoint == "preview":

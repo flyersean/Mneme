@@ -162,7 +162,7 @@ _DEFAULT_PLAN = (
 class RunEngine:
     def __init__(self, ledger: Ledger, executor: Executor, *, planner: Optional[Planner] = None,
                  freeform_turn: Optional[Callable] = None,
-                 capabilities=None, skills=None, judge=None, plan_judge=None, step_judge=None, diagnostics=None, evolution=None, profiles=None,
+                 capabilities=None, skills=None, judge=None, plan_judge=None, step_judge=None, goal_judge=None, diagnostics=None, evolution=None, profiles=None,
                  runs_root: Optional[str] = None,
                  lease_seconds: float = 120.0, owner_tag: str = "engine",
                  log: Optional[Callable[[str], None]] = None):
@@ -175,6 +175,7 @@ class RunEngine:
         self.judge = judge                   # (criteria, output) -> (bool, why) for llm_judge checks + appeal
         self.plan_judge = plan_judge         # (goal, plan_text) -> (bool, why) — approves a plan before execution
         self.step_judge = step_judge         # (criteria, output, evidence) -> (bool, why) — confirms a checkless step
+        self.goal_judge = goal_judge         # (state) -> (bool, why) — checks the step still serves the goal (drift guard)
         self.diagnostics = diagnostics       # () -> str; extra failure context (e.g. bash log tail)
         self.on_finish: List[Callable] = []  # hooks(engine, run) after completed/failed
         self.evolution = evolution            # Evolution (Phase 6) — optional
@@ -642,6 +643,10 @@ class RunEngine:
         self.ledger.finish_step(step["step_id"], "completed" if result.ok else "failed",
                                 output=result.output or "", error=result.error or "", meta=result.meta)
 
+        # Goal-alignment guard: fire after every step (completed or failed) to catch
+        # drift into a sub-task / loop and redirect the next step.
+        self._check_goal_alignment(run, task, result)
+
         if result.ok and result.done:
             self.ledger.update_task(task["task_id"], status="completed", result=result.output or "",
                                     error="", finished_at=_now(), event="task_completed",
@@ -726,6 +731,40 @@ class RunEngine:
         self.ledger.emit(run["run_id"], "verification_passed" if ok else "verification_failed",
                          {"judge": why}, task_id=task["task_id"], step_id=step["step_id"])
         return ok, why
+
+    def _check_goal_alignment(self, run: dict, task: dict, result) -> None:
+        """After every step (completed OR failed), ask the goal judge whether the
+        recent activity still serves the overall goal, or has drifted into a
+        sub-task / loop. A drift verdict sets a pending note that redirects the
+        next step — this is the semantic loop-breaker the syntactic repeat-guard
+        can't catch (e.g. endlessly re-querying memory for a deleted file)."""
+        if self.goal_judge is None:
+            return
+        run_id = run["run_id"]
+        trace = []
+        for tc in (result.tool_calls or [])[-6:]:
+            args = tc.get("args") or {}
+            arg_s = (args.get("query") or args.get("command") or args.get("path") or "")[:120]
+            trace.append(f"{tc.get('tool')} {arg_s} -> {str(tc.get('status') or '')[:20]}")
+        state = {
+            "goal": (run.get("goal") or "")[:1200],
+            "step_title": (task.get("title") or "")[:300],
+            "step_outcome": ("completed" if result.ok else "failed")
+                            + ": " + ((result.output or result.error or "")[:800]),
+            "recent_tool_calls": "\n".join(trace)[:3000] or "(no tool calls)",
+        }
+        try:
+            ok, why = self.goal_judge(state)
+            ok, why = bool(ok), (why or "")[:500]
+        except Exception as e:
+            self.ledger.emit(run_id, "goal_judge_error", {"error": f"{type(e).__name__}: {e}"})
+            return
+        self.ledger.emit(run_id, "goal_aligned" if ok else "goal_drift",
+                         {"why": why}, task_id=task.get("task_id"))
+        if not ok:
+            self.add_note(run_id, f"[goal alignment] {why}\n"
+                          "Refocus: your recent activity may have drifted from the overall "
+                          "goal. Re-read the goal and take the most direct next step toward it.")
 
     def _judge_plan(self, run: dict, plan: dict):
         """Plan approval: the judge decides whether the plan will achieve the goal
