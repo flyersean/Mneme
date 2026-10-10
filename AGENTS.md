@@ -21,6 +21,42 @@ disagree, trust the linked spec — it is the source of truth.
 
 ---
 
+## 0. Git workflow — WHICH BRANCH ARE YOU ON? (read this first)
+
+This repo has **two active branches** and **two running instances**. Before you
+edit anything, check `git branch --show-current`.
+
+### You are on `self-code` (the self-coding agent, port 8080)
+
+- This is **your sandbox**. Edit freely. Commit and push **only** to `self-code`:
+
+      git pull --rebase origin self-code      # sync first
+      git add -A && git commit -m "what and why"
+      git push origin self-code
+
+- **NEVER** touch `classification-models` — never check it out, never push to it.
+- The standby instance (port 8082) runs `classification-models` from
+  `/home/ubuntu/mneme/repo-standby`. Do **not** edit that checkout or that instance.
+- If you break something, that's fine — the standby is a clean fallback. Just
+  keep pushing to `self-code` so your work is never lost.
+
+### You are on `classification-models` (the standby/fixer, port 8082)
+
+- This is the **stable** branch. Make only careful, minimal, verified fixes.
+- The self-coding agent works on `self-code` in `/home/ubuntu/mneme/repo`; do
+  not edit that checkout.
+- Push fixes to `classification-models` only after verifying they work.
+
+### Rules that apply everywhere
+
+- Launch proxies as the `ubuntu` user, **never** `sudo` (sudo stamps
+  `no_new_privs` and breaks `sudo` inside the bash tool).
+- The push token lives in the secrets store (`secrets.yaml`, key `github`); do
+  not log or echo it.
+- Keep `AGENTS.md` and `WORKFLOW.md` in sync when the workflow changes.
+
+---
+
 ## 1. What Mneme is (the mental model you must preserve)
 
 Mneme is a **proxy**, not a model, not a framework. A single running proxy is a thin

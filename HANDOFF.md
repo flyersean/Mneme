@@ -272,6 +272,12 @@ Deferred work (carried over from earlier sessions, not started):
   tokens, webhook keys, etc.), an admin-only `/secrets` page (list/add/delete
   with masked values), and `${secret:NAME}` reference resolution wired into MCP
   server `env`/`args`. Provider API keys remain in the env file.
+- Added a **`start_run` tool** — the chat model can start a background harness
+  run (structured or free-form) and check it via `inspect_run`. Bound via
+  `mntools.engine`; gated by `tools.start_run`. Added a **`POST /decide`**
+  endpoint so extensions call the classifier/decision models (Jev) over HTTP,
+  and gave the **swarm** a `decide` step (classifier) + `run` step (background
+  harness run) + `MNEME_API_TOKEN` auth on its proxy calls.
 
 **Don't launch the proxy via `sudo ./start_proxy.sh`** — sudo stamps
 `no_new_privs` (PR_SET_NO_NEW_PRIVS) on the process, which is inherited by all
@@ -280,3 +286,8 @@ breaks `sudo` inside the agent's bash tool ("The 'no new privileges' flag is
 set"). Always launch as the ubuntu user with `./start_proxy.sh` (or
 `setsid ./start_proxy.sh`); verify with `grep NoNewPrivs /proc/<pid>/status`
 expecting `0`.
+
+- Set up the **two-instance / two-branch workflow**: the self-coding agent works
+  on `self-code` (push/pull there only); the standby instance (8082) runs
+  `classification-models` from `/home/ubuntu/mneme/repo-standby`. See
+  `WORKFLOW.md` and `AGENTS.md` §0.
