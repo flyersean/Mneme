@@ -120,6 +120,7 @@ TOOL_INJECT_TOKENS = int(os.environ.get("MNEME_TOOL_INJECT_TOKENS", "600"))
 db = None          # sqlite3.Connection
 embed = None       # callable: str -> np.ndarray (normalized) | None
 ledger = None      # bound by mneme_proxy at harness startup (mneme.harness.Ledger | None)
+engine = None      # bound by mneme_proxy at harness startup (mneme.harness.RunEngine | None)
 
 
 def reload_config():
@@ -441,6 +442,22 @@ INSPECT_RUN_TOOL = {
     },
 }
 
+START_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "start_run",
+        "description": "Start a harness run in the background. The harness plans the goal and executes it step by step on its own thread (structured planner/verify by default, or a free-form goal session with free_form=true). Returns immediately with the run id; the run keeps going after your reply. Use inspect_run(run_id=...) to check its status, tasks, errors, or result later. Use this to delegate a long multi-step job (e.g. 'write tests for X and run them', 'refactor Y across the repo') instead of doing it inline.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "The goal for the run — a self-contained description of what to accomplish."},
+                "free_form": {"type": "boolean", "description": "True for a free-form goal session (model drives across turns); false/omit for the structured planner/verify run. Default false."},
+            },
+            "required": ["goal"],
+        },
+    },
+}
+
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
 
@@ -570,22 +587,26 @@ def _tool_name(t):
 
 
 def native_exec_names(client_tools):
-    """Which native bootstrap tools (bash/write) to expose, given client tools.
+    """Which native bootstrap tools (bash/write/start_run) to expose, given client tools.
 
     auto -> fill the gap (inject native bash only if the client lacks a bash,
             native write only if the client lacks a write).
-    on   -> always both.  off -> neither.
+    on   -> always both.  off -> neither (bash/write only).
+
+    start_run is a harness-delegation tool, not shell execution — it is gated by
+    its own flag (MNEME_TOOL_START_RUN) and is independent of NATIVE_TOOLS_MODE.
     """
-    if NATIVE_TOOLS_MODE == "on":
-        return {"bash", "write"}
-    if NATIVE_TOOLS_MODE == "off":
-        return set()
-    client_names = {_tool_name(t) for t in (client_tools or [])}
     out = set()
-    if "bash" not in client_names:
-        out.add("bash")
-    if "write" not in client_names:
-        out.add("write")
+    if NATIVE_TOOLS_MODE == "on":
+        out.update({"bash", "write"})
+    elif NATIVE_TOOLS_MODE != "off":
+        client_names = {_tool_name(t) for t in (client_tools or [])}
+        if "bash" not in client_names:
+            out.add("bash")
+        if "write" not in client_names:
+            out.add("write")
+    if os.environ.get("MNEME_TOOL_START_RUN", "1") == "1":
+        out.add("start_run")
     return out
 
 
@@ -606,9 +627,10 @@ def assemble_tools(client_tools):
 
     for t in enabled_readonly_tools():
         add(t)
-    for n in ("bash", "write"):
+    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL}
+    for n in ("bash", "write", "start_run"):
         if n in native_exec_names(client_tools):
-            add(NATIVE_BASH_TOOL if n == "bash" else NATIVE_WRITE_TOOL)
+            add(_native_defs[n])
     for t in (client_tools or []):
         add(t)
     # MCP tools (dynamic — added/removed at runtime via the MCP manager). Added
@@ -749,11 +771,13 @@ def _exec_write(file_path, content):
 
 
 def execute_native_tool(name, args):
-    """Dispatch a native bash/write call server-side. Returns a result string."""
+    """Dispatch a native bash/write/start_run call server-side. Returns a result string."""
     if name == "bash":
         return _exec_bash((args or {}).get("command", ""))
     if name == "write":
         return _exec_write((args or {}).get("file_path", ""), (args or {}).get("content", ""))
+    if name == "start_run":
+        return _exec_start_run(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1089,6 +1113,28 @@ def _exec_inspect_run(args):
         return _format_run_detail(d)
     except Exception as e:
         return f"[inspect_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_start_run(args):
+    """Start a harness run in the background; return its id immediately."""
+    if engine is None:
+        return ("Harness is disabled or not initialized — there is no engine to "
+                "start a run.")
+    args = args or {}
+    goal = str(args.get("goal") or "").strip()
+    if not goal:
+        return "start_run requires a non-empty goal."
+    free_form = bool(args.get("free_form"))
+    try:
+        run = engine.create(goal, free_form=free_form, start=True,
+                            created_by="model:start_run")
+        rid = run.get("run_id")
+        status = run.get("status")
+        return (f"Run started in the background: {rid} [{status}]. "
+                f"The harness is planning and executing it on its own thread. "
+                f"Check progress with inspect_run(run_id=\"{rid}\").")
+    except Exception as e:
+        return f"[start_run error: {type(e).__name__}: {e}]"
 
 
 def execute_readonly_tool(name, args):

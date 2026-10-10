@@ -231,6 +231,7 @@ _CONFIG_ENV_MAP = {
     "tools.fetch_url": "MNEME_TOOL_FETCH_URL",
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
     "tools.inspect_run": "MNEME_TOOL_INSPECT_RUN",
+    "tools.start_run": "MNEME_TOOL_START_RUN",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     # Agent harness (durable runs) — see docs/harness/.
     "harness.enabled": "MNEME_HARNESS",
@@ -7070,7 +7071,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     _tool_trace.append(_trace("write", tc["function"].get("arguments", {}) or {},
                                               "build budget exhausted — not executed", time.time(), blocked=True))
                 print(f"  [BUILD-EXHAUSTED] write budget ({BUILD_MAX_ITERATIONS}) reached", flush=True)
-                _exec = [tc for tc in native_calls if tc.get("function", {}).get("name") == "bash"]
+                _exec = [tc for tc in native_calls if tc.get("function", {}).get("name") in ("bash", "start_run")]
             else:
                 _build_calls += len(_writes)
                 _exec = native_calls
@@ -7979,6 +7980,7 @@ def _init_harness():
         _log_error("harness:init", e)
         print(f"  [HARNESS][ERR] failed to start — harness disabled: {e}", flush=True)
         HARNESS = None
+    mntools.engine = HARNESS  # run-creation access for the start_run tool
 
 
 # ── Filesystem scope (the chat file browser) ─────────────────────
@@ -8462,6 +8464,29 @@ if FLASK_OK:
         persisted = _persist_model(model)
         print(f"  [MODEL-SWITCH] -> {model} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "model": model, "persisted": persisted})
+
+    # ── Decision (classifier) models over HTTP — for extensions like the swarm ──
+    @app.route("/decide", methods=["POST"])
+    def decide_endpoint():
+        """Evaluate typed decision questions against a state using the decision
+        (classifier) models — see mneme.decisions. Body: {state, questions, model?}.
+
+        Returns {ok, decision: {id, model, provider, answers, usage}}. Each answer
+        carries a calibrated probability (noul -> yes/no, choice -> one option,
+        score -> position on a rubric). Extensions call this to use the classifier
+        models without importing the Mneme repo."""
+        from mneme.decisions import decide
+        data = request.get_json(force=True, silent=True) or {}
+        state = data.get("state")
+        questions = data.get("questions") or {}
+        model = (data.get("model") or "").strip()
+        if state is None or not isinstance(questions, dict) or not questions:
+            return _cors_response({"ok": False, "error": "missing state or questions"}, status=400)
+        try:
+            resp = decide(state, questions, model=model) if model else decide(state, questions)
+            return _cors_response({"ok": True, "decision": resp})
+        except Exception as e:
+            return _cors_response({"ok": False, "error": f"{type(e).__name__}: {e}"}, status=502)
 
     # ── Dashboard: one hub with the full nav menu + proxy overview + status ──
     _OLLAMA_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "ollama.html")

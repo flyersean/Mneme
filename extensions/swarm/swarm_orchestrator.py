@@ -107,6 +107,16 @@ CONFIG (swarm_config.yaml)
                   the run. Use for utilities like `scripts/now.py <file>` to stamp
                   a timestamp the models can read. Runs from the orchestrator's
                   working directory.
+    decide        call the proxy's /decide endpoint (classifier/decision models —
+                  Jev et al). { questions: {name: {type, instructions, criteria}},
+                  model? }. The step's output is the answers rendered as
+                  `name: ANSWER (prob)` lines, so a string `if` branches on it
+                  (e.g. `contains: YES`). Talks to step `port:` or the `harness:`
+                  block's port.
+    run           start a BACKGROUND harness run on the proxy (POST /runs with
+                  start=True). { goal?, free_form? } — goal defaults to the read_dir
+                  context. Output is the new run id; the run keeps executing after
+                  this step returns. Talks to step `port:` or the `harness:` port.
 
   `if` has two forms:
 
@@ -138,6 +148,7 @@ CONFIG (swarm_config.yaml)
 """
 
 import difflib
+import json
 import os
 import re
 import shutil
@@ -170,6 +181,14 @@ _EDIT_INSTRUCTION = (
 )
 
 
+def _auth_headers():
+    """Bearer header for the local proxy, from the token Mneme injects into the
+    extension's environment (MNEME_API_TOKEN). Empty dict when unset (proxy with
+    auth off) — the header is then omitted entirely."""
+    tok = os.environ.get("MNEME_API_TOKEN", "")
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
 class RunRecorder:
     """Optional: record this swarm as a durable Mneme harness run — over HTTP only.
 
@@ -198,7 +217,7 @@ class RunRecorder:
         if not self.enabled:
             return None
         try:
-            r = requests.post(self.base + path, json=body, timeout=15)
+            r = requests.post(self.base + path, json=body, timeout=15, headers=_auth_headers())
         except requests.exceptions.RequestException as e:
             return self._fail(f"harness unreachable: {e}")
         if r.status_code >= 400:
@@ -218,7 +237,7 @@ class RunRecorder:
         if resume_run_id:
             self.run_id = resume_run_id
             try:
-                cur = requests.get(f"{self.base}/runs/{self.run_id}", timeout=15).json().get("run") or {}
+                cur = requests.get(f"{self.base}/runs/{self.run_id}", timeout=15, headers=_auth_headers()).json().get("run") or {}
             except (requests.exceptions.RequestException, ValueError):
                 cur = {}
             if cur.get("status") in ("failed", "cancelled"):   # terminal -> reopen first
@@ -241,7 +260,8 @@ class RunRecorder:
         """The step name recorded as 'next' by the last completed step (or None)."""
         try:
             r = requests.get(f"{self.base}/runs/{self.run_id}/events",
-                             params={"types": "swarm_step_completed"}, timeout=15)
+                             params={"types": "swarm_step_completed"}, timeout=15,
+                             headers=_auth_headers())
             evs = r.json().get("events", []) if r.status_code == 200 else []
         except requests.exceptions.RequestException:
             evs = []
@@ -411,7 +431,7 @@ class Orchestrator:
             # on output — action-only steps (folder actions, folder-state if, goto,
             # read-only) never touch a backend, so requiring port/model there is
             # wrong and rejects otherwise-valid action-only configs.
-            if self._step_needs_model(s):
+            if self._step_needs_model(s) and not s.get("decide") and not s.get("run"):
                 if backend == "mneme" and not s.get("port"):
                     raise SystemExit(f"step {nm}: backend=mneme requires 'port'")
                 if backend == "ollama" and not s.get("model"):
@@ -730,7 +750,7 @@ class Orchestrator:
         """
         for attempt in range(retries + 1):
             try:
-                r = requests.post(url, json=payload, timeout=timeout)
+                r = requests.post(url, json=payload, timeout=timeout, headers=_auth_headers())
             except requests.exceptions.RequestException as e:
                 if attempt < retries:
                     print(f"  [retry] {label} {type(e).__name__} — retrying ({attempt + 1}/{retries})", flush=True)
@@ -744,6 +764,78 @@ class Orchestrator:
                 time.sleep(2 ** attempt)
                 continue
             raise SystemExit(f"{label} HTTP {r.status_code}: {r.text[:400]}")
+
+    def _decision_target_port(self, step):
+        """Which proxy a decide/run step talks to: the step's own `port`, else the
+        harness recorder's port (the local proxy that spawned this extension)."""
+        return step.get("port") or (self.recorder.cfg.get("port") if self.recorder.cfg else None)
+
+    def _format_decision(self, decision):
+        """Render a /decide response's answers as branchable text: one
+        `name: ANSWER (prob)` line per question (noul -> YES/NO, choice -> option,
+        score -> value)."""
+        answers = (decision or {}).get("answers") or {}
+        lines = []
+        for name, a in answers.items():
+            if not isinstance(a, dict):
+                lines.append(f"{name}: {a}")
+            elif "noul" in a:
+                p = float(a.get("noul", 0.0))
+                lines.append(f"{name}: {'YES' if p >= 0.5 else 'NO'} ({p:.2f})")
+            elif "choice" in a:
+                lines.append(f"{name}: {a.get('choice')} ({float(a.get('confidence', 0.0)):.2f})")
+            elif "score" in a:
+                lines.append(f"{name}: {a.get('score')}")
+            else:
+                lines.append(f"{name}: {json.dumps(a)}")
+        return "\n".join(lines) or json.dumps(decision)
+
+    def call_decide(self, step, context):
+        """Call the proxy's /decide endpoint (classifier/decision models) and return
+        the answers as branchable text (see _format_decision)."""
+        d = step.get("decide") or {}
+        questions = d.get("questions") or {}
+        port = self._decision_target_port(step)
+        if not port:
+            raise SystemExit("decide step needs a port (set step `port:` or a `harness:` block)")
+        body = {"state": context, "questions": questions}
+        if d.get("model"):
+            body["model"] = str(d["model"])
+        r = self._post_json(f"http://localhost:{port}/decide", body,
+                            step.get("timeout") or self.timeout,
+                            int(step.get("retry") or 0), f"decide :{port}")
+        try:
+            payload = r.json()
+        except ValueError:
+            raise SystemExit(f"decide :{port} non-JSON response: {r.text[:300]}")
+        if not payload.get("ok"):
+            raise SystemExit(f"decide :{port} error: {payload.get('error')}")
+        return self._format_decision(payload.get("decision") or {})
+
+    def call_start_run(self, step, context):
+        """Start a background harness run on the proxy (POST /runs with start=True)
+        and return the new run id. The run keeps executing after this step returns."""
+        r = step.get("run") or {}
+        goal = (r.get("goal") or "").strip() or (context or "").strip()
+        if not goal:
+            raise SystemExit("run step needs a goal (set `run.goal` or non-empty read_dir context)")
+        port = self._decision_target_port(step)
+        if not port:
+            raise SystemExit("run step needs a port (set step `port:` or a `harness:` block)")
+        body = {"goal": goal, "start": True, "created_by": "extension:swarm",
+                "free_form": bool(r.get("free_form"))}
+        rr = self._post_json(f"http://localhost:{port}/runs", body,
+                             step.get("timeout") or self.timeout,
+                             int(step.get("retry") or 0), f"run :{port}")
+        try:
+            payload = rr.json()
+        except ValueError:
+            raise SystemExit(f"run :{port} non-JSON response: {rr.text[:300]}")
+        rid = ((payload.get("run") or {}).get("run_id")) or payload.get("run_id")
+        if not rid:
+            raise SystemExit(f"run :{port} no run_id in response: {rr.text[:300]}")
+        print(f"  [run] started background run {rid}", flush=True)
+        return rid
 
     def call_mneme(self, step, context, retries=0):
         """Call a Mneme proxy over its OpenAI-compatible chat endpoint.
@@ -964,7 +1056,13 @@ class Orchestrator:
             _empty_skip = bool(step.get("skip_if_empty")) and context == "NO_INPUT"
             if _empty_skip:
                 print("  [skip] read_dir empty — skipping model call")
-            if self._step_needs_model(step) and not _empty_skip:
+            if step.get("decide"):
+                # Classifier/decision models over HTTP (no generation call).
+                output = self.call_decide(step, context)
+            elif step.get("run"):
+                # Start a background harness run on the proxy.
+                output = self.call_start_run(step, context)
+            elif self._step_needs_model(step) and not _empty_skip:
                 backend = (step.get("backend") or "mneme").lower()
                 retries = int(step.get("retry") or 0)
                 if backend == "ollama":
