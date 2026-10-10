@@ -39,6 +39,7 @@ def _default_tools_dir() -> str:
     return os.path.expanduser(os.environ.get("MNEME_TOOLS_DIR") or os.path.join(cd, "tools"))
 TOOLS_DIR = _default_tools_dir()
 BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
+_BASH_LOG_MAX = int(os.environ.get("MNEME_BASH_LOG_MAX", str(10 * 1024 * 1024)))  # 10 MB cap
 
 # ─── Filesystem scope (enforced by the native bash/write/read tools) ────
 # The model may WRITE only under MODEL_SCOPE and TOOLS_DIR (its workspace); the
@@ -691,6 +692,15 @@ def _exec_bash(command):
             cmd = ["bash", "-c", command]
 
         log_path = _bash_log_path()
+        # Bound the log: a runaway command or a leaked background process (a server
+        # started with `&` that inherits this fd) can otherwise fill the disk. When
+        # the log exceeds the cap, truncate it before this call so the new process
+        # starts from a fresh file.
+        try:
+            if os.path.getsize(log_path) > _BASH_LOG_MAX:
+                os.truncate(log_path, 0)
+        except OSError:
+            pass
         header = ("\n===== bash %s :: %s =====\n" % (time.strftime("%H:%M:%S"), command[:200])).encode("utf-8", "replace")
         with open(log_path, "ab") as logf:
             logf.write(header)
