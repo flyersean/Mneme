@@ -58,6 +58,12 @@
 # provider" (selected in `providers:`), NOT literally OpenAI.
 backend:
   type: openai          # "ollama" | "openai"
+  # TODO(fix later): start_proxy.sh hardcodes `export MNEME_BACKEND="openrouter"`
+  # (or "ollama"), which OVERRIDES this `type:` at startup — so `backend.type` is
+  # currently ignored and the proxy reports the start script's backend instead of
+  # what's written here. Fix = drop that export from scripts/mneme_setup.py AND
+  # the generated start script, then re-sync the MNEME_BACKEND global from
+  # os.environ after config load (otherwise it silently falls back to "ollama").
   provider: openrouter  # which `providers:` entry to use (ignored when type=ollama)
   ollama_url: http://localhost:11434   # used only when type=ollama
 
