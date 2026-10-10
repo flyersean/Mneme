@@ -441,6 +441,26 @@ INSPECT_RUN_TOOL = {
     },
 }
 
+SAVE_TOOL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "save_tool",
+        "description": "Register a tool you just built into the persistent tool registry so future sessions can find and reuse it via list_tools/read_tool. Write and test your script first (write/bash), then call this with its path. Saving under an existing name updates that entry.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "problem_type": {"type": "string", "description": "Category of problem this tool solves, e.g. live_data, scraping, data_processing"},
+                "name": {"type": "string", "description": "Short unique snake_case identifier for the tool"},
+                "description": {"type": "string", "description": "What the tool does and when to use it"},
+                "script_path": {"type": "string", "description": "Path to the script file you wrote (relative to the tools dir, or absolute)"},
+            },
+            "required": ["problem_type", "name", "description", "script_path"],
+        },
+    },
+}
+
+# Registry-write tool (save_tool). Mutates the tools table + canonical dir, so it
+# is NOT in READONLY_SERVER_TOOLS; gated by MNEME_TOOL_SAVE_TOOL (default on).
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
 
@@ -563,6 +583,13 @@ def enabled_readonly_names():
     return {_tool_name(t) for t in enabled_readonly_tools()}
 
 
+def enabled_save_tools():
+    """The save_tool registry-write tool, if enabled (default on)."""
+    if db is None:
+        return []  # no registry connection — nothing to save into
+    return [SAVE_TOOL_TOOL] if _tool_enabled("save_tool") else []
+
+
 # ─── Tool assembly ───────────────────────────────────────────────────────
 
 def _tool_name(t):
@@ -619,6 +646,10 @@ def assemble_tools(client_tools):
     # Curation tools last (same collision policy — built-ins win). Only present
     # when the model has retraction authority (see set_curation_hooks).
     for t in enabled_curation_tools():
+        add(t)
+    # Registry-write tool (save_tool) — same collision policy. Gated by
+    # MNEME_TOOL_SAVE_TOOL (default on); requires a registry db connection.
+    for t in enabled_save_tools():
         add(t)
     return tools
 
@@ -1091,6 +1122,34 @@ def _exec_inspect_run(args):
         return f"[inspect_run error: {type(e).__name__}: {e}]"
 
 
+def _exec_save_tool(args):
+    """Agent-facing wrapper around save_tool(): register a built script."""
+    args = args or {}
+    name = (args.get("name") or "").strip()
+    problem_type = (args.get("problem_type") or "").strip()
+    description = (args.get("description") or "").strip()
+    script_path = (args.get("script_path") or "").strip()
+    if not name:
+        return "[save_tool error: 'name' is required]"
+    if not _re.fullmatch(r"[a-z0-9_]{1,64}", name):
+        return f"[save_tool error: invalid name '{name}' — use snake_case, a-z/0-9/_ only]"
+    if not problem_type:
+        return "[save_tool error: 'problem_type' is required]"
+    if not description:
+        return "[save_tool error: 'description' is required]"
+    if not script_path:
+        return "[save_tool error: 'script_path' is required — write your script first (write/bash), then pass its path]"
+    # Resolve relative paths against TOOLS_DIR (same root the write/bash tools use).
+    if not os.path.isabs(script_path):
+        script_path = os.path.join(TOOLS_DIR, script_path)
+    if not os.path.isfile(script_path):
+        return f"[save_tool error: no script at {script_path} — write it first, then save]"
+    tool_id = save_tool(problem_type, name, description, script_path)
+    if tool_id is None:
+        return "[save_tool error: registry unavailable (db not connected)]"
+    return f"Saved tool '{name}' (id={tool_id}) for problem_type '{problem_type}'. It is now discoverable via list_tools and readable via read_tool."
+
+
 def execute_readonly_tool(name, args):
     """Dispatch a read-only registry tool (list_tools/read_tool/read_image/read_file/fetch_url) or web_search."""
     if name == "list_tools":
@@ -1113,6 +1172,8 @@ def execute_readonly_tool(name, args):
         return _exec_remove_memory(args)
     if name == "inspect_run":
         return _exec_inspect_run(args)
+    if name == "save_tool":
+        return _exec_save_tool(args)
     return f"[unknown registry tool: {name}]"
 
 

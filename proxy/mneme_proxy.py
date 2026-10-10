@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex
+import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -3063,6 +3063,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 "status_code": r.status_code, "retry_after": _parse_retry_after(r.headers)}
 
     content_parts = []
+    # [LOOP-GUARD] state: recent content deltas for repetition detection
+    _LOOP_WINDOW = 8
+    _recent = collections.deque()
     reasoning_parts = []
     tc_slots = {}          # index -> accumulator for streamed tool-call deltas
     finish_reason = None
@@ -3137,6 +3140,27 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             delta = choices[0].get("delta") or {}
             if delta.get("content"):
                 content_parts.append(delta["content"])
+                # [LOOP-GUARD] mid-stream repetition detector: if the last
+                # LOOP_WINDOW content deltas are byte-identical (and non-
+                # trivial), the model is stuck in a repetition loop (seen with
+                # GLM at low temperature). Abort the stream, keep the partial
+                # output, and let the retry loop re-query. Cheap: only compares
+                # small recent deltas, never the whole buffer.
+                _d = delta["content"]
+                if len(_d) > 1:
+                    _recent.append(_d)
+                if len(_recent) > _LOOP_WINDOW:
+                    _recent.popleft()
+                if (len(_recent) == _LOOP_WINDOW
+                        and len(set(_recent)) == 1
+                        and sum(len(x) for x in _recent) >= 24):
+                    print(f"  [LOOP-GUARD] {len(content_parts)} content chunks "
+                          f"in, last {_LOOP_WINDOW} deltas identical — aborting "
+                          f"repetition loop, keeping partial", flush=True)
+                    return {"content": "".join(content_parts),
+                            "thinking": "".join(reasoning_parts),
+                            "tool_calls": [], "eval_count": 0,
+                            "done_reason": "loop", "provider": provider}
                 _emit_token("content", delta["content"])
             if delta.get("reasoning"):
                 reasoning_parts.append(delta["reasoning"])
@@ -6893,6 +6917,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # `other_calls` and get passed through to the client instead of run, which
     # showed up as an empty answer plus "passing tool call through to client".
     _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_curation_tools()}
+    # save_tool executes server-side too (registry write) — same routing as curation.
+    _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_save_tools()}
     _mcp_names = mntools.mcp_tool_names() - _readonly_names - _native_names  # MCP tools (shadowed on name collision)
     # Harness permission grant: an ungranted tool is not executed server-side even if
     # the model names it anyway (it falls through to passthrough -> step failure).

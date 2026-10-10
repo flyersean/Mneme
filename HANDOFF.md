@@ -272,3 +272,11 @@ Deferred work (carried over from earlier sessions, not started):
   tokens, webhook keys, etc.), an admin-only `/secrets` page (list/add/delete
   with masked values), and `${secret:NAME}` reference resolution wired into MCP
   server `env`/`args`. Provider API keys remain in the env file.
+
+**Don't launch the proxy via `sudo ./start_proxy.sh`** — sudo stamps
+`no_new_privs` (PR_SET_NO_NEW_PRIVS) on the process, which is inherited by all
+children (including bash-tool subprocesses) and is one-way until restart. It
+breaks `sudo` inside the agent's bash tool ("The 'no new privileges' flag is
+set"). Always launch as the ubuntu user with `./start_proxy.sh` (or
+`setsid ./start_proxy.sh`); verify with `grep NoNewPrivs /proc/<pid>/status`
+expecting `0`.
