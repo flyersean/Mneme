@@ -93,6 +93,7 @@ mneme/
       tools.py              #   tool registry / native tools
       instructions.py       #   prompt instructions
       auth.py / auth_ui.py  #   login (pw=humans, token/Bearer=machines)
+      secrets_store.py      #   named secret store (${secret:NAME} refs for MCP/integrations)
       grading.py curation.py overcome.py strategies.py templates.py
       logfile.py thinking_log.py tool_trail.py mcp_client.py capability.py chatcmd.py ...
     static/                 # chat.html (chat UI), dashboard.html, vendor/ (CodeMirror)
@@ -178,6 +179,12 @@ DeepSeek directly). In that case it needs the DeepSeek key (and the OpenRouter
 key if it also drives its own embedding). Never commit these keys — they live in
 `/home/ubuntu/mneme/env`, which is gitignored.
 
+**Non-provider secrets** (MCP server tokens, webhook keys, third-party service
+credentials) go in the general-purpose **Secrets** store, not the env file or the
+config. Admin-only UI at `/secrets` (dashboard nav → Secrets); values live in a
+chmod-600 `<mneme-root>/secrets.yaml`, and config consumers reference them with
+`${secret:NAME}` (e.g. an MCP server's `env: GITHUB_TOKEN: ${secret:gh-token}`).
+
 ---
 
 ## 7. Known issues / TODOs
@@ -260,3 +267,8 @@ Deferred work (carried over from earlier sessions, not started):
   `agent-harness`), fetched `classification-models`, checked it out (tracking
   `origin/classification-models`), and deleted the stale local `agent-harness`
   branch. The VPS now cleanly tracks the active dev branch.
+- Added a general-purpose **secret store** (`proxy/mneme/secrets_store.py`): a
+  chmod-600 `<mneme-root>/secrets.yaml` for arbitrary keys/passwords (MCP
+  tokens, webhook keys, etc.), an admin-only `/secrets` page (list/add/delete
+  with masked values), and `${secret:NAME}` reference resolution wired into MCP
+  server `env`/`args`. Provider API keys remain in the env file.
