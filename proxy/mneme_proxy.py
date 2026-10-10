@@ -8330,8 +8330,13 @@ if FLASK_OK:
         if not api_key_env:
             return _cors_response({"ok": False, "error": f"provider {provider!r} has no api_key_env"}, status=400)
         os.environ[api_key_env] = key
-        if api_key_env == "OPENROUTER_API_KEY":
-            global OR_API_KEY
+        # Refresh the cached chat key when this provider is the ACTIVE one (or the
+        # OpenRouter carrier). Saving a key AFTER activation otherwise leaves
+        # OR_API_KEY stale and every chat request 401s with the old key.
+        global OR_API_KEY
+        _active = os.environ.get("MNEME_PROVIDER", "")
+        _act_key_env = (PROVIDER_CATALOG.get(_active) or {}).get("key_env") or ""
+        if api_key_env == "OPENROUTER_API_KEY" or api_key_env == _act_key_env:
             OR_API_KEY = key
         persisted = _persist_env_key(_env_file_path(), api_key_env, key)
         print(f"  [PROVIDER-KEY] set {api_key_env} for {provider} (persisted={persisted})", flush=True)
