@@ -528,8 +528,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     flex-shrink: 0; height: 28px;
   }
   #preview-frame {
-    flex: 1; border: none; background: #fff;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 120px;
+    height: 100%;
+    border: none;
+    background: #fff;
+    outline: none;
   }
+  #preview-pane.active { display: flex; min-height: 120px; }
 
   /* Console pane */
   #console-pane {
@@ -961,7 +968,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <span>👁️ Preview</span>
         <button onclick="togglePreview()" style="background:none;border:none;color:var(--text-dim);cursor:pointer">✕</button>
       </div>
-      <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+      <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin" tabindex="0"></iframe>
     </div>
 
     <!-- Diff view -->
@@ -1689,6 +1696,17 @@ function togglePreview() {
   if (state.previewActive) updatePreview();
 }
 
+function focusPreviewFrame() {
+  const frame = document.getElementById('preview-frame');
+  if (!frame || !state.previewActive) return;
+  try { frame.focus(); } catch (e) { /* ignore */ }
+  try { frame.contentWindow && frame.contentWindow.focus(); } catch (e) { /* ignore */ }
+}
+document.addEventListener('click', (e) => {
+  const frame = document.getElementById('preview-frame');
+  if (frame && state.previewActive && (e.target === frame || frame.contains(e.target))) focusPreviewFrame();
+});
+
 async function updatePreview() {
   if (!state.currentFile || !state.previewActive) return;
   const content = getEditorContent();
@@ -1702,6 +1720,7 @@ async function updatePreview() {
     const data = await resp.json();
     if (data.content_type === 'text/html') {
       document.getElementById('preview-frame').srcdoc = data.content;
+      focusPreviewFrame();
     } else if (data.content_type === 'image') {
       document.getElementById('preview-frame').srcdoc = `<img src="data:image/png;base64,${data.content}" style="max-width:100%">`;
     } else {
@@ -1722,8 +1741,11 @@ function switchTab(tab) {
   document.getElementById('editor-pane').style.display = tab === 'edit' ? 'flex' : 'none';
   document.getElementById('preview-pane').classList.toggle('active', tab === 'preview');
   document.getElementById('diff-view').classList.toggle('active', tab === 'diff');
+  state.previewActive = (tab === 'preview');
+  document.getElementById('preview-btn').classList.toggle('active', state.previewActive);
 
   if (tab === 'preview') updatePreview();
+  else if (tab === 'edit') document.getElementById('preview-pane').classList.remove('active');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2165,33 +2187,38 @@ function applySettings() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Resize handlers
 // ═════════════════════════════════════════════════════════════════════════════
-function makeResizable(handleId, targetId, direction, reverse) {
+function makeResizable(handleId, targetId, edge) {
+  // Position-based resizing: the pane's new size is computed directly from
+  // the pointer position relative to the pane's anchored edge — no delta
+  // math and no inversion flags.
+  //   edge='left'   : sidebar, anchored at viewport left; width = pointerX
+  //   edge='right'  : chat pane, anchored at viewport right; width = winW - pointerX
+  //   edge='bottom' : console pane, anchored at viewport bottom; height = winH - pointerY
   const handle = document.getElementById(handleId);
   const target = document.getElementById(targetId);
-  let startPos, startSize;
+  if (!handle || !target) return;
+  const isRow = (edge === 'bottom');
+  const minSize = isRow ? 80 : 150;
+
+  const clampAndApply = (px) => {
+    const maxPx = isRow ? window.innerHeight - 200 : window.innerWidth - 300;
+    const size = Math.min(Math.max(px, minSize), Math.max(maxPx, minSize));
+    if (isRow) target.style.height = size + 'px';
+    else target.style.width = size + 'px';
+    try { localStorage.setItem('canvas-size-' + targetId, Math.round(size)); } catch (e) {}
+    return size;
+  };
 
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault();
-    startPos = direction === 'col' ? e.clientX : e.clientY;
-    startSize = direction === 'col' ? target.offsetWidth : target.offsetHeight;
     handle.classList.add('active');
-    document.body.style.cursor = direction === 'col' ? 'col-resize' : 'row-resize';
+    document.body.style.cursor = isRow ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
-
     const onMove = (ev) => {
-      const delta = direction === 'col' ? (ev.clientX - startPos) : (ev.clientY - startPos);
-      // A left/bottom panel's handle sits on its leading edge: dragging "inward"
-      // (right for a right panel, down for a bottom panel) must SHRINK it, so the
-      // delta is negated. A left panel's handle sits on its trailing edge and grows
-      // with the drag. Without this, the chat and console sliders run backwards.
-      const newSize = startSize + (reverse ? -delta : delta);
-      if (direction === 'col') {
-        target.style.width = Math.max(target.dataset.min || 160, newSize) + 'px';
-      } else {
-        target.style.height = Math.max(60, newSize) + 'px';
-      }
+      if (edge === 'left') clampAndApply(ev.clientX);
+      else if (edge === 'right') clampAndApply(window.innerWidth - ev.clientX);
+      else clampAndApply(window.innerHeight - ev.clientY);
     };
-
     const onUp = () => {
       handle.classList.remove('active');
       document.body.style.cursor = '';
@@ -2199,15 +2226,19 @@ function makeResizable(handleId, targetId, direction, reverse) {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
-
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
-}
 
-makeResizable('sidebar-resize', 'sidebar', 'col', false);
-makeResizable('chat-resize', 'chat-pane', 'col', true);
-makeResizable('console-resize', 'console-pane', 'row', true);
+  // Restore persisted size (if any) once panes are laid out.
+  try {
+    const saved = localStorage.getItem('canvas-size-' + targetId);
+    if (saved) clampAndApply(parseInt(saved, 10));
+  } catch (e) {}
+}
+makeResizable('sidebar-resize', 'sidebar', 'left');
+makeResizable('chat-resize', 'chat-pane', 'right');
+makeResizable('console-resize', 'console-pane', 'bottom');
 
 function togglePane(paneId) {
   const pane = document.getElementById(paneId);
