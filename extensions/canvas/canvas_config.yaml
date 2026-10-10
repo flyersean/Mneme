@@ -1,0 +1,168 @@
+# Canvas Extension — Default Configuration
+# =============================================================================
+# Point this config at your running Mneme proxies and define the agents,
+# canvas template, loop parameters, and UI/feature settings.
+#
+# The canvas server reads this file on startup. Edit it and restart the server
+# (or use POST /canvas/reset after re-reading) to apply changes.
+#
+# Placeholder ports are used throughout — replace them with your actual
+# Mneme proxy ports before running.
+# =============================================================================
+
+# ── Server ──────────────────────────────────────────────────────────────────
+# The port the canvas HTTP server listens on. The server also accepts
+# --port and --host CLI flags which override this value.
+port: 9090
+host: "0.0.0.0"
+
+# ── Proxies ─────────────────────────────────────────────────────────────────
+# List of Mneme proxy endpoints. The server round-robins across them on each
+# turn. Each proxy must expose POST /v1/chat/completions (OpenAI-compatible).
+#
+# PLACEHOLDER PORTS — change these to match your running Mneme instances.
+# On RunPod, avoid port 8081 (nginx reserves it).
+proxies:
+  - url: "http://localhost:8080"   # primary proxy (placeholder)
+  # - url: "http://localhost:8081"  # secondary proxy (uncomment if available)
+
+# ── Agents ──────────────────────────────────────────────────────────────────
+# Define the agents that participate in the loop. The server calls them in
+# round-robin order (analyst → critic → analyst → ...).
+#
+# Each agent has:
+#   name          — identifier used in round-robin order and canvas metadata
+#   model         — model name passed in the chat completion request body
+#   system_prompt — prepended to every turn for this agent
+#   temperature   — (optional) sampling temperature, default: proxy default
+#   max_tokens    — (optional) max response tokens, default: proxy default
+agents:
+  - name: "analyst"
+    model: "qwen/qwen3-8b"
+    system_prompt: |
+      You are a systems analyst. Read the current canvas carefully.
+      Provide a clear, structured analysis or proposal. If you want to
+      update the canvas, output a fenced code block with your changes:
+
+      ```canvas
+      {
+        "sections": [{"title": "...", "content": "..."}],
+        "scores": {"quality": 0.0, "feasibility": 0.0}
+      }
+      ```
+
+      Be specific and actionable. Assign scores honestly.
+    temperature: 0.7
+    max_tokens: 2048
+
+  - name: "critic"
+    model: "qwen/qwen3-8b"
+    system_prompt: |
+      You are a constructive critic. Review the latest proposal on the
+      canvas. Identify strengths, weaknesses, and blind spots. Suggest
+      concrete improvements. If you want to update the canvas, output a
+      fenced code block with your changes:
+
+      ```canvas
+      {
+        "sections": [{"title": "Critique", "content": "..."}],
+        "scores": {"quality": 0.0, "feasibility": 0.0}
+      }
+      ```
+
+      Be fair but rigorous. Lower scores should come with a clear reason.
+    temperature: 0.8
+    max_tokens: 2048
+
+# ── Canvas ──────────────────────────────────────────────────────────────────
+# The shared structured document that agents read and write.
+#
+# template:
+#   The initial canvas structure. Deep-copied on every reset. You can add
+#   any keys you want — "problem", "sections", and "scores" are the
+#   convention, but agents can use $set / $merge to modify arbitrary keys.
+#
+# max_sections:
+#   Maximum number of sections before the oldest are trimmed (FIFO).
+canvas:
+  template:
+    problem: ""
+    sections: []
+    scores: {}
+    turn: 0
+  max_sections: 20
+
+# ── Loop ────────────────────────────────────────────────────────────────────
+# Controls when the agent loop stops.
+#
+# max_turns:
+#   Hard limit on the number of turns before the loop stops.
+#
+# stop_on_consensus:
+#   If true, the loop stops early when the average of all numeric scores
+#   in the canvas reaches consensus_threshold.
+#
+# consensus_threshold:
+#   Score threshold (0.0–1.0). The loop stops when avg(scores) >= this.
+#
+# stop_on_max_turns:
+#   If true, the loop stops when max_turns is reached (always true in
+#   practice — set to false only if you want infinite looping).
+loop:
+  max_turns: 10
+  stop_on_consensus: true
+  consensus_threshold: 0.8
+  stop_on_max_turns: true
+
+# ── UI ──────────────────────────────────────────────────────────────────────
+# User interface settings for the canvas frontend.
+#
+# theme:
+#   Visual theme. Supported values: "dark" | "light"
+#
+# preview_enabled:
+#   Whether the live preview pane is enabled by default. Users can toggle
+#   it from the toolbar at runtime regardless of this setting.
+ui:
+  theme: "dark"              # "dark" | "light"
+  preview_enabled: true      # boolean — enable live preview pane on startup
+
+# ── Export ──────────────────────────────────────────────────────────────────
+# Controls which export formats are available in the File > Export menu.
+#
+# enabled_formats:
+#   List of enabled export format identifiers. Each entry must match a
+#   format supported by the POST /api/export endpoint.
+#   Supported: "pdf", "md", "docx", "txt", "py", "js", "html", "json"
+#
+# default_format:
+#   The format pre-selected in the export dialog.
+export:
+  enabled_formats:
+    - "pdf"
+    - "md"
+    - "docx"
+    - "txt"
+    - "py"
+    - "html"
+    - "json"
+  default_format: "md"
+
+# ── Version History ─────────────────────────────────────────────────────────
+# Controls the version history / snapshot feature.
+#
+# max_depth:
+#   Maximum number of version snapshots retained per file. When the limit
+#   is exceeded, the oldest snapshots are pruned (FIFO). Set to 0 to
+#   disable version history entirely.
+#
+# auto_snapshot_on_save:
+#   If true, a version snapshot is automatically created every time a
+#   file is saved via PUT /api/files/<path>.
+#
+# diff_preview_lines:
+#   Maximum number of context lines shown in diff previews.
+version_history:
+  max_depth: 50              # integer — max snapshots per file (0 = disabled)
+  auto_snapshot_on_save: true # boolean — snapshot on every save
+  diff_preview_lines: 10     # integer — context lines in diff view
