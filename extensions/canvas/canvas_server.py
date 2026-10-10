@@ -59,6 +59,7 @@ from urllib.error import HTTPError, URLError
 
 DEFAULT_PORT = 9090
 DEFAULT_WORKSPACE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+VENDOR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
 VERSIONS_DIR = ".canvas_versions"
 
 
@@ -296,6 +297,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Canvas Workspace</title>
+<link rel="stylesheet" href="/vendor/codemirror.min.css">
 <style>
   /* ═══════════════════════════════════════════════════════════════════════
      CSS Variables & Reset
@@ -491,6 +493,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
   #editor-container .line-numbers span {
     display: block; padding: 0 8px;
   }
+  /* CodeMirror (same viewer as the YAML config editor) — fill the pane and
+     match the dark theme so syntax highlighting stays readable. */
+  #editor-container .CodeMirror {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0; height: auto;
+    background: var(--bg); color: var(--text);
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+  }
+  #editor-container .CodeMirror-gutters {
+    background: var(--sidebar-bg); border-right: 1px solid var(--border);
+  }
+  #editor-container .CodeMirror-linenumber { color: var(--text-dim); }
+  #editor-container .cm-keyword { color: #c586c0; }
+  #editor-container .cm-string, #editor-container .cm-string-2 { color: #ce9178; }
+  #editor-container .cm-comment { color: #6a9955; }
+  #editor-container .cm-number { color: #b5cea8; }
+  #editor-container .cm-def, #editor-container .cm-variable-2 { color: #dcdcaa; }
+  #editor-container .cm-property, #editor-container .cm-attribute { color: #9cdcfe; }
+  #editor-container .cm-tag { color: #569cd6; }
+  #editor-container .cm-atom { color: #b5cea8; }
+  #editor-container .cm-builtin { color: #4ec9b0; }
 
   /* Preview pane */
   #preview-pane {
@@ -616,6 +638,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
     flex-shrink: 0; position: relative; z-index: 10;
   }
   #chat-resize:hover, #chat-resize.active { background: var(--accent); }
+
+  /* ── Collapsible panes ── */
+  #sidebar.collapsed, #chat-pane.collapsed {
+    width: 0 !important; min-width: 0 !important; max-width: 0 !important;
+    border: none !important; overflow: hidden !important;
+  }
+  #console-pane.collapsed {
+    height: 0 !important; min-height: 0 !important; max-height: 0 !important;
+    border: none !important; overflow: hidden !important;
+  }
+  .pane-toggle { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 13px; padding: 2px; line-height: 1; border-radius: var(--radius-sm); }
+  .pane-toggle:hover { color: var(--text); background: var(--hover-bg); }
 
   /* ═══════════════════════════════════════════════════════════════════════
      Status Bar
@@ -814,6 +848,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <div class="separator"></div>
 
+  <!-- Panel toggles (re-expand a collapsed pane) -->
+  <div class="tb-group">
+    <button class="tb-btn" onclick="togglePane('sidebar')" title="Toggle Explorer"><span class="icon">🗂</span><span class="label">Explorer</span></button>
+    <button class="tb-btn" onclick="togglePane('console-pane')" title="Toggle Console"><span class="icon">⚙</span><span class="label">Console</span></button>
+    <button class="tb-btn" onclick="togglePane('chat-pane')" title="Toggle Chat"><span class="icon">💬</span><span class="label">Chat</span></button>
+  </div>
+
+  <div class="separator"></div>
+
   <!-- Writing shortcuts dropdown -->
   <div class="tb-dropdown">
     <button class="tb-btn" onclick="toggleDropdown('writing-dropdown')" title="Writing Shortcuts"><span class="icon">✍️</span><span class="label">Writing</span></button>
@@ -867,6 +910,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="actions">
         <button onclick="refreshFileTree()" title="Refresh">⟳</button>
         <button onclick="collapseAll()" title="Collapse All">−</button>
+        <button class="pane-toggle" onclick="togglePane('sidebar')" title="Collapse Explorer">«</button>
       </div>
     </div>
     <div id="file-tree"></div>
@@ -925,6 +969,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="console-actions">
           <button onclick="clearConsole()">🗑 Clear</button>
           <button class="primary" onclick="runFile()" id="run-btn2">▶ Run</button>
+          <button class="pane-toggle" onclick="togglePane('console-pane')" title="Collapse Console">▼</button>
         </div>
       </div>
       <div id="console-output"></div>
@@ -940,6 +985,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <span>💬 Chat</span>
       <div class="actions">
         <button onclick="clearChat()" title="Clear chat">🗑</button>
+        <button class="pane-toggle" onclick="togglePane('chat-pane')" title="Collapse Chat">»</button>
       </div>
     </div>
     <div id="chat-messages">
@@ -1034,6 +1080,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+
+<script src="/vendor/codemirror.min.js"></script>
+<script src="/vendor/xml.js"></script>
+<script src="/vendor/javascript.js"></script>
+<script src="/vendor/css.js"></script>
+<script src="/vendor/htmlmixed.js"></script>
+<script src="/vendor/python.js"></script>
+<script src="/vendor/markdown.js"></script>
+<script src="/vendor/yaml.min.js"></script>
 
 <script>
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1280,7 +1335,8 @@ async function openFile(path) {
     state.editorDirty = false;
     state.undoStack = [];
     state.redoStack = [];
-    document.getElementById('editor').value = text;
+    setEditorContent(text);
+    setEditorMode(path);
     document.getElementById('current-filename').textContent = path;
     document.getElementById('unsaved-indicator').textContent = '';
     document.getElementById('save-btn').disabled = true;
@@ -1302,7 +1358,7 @@ async function openFile(path) {
 
 async function saveFile() {
   if (!state.currentFile) return;
-  const content = document.getElementById('editor').value;
+  const content = getEditorContent();
   try {
     const resp = await fetch('/api/files/' + encodeURIComponent(state.currentFile), {
       method: 'PUT',
@@ -1443,7 +1499,7 @@ async function deleteItem(entry) {
     showToast('Deleted ' + entry.path, 'success');
     if (state.currentFile === entry.path) {
       state.currentFile = null;
-      document.getElementById('editor').value = '';
+      setEditorContent('');
       document.getElementById('current-filename').textContent = '(no file open)';
       document.getElementById('unsaved-indicator').textContent = '';
       document.getElementById('save-btn').disabled = true;
@@ -1466,7 +1522,70 @@ function copyPath(path) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Editor
 // ═════════════════════════════════════════════════════════════════════════════
+// ── CodeMirror editor (same component as the YAML config editor) ──
+let cmEditor = null;
+let _suppressChange = false;
+
+function modeForFile(path) {
+  if (!path) return null;
+  const ext = path.split('.').pop().toLowerCase();
+  const map = {
+    py: 'python', pyw: 'python',
+    js: 'javascript', mjs: 'javascript', json: {name: 'javascript', json: true},
+    html: 'htmlmixed', htm: 'htmlmixed', xml: 'xml', svg: 'xml',
+    css: 'css', md: 'markdown', markdown: 'markdown',
+    yaml: 'yaml', yml: 'yaml',
+  };
+  return map[ext] || null;
+}
+
+function setEditorMode(path) {
+  if (cmEditor) cmEditor.setOption('mode', modeForFile(path) || 'text/plain');
+}
+
+function getEditorContent() {
+  return cmEditor ? cmEditor.getValue() : document.getElementById('editor').value;
+}
+
+function setEditorContent(v) {
+  if (cmEditor) { _suppressChange = true; cmEditor.setValue(v || ''); _suppressChange = false; }
+  else { document.getElementById('editor').value = v || ''; }
+}
+
+function getCursorPos() {
+  if (cmEditor) return cmEditor.indexFromPos(cmEditor.getCursor());
+  return document.getElementById('editor').selectionStart || 0;
+}
+
+function setCursorPos(pos) {
+  if (cmEditor) { cmEditor.setCursor(cmEditor.posFromIndex(pos)); cmEditor.focus(); }
+  else { const e = document.getElementById('editor'); e.selectionStart = e.selectionEnd = pos; }
+}
+
+function initCodeMirror() {
+  if (typeof CodeMirror === 'undefined') return;  // vendor failed — fall back to plain textarea
+  const ta = document.getElementById('editor');
+  cmEditor = CodeMirror.fromTextArea(ta, {
+    lineNumbers: true,
+    mode: modeForFile(state.currentFile) || 'text/plain',
+    indentUnit: 2, indentWithTabs: false, tabSize: 2,
+    lineWrapping: false,
+  });
+  document.getElementById('line-numbers').style.display = 'none';
+  cmEditor.on('change', () => {
+    if (_suppressChange) return;
+    if (!state.undoStack.length && state.currentFile) pushUndo();
+    editorDirtyCheck();
+  });
+  cmEditor.on('cursorActivity', updateStatusBar);
+  setTimeout(() => cmEditor.refresh(), 0);
+}
+
 function updateLineNumbers() {
+  if (cmEditor) {
+    cmEditor.setOption('lineNumbers', !!state.settings.lineNumbers);
+    return;
+  }
   const container = document.getElementById('line-numbers');
   const editor = document.getElementById('editor');
   if (!state.settings.lineNumbers) {
@@ -1476,19 +1595,15 @@ function updateLineNumbers() {
   }
   container.style.display = 'block';
   editor.style.paddingLeft = '64px';
-  const lines = editor.value.split('\n').length;
+  const lines = getEditorContent().split('\n').length;
   let html = '';
-  for (let i = 1; i <= lines; i++) {
-    html += '<span>' + i + '</span>';
-  }
+  for (let i = 1; i <= lines; i++) html += '<span>' + i + '</span>';
   container.innerHTML = html;
 }
 
 function updateStatusBar() {
-  const editor = document.getElementById('editor');
-  const text = editor.value;
-  const lines = text.split('\n');
-  const cursorPos = editor.selectionStart;
+  const text = getEditorContent();
+  const cursorPos = getCursorPos();
   let line = 1, col = 1;
   for (let i = 0; i < cursorPos; i++) {
     if (text[i] === '\n') { line++; col = 1; }
@@ -1515,8 +1630,7 @@ function updateStatusBar() {
 }
 
 function pushUndo() {
-  const editor = document.getElementById('editor');
-  state.undoStack.push({ content: state.fileContent, cursor: editor.selectionStart });
+  state.undoStack.push({ content: state.fileContent, cursor: getCursorPos() });
   state.redoStack = [];
   document.getElementById('undo-btn').disabled = false;
   document.getElementById('redo-btn').disabled = true;
@@ -1524,11 +1638,10 @@ function pushUndo() {
 
 function undoEdit() {
   if (state.undoStack.length === 0) return;
-  const editor = document.getElementById('editor');
-  state.redoStack.push({ content: editor.value, cursor: editor.selectionStart });
+  state.redoStack.push({ content: getEditorContent(), cursor: getCursorPos() });
   const prev = state.undoStack.pop();
-  editor.value = prev.content;
-  editor.selectionStart = editor.selectionEnd = prev.cursor;
+  setEditorContent(prev.content);
+  setCursorPos(prev.cursor);
   editorDirtyCheck();
   document.getElementById('undo-btn').disabled = state.undoStack.length === 0;
   document.getElementById('redo-btn').disabled = false;
@@ -1536,19 +1649,17 @@ function undoEdit() {
 
 function redoEdit() {
   if (state.redoStack.length === 0) return;
-  const editor = document.getElementById('editor');
-  state.undoStack.push({ content: editor.value, cursor: editor.selectionStart });
+  state.undoStack.push({ content: getEditorContent(), cursor: getCursorPos() });
   const next = state.redoStack.pop();
-  editor.value = next.content;
-  editor.selectionStart = editor.selectionEnd = next.cursor;
+  setEditorContent(next.content);
+  setCursorPos(next.cursor);
   editorDirtyCheck();
   document.getElementById('undo-btn').disabled = false;
   document.getElementById('redo-btn').disabled = state.redoStack.length === 0;
 }
 
 function editorDirtyCheck() {
-  const editor = document.getElementById('editor');
-  state.editorDirty = state.currentFile ? editor.value !== state.fileContent : false;
+  state.editorDirty = state.currentFile ? getEditorContent() !== state.fileContent : false;
   document.getElementById('unsaved-indicator').textContent = state.editorDirty ? '● unsaved' : '';
   document.getElementById('save-btn').disabled = !state.editorDirty || !state.currentFile;
   updateLineNumbers();
@@ -1568,7 +1679,7 @@ function togglePreview() {
 
 async function updatePreview() {
   if (!state.currentFile || !state.previewActive) return;
-  const content = document.getElementById('editor').value;
+  const content = getEditorContent();
   try {
     const resp = await fetch('/api/preview', {
       method: 'POST',
@@ -1705,7 +1816,7 @@ function renderVersions() {
 
 async function saveVersion() {
   if (!state.currentFile) { showToast('No file open', 'warning'); return; }
-  const content = document.getElementById('editor').value;
+  const content = getEditorContent();
   try {
     const resp = await fetch('/api/versions', {
       method: 'POST',
@@ -1726,7 +1837,7 @@ async function restoreVersion(versionId) {
     const resp = await fetch('/api/versions/' + versionId);
     if (!resp.ok) throw new Error('Failed');
     const data = await resp.json();
-    document.getElementById('editor').value = data.content;
+    setEditorContent(data.content);
     state.fileContent = data.content;
     state.editorDirty = false;
     state.undoStack = [];
@@ -1764,7 +1875,7 @@ async function diffVersion(versionId) {
 // ═════════════════════════════════════════════════════════════════════════════
 async function exportFile(format) {
   if (!state.currentFile) { showToast('No file open', 'warning'); return; }
-  const content = document.getElementById('editor').value;
+  const content = getEditorContent();
   try {
     const resp = await fetch('/api/export', {
       method: 'POST',
@@ -1799,7 +1910,7 @@ async function exportFile(format) {
 // ═════════════════════════════════════════════════════════════════════════════
 async function doAction(action) {
   if (!state.currentFile) { showToast('No file open', 'warning'); return; }
-  const content = document.getElementById('editor').value;
+  const content = getEditorContent();
   closeAllDropdowns();
   showToast('Running action: ' + action.replace(/_/g, ' '), 'info', 2000);
 
@@ -1822,7 +1933,7 @@ async function doAction(action) {
     if (data.content) {
       // Push undo before applying
       pushUndo();
-      document.getElementById('editor').value = data.content;
+      setEditorContent(data.content);
       editorDirtyCheck();
       showToast('Action applied: ' + action.replace(/_/g, ' '), 'success', 2000);
     }
@@ -1900,7 +2011,7 @@ function addChatMessage(role, content) {
 function applyToEditor(btn) {
   const content = btn.closest('.chat-msg').querySelector('.content').textContent;
   pushUndo();
-  document.getElementById('editor').value = content;
+  setEditorContent(content);
   editorDirtyCheck();
   showToast('Applied to editor', 'success', 1500);
 }
@@ -1959,6 +2070,13 @@ function applySettings() {
   editor.style.fontSize = state.settings.fontSize + 'px';
   editor.style.tabSize = state.settings.tabSize;
   editor.style.whiteSpace = state.settings.wordWrap ? 'pre-wrap' : 'pre';
+  if (cmEditor) {
+    cmEditor.setOption('tabSize', state.settings.tabSize);
+    cmEditor.setOption('lineWrapping', !!state.settings.wordWrap);
+    const wrap = document.querySelector('.CodeMirror');
+    if (wrap) wrap.style.fontSize = state.settings.fontSize + 'px';
+    cmEditor.refresh();
+  }
 
   // Theme
   if (state.settings.theme === 'light') {
@@ -1993,7 +2111,7 @@ function applySettings() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Resize handlers
 // ═════════════════════════════════════════════════════════════════════════════
-function makeResizable(handleId, targetId, direction) {
+function makeResizable(handleId, targetId, direction, reverse) {
   const handle = document.getElementById(handleId);
   const target = document.getElementById(targetId);
   let startPos, startSize;
@@ -2008,7 +2126,11 @@ function makeResizable(handleId, targetId, direction) {
 
     const onMove = (ev) => {
       const delta = direction === 'col' ? (ev.clientX - startPos) : (ev.clientY - startPos);
-      const newSize = startSize + delta;
+      // A left/bottom panel's handle sits on its leading edge: dragging "inward"
+      // (right for a right panel, down for a bottom panel) must SHRINK it, so the
+      // delta is negated. A left panel's handle sits on its trailing edge and grows
+      // with the drag. Without this, the chat and console sliders run backwards.
+      const newSize = startSize + (reverse ? -delta : delta);
       if (direction === 'col') {
         target.style.width = Math.max(target.dataset.min || 160, newSize) + 'px';
       } else {
@@ -2029,9 +2151,24 @@ function makeResizable(handleId, targetId, direction) {
   });
 }
 
-makeResizable('sidebar-resize', 'sidebar', 'col');
-makeResizable('chat-resize', 'chat-pane', 'col');
-makeResizable('console-resize', 'console-pane', 'row');
+makeResizable('sidebar-resize', 'sidebar', 'col', false);
+makeResizable('chat-resize', 'chat-pane', 'col', true);
+makeResizable('console-resize', 'console-pane', 'row', true);
+
+function togglePane(paneId) {
+  const pane = document.getElementById(paneId);
+  if (!pane) return;
+  const collapsed = pane.classList.toggle('collapsed');
+  // Hide the pane's resize handle too so a collapsed pane leaves no dead strip.
+  const handleMap = { 'sidebar': 'sidebar-resize', 'chat-pane': 'chat-resize', 'console-pane': 'console-resize' };
+  const handleId = handleMap[paneId];
+  if (handleId) {
+    const h = document.getElementById(handleId);
+    if (h) h.style.display = collapsed ? 'none' : '';
+  }
+  // Give the flex layout (and CodeMirror, once wired) a tick to reflow.
+  setTimeout(() => { if (window.cmEditor) cmEditor.refresh(); }, 60);
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Keyboard shortcuts
@@ -2077,19 +2214,10 @@ document.addEventListener('keydown', (e) => {
 // Editor event listeners
 // ═════════════════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
-  const editor = document.getElementById('editor');
-
-  // Track changes
-  editor.addEventListener('input', () => {
-    if (!state.undoStack.length && state.currentFile) {
-      pushUndo();
-    }
-    editorDirtyCheck();
-  });
-
-  // Track cursor position
-  editor.addEventListener('click', updateStatusBar);
-  editor.addEventListener('keyup', updateStatusBar);
+  // Replace the plain <textarea> with CodeMirror (same viewer as the YAML config
+  // editor). The change + cursor handlers are wired inside initCodeMirror; this
+  // only needs to fire once.
+  initCodeMirror();
 
   // Initial load
   refreshFileTree();
@@ -2161,6 +2289,21 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_vendor(self, filename):
+        """Serve a static vendor file (CodeMirror core + modes) from VENDOR_DIR."""
+        if (not filename or "/" in filename or "\\" in filename
+                or filename.startswith(".") or ".." in filename):
+            self._send_error("Not found", 404)
+            return
+        full = os.path.join(VENDOR_DIR, filename)
+        if not os.path.isfile(full):
+            self._send_error("Not found", 404)
+            return
+        ctype = "text/javascript" if filename.endswith(".js") else "text/css"
+        with open(full, "rb") as f:
+            data = f.read()
+        self._send_binary(data, ctype)
+
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
@@ -2206,6 +2349,8 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
             return ("action", "", query)
         elif path == "/api/chat":
             return ("chat", "", query)
+        elif path.startswith("/vendor/"):
+            return ("vendor", path[len("/vendor/"):], query)
         else:
             return ("unknown", path, query)
 
@@ -2222,6 +2367,9 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
 
         if endpoint == "root":
             self._send_html(serve_html())
+
+        elif endpoint == "vendor":
+            self._serve_vendor(subpath)
 
         elif endpoint == "status":
             self._send_json({
