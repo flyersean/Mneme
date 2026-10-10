@@ -8321,8 +8321,12 @@ if FLASK_OK:
         key = (data.get("key") or "").strip()
         if not provider or not key:
             return _cors_response({"ok": False, "error": "missing provider or key"}, status=400)
-        prov = (CONFIG_DATA.get("providers") or {}).get(provider) or {}
-        api_key_env = prov.get("api_key_env") or ""
+        info = PROVIDER_CATALOG.get(provider)
+        if info is None:
+            prov = (CONFIG_DATA.get("providers") or {}).get(provider) or {}
+            api_key_env = prov.get("api_key_env") or ""
+        else:
+            api_key_env = info.get("key_env") or ""
         if not api_key_env:
             return _cors_response({"ok": False, "error": f"provider {provider!r} has no api_key_env"}, status=400)
         os.environ[api_key_env] = key

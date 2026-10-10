@@ -1839,7 +1839,12 @@ async function saveKey() {
   const key = keyDialog.querySelector(".kd-input").value.trim();
   if (!key) return;
   try {
-    await fetch("/providers/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: keyProvider, key }) });
+    const resp = await fetch("/providers/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: keyProvider, key }) });
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok || j.ok === false) {
+      toast("Could not save key: " + (j.error || ("HTTP " + resp.status)));
+      return;  // keep the dialog open so the user can retry
+    }
     // refresh catalog key status + re-fetch the provider's models
     const pc = await (await fetch("/providers")).json();
     mpCatalog = pc.catalog || [];
@@ -1850,7 +1855,10 @@ async function saveKey() {
       mpModels = d.models || [];
       renderModels("");
     }
-  } catch (e) {}
+  } catch (e) {
+    toast("Could not save key: " + e.message);
+    return;
+  }
   keyDialog.classList.remove("open");
 }
 
