@@ -1,0 +1,60 @@
+# Canvas Extension Manifest
+# Makes this extension manageable from the Mneme /extensions page.
+#
+# The canvas server is a self-contained HTTP server that serves a shared
+# file workspace UI: a file-tree sidebar, a CodeMirror editor, a live
+# preview pane, version history, export, and a run console. It talks to
+# Mneme proxies ONLY over HTTP.
+#
+# `command` + `args` are run from THIS directory. The tokens {port} and {url}
+# are substituted with the managing proxy's port / base URL.
+#
+# `config` entries are rendered as a form on the /extensions page; each `key`
+# is injected into the process environment when it runs.
+
+name: canvas
+description: "Shared code workspace — file tree, editor, live preview, version history, export, and run console"
+
+command: ["python3", "canvas_server.py"]
+args: ["--proxy-url", "{url}"]
+
+config:
+  - key: CANVAS_PORT
+    label: "Canvas UI / API port"
+    type: number
+    required: true
+    default: 9090
+
+  - key: WORKSPACE_DIR
+    label: "Workspace directory (relative to this extension dir)"
+    type: string
+    required: false
+    default: "./workspace"
+
+  - key: CANVAS_THEME
+    label: "UI theme"
+    type: string
+    required: false
+    default: "dark"
+    description: "Visual theme — 'dark' or 'light'"
+
+  - key: CANVAS_PREVIEW_ENABLED
+    label: "Enable live preview pane"
+    type: boolean
+    required: false
+    default: true
+    description: "Show the live preview pane on startup (users can toggle it from the toolbar)"
+
+  - key: CANVAS_EXPORT_FORMATS
+    label: "Enabled export formats"
+    type: string
+    required: false
+    default: "pdf,md,docx,txt,py,html,json"
+    description: "Comma-separated list of enabled export formats"
+
+  - key: CANVAS_VERSION_DEPTH
+    label: "Version history max depth"
+    type: number
+    required: false
+    default: 50
+    description: "Maximum version snapshots retained per file (0 = disabled)"

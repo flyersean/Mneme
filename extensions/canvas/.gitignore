@@ -1,0 +1,4 @@
+# Canvas runtime state — the workspace and version history are created at
+# runtime, never committed. A fresh clone starts empty and the server
+# auto-populates a sample file.
+workspace/
