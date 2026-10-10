@@ -621,7 +621,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     flex: 1; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); padding: 10px 12px; border-radius: var(--radius);
     font-family: var(--font-ui); font-size: 13px; resize: none;
-    outline: none; min-height: 64px; max-height: 240px;
+    outline: none; min-height: 120px; max-height: 240px;
     line-height: 1.5;
   }
   #chat-input:focus { border-color: var(--accent); }
