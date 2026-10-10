@@ -11,6 +11,7 @@ the browser routes — so ``mneme_proxy.py`` stays lean.
   - ``/logout``,
   - ``/tokens``  (every signed-in user manages their own tokens),
   - ``/users``   (admin-only: list/add/remove accounts, reset passwords),
+  - ``/secrets`` (admin-only: manage arbitrary named secrets for integrations),
   - ``/extensions/generate-token`` (mint a token from the extensions UI).
 """
 
@@ -25,6 +26,7 @@ from mneme.auth import (
     check_request, sign_session, verify_session,
     add_user, delete_user, reset_password, add_token, revoke_token,
 )
+from mneme import secrets_store
 
 _SESSION_COOKIE = "mneme_session"
 _PUBLIC_PATHS = ("/login", "/create-account", "/logout")
@@ -83,6 +85,7 @@ _SITE_NAV = ('<nav class="mneme-nav">'
              '<a href="/runs/ui">Runs</a>'
              '<a href="/strategies/ui">Strategies</a>'
              '<a href="/extensions">Extensions</a>'
+             '<a href="/secrets">Secrets</a>'
              '</nav>')
 
 
@@ -360,6 +363,71 @@ def register(app, get_auth, cors_response):
                  f'<label>New password</label><input type="password" name="password">'
                  f'<button type="submit">Reset password</button></form>')
         return _page("Users", body, nav=True, signout=True)
+
+    # ── secrets page (admin only) ────────────────────────────────────────────
+    @app.route("/secrets", methods=["GET", "POST"])
+    def secrets_page():
+        username = _session_user()
+        if not username:
+            return redirect("/login?next=/secrets")
+        if not get_auth().is_admin(username):
+            return Response("admin only", status=403)
+
+        message = ""
+        if request.method == "POST":
+            action = request.form.get("action") or ""
+            name = (request.form.get("name") or "").strip()
+            if action == "save":
+                value = request.form.get("value") or ""
+                if not name:
+                    message = '<div class="err">A name is required.</div>'
+                elif not secrets_store.set_secret(name, value):
+                    message = ('<div class="err">Invalid name — use only letters, '
+                               'numbers, dot, underscore, hyphen.</div>')
+                else:
+                    message = f'<div class="ok">Saved secret <b>{esc(name)}</b>.</div>'
+            elif action == "delete":
+                if secrets_store.delete_secret(name):
+                    message = f'<div class="ok">Deleted secret <b>{esc(name)}</b>.</div>'
+                else:
+                    message = '<div class="err">Secret not found.</div>'
+
+        rows = []
+        for name, value in secrets_store.load_secrets().items():
+            rows.append(
+                f'<div class="row"><div class="row-main">'
+                f'<span class="lbl">{esc(name)}</span>'
+                f'<code class="secret-mask">••••••••</code>'
+                f'<code class="secret-value" style="display:none">{esc(value)}</code>'
+                f'<a class="meta" href="#" onclick="return revealSecret(this)">reveal</a>'
+                f'</div>'
+                f'<form method="post" class="inline">'
+                f'<input type="hidden" name="action" value="delete">'
+                f'<input type="hidden" name="name" value="{esc(name, quote=True)}">'
+                f'<button type="submit" class="danger inline">Delete</button></form></div>'
+            )
+        if not rows:
+            rows = ['<div class="empty">No secrets saved yet.</div>']
+
+        body = (
+            '<p class="sub">Arbitrary keys and passwords for MCP servers, webhooks, '
+            'and other integrations. Reference them from config with '
+            '<code>${secret:NAME}</code> — e.g. an MCP server <code>env</code> value '
+            'like <code>GITHUB_TOKEN: ${secret:mcp-github-token}</code>.</p>'
+            + (f'<div class="tokbox">{message}</div>' if message else '')
+            + '<h2>Add secret</h2>'
+            + '<form method="post"><input type="hidden" name="action" value="save">'
+            '<label>Name</label><input name="name" placeholder="e.g. mcp-github-token" autocomplete="off">'
+            '<label>Value</label><input type="password" name="value" placeholder="secret value" autocomplete="off">'
+            '<button type="submit">Save secret</button></form>'
+            + '<h2>Saved secrets</h2>'
+            + '<div class="card" style="padding:12px 20px">' + "".join(rows) + '</div>'
+            + '<script>function revealSecret(a){var c=a.parentNode;'
+            'var m=c.querySelector(".secret-mask");var v=c.querySelector(".secret-value");'
+            'if(v.style.display==="none"){v.style.display="block";m.style.display="none";a.textContent="hide";}'
+            'else{v.style.display="none";m.style.display="block";a.textContent="reveal";}return false;}</script>'
+        )
+        return _page("Secrets", body, nav=True, signout=True)
 
     # ── extensions: mint a token for a dedicated 'gateway' user ──────────────
     @app.route("/extensions/generate-token", methods=["POST"])

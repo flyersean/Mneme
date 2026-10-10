@@ -89,6 +89,7 @@ from mneme.grading import (
     _verify_and_regrade,
 )
 import mneme.tools as mntools
+import mneme.secrets_store as secrets_store
 import mneme.curation as curation
 import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
@@ -602,7 +603,7 @@ _apply_thinking_log()
 # background and their tools appear in assemble_tools on the next request).
 _mcp_cfgs = CONFIG_DATA.get("mcp_servers") or []
 if _mcp_cfgs:
-    mntools.get_manager().reconcile(_mcp_cfgs)
+    mntools.get_manager().reconcile(secrets_store.resolve_mcp_config(_mcp_cfgs))
     print(f"  [MCP] configured {len(_mcp_cfgs)} server(s): {[c.get('name') for c in _mcp_cfgs]}", flush=True)
 
 OLLAMA_URL  = os.environ.get("MNEME_OLLAMA_URL", "http://localhost:11434")
@@ -874,7 +875,7 @@ def _reload_sampling_if_changed():
     # MCP servers — reconcile the running set with the config (hot add/remove).
     if "mcp_servers" in data:
         CONFIG_DATA["mcp_servers"] = data["mcp_servers"] or []
-        mntools.get_manager().reconcile(CONFIG_DATA["mcp_servers"])
+        mntools.get_manager().reconcile(secrets_store.resolve_mcp_config(CONFIG_DATA["mcp_servers"]))
         changed.append("mcp_servers")
     print(f"  [CONFIG] hot-reloaded sampling/models/storage ({', '.join(changed) or 'models-only'})", flush=True)
 
