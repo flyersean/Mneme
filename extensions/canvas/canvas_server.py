@@ -48,7 +48,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -631,6 +631,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   #chat-send:hover { background: var(--accent-hover); }
   #chat-send:disabled { opacity: 0.5; cursor: default; }
+  #chat-send.stop { background: var(--error); }
+  #chat-send.stop:hover { background: #d43b3b; }
+  /* "Thinking…" indicator while the model is working */
+  .chat-msg.thinking .content { display: flex; align-items: center; gap: 4px; }
+  .chat-msg.thinking .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text-dim); animation: thinking-blink 1.2s infinite ease-in-out;
+  }
+  .chat-msg.thinking .dot:nth-child(2) { animation-delay: 0.2s; }
+  .chat-msg.thinking .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes thinking-blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
 
   /* ── Resize handle (chat) ── */
   #chat-resize {
@@ -1949,28 +1960,38 @@ async function doAction(action) {
 // Chat
 // ═════════════════════════════════════════════════════════════════════════════
 let chatPending = false;
+let chatController = null;
 let chatConversationId = null;
 let chatGeneration = 0;
 
 async function sendChat() {
   const input = document.getElementById('chat-input');
+
+  // While the model is working, the button reads "Stop" and aborts the request.
+  if (chatPending) {
+    if (chatController) chatController.abort();
+    return;
+  }
+
   const text = input.value.trim();
-  if (!text || chatPending) return;
+  if (!text) return;
 
   chatPending = true;
   const generation = chatGeneration;
-  const sendButton = document.getElementById('chat-send');
-  sendButton.disabled = true;
+  chatController = new AbortController();
+  setChatButton('stop');
   state.chatMessages.push({role: 'user', content: text});
   addChatMessage('user', text);
   input.value = '';
   input.style.height = 'auto';
+  addChatThinking();
 
   try {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({messages: state.chatMessages, conversation_id: chatConversationId}),
+      signal: chatController.signal,
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || `Chat request failed (HTTP ${resp.status})`);
@@ -1982,14 +2003,45 @@ async function sendChat() {
     addChatMessage('assistant', data.reply);
   } catch (e) {
     if (generation === chatGeneration) {
-      // Failed turns should not pollute the context sent with the next attempt.
-      state.chatMessages.pop();
-      addChatMessage('error', 'Chat error: ' + e.message);
+      if (e.name === 'AbortError') {
+        // User pressed Stop — keep their message so the model can still answer it
+        // later, but note the interruption.
+        addChatMessage('system', 'Stopped.');
+      } else {
+        // Failed turns should not pollute the context sent with the next attempt.
+        state.chatMessages.pop();
+        addChatMessage('error', 'Chat error: ' + e.message);
+      }
     }
   } finally {
+    removeChatThinking();
     chatPending = false;
-    sendButton.disabled = false;
+    chatController = null;
+    setChatButton('send');
   }
+}
+
+function setChatButton(mode) {
+  const btn = document.getElementById('chat-send');
+  if (mode === 'stop') { btn.textContent = 'Stop'; btn.classList.add('stop'); }
+  else { btn.textContent = 'Send'; btn.classList.remove('stop'); }
+}
+
+function addChatThinking() {
+  removeChatThinking();
+  const container = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg thinking';
+  div.id = 'chat-thinking';
+  div.innerHTML = `<div class="role">Assistant</div>
+    <div class="content"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeChatThinking() {
+  const el = document.getElementById('chat-thinking');
+  if (el) el.remove();
 }
 
 function addChatMessage(role, content) {
@@ -1997,7 +2049,7 @@ function addChatMessage(role, content) {
   const div = document.createElement('div');
   div.className = 'chat-msg';
   div.innerHTML = `
-    <div class="role">${role === 'user' ? 'You' : role === 'error' ? 'Error' : 'Assistant'}</div>
+    <div class="role">${role === 'user' ? 'You' : role === 'error' ? 'Error' : role === 'system' ? 'System' : 'Assistant'}</div>
     <div class="content">${htmlEscape(content)}</div>
     ${role === 'assistant' ? `<div class="actions">
       <button onclick="applyToEditor(this)" title="Apply to editor">📝 Apply</button>
@@ -2025,6 +2077,7 @@ function copyMessage(btn) {
 
 function clearChat() {
   chatGeneration++;
+  if (chatController) chatController.abort();
   state.chatMessages = [];
   chatConversationId = null;
   document.getElementById('chat-messages').innerHTML = `
@@ -2910,7 +2963,7 @@ def create_server(workspace_dir, host="0.0.0.0", port=DEFAULT_PORT, proxy_url=No
             self.api_token = os.environ.get("MNEME_API_TOKEN", "")
             super().__init__(*args, **kwargs)
 
-    server = HTTPServer((host, port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
     return server
 
 
