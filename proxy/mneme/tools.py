@@ -521,6 +521,51 @@ NOTE_RUN_TOOL = {
     },
 }
 
+PAUSE_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "pause_run",
+        "description": "Pause a running harness run, holding it at the next safe checkpoint. Use when a run should stop and wait (e.g. for review) before continuing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to pause."},
+            },
+            "required": ["run_id"],
+        },
+    },
+}
+
+CANCEL_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "cancel_run",
+        "description": "Cancel a harness run, stopping it permanently. Use when a run is no longer needed or is running away. This is terminal (not resumable).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to cancel."},
+            },
+            "required": ["run_id"],
+        },
+    },
+}
+
+RETRY_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "retry_run",
+        "description": "Retry a failed or cancelled harness run, starting it again from its checkpoint. Use after fixing whatever caused the run to fail.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to retry."},
+            },
+            "required": ["run_id"],
+        },
+    },
+}
+
 # Registry-write tool (save_tool). Mutates the tools table + canonical dir, so it
 # is NOT in READONLY_SERVER_TOOLS; gated by MNEME_TOOL_SAVE_TOOL (default on).
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
@@ -678,7 +723,8 @@ def native_exec_names(client_tools):
         if "write" not in client_names:
             out.add("write")
     if os.environ.get("MNEME_TOOL_START_RUN", "1") == "1":
-        out.update({"start_run", "resume_run", "replan_run", "note_run"})
+        out.update({"start_run", "resume_run", "replan_run", "note_run",
+                    "pause_run", "cancel_run", "retry_run"})
     return out
 
 
@@ -700,8 +746,10 @@ def assemble_tools(client_tools):
     for t in enabled_readonly_tools():
         add(t)
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
-                    "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL}
-    for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run"):
+                    "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
+                    "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL}
+    for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
+              "pause_run", "cancel_run", "retry_run"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -861,6 +909,12 @@ def execute_native_tool(name, args):
         return _exec_replan_run(args)
     if name == "note_run":
         return _exec_note_run(args)
+    if name == "pause_run":
+        return _exec_pause_run(args)
+    if name == "cancel_run":
+        return _exec_cancel_run(args)
+    if name == "retry_run":
+        return _exec_retry_run(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1295,6 +1349,51 @@ def _exec_note_run(args):
         return f"Note queued for {run_id} — injected into the next task step."
     except Exception as e:
         return f"[note_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_pause_run(args):
+    """Pause a running harness run by id."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to pause a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    if not run_id:
+        return "pause_run requires a run_id."
+    try:
+        engine.pause(run_id, actor="model:pause_run")
+        return f"Pause requested for {run_id}."
+    except Exception as e:
+        return f"[pause_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_cancel_run(args):
+    """Cancel a harness run by id (terminal)."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to cancel a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    if not run_id:
+        return "cancel_run requires a run_id."
+    try:
+        engine.cancel(run_id, actor="model:cancel_run")
+        return f"Cancel requested for {run_id}."
+    except Exception as e:
+        return f"[cancel_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_retry_run(args):
+    """Retry a failed/cancelled harness run by id."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to retry a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    if not run_id:
+        return "retry_run requires a run_id."
+    try:
+        engine.retry(run_id, actor="model:retry_run")
+        return f"Retry requested for {run_id}."
+    except Exception as e:
+        return f"[retry_run error: {type(e).__name__}: {e}]"
 
 
 def execute_readonly_tool(name, args):
