@@ -1519,7 +1519,8 @@ _REASONING_STALE_FLOORS = (
 # these, a no_reasoning call can't disable thinking; it is bounded with a small
 # budget instead. Slug-anchored, longest-first (same convention as the floors).
 _MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6",
-                               "deepseek-v4-pro", "deepseek-pro")
+                               "deepseek-v4-pro", "deepseek-pro",
+                               "glm")  # "glm" catches glm-latest / glm-5.3-flash / glm-5.x
 
 # Reasoning budget applied to a mandatory-reasoning model when a call asks for
 # NO reasoning (no_reasoning=True) — e.g. the terse yes/no self-report in
@@ -2762,6 +2763,15 @@ def _model_mandates_reasoning(model) -> bool:
     return False
 
 
+def _is_thinking_model(model) -> bool:
+    """True for Z.AI GLM models, which use the `thinking` request param (not
+    `reasoning`) and force thinking ON (GLM-5.3 cannot be disabled). Matches the
+    payload OpenCode sends: thinking: {"type": "enabled", "clear_thinking": false}."""
+    if not model or not isinstance(model, str):
+        return False
+    return "glm" in model.strip().lower()
+
+
 def _parse_retry_after(headers) -> Optional[float]:
     """Retry-After seconds from a provider response, else None.
 
@@ -2941,7 +2951,11 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             # Mandatory-reasoning model asked to skip thinking — can't send
             # `enabled:false` (the endpoint 400s), so bound it tightly instead.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
-    if _reasoning:
+    if _is_thinking_model(_model):
+        # Z.AI GLM: forced thinking + preserved thinking (clear_thinking:false),
+        # exactly what OpenCode sends. Never `reasoning:{enabled:false}`.
+        payload["thinking"] = {"type": "enabled", "clear_thinking": False}
+    elif _reasoning:
         payload["reasoning"] = _reasoning
     if tools:
         payload["tools"] = tools
