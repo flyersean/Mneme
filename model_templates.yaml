@@ -164,6 +164,10 @@ templates:
     models:
       "{model}":
         temperature: 0.5
+        reasoning_param: thinking
+        reasoning_field: reasoning_content
+        clear_thinking: false
+        reasoning_forced: true
 
   deepseek-v4:
     description: "DeepSeek V4 (Pro/Flash) — reasoning model; its own API defaults"
@@ -175,3 +179,4 @@ templates:
       "{model}":
         temperature: 1.0
         top_p: 1.0
+        reasoning_forced: true

@@ -56,6 +56,12 @@ ALLOWED_MODEL_KEYS = {
     "temperature", "top_p", "top_k", "min_p", "presence_penalty",
     "frequency_penalty", "repetition_penalty", "repeat_penalty", "num_ctx", "num_predict",
     "reasoning", "reasoning_effort", "strip_reasoning",
+    # Reasoning transport: how THIS model carries reasoning to/from its provider.
+    #   reasoning_param   -> request param: "thinking" (Z.AI GLM) | "reasoning" (default)
+    #   reasoning_field   -> response/replay field: "reasoning_content" (Z.AI) | "reasoning" (default)
+    #   clear_thinking    -> bool, only for "thinking" (Z.AI preserved thinking)
+    #   reasoning_forced  -> bool, thinking cannot be disabled (GLM-5.3 / DeepSeek)
+    "reasoning_param", "reasoning_field", "clear_thinking", "reasoning_forced",
 }
 # The optional modelfile block — an Ollama-side chat-template recipe. Only
 # relevant to the setup wizard / templates page; it is NOT merged into config.

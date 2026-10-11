@@ -2763,13 +2763,29 @@ def _model_mandates_reasoning(model) -> bool:
     return False
 
 
-def _is_thinking_model(model) -> bool:
-    """True for Z.AI GLM models, which use the `thinking` request param (not
-    `reasoning`) and force thinking ON (GLM-5.3 cannot be disabled). Matches the
-    payload OpenCode sends: thinking: {"type": "enabled", "clear_thinking": false}."""
-    if not model or not isinstance(model, str):
-        return False
-    return "glm" in model.strip().lower()
+def _reasoning_transport(model):
+    """How THIS model carries reasoning to/from its provider. Template / per-model
+    config wins; model-slug fallbacks keep pre-template models working.
+
+    Returns {"param", "field", "clear_thinking", "forced"}:
+      param  -> request param name: "thinking" (Z.AI GLM) | "reasoning" (default)
+      field  -> response/replay field: "reasoning_content" (Z.AI) | "reasoning" (default)
+      clear_thinking -> bool (Z.AI preserved thinking; None = omit)
+      forced -> bool, thinking cannot be disabled (GLM-5.3 / DeepSeek)
+
+    This is the extension point for models with different reasoning requirements:
+    add a per-model block (or template) instead of a hardcoded slug check."""
+    cfg = (CONFIG_DATA.get("models") or {}).get(model) or {}
+    glm = "glm" in (model or "").strip().lower()
+    param = cfg.get("reasoning_param") or ("thinking" if glm else "reasoning")
+    field = cfg.get("reasoning_field") or ("reasoning_content" if glm else "reasoning")
+    clear = cfg.get("clear_thinking")
+    if clear is None:
+        clear = False if glm else None
+    forced = cfg.get("reasoning_forced")
+    if forced is None:
+        forced = _model_mandates_reasoning(model) or glm
+    return {"param": param, "field": field, "clear_thinking": clear, "forced": forced}
 
 
 def _parse_retry_after(headers) -> Optional[float]:
@@ -2910,8 +2926,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # measured 28,771 reasoning tokens / 75s per trivial ask. A Qwen-specific
     # "budget is a goal not a cap" quirk was previously generalized to every
     # reasoning model here; the budget is opt-out via MNEME_REASONING_BUDGET=0.
+    _transport = _reasoning_transport(_model)
     _reasoning = {}
-    _mandatory = _model_mandates_reasoning(_model)
+    _mandatory = _transport["forced"]
     _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
     _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
     if _reffort and not no_reasoning:
@@ -2951,10 +2968,13 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             # Mandatory-reasoning model asked to skip thinking — can't send
             # `enabled:false` (the endpoint 400s), so bound it tightly instead.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
-    if _is_thinking_model(_model):
+    if _transport["param"] == "thinking":
         # Z.AI GLM: forced thinking + preserved thinking (clear_thinking:false),
         # exactly what OpenCode sends. Never `reasoning:{enabled:false}`.
-        payload["thinking"] = {"type": "enabled", "clear_thinking": False}
+        _th = {"type": "enabled"}
+        if _transport["clear_thinking"] is not None:
+            _th["clear_thinking"] = bool(_transport["clear_thinking"])
+        payload["thinking"] = _th
     elif _reasoning:
         payload["reasoning"] = _reasoning
     if tools:
@@ -3341,7 +3361,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
                 # its "next step" context and finalizes the turn. Opt-out via the
                 # per-model `strip_reasoning: true` key (handled in _query_openrouter).
                 if m.get("reasoning"):
-                    new_m["reasoning"] = m["reasoning"]
+                    new_m[_reasoning_transport(MODEL)["field"]] = m["reasoning"]
                 if m.get("thinking"):
                     new_m["thinking"] = m["thinking"]
                 if m.get("tool_calls"):
@@ -7155,7 +7175,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     # Replay the model's reasoning across the tool call so a
                     # reasoning model (GLM/DeepSeek/Kimi) keeps its "next step"
                     # context and continues instead of finalizing early.
-                    _am["reasoning"] = result["thinking"]
+                    _am[_reasoning_transport(MODEL)["field"]] = result["thinking"]
                 followup.append(_am)
                 for tc in _exec:
                     nm = tc["function"]["name"]
@@ -9719,7 +9739,7 @@ if FLASK_OK:
         if request.path.startswith("/v1"):
             msg_obj = {"role": "assistant", "content": result.get("content", "")}
             if result.get("thinking"):
-                msg_obj["reasoning"] = result["thinking"]
+                msg_obj[_reasoning_transport(MODEL)["field"]] = result["thinking"]
             if result.get("tool_calls"):
                 oai_tc = []
                 for i, tc in enumerate(result["tool_calls"]):
