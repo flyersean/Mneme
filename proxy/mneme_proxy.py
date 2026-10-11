@@ -480,7 +480,7 @@ def load_config():
         if _tpl_name:
             try:
                 data = _templates.apply_template(
-                    data, os.environ.get("MNEME_MODEL", ""), _tpl_name,
+                    data, data.get("model") or os.environ.get("MNEME_MODEL", ""), _tpl_name,
                     _templates.default_templates_path(REPO_ROOT),
                     _resolve_user_templates_path(data),
                 )

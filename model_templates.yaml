@@ -171,7 +171,7 @@ templates:
 
   deepseek-v4:
     description: "DeepSeek V4 (Pro/Flash) — reasoning model; its own API defaults"
-    notes: "DeepSeek V4 defaults: temperature 1.0, top_p 1.0, no frequency/presence penalty. Thinking stays on (mandatory-reasoning list bounds it). The GLM anti-loop penalties (frequency 0.7 / presence 0.3) deliberately do NOT apply here."
+    notes: "DeepSeek V4 transport (mirrors Hermes): thinking:{type:enabled} + reasoning_content echoed back on every assistant tool-call message. temperature 1.0, top_p 1.0, no frequency/presence penalty. The GLM anti-loop penalties (frequency 0.7 / presence 0.3) deliberately do NOT apply here."
     sampling:
       temperature: 1.0
       top_p: 1.0
@@ -179,4 +179,6 @@ templates:
       "{model}":
         temperature: 1.0
         top_p: 1.0
+        reasoning_param: thinking
+        reasoning_field: reasoning_content
         reasoning_forced: true
