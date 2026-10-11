@@ -201,7 +201,7 @@ Mneme runs four models against one shared memory store:
   stalls the pipeline).
 - **Decision (classifier)** — answers *typed* yes/no / multiple-choice / rubric questions
   with calibrated probabilities instead of generating text. Powers the harness judge, the
-  tool-safety gate, and routing. See [Decision models](#decision-models).
+  tool-safety gate, and routing. See [Decision models](#decision-models-classifier-layer).
 
 **Thinking models** (Gemma 3/4, etc.) are handled for you: reasoning is **off by
 default** (`think: false`), so the model answers directly. If a model hangs or times
@@ -401,7 +401,7 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
 - `unified_mneme` — **legacy** full-build branch, superseded by `agent-harness`. Still
   around for history only; new installs should use `agent-harness`.
 - `classification-models` — **the decision-layer build** — everything in `agent-harness`
-  plus the decision / classifier model layer (see [Decision models](#decision-models)):
+  plus the decision / classifier model layer (see [Decision models](#decision-models-classifier-layer)):
   harness judge, tool-safety gate, `POST /decide`, and swarm `decide`/`run` steps.
 - `self-code` — the running agent's self-editing sandbox (it pushes only here); reviewed
   and merged into the build branches.
