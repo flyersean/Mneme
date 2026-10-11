@@ -1063,14 +1063,14 @@ async function send() {
     }
     if (!content) content = "(no response)";
     bubble.innerHTML = renderMarkdown(content);
-    history.push({ role: "assistant", content: content });
+    history.push({ role: "assistant", content: content, reasoning: reasoning });
     saveConversation();   // fire-and-forget: the server already persisted the turn
     scrollDown();
   } catch (e) {
     if (e.name === "AbortError") {
       if (content) {
         bubble.innerHTML = renderMarkdown(content);
-        history.push({ role: "assistant", content: content });
+        history.push({ role: "assistant", content: content, reasoning: reasoning });
         saveConversation();
       } else {
         bubble.textContent = "[stopped]";
