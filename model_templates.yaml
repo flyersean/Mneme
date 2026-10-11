@@ -160,12 +160,10 @@ templates:
     description: "GLM-5.3 — anti-loop sampling (temp 1.0); keep reasoning for tool-call continuity"
     notes: "GLM default temperature is 1.0; lower temps degenerate into repetition loops. strip_reasoning stays OFF so the model keeps its reasoning across tool calls (fixes early-stop). Bump frequency_penalty to 0.8 if loops recur."
     sampling:
-      frequency_penalty: 0.7
       temperature: 1.0
       top_p: 0.95
     models:
       "{model}":
-        strip_reasoning: false    # KEEP reasoning across tool calls (early-stop fix)
         frequency_penalty: 0.7
         temperature: 1.0
         top_p: 0.95
