@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/vendor/codemirror.min.css">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/theme.js"></script>
+<title>Mneme — Swarm Monitor</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:16px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; font-weight:650; }
+  main.swarm-main { display:flex; gap:16px; padding:18px 28px; max-width:1500px; margin:0 auto; align-items:stretch; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { color:var(--accent); }
+  button.save { color:var(--green); }
+  button.save:hover { border-color:var(--green); }
+  input[type="text"] { padding:7px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; font-size:13px; background:var(--bg); color:var(--fg); }
+  input[type="text"]:focus { outline:none; border-color:var(--accent); }
+
+  /* ── Left: file browser panel ── */
+  .browser-panel { flex:0 0 320px; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:calc(100vh - 150px); max-height:calc(100vh - 150px); }
+  .browser-head { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--line); }
+  .browser-head input { flex:1; min-width:0; }
+  .browser-crumb { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
+  .tree { flex:1; overflow-y:auto; padding:6px; font-size:13px; }
+  .tree .empty { color:var(--muted); padding:10px 8px; font-size:13px; }
+  .tree-item { display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:6px; cursor:pointer; white-space:nowrap; }
+  .tree-item:hover { background:var(--accent-soft); }
+  .tree-item .icon { width:14px; text-align:center; flex:0 0 auto; color:var(--muted); }
+  .tree-item.dir { color:var(--accent); }
+  .tree-item.file { color:var(--fg); }
+  .tree-item .name { overflow:hidden; text-overflow:ellipsis; }
+  .tree-item .size { margin-left:auto; color:var(--muted); font-size:11px; flex:0 0 auto; }
+  .tree-item .scope { color:var(--green); font-size:11px; margin-left:6px; flex:0 0 auto; }
+
+  /* ── Right: viewer/editor panel ── */
+  .viewer-panel { flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:calc(100vh - 150px); max-height:calc(100vh - 150px); }
+  .editor-toolbar { display:flex; align-items:center; gap:8px; padding:10px; border-bottom:1px solid var(--line); }
+  .editor-toolbar label.check { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; }
+  .editor-toolbar label.check input { width:auto; }
+  .editor-status { margin-left:auto; font-size:12px; color:var(--muted); }
+  .editor-status.ok { color:var(--green); }
+  .editor-status.err { color:var(--red); }
+  .tabbar { display:flex; gap:4px; padding:6px 8px 0; border-bottom:1px solid var(--line); overflow-x:auto; background:var(--bg); }
+  .tab { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border:1px solid var(--line); border-bottom:none; border-radius:7px 7px 0 0; font-size:13px; cursor:pointer; background:var(--bg); color:var(--fg); white-space:nowrap; }
+  .tab.active { background:var(--panel); color:var(--accent); }
+  .tab .tabname { overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+  .tab .close { color:var(--muted); font-size:15px; line-height:1; cursor:pointer; }
+  .tab .close:hover { color:var(--red); }
+  .editor-host { flex:1; overflow:hidden; padding:8px; display:flex; flex-direction:column; }
+  .editor-host .CodeMirror { flex:1; border:1px solid var(--line); border-radius:7px; font-size:13px; height:100%; }
+  .editor-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:14px; border:1px dashed var(--line); border-radius:7px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mneme — Swarm Monitor</h1>
+</header>
+<nav class="mneme-nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/memory">Memory</a>
+  <a href="/instructions">Instructions</a>
+  <a href="/templates">Templates</a>
+  <a href="/ollama">Ollama</a>
+  <a href="/runs/ui">Runs</a>
+  <a href="/strategies/ui">Strategies</a>
+  <a href="/extensions">Extensions</a>
+  <a href="/swarmonitor" class="active">Swarm Monitor</a>
+  <a href="/tokens">Tokens</a>
+  <a href="/users" id="users-link">Users</a>
+</nav>
+<main class="swarm-main">
+  <aside class="browser-panel">
+    <div class="browser-head">
+      <input type="text" id="pathInput" placeholder="Path (relative or absolute)…" spellcheck="false">
+      <button id="browseBtn">Go</button>
+    </div>
+    <div class="browser-crumb" id="browserCrumb">Loading…</div>
+    <div class="tree" id="tree">
+      <div class="empty">Loading…</div>
+    </div>
+  </aside>
+  <section class="viewer-panel">
+    <div class="editor-toolbar">
+      <button id="refreshBtn" class="primary">Refresh</button>
+      <button id="saveBtn" class="save">Save</button>
+      <label class="check"><input type="checkbox" id="autoReload"> Auto-reload</label>
+      <span class="editor-status" id="editorStatus"></span>
+    </div>
+    <div class="tabbar" id="tabbar"></div>
+    <div class="editor-host" id="editor">
+      <div class="editor-empty" id="editorEmpty">Open a file from the browser to view or edit it.</div>
+    </div>
+  </section>
+</main>
+<script src="/static/vendor/codemirror.min.js"></script>
+<script src="/static/vendor/yaml.min.js"></script>
+<script src="/static/vendor/js-yaml.min.js"></script>
+<script>
+/* Swarm Monitor — browser + tabbed viewer/editor wiring.
+   Injected at the //__SWARMONITOR_JS__ marker in swarmonitor.html. */
+
+(function () {
+  'use strict';
+
+  // ── State ──────────────────────────────────────────────────────────────
+  const tabs = [];          // { id, path, name, content, cm, dirty }
+  let activeTabId = null;
+  let cmEditor = null;      // CodeMirror instance for the ACTIVE tab
+  let autoReloadTimer = null;
+  let lastReloaded = {};    // id -> last content hash for auto-reload change detection
+  let seq = 0;
+
+  const $ = (id) => document.getElementById(id);
+  const treeEl = $('tree');
+  const crumbEl = $('browserCrumb');
+  const pathInput = $('pathInput');
+  const statusEl = $('editorStatus');
+  const editorHost = $('editor');
+  const tabbarEl = $('tabbar');
+
+  // ── Small helpers ──────────────────────────────────────────────────────
+  function setStatus(msg, cls) {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'editor-status' + (cls ? ' ' + cls : '');
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function fmtSize(n) {
+    if (n == null || isNaN(n)) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+  }
+
+  function modeFor(path) {
+    const ext = ((path || '').split('.').pop() || '').toLowerCase();
+    const map = {
+      yaml: 'yaml', yml: 'yaml',
+      json: { name: 'javascript', json: true },
+      js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+      py: 'python',
+      md: 'markdown', markdown: 'markdown',
+      css: 'css',
+      html: 'htmlmixed', htm: 'htmlmixed',
+      xml: 'xml', svg: 'xml',
+      sh: 'shell', bash: 'shell', zsh: 'shell',
+      ini: null, cfg: null, conf: null, txt: null, log: null, out: null,
+      csv: null, tsv: null
+    };
+    if (ext in map) return map[ext];
+    return null;
+  }
+
+  async function fetchJSON(url, opts) {
+    const r = await fetch(url, opts);
+    let j = null;
+    try { j = await r.json(); } catch (e) { /* non-JSON */ }
+    if (!r.ok) {
+      const msg = (j && j.error) ? j.error : ('HTTP ' + r.status);
+      const err = new Error(msg);
+      err.status = r.status;
+      throw err;
+    }
+    return j;
+  }
+
+  // ── Browser: list + render ─────────────────────────────────────────────
+  function renderTree(j) {
+    crumbEl.textContent = 'root: ' + (j.root || '') + (j.current ? '  ▸  ' + j.current : '');
+    const items = j.items || [];
+    if (!items.length) {
+      treeEl.innerHTML = '<div class="empty">(empty directory)</div>';
+      return;
+    }
+    const html = items.map((it) => {
+      const icon = it.type === 'dir' ? '▸' : '·';
+      const cls = it.type === 'dir' ? 'dir' : 'file';
+      const scope = it.in_model_scope ? '<span class="scope">●</span>' : '';
+      const size = it.type === 'file' ? '<span class="size">' + esc(fmtSize(it.size)) + '</span>' : '';
+      return '<div class="tree-item ' + cls + '" data-path="' + esc(it.path) + '" data-type="' + it.type + '">' +
+        '<span class="icon">' + icon + '</span>' +
+        '<span class="name">' + esc(it.name) + '</span>' + scope + size +
+        '</div>';
+    }).join('');
+    treeEl.innerHTML = html;
+    treeEl.querySelectorAll('.tree-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const p = el.getAttribute('data-path');
+        const t = el.getAttribute('data-type');
+        if (t === 'dir') loadDir(p);
+        else openTab(p);
+      });
+    });
+  }
+
+  async function loadDir(path) {
+    treeEl.innerHTML = '<div class="empty">Loading…</div>';
+    pathInput.value = path || '';
+    try {
+      const j = await fetchJSON('/fs/list?path=' + encodeURIComponent(path || ''));
+      renderTree(j);
+    } catch (e) {
+      treeEl.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  // ── Tabs: open / close / switch ────────────────────────────────────────
+  function findTabByPath(path) {
+    return tabs.find((t) => t.path === path);
+  }
+
+  function saveActiveIntoState() {
+    if (activeTabId == null || !cmEditor) return;
+    const t = tabs.find((x) => x.id === activeTabId);
+    if (t) t.content = cmEditor.getValue();
+  }
+
+  function renderTabbar() {
+    tabbarEl.innerHTML = tabs.map((t) => {
+      const active = t.id === activeTabId ? ' active' : '';
+      const dirty = t.dirty ? ' ●' : '';
+      return '<div class="tab' + active + '" data-id="' + t.id + '">' +
+        '<span class="tabname">' + esc(t.name) + dirty + '</span>' +
+        '<span class="close" data-close="' + t.id + '" title="Close">×</span>' +
+        '</div>';
+    }).join('');
+    tabbarEl.querySelectorAll('.tab').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        if (e.target.getAttribute('data-close')) return;
+        activateTab(el.getAttribute('data-id'));
+      });
+    });
+    tabbarEl.querySelectorAll('.close').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeTab(el.getAttribute('data-close'));
+      });
+    });
+  }
+
+  function clearEditor() {
+    saveActiveIntoState();
+    if (cmEditor) {
+      try { cmEditor.toTextArea(); } catch (e) { /* ignore */ }
+      cmEditor = null;
+    }
+    editorHost.innerHTML = '<div class="editor-empty" id="editorEmpty">Open a file from the browser to view or edit it.</div>';
+  }
+
+  function initEditorForTab(tab) {
+    // Replace the placeholder with a fresh textarea, then wrap it in CodeMirror.
+    editorHost.innerHTML = '<textarea id="cmTextarea"></textarea>';
+    const ta = document.getElementById('cmTextarea');
+    ta.value = tab.content || '';
+    const mode = modeFor(tab.path);
+    cmEditor = CodeMirror.fromTextArea(ta, {
+      lineNumbers: true,
+      mode: mode,
+      indentUnit: 2,
+      indentWithTabs: false,
+      tabSize: 2,
+      lineWrapping: false
+    });
+    cmEditor.on('change', () => {
+      const t = tabs.find((x) => x.id === activeTabId);
+      if (t) t.dirty = true;
+    });
+    setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+  }
+
+  function activateTab(id) {
+    if (activeTabId === id) return;
+    saveActiveIntoState();
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return;
+    activeTabId = id;
+    renderTabbar();
+    initEditorForTab(t);
+    if (t.path && t.dirty !== true) {
+      setStatus(t.path + ' — ' + fmtSize(t.size));
+    } else if (t.path) {
+      setStatus(t.path + ' — unsaved changes', 'err');
+    }
+  }
+
+  async function openTab(path) {
+    // Reuse an already-open tab.
+    const existing = findTabByPath(path);
+    if (existing) { activateTab(existing.id); return; }
+    try {
+      setStatus('Reading ' + path + '…');
+      const j = await fetchJSON('/fs/read?path=' + encodeURIComponent(path));
+      const id = 't' + (++seq);
+      const tab = {
+        id, path, name: (path || '').split('/').pop() || path || '(untitled)',
+        content: j.content || '', size: j.size, cm: null, dirty: false
+      };
+      tabs.push(tab);
+      lastReloaded[id] = j.content || '';
+      activeTabId = id;
+      renderTabbar();
+      initEditorForTab(tab);
+      setStatus(path + ' — ' + fmtSize(j.size));
+    } catch (e) {
+      setStatus(e.message, 'err');
+      alert(e.message);
+    }
+  }
+
+  function closeTab(id) {
+    const idx = tabs.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const closingActive = id === activeTabId;
+    tabs.splice(idx, 1);
+    delete lastReloaded[id];
+    if (!tabs.length) {
+      activeTabId = null;
+      clearEditor();
+      renderTabbar();
+      setStatus('');
+      return;
+    }
+    if (closingActive) {
+      const next = tabs[Math.min(idx, tabs.length - 1)];
+      activeTabId = null; // force re-init even if same id somehow
+      activateTab(next.id);
+    } else {
+      renderTabbar();
+    }
+  }
+
+  // ── Read / save / refresh handlers ─────────────────────────────────────
+  async function refreshActive() {
+    if (activeTabId == null) return;
+    const t = tabs.find((x) => x.id === activeTabId);
+    if (!t) return;
+    if (t.dirty) {
+      if (!confirm('This tab has unsaved changes. Reload from disk anyway?')) return;
+    }
+    try {
+      setStatus('Refreshing ' + t.path + '…');
+      const j = await fetchJSON('/fs/read?path=' + encodeURIComponent(t.path));
+      t.content = j.content || '';
+      t.size = j.size;
+      t.dirty = false;
+      lastReloaded[t.id] = t.content;
+      if (cmEditor) cmEditor.setValue(t.content);
+      setStatus(t.path + ' — ' + fmtSize(j.size));
+    } catch (e) {
+      setStatus(e.message, 'err');
+    }
+  }
+
+  async function saveActive() {
+    if (activeTabId == null || !cmEditor) return;
+    const t = tabs.find((x) => x.id === activeTabId);
+    if (!t) return;
+    const content = cmEditor.getValue();
+    setStatus('Saving ' + t.path + '…');
+    try {
+      const j = await fetchJSON('/fs/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: t.path, content })
+      });
+      t.content = content;
+      t.dirty = false;
+      t.size = j.size;
+      lastReloaded[t.id] = content;
+      renderTabbar();
+      setStatus('Saved ' + t.path + ' — ' + fmtSize(j.size) + ' ✓', 'ok');
+    } catch (e) {
+      setStatus(e.message, 'err');
+      alert(e.message);
+    }
+  }
+
+  // ── Auto-reload (live-append watching for the active tab) ──────────────
+  function startAutoReload() {
+    if (autoReloadTimer) return;
+    autoReloadTimer = setInterval(autoReloadTick, 3000);
+  }
+
+  async function autoReloadTick() {
+    if (!$('autoReload').checked) return;
+    if (activeTabId == null) return;
+    const t = tabs.find((x) => x.id === activeTabId);
+    if (!t || !t.path || t.dirty) return; // never clobber unsaved edits
+    try {
+      const j = await fetchJSON('/fs/read?path=' + encodeURIComponent(t.path));
+      const incoming = j.content || '';
+      if (incoming !== lastReloaded[t.id]) {
+        lastReloaded[t.id] = incoming;
+        t.content = incoming;
+        t.size = j.size;
+        if (cmEditor) cmEditor.setValue(incoming);
+        setStatus('Auto-reloaded ' + t.path + ' — ' + fmtSize(j.size), 'ok');
+      }
+    } catch (e) {
+      // transient failure — stay quiet, retry next tick
+    }
+  }
+
+  // ── Wire up UI events ──────────────────────────────────────────────────
+  function goPath() {
+    const p = pathInput.value.trim();
+    // Absolute paths work because /fs/list joins root with an absolute path
+    // (os.path.join drops the root when the second arg is absolute), and the
+    // server's _within() guard clamps out-of-scope paths to browser_root.
+    loadDir(p);
+  }
+
+  $('browseBtn').addEventListener('click', goPath);
+  pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') goPath(); });
+  $('refreshBtn').addEventListener('click', refreshActive);
+  $('saveBtn').addEventListener('click', saveActive);
+  $('autoReload').addEventListener('change', startAutoReload);
+  startAutoReload();
+
+  // ── Boot: start at filesystem.browser_root (server default) ────────────
+  loadDir('');
+})();
+
+</script>
+</body>
+</html>
