@@ -3317,8 +3317,18 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
             # Preserve tool_calls on assistant messages so the model can associate
             # a follow-up tool result with its call (critical for multi-turn tool
             # use in Pi). Dropping this is what broke tool calls → "None".
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                new_m["tool_calls"] = m["tool_calls"]
+            if m.get("role") == "assistant":
+                # Preserve reasoning/thinking so reasoning models (GLM/DeepSeek/
+                # Kimi) can continue multi-step tool calls. Dropping this is what
+                # causes the early-stop right after a tool result: the model loses
+                # its "next step" context and finalizes the turn. Opt-out via the
+                # per-model `strip_reasoning: true` key (handled in _query_openrouter).
+                if m.get("reasoning"):
+                    new_m["reasoning"] = m["reasoning"]
+                if m.get("thinking"):
+                    new_m["thinking"] = m["thinking"]
+                if m.get("tool_calls"):
+                    new_m["tool_calls"] = m["tool_calls"]
             # Preserve tool_call_id (and optional name) on tool messages — the
             # OpenAI-compatible format (OpenRouter) requires a tool result to carry
             # the id of the assistant tool_call it answers. Dropping it orphaned
@@ -7122,7 +7132,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 _exec = native_calls
 
             if _exec:
-                followup.append({"role": "assistant", "content": None, "tool_calls": _exec})
+                _am = {"role": "assistant", "content": None, "tool_calls": _exec}
+                if result.get("thinking"):
+                    # Replay the model's reasoning across the tool call so a
+                    # reasoning model (GLM/DeepSeek/Kimi) keeps its "next step"
+                    # context and continues instead of finalizing early.
+                    _am["reasoning"] = result["thinking"]
+                followup.append(_am)
                 for tc in _exec:
                     nm = tc["function"]["name"]
                     args = tc["function"].get("arguments", {}) or {}
