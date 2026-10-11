@@ -8652,6 +8652,65 @@ if FLASK_OK:
         out.sort(key=lambda d: d["port"])
         return _cors_response({"instances": out, "self_port": PORT})
 
+    def _port_owner(port):
+        """PID(s) owning a listen socket on `port`, resolved host-side via
+        `ss -ltnp`. Runs in the proxy process (OUTSIDE the model's bwrap sandbox),
+        so the pid= column populates here even though the model's own bash sees it
+        empty."""
+        try:
+            out = subprocess.run(["ss", "-ltnp"], capture_output=True,
+                                 text=True, timeout=3).stdout
+            pids = []
+            for line in out.splitlines():
+                if not line.startswith("LISTEN"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 4 and parts[3].rsplit(":", 1)[-1] == str(port):
+                    pids.extend(re.findall(r"pid=(\d+)", line))
+            return sorted(set(pids))
+        except Exception:
+            return []
+
+    def _proxy_processes():
+        """(pid, lstart, cmd) lines for every live mneme_proxy.py process."""
+        try:
+            out = subprocess.run(["ps", "-eo", "pid,lstart,cmd"],
+                                 capture_output=True, text=True, timeout=3).stdout
+            return [l for l in out.splitlines()
+                    if "mneme_proxy.py" in l and "grep" not in l]
+        except Exception:
+            return []
+
+    @app.route("/system/status", methods=["GET"])
+    def system_status():
+        """Public machine-readable system status for the model: every instance
+        (with host-resolved owner PIDs) + live proxy processes. Runs server-side so
+        `ss -p` / `ps` see the host — the model's own bash runs under bwrap, where
+        `ss -p`'s pid= column is empty."""
+        out = []
+        root = _instances_root()
+        seen = set()
+        try:
+            names = [n for n in os.listdir(root) if n.isdigit()] if os.path.isdir(root) else []
+        except Exception:
+            names = []
+        for n in names:
+            port = int(n)
+            if port in seen:
+                continue
+            seen.add(port)
+            model, backend = _instance_meta(port)
+            out.append({"port": port, "model": model or "(unknown)",
+                        "backend": backend or "ollama", "running": _proxy_up(port),
+                        "self": port == PORT, "owner_pid": _port_owner(port)})
+        if PORT not in seen:
+            out.append({"port": PORT, "model": MODEL,
+                        "backend": os.environ.get("MNEME_BACKEND", "ollama"),
+                        "running": True, "self": True, "owner_pid": _port_owner(PORT)})
+        out.sort(key=lambda d: d["port"])
+        return _cors_response({"instances": out, "self_port": PORT,
+                               "processes": _proxy_processes()})
+
     @app.route("/overview/stop", methods=["POST"])
     def overview_stop():
         port = int((request.get_json(force=True) or {}).get("port", 0))

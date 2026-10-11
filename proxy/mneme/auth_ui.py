@@ -153,7 +153,7 @@ def register(app, get_auth, cors_response):
     # ── auth guard ───────────────────────────────────────────────────────────
     @app.before_request
     def _authorize():
-        if request.method == "OPTIONS" or request.path == "/health":
+        if request.method == "OPTIONS" or request.path in ("/health", "/system/status"):
             return None
         if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
             return None
