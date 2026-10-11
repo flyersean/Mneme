@@ -410,6 +410,11 @@ Rules that matter for you:
   built-in default.
 - After a switch, type `<<SETTINGS>>` in chat to confirm the merged settings.
 - Known-good templates: `model_templates.yaml`. Provider catalog: `PROVIDER_CATALOG`.
+- **Maintenance: model info goes stale.** `model_templates.yaml`,
+  `_MANDATORY_REASONING_MODELS`, and `PROVIDER_CATALOG` are hand-curated and wrong the
+  moment a new model ships — update all three whenever you add/adopt a model.
+- **TODO (not yet done):** auto-select the template from the model slug so `model:` and
+  `model_template:` can't drift. See `docs/model-switching.md` -> "Maintenance & future work".
 
 ## 3. `mneme.yaml` — full spec (proxy config)
 

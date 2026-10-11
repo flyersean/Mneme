@@ -107,3 +107,32 @@ and is a known foot-gun.
 - **Built-in code defaults once shipped `frequency_penalty 0.5` / `presence_penalty 0.3`**
   (GPT-family values) that leaked to every model. Now 0.0 — model-specific penalties
   belong only in that model's template.
+
+---
+
+## Maintenance & future work
+
+### Maintenance requirement: model info goes stale
+
+`model_templates.yaml`, `_MANDATORY_REASONING_MODELS`, and `PROVIDER_CATALOG` are
+hand-curated. **They are wrong the moment a new model ships.** When you add or adopt a
+model, update all three together:
+
+1. Add a template with its known-good settings (or confirm neutral defaults are right).
+2. If it's a reasoning model, add its slug to `_MANDATORY_REASONING_MODELS`.
+3. If it's a new provider, add it to `PROVIDER_CATALOG` (base_url + key_env).
+
+Treat this as a standing requirement, not a one-off. A model with no template and no
+mandatory-reasoning entry silently gets neutral defaults + `reasoning.enabled=false` —
+the exact combination that produces the early-end failure. New models release constantly;
+this table is only as good as the last time someone updated it.
+
+### TODO: auto-select the template by model slug
+
+Currently `model_template:` is pinned manually; changing `model:` doesn't follow it —
+the root cause of the word-salad/early-end trap this doc exists to prevent. The intended
+fix is to make template selection automatic (match the model slug, like
+`_MANDATORY_REASONING_MODELS` already does), with a neutral fallback and a visible
+"no known-good settings" notice in `<<SETTINGS>>`. Not yet implemented; recorded here as
+the standing improvement.
+
