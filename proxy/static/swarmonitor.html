@@ -65,24 +65,12 @@
 <header>
   <h1>Mneme — Swarm Monitor</h1>
 </header>
-<nav class="mneme-nav">
-  <a href="/">Dashboard</a>
-  <a href="/chat">Chat</a>
-  <a href="/memory">Memory</a>
-  <a href="/instructions">Instructions</a>
-  <a href="/templates">Templates</a>
-  <a href="/ollama">Ollama</a>
-  <a href="/runs/ui">Runs</a>
-  <a href="/strategies/ui">Strategies</a>
-  <a href="/extensions">Extensions</a>
-  <a href="/swarmonitor" class="active">Swarm Monitor</a>
-  <a href="/tokens">Tokens</a>
-  <a href="/users" id="users-link">Users</a>
-</nav>
+<nav class="mneme-nav"></nav>
 <main class="swarm-main">
   <aside class="browser-panel">
     <div class="browser-head">
       <input type="text" id="pathInput" placeholder="Path (relative or absolute)…" spellcheck="false">
+      <button id="upBtn" title="Go up one directory">↑ Up</button>
       <button id="browseBtn">Go</button>
       <button id="termBtn" title="Open a system terminal in this folder">Terminal</button>
     </div>
@@ -433,6 +421,16 @@
   }
 
   // ── Wire up UI events ──────────────────────────────────────────────────
+  function goUp() {
+    // currentDir is the directory shown, relative to browser_root ('.' = root).
+    // Pop one segment and reload; never navigate above the root.
+    const c = currentDir || '.';
+    if (c === '.' || c === '' || c === '/') { loadDir(''); return; }
+    const parts = c.split('/').filter(Boolean);
+    parts.pop();
+    loadDir(parts.join('/'));
+  }
+
   function goPath() {
     const p = pathInput.value.trim();
     // Absolute paths work because /fs/list joins root with an absolute path
@@ -496,6 +494,7 @@
   }
 
   $('browseBtn').addEventListener('click', goPath);
+  $('upBtn').addEventListener('click', goUp);
   $('termBtn').addEventListener('click', openTerminalHere);
   $('newFolderBtn').addEventListener('click', newFolder);
   $('newFileBtn').addEventListener('click', newFile);

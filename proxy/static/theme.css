@@ -49,6 +49,10 @@ html { zoom: 1.25; }
 .mneme-nav a:hover{border-color:var(--accent);color:var(--accent)}
 .mneme-nav a.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 
+/* Sticky top chrome — theme.js wraps header + nav in .topbar so both stay
+ * pinned on scroll (the description blocks no longer push the nav off-screen). */
+.topbar { position: sticky; top: 0; z-index: 40; background: var(--bg); }
+
 /* Collapsible intro/help text — pages wrap their header description in
  * <div class="intro" id="..."> and add a toggle button that calls
  * theme.js's toggleIntro(id). Expanded by default on desktop; theme.js
