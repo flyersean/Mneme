@@ -118,6 +118,22 @@ break the ability to mix providers against one DB.
 a file path, a config key, a tool behavior, a capability — say so honestly and ask, or grant
 it through the UI. Never work around it, and never claim a blocked action succeeded.
 
+### The `text-mneme:195k` model name is FAKE — do not chase it
+
+When you hit `/health` you'll see two model-ish fields that don't match, and that is
+intentional:
+
+- `model` — a **fake id** like `text-mneme:195k` (or `text-mneme:64k`).
+- `backend` — the **real** chat model (e.g. `deepseek-v4-pro`).
+
+`text-mneme:<N>k` is NOT a real model and not something you can call or select. It's a
+Hermes-compatibility spoof: Hermes refuses to load any model it thinks has less than ~64k
+context, so Mneme reports a fabricated id whose suffix (`<N>k`) is the real context budget
+in thousands of tokens (from `MNEME_CTX_TOKENS`, clamped to a 64k floor — `195k` means a
+~200,000-token budget). The model you actually talk to is `backend` (and `model` in
+`/system/status`). If you need to know which model a proxy is really serving, read `backend`,
+not `model`.
+
 ---
 
 ## Repo layout
@@ -644,7 +660,7 @@ IGNORED — the proxy does not silently override its own config.
 | POST | `/v1/chat/completions` | OpenAI-compatible chat |
 | POST | `/save` | Flush staging buffer to storage |
 | POST | `/search` | Debug search `{"query": "...", "top_k": 3}` |
-| GET | `/health` | `{"status":"ok","backend":"<model>","chunks":N}` |
+| GET | `/health` | `{"status":"ok","backend":"<real chat model>","model":"text-mneme:<N>k","chunks":N}` — `model` is a fake Hermes-compat id (context-budget suffix); `backend` is the real model |
 | GET | `/system/status` | Every instance (`port`/`model`/`backend`/`running`/`owner_pid`) + live proxy processes — host-resolved, for the model's bwrap-sandboxed bash |
 | GET | `/status` | chat / embedder / labeler connectivity (`ok` + last error) — feeds the chat header dots |
 | GET | `/` `/chat` | Built-in chat UI |
