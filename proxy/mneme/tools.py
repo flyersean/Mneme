@@ -474,6 +474,53 @@ START_RUN_TOOL = {
     },
 }
 
+RESUME_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "resume_run",
+        "description": "Resume a paused harness run by id, continuing it from where it stopped. Use when inspect_run shows a run with status 'paused' that should keep going.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to resume."},
+            },
+            "required": ["run_id"],
+        },
+    },
+}
+
+REPLAN_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "replan_run",
+        "description": "Ask the harness to replan the remaining work for a run. Use when a run is stuck, off-track, or its plan no longer matches the goal — the harness regenerates the plan for the unfinished tasks.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to replan."},
+                "reason": {"type": "string", "description": "Why the plan should be regenerated (e.g. 'the current plan misses the migration step')."},
+            },
+            "required": ["run_id"],
+        },
+    },
+}
+
+NOTE_RUN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "note_run",
+        "description": "Inject a steering note into a run's next task step, to correct or guide a running/paused run without a full replan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "The run_... id to note."},
+                "text": {"type": "string", "description": "The note text to inject (e.g. 'use the existing helper instead of rewriting it')."},
+            },
+            "required": ["run_id", "text"],
+        },
+    },
+}
+
 # Registry-write tool (save_tool). Mutates the tools table + canonical dir, so it
 # is NOT in READONLY_SERVER_TOOLS; gated by MNEME_TOOL_SAVE_TOOL (default on).
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
@@ -631,7 +678,7 @@ def native_exec_names(client_tools):
         if "write" not in client_names:
             out.add("write")
     if os.environ.get("MNEME_TOOL_START_RUN", "1") == "1":
-        out.add("start_run")
+        out.update({"start_run", "resume_run", "replan_run", "note_run"})
     return out
 
 
@@ -652,8 +699,9 @@ def assemble_tools(client_tools):
 
     for t in enabled_readonly_tools():
         add(t)
-    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL}
-    for n in ("bash", "write", "start_run"):
+    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
+                    "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL}
+    for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -807,6 +855,12 @@ def execute_native_tool(name, args):
         return _exec_write((args or {}).get("file_path", ""), (args or {}).get("content", ""))
     if name == "start_run":
         return _exec_start_run(args)
+    if name == "resume_run":
+        return _exec_resume_run(args)
+    if name == "replan_run":
+        return _exec_replan_run(args)
+    if name == "note_run":
+        return _exec_note_run(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1192,6 +1246,55 @@ def _exec_start_run(args):
                 f"Check progress with inspect_run(run_id=\"{rid}\").")
     except Exception as e:
         return f"[start_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_resume_run(args):
+    """Resume a paused harness run by id."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to resume a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    if not run_id:
+        return "resume_run requires a run_id."
+    try:
+        engine.resume(run_id, actor="model:resume_run")
+        return f"Resume requested for {run_id}."
+    except Exception as e:
+        return f"[resume_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_replan_run(args):
+    """Ask the harness to replan the remaining work for a run."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to replan a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    reason = str(args.get("reason") or "").strip()
+    if not run_id:
+        return "replan_run requires a run_id."
+    try:
+        engine.request_replan(run_id, reason or "requested by model", actor="model:replan_run")
+        return f"Replan requested for {run_id}."
+    except Exception as e:
+        return f"[replan_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_note_run(args):
+    """Inject a steering note into a run's next task step."""
+    if engine is None:
+        return "Harness is disabled or not initialized — there is no engine to note a run."
+    args = args or {}
+    run_id = str(args.get("run_id") or "").strip()
+    text = str(args.get("text") or "").strip()
+    if not run_id:
+        return "note_run requires a run_id."
+    if not text:
+        return "note_run requires text."
+    try:
+        engine.add_note(run_id, text, actor="model:note_run")
+        return f"Note queued for {run_id} — injected into the next task step."
+    except Exception as e:
+        return f"[note_run error: {type(e).__name__}: {e}]"
 
 
 def execute_readonly_tool(name, args):
