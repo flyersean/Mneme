@@ -25,6 +25,11 @@
   .browser-panel { flex:0 0 320px; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:calc(100vh - 150px); max-height:calc(100vh - 150px); }
   .browser-head { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--line); }
   .browser-head input { flex:1; min-width:0; }
+  .browser-tools { display:flex; gap:6px; padding:7px 10px; border-bottom:1px solid var(--line); }
+  .browser-tools button { font-size:12px; padding:4px 9px; }
+  .tree-item .del { margin-left:6px; color:var(--muted); font-size:15px; line-height:1; cursor:pointer; flex:0 0 auto; opacity:0; transition:opacity .12s; }
+  .tree-item:hover .del { opacity:1; }
+  .tree-item .del:hover { color:var(--red); }
   .browser-crumb { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
   .tree { flex:1; overflow-y:auto; padding:6px; font-size:13px; }
   .tree .empty { color:var(--muted); padding:10px 8px; font-size:13px; }
@@ -79,6 +84,11 @@
     <div class="browser-head">
       <input type="text" id="pathInput" placeholder="Path (relative or absolute)…" spellcheck="false">
       <button id="browseBtn">Go</button>
+      <button id="termBtn" title="Open a system terminal in this folder">Terminal</button>
+    </div>
+    <div class="browser-tools">
+      <button id="newFolderBtn" title="Create a new folder in the current directory">New folder</button>
+      <button id="newFileBtn" title="Create a new file in the current directory">New file</button>
     </div>
     <div class="browser-crumb" id="browserCrumb">Loading…</div>
     <div class="tree" id="tree">
@@ -115,6 +125,7 @@
   let autoReloadTimer = null;
   let lastReloaded = {};    // id -> last content hash for auto-reload change detection
   let seq = 0;
+  let currentDir = '';  // directory currently shown in the browser panel
 
   const $ = (id) => document.getElementById(id);
   const treeEl = $('tree');
@@ -192,6 +203,7 @@
       return '<div class="tree-item ' + cls + '" data-path="' + esc(it.path) + '" data-type="' + it.type + '">' +
         '<span class="icon">' + icon + '</span>' +
         '<span class="name">' + esc(it.name) + '</span>' + scope + size +
+        '<span class="del" title="Delete" data-del="' + esc(it.path) + '">×</span>' +
         '</div>';
     }).join('');
     treeEl.innerHTML = html;
@@ -203,6 +215,12 @@
         else openTab(p);
       });
     });
+    treeEl.querySelectorAll('.del').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deletePath(el.getAttribute('data-del'));
+      });
+    });
   }
 
   async function loadDir(path) {
@@ -211,6 +229,7 @@
     try {
       const j = await fetchJSON('/fs/list?path=' + encodeURIComponent(path || ''));
       renderTree(j);
+      currentDir = j.current || '';
     } catch (e) {
       treeEl.innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
     }
@@ -422,7 +441,64 @@
     loadDir(p);
   }
 
+
+  async function openTerminalHere() {
+    setStatus('Opening terminal…');
+    try {
+      const j = await fetchJSON('/fs/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: currentDir || '' })
+      });
+      setStatus('Terminal opened (' + j.terminal + ') at ' + j.cwd, 'ok');
+    } catch (e) {
+      setStatus(e.message, 'err');
+      alert(e.message);
+    }
+  }
+
+  // ── New folder / new file / delete ──────────────────────────────────────
+  function curBase() { return (currentDir && currentDir !== '.') ? currentDir : ''; }
+
+  async function newFolder() {
+    const name = prompt('Folder name:');
+    if (!name || !name.trim()) return;
+    const base = curBase();
+    const path = base ? base + '/' + name.trim() : name.trim();
+    try {
+      await fetchJSON('/fs/mkdir', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+      loadDir(currentDir);
+    } catch (e) { setStatus(e.message, 'err'); alert(e.message); }
+  }
+
+  async function newFile() {
+    const name = prompt('File name:');
+    if (!name || !name.trim()) return;
+    const base = curBase();
+    const path = base ? base + '/' + name.trim() : name.trim();
+    try {
+      await fetchJSON('/fs/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, content: '' }) });
+      loadDir(currentDir);
+      openTab(path);
+    } catch (e) { setStatus(e.message, 'err'); alert(e.message); }
+  }
+
+  async function deletePath(path) {
+    if (!path) return;
+    const name = (path || '').split('/').pop() || path;
+    if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+    try {
+      await fetchJSON('/fs/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+      loadDir(currentDir);
+      const idx = tabs.findIndex((t) => t.path === path);
+      if (idx >= 0) closeTab(tabs[idx].id);
+    } catch (e) { setStatus(e.message, 'err'); alert(e.message); }
+  }
+
   $('browseBtn').addEventListener('click', goPath);
+  $('termBtn').addEventListener('click', openTerminalHere);
+  $('newFolderBtn').addEventListener('click', newFolder);
+  $('newFileBtn').addEventListener('click', newFile);
   pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') goPath(); });
   $('refreshBtn').addEventListener('click', refreshActive);
   $('saveBtn').addEventListener('click', saveActive);

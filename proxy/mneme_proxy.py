@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex
+import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -1941,9 +1941,9 @@ DEFAULT_GRADE   = "C"
 # turn independent of memory retrieval. Deliberately short and constant —
 # NOT counted against the dynamic MAX_INJECTED_TOKENS budget.
 META_PRINCIPLES = [
-    "Answer directly and concisely. A straightforward answer is usually correct — do not reject an answer merely because it came quickly.",
-    "Run one quick sanity check before committing: is there a concrete reason this is wrong? If not, give the answer and stop.",
-    "Only explore alternatives when the question is genuinely ambiguous, explicitly asks for options, or the sanity check found a real flaw. Do not brainstorm as a default ritual.",
+    "Answer directly and concisely — no filler. But conciseness is about wording, not about stopping: once you commit to a multi-step task (editing, building, verifying, researching), finish the whole chain in the same turn instead of pausing for permission.",
+    "Run one quick sanity check before committing. If the user asked a single self-contained question with a clear answer, give it and stop. If you are mid-task, a clean sanity check means proceed to the next step — it is not a reason to stop.",
+    "Do not brainstorm as a default ritual. But a task with a clear next step is not a brainstorm: after a tool call returns, continue to the next step rather than ending the turn.",
     "Prefer the mechanism over the example — name the underlying rule, not just the surface detail.",
     "State your confidence honestly: if unsure, say so plainly instead of padding the answer with extra reasoning.",
 ]
@@ -3045,8 +3045,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 _tool_calls = _dsml_tcs
                 _content = _dsml_residual
                 _finish = "tool_calls"
-        if not _content and _thinking and not _tool_calls:
-            _content = _thinking
+        # Reasoning-only response (empty content, non-empty thinking): leave
+        # content EMPTY. The agent loop's empty-reply nudge re-queries with a
+        # "continue" prompt; promoting thinking->content would leak chain-of-
+        # thought as a fake answer and pollute history.
         _done = {"stop": "stop", "length": "length", "tool_calls": "tool_calls"}.get(_finish, _finish) \
             if _finish else ("tool_calls" if _tool_calls else "stop")
         return {"content": _content, "thinking": _thinking, "tool_calls": _tool_calls,
@@ -3244,10 +3246,9 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             "type": slot.get("type", "function"),
             "function": {"name": slot["function"].get("name", ""), "arguments": args},
         })
-    # Reasoning models sometimes leave content empty and put the answer in
-    # reasoning. Fall back (unless there are tool calls, which must stay calls).
-    if not content and thinking and not tool_calls:
-        content = thinking
+    # Reasoning-only response (empty content, non-empty thinking): leave content
+    # EMPTY so the agent loop's empty-reply nudge fires a "continue" re-query.
+    # Promoting thinking->content would leak chain-of-thought as a fake answer.
     if _stalled or (finish_reason is None and not _saw_done):
         # INCOMPLETE response, two shapes (OpenCode's requireTerminalEvent):
         #  - _stalled: the stream raised (timeout/ConnectionError) mid-response.
@@ -3568,10 +3569,9 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         if _text_tcs:
             tool_calls = _text_tcs
             done_reason = "tool_calls"
-    # Reasoning models sometimes leave content empty and put the answer in
-    # thinking. Fall back (unless there are tool calls, which must stay calls).
-    if not content and thinking and not tool_calls:
-        content = thinking
+    # Reasoning-only response (empty content, non-empty thinking): leave content
+    # EMPTY so the agent loop's empty-reply nudge fires a "continue" re-query.
+    # Promoting thinking->content would leak chain-of-thought as a fake answer.
     if not content and not tool_calls:
         print(f"  [WARN] Empty content from Ollama. done_reason={done_reason} eval_count={eval_count}", flush=True)
     return {"content": content, "thinking": thinking, "tool_calls": tool_calls,
@@ -8072,6 +8072,24 @@ def _model_scope() -> str:
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
 
 
+def _detect_terminal() -> str:
+    """Pick a terminal emulator available on this host, honoring a user override
+    in `filesystem.terminal`. The shell starts in the terminal's own cwd, so we
+    pass the target directory via subprocess cwd= (portable across gnome-terminal,
+    xfce4-terminal, konsole, xterm, alacritty, kitty, etc.)."""
+    cfg = (CONFIG_DATA.get("filesystem") or {}).get("terminal")
+    if cfg:
+        cfg = str(cfg).strip()
+        if cfg:
+            return cfg
+    for cand in ("x-terminal-emulator", "gnome-terminal", "xfce4-terminal",
+                 "konsole", "xterm", "alacritty", "kitty", "terminator",
+                 "lxterminal", "wezterm"):
+        if shutil.which(cand):
+            return cand
+    return "x-terminal-emulator"
+
+
 if FLASK_OK:
     from mneme.auth import AuthStore
 
@@ -8100,6 +8118,7 @@ if FLASK_OK:
     # ── Dashboard: single entry point linking out to every page ──
     _DASHBOARD_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html")
     _CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "chat.html")
+    _SWARMONITOR_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "swarmonitor.html")
 
     def _serve_html(path, err_tag):
         try:
@@ -8116,6 +8135,10 @@ if FLASK_OK:
     @app.route("/chat", methods=["GET"])
     def chat_ui():
         return _serve_html(_CHAT_HTML_PATH, "CHAT-UI")
+
+    @app.route("/swarmonitor", methods=["GET"])
+    def swarmonitor_ui():
+        return _serve_html(_SWARMONITOR_HTML_PATH, "SWARMMONITOR-UI")
 
     @app.route("/static/<path:filename>")
     def static_asset(filename):
@@ -9165,6 +9188,57 @@ if FLASK_OK:
         print(f"  [FS-WRITE] {target} ({size} bytes)", flush=True)
         return _cors_response({"ok": True, "size": size})
 
+    @app.route("/fs/mkdir", methods=["POST"])
+    def fs_mkdir():
+        """Create a directory inside filesystem.browser_root. Accepts an absolute
+        path or one relative to browser_root (same _within() guard as /fs/write)."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return _cors_response({"ok": False, "error": "missing path"}, 400)
+        root = _browser_root()
+        if os.path.isabs(path):
+            target = os.path.realpath(os.path.expanduser(path))
+        else:
+            target = os.path.realpath(os.path.join(root, path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as ex:
+            return _cors_response({"ok": False, "error": str(ex)}, 500)
+        print(f"  [FS-MKDIR] {target}", flush=True)
+        return _cors_response({"ok": True})
+
+    @app.route("/fs/delete", methods=["POST"])
+    def fs_delete():
+        """Delete a file or directory inside filesystem.browser_root. Refuses to
+        delete the browser root itself. Directories are removed recursively."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return _cors_response({"ok": False, "error": "missing path"}, 400)
+        root = _browser_root()
+        if os.path.isabs(path):
+            target = os.path.realpath(os.path.expanduser(path))
+        else:
+            target = os.path.realpath(os.path.join(root, path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        if os.path.realpath(target) == os.path.realpath(root):
+            return _cors_response({"ok": False, "error": "cannot delete the browser root"}, 400)
+        try:
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            elif os.path.isfile(target):
+                os.remove(target)
+            else:
+                return _cors_response({"ok": False, "error": "not found"}, 404)
+        except OSError as ex:
+            return _cors_response({"ok": False, "error": str(ex)}, 500)
+        print(f"  [FS-DELETE] {target}", flush=True)
+        return _cors_response({"ok": True})
+
     @app.route("/fs/scope", methods=["POST"])
     def fs_scope():
         """Set the model's write scope (filesystem.model_scope) to a path inside
@@ -9238,6 +9312,29 @@ if FLASK_OK:
             return _cors_response({"ok": False, "error": f"launch failed: {e}"}, 500)
         print(f"  [FS-OPEN] {kind} -> {cmd} {target}", flush=True)
         return _cors_response({"ok": True, "command": cmd, "path": target})
+
+    @app.route("/fs/terminal", methods=["POST"])
+    def fs_terminal():
+        """Open a system terminal whose shell starts in the requested directory
+        (inside browser_root). The terminal command is auto-detected (or set via
+        `filesystem.terminal`); the path is resolved the same way as /fs/list —
+        relative paths are joined to browser_root and out-of-scope paths clamp to it."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        root = _browser_root()
+        target = os.path.realpath(os.path.join(root, path)) if path else root
+        if not _within(target, root):
+            target = root
+        if not os.path.isdir(target):
+            return _cors_response({"ok": False, "error": "not a directory"}, 404)
+        term = _detect_terminal()
+        try:
+            subprocess.Popen([term], cwd=target, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            return _cors_response({"ok": False, "error": f"launch failed: {e}"}, 500)
+        print(f"  [FS-TERMINAL] {term} @ {target}", flush=True)
+        return _cors_response({"ok": True, "terminal": term, "cwd": target})
 
     # ── Conversations (persistent chat) ──
     def _conv_db():
