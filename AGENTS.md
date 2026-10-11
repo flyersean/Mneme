@@ -391,6 +391,26 @@ whose auth doesn't fit the Bearer pattern needs a config block, not a catalog ro
 
 ---
 
+### 2.7 Switching models without breaking the instance
+
+Changing `model:` alone is the classic "Mneme is broken" trap — settings are
+model-specific and leak across switches. Full guide: `docs/model-switching.md`.
+
+Rules that matter for you:
+
+- **Never change `model:` without also updating `model_template:`** — otherwise the new
+  model runs on the old model's recipe (word salad / early-stop).
+- **Reasoning models must stay in `_MANDATORY_REASONING_MODELS`** (proxy/mneme_proxy.py).
+  If you add a new reasoning model, add its slug there too, else it gets
+  `reasoning.enabled=false` and early-ends its turns.
+- **Penalties (frequency/presence) are model-specific.** The neutral default is 0.0.
+  GLM's anti-loop recipe (freq 0.7 / pres 0.3) lives ONLY in the `glm5.3-loop` template —
+  do not put it in the global `sampling:` block.
+- Settings stack (highest wins): env var > models.<name>.* > model_template > sampling >
+  built-in default.
+- After a switch, type `<<SETTINGS>>` in chat to confirm the merged settings.
+- Known-good templates: `model_templates.yaml`. Provider catalog: `PROVIDER_CATALOG`.
+
 ## 3. `mneme.yaml` — full spec (proxy config)
 
 > **Authoritative:** `mneme.yaml.example`. This inline copy is for convenience and may

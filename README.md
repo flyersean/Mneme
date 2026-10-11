@@ -210,7 +210,10 @@ out, suspect the proxy's config before the model. Opt back in with
 
 **Model templates** package known-good settings (sampling, thinking mode, output caps,
 per-model overrides, and optional corrected Modelfiles) so you select them at setup
-instead of rediscovering them. See [`model_templates.yaml`](model_templates.yaml).
+instead of rediscovering them. See [`model_templates.yaml`](model_templates.yaml). Switching models? Read
+[docs/model-switching.md](docs/model-switching.md) first — a model switch that leaves the
+old model's template/penalties in place is the #1 cause of word-salad and early-stop
+failures, and it's a 3-line fix once you know the checklist.
 
 ## Decision models (classifier layer)
 
