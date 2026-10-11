@@ -19,6 +19,7 @@
   .badge { font-size:11px; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
   .badge.user { background:var(--accent); border-color:var(--accent); color:#fff; }
   .badge.mf { background:var(--amber-soft); border-color:var(--amber); color:var(--amber); }
+  .badge.active { background:#2e7d32; border-color:#2e7d32; color:#fff; }
   table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
   th, td { text-align:left; padding:10px 12px; font-size:14px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
@@ -111,6 +112,20 @@ function setMsg(t, ok) {
   m.textContent = t; m.className = ok ? 'ok' : 'err';
 }
 
+async function useTemplate(name) {
+  setMsg('Activating ' + name + '…', true);
+  try {
+    const r = await fetch('/templates/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const j = await r.json();
+    if (j.ok) {
+      setMsg('Active template: ' + name + (j.restart_required ? ' (needs restart)' : ' (applied — no restart)'), true);
+      await load();
+    } else {
+      setMsg('Activate failed: ' + (j.error || 'unknown'), false);
+    }
+  } catch (e) { setMsg('Activate failed: ' + e.message, false); }
+}
+
 async function load() {
   const r = await fetch('/templates/data');
   const j = await r.json();
@@ -121,7 +136,9 @@ async function load() {
     const tags = [];
     tags.push(t.user ? '<span class="badge user">user</span>' : '<span class="badge">shipped</span>');
     if (t.has_modelfile) tags.push('<span class="badge mf">modelfile</span>');
+    if (t.active) tags.push('<span class="badge active">active</span>');
     const actions = [];
+    if (!t.active) actions.push(`<button class="btn primary" onclick="useTemplate('${t.name}')">Use</button>`);
     actions.push(`<button class="btn" onclick="edit('${t.name}')">Edit</button>`);
     actions.push(`<button class="btn" onclick="exportOne('${t.name}')">Export</button>`);
     if (t.user) actions.push(`<button class="btn danger" onclick="del('${t.name}')">Delete</button>`);

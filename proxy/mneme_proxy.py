@@ -814,20 +814,22 @@ def _reload_sampling_if_changed():
     # assigning the raw section directly would silently DISCARD the template's
     # settings on the first hot-reload, so they applied at boot and then vanished
     # (observed: repeat_penalty fell back to 1.000 after the first request).
-    if "models" in data or "model_template" in data:
-        _tpl_name = (data.get("model_template") or "").strip()
-        _sect = data.get("models") or {}
-        if _tpl_name:
-            try:
-                _merged = _templates.apply_template(
-                    data, MODEL, _tpl_name, _templates.default_templates_path(REPO_ROOT),
-                    USER_TEMPLATES_PATH)
-                _sect = _merged.get("models") or _sect
-            except _templates.TemplateError as e:
-                print(f"  [CONFIG] template re-apply failed: {e}", flush=True)
-        CONFIG_DATA["models"] = _sect
-        if "model_template" in data:
-            CONFIG_DATA["model_template"] = data.get("model_template") or ""
+    # Re-apply the model template to the WHOLE raw config (sampling + timeouts +
+    # models), so a template switch on hot-reload changes the temperature/penalties
+    # too — not just the per-model overrides. (The old code only merged `models`,
+    # so switching templates left the previous template's sampling in force.)
+    _tpl_name = (data.get("model_template") or "").strip()
+    if _tpl_name:
+        try:
+            data = _templates.apply_template(
+                data, MODEL, _tpl_name, _templates.default_templates_path(REPO_ROOT),
+                USER_TEMPLATES_PATH)
+        except _templates.TemplateError as e:
+            print(f"  [CONFIG] template re-apply failed: {e}", flush=True)
+    if "models" in data:
+        CONFIG_DATA["models"] = data.get("models") or {}
+    if "model_template" in data:
+        CONFIG_DATA["model_template"] = data.get("model_template") or ""
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
@@ -919,6 +921,34 @@ def _persist_model(model: str) -> bool:
         return True
     except Exception as e:
         print(f"  [MODEL-SWITCH] persist failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+def _persist_model_template(name: str) -> bool:
+    """Persist the active model template to the top-level `model_template:` line so
+    the selection survives a restart. Replaces the line if present, else appends it
+    right after `model:` (or at end of file)."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        if re.search(r'(?m)^model_template:', text):
+            new_text, n = re.subn(r'(?m)^model_template:\s*.*$', f'model_template: {name}', text, count=1)
+        elif re.search(r'(?m)^model:', text):
+            new_text, n = re.subn(r'(?m)^(model:\s*.*)$', r'\1\nmodel_template: ' + name, text, count=1)
+        else:
+            new_text = text.rstrip() + f'\nmodel_template: {name}\n'
+            n = 1
+        if n == 0:
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [TEMPLATE-SWITCH] persist failed: {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -9114,6 +9144,7 @@ if FLASK_OK:
         return {
             "name": name,
             "user": name in user,
+            "active": (CONFIG_DATA.get("model_template") or "") == name,
             "description": tpl.get("description", ""),
             "notes": tpl.get("notes", ""),
             "has_modelfile": bool(mf),
@@ -9178,6 +9209,25 @@ if FLASK_OK:
             return _cors_response({"ok": True, "name": name})
         except Exception as e:
             return _cors_response({"error": str(e)}, status=500)
+
+    @app.route("/templates/activate", methods=["POST"])
+    def templates_activate():
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return _cors_response({"error": "name required"}, status=400)
+        shipped = _templates.load_templates(_templates.default_templates_path(REPO_ROOT))
+        user = _templates.load_templates(USER_TEMPLATES_PATH)
+        if name not in shipped and name not in user:
+            return _cors_response({"error": f"no template {name!r}"}, status=404)
+        if not _persist_model_template(name):
+            return _cors_response({"error": "could not persist model_template to the config file"}, status=500)
+        _force_config_reload()
+        return _cors_response({
+            "ok": True, "name": name,
+            "active": CONFIG_DATA.get("model_template") or "",
+            "restart_required": not HOT_RELOAD,
+        })
 
     @app.route("/templates/install-modelfile", methods=["POST"])
     def templates_install_modelfile():

@@ -534,6 +534,8 @@ header .model:hover { color: var(--accent); }
 .mp-provider-list .mp-prov { cursor: pointer; border-radius: 7px; }
 .mp-provider-list .mp-prov:hover { background: var(--accent-soft); }
 .mp-provider-list .mp-prov.cur { background: var(--accent-soft); }
+.mp-prov-inuse, .mp-item-inuse { font-size: 10px; font-weight: 700; color: #2e7d32; margin-left: 6px; white-space: nowrap; }
+.mp-item.cur { background: var(--accent-soft); }
 .mp-prov .mp-prov-kind { color: var(--muted); font-size: 11px; }
 .mp-prov .mp-prov-key { color: var(--muted); font-size: 11px; }
 .mp-prov .mp-prov-key.mp-setkey-link { color: var(--accent); cursor: pointer; }
@@ -1712,11 +1714,13 @@ function updateKeyBtn(p) {
 function renderProviders() {
   mpProviderList.innerHTML = mpCatalog.map(p => {
     const cur = (p.name === mpActiveProvider) ? " cur" : "";
+    const inuse = (p.name === mpActiveProvider) ? '<span class="mp-prov-inuse">in use</span>' : "";
     const key = (p.kind === "ollama") ? "local" : (p.has_key ? "key ✓" : "no key");
     return '<div class="mp-prov' + cur + '" data-name="' + escAttr(p.name) + '">' +
       '<span class="mp-prov-name">' + escAttr(p.label || p.name) + '</span>' +
       '<span class="mp-prov-kind">' + escAttr(p.kind) + '</span>' +
       '<span class="mp-prov-key">' + key + '</span>' +
+      inuse +
     '</div>';
   }).join("");
   mpProviderList.querySelectorAll(".mp-prov").forEach(el => {
@@ -1753,8 +1757,11 @@ function renderModels(filter) {
     mpList.innerHTML = '<div class="mp-empty">No matches — use the "enter a model id" box above.</div>';
     return;
   }
-  mpList.innerHTML = items.map(m =>
-    `<div class="mp-item" data-id="${escAttr(m.id)}"><span class="mp-id">${escAttr(m.id)}</span></div>`).join("");
+  mpList.innerHTML = items.map(m => {
+    const cur = (m.id === currentModelId) ? " cur" : "";
+    const inuse = (m.id === currentModelId) ? '<span class="mp-item-inuse">in use</span>' : "";
+    return `<div class="mp-item${cur}" data-id="${escAttr(m.id)}"><span class="mp-id">${escAttr(m.id)}</span>${inuse}</div>`;
+  }).join("");
   mpList.querySelectorAll(".mp-item").forEach(it => { it.onclick = () => activateModel(it.dataset.id); });
 }
 
