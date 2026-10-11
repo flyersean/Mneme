@@ -17,6 +17,8 @@ Errors: 404 unknown run, 409 invalid state transition, 400 bad request,
 
 from __future__ import annotations
 
+import os
+import shutil
 from typing import Callable, Optional
 
 from mneme.harness.ledger import InvalidTransition, LedgerError
@@ -81,10 +83,41 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         if err:
             return err
         status = [s for s in (request.args.get("status") or "").split(",") if s] or None
-        runs = eng.ledger.list_runs(status=status, limit=int(request.args.get("limit", 50)),
+        runs = eng.ledger.list_runs(status=status, limit=int(request.args.get("limit", 100)),
                                     offset=int(request.args.get("offset", 0)),
-                                    parent_run_id=request.args.get("parent"))
+                                    parent_run_id=request.args.get("parent"),
+                                    q=request.args.get("q"),
+                                    model=request.args.get("model"),
+                                    after=request.args.get("after"),
+                                    before=request.args.get("before"))
         return respond({"runs": runs})
+
+    @app.route("/runs/models", methods=["GET"])
+    def harness_runs_models():
+        eng, err = _engine()
+        if err:
+            return err
+        return respond({"models": eng.ledger.list_run_models()})
+
+    @app.route("/runs/delete", methods=["POST"])
+    def harness_runs_delete():
+        eng, err = _engine()
+        if err:
+            return err
+        d = _body()
+        run_ids = [str(x) for x in (d.get("run_ids") or [])]
+        if not run_ids:
+            return respond({"error": "run_ids required"}, 400)
+        include_ws = bool(d.get("include_workspace"))
+        n = eng.ledger.delete_runs(run_ids)
+        ws_deleted = 0
+        if include_ws:
+            for rid in run_ids:
+                ws = eng.workspace(rid)
+                if ws is not None and os.path.isdir(ws.path):
+                    shutil.rmtree(ws.path, ignore_errors=True)
+                    ws_deleted += 1
+        return respond({"ok": True, "deleted": n, "workspaces_deleted": ws_deleted})
 
     @app.route("/runs/<run_id>", methods=["GET"])
     def harness_run_detail(run_id):

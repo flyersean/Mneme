@@ -493,6 +493,26 @@ SCHEDULE_JOB_TOOL = {
     },
 }
 
+DELETE_RUNS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_runs",
+        "description": "Permanently delete harness runs. Either pass explicit run_ids, or a filter (status / goal_query / model / older_than_days) to select a set. include_workspace also deletes each run's files on disk. Use dry_run=true to preview what would be deleted first. This is irreversible.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_ids": {"type": "array", "items": {"type": "string"}, "description": "Explicit run ids to delete."},
+                "status": {"type": "string", "description": "Filter by status (comma-separated: completed, failed, paused, cancelled, running)."},
+                "goal_query": {"type": "string", "description": "Substring match on the run goal."},
+                "model": {"type": "string", "description": "Filter by the model the run used."},
+                "older_than_days": {"type": "number", "description": "Delete runs created more than N days ago."},
+                "include_workspace": {"type": "boolean", "description": "Also delete each run's workspace directory on disk. Default false (DB rows only)."},
+                "dry_run": {"type": "boolean", "description": "Preview the matching run ids without deleting. Default false."},
+            },
+        },
+    },
+}
+
 RESUME_RUN_TOOL = {
     "type": "function",
     "function": {
@@ -746,6 +766,8 @@ def native_exec_names(client_tools):
                     "pause_run", "cancel_run", "retry_run"})
     if os.environ.get("MNEME_TOOL_SCHEDULE_JOB", "1") == "1":
         out.add("schedule_job")
+    if os.environ.get("MNEME_TOOL_DELETE_RUNS", "1") == "1":
+        out.add("delete_runs")
     return out
 
 
@@ -769,9 +791,9 @@ def assemble_tools(client_tools):
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
-                    "schedule_job": SCHEDULE_JOB_TOOL}
+                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL}
     for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-              "pause_run", "cancel_run", "retry_run", "schedule_job"):
+              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -946,6 +968,8 @@ def execute_native_tool(name, args):
         return _exec_retry_run(args)
     if name == "schedule_job":
         return _exec_schedule_job(args)
+    if name == "delete_runs":
+        return _exec_delete_runs(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1367,6 +1391,48 @@ def _exec_schedule_job(args):
                 f"Each fire starts a harness run — check it with inspect_run(run_id=...).")
     except Exception as e:
         return f"[schedule_job error: {type(e).__name__}: {e}]"
+
+
+def _exec_delete_runs(args):
+    """Delete harness runs by id or filter. Destructive — resolves the filter to
+    run ids, then permanently deletes them (and optionally their workspaces)."""
+    if engine is None or not getattr(engine, "ledger", None):
+        return "Harness is disabled or not initialized — cannot delete runs."
+    args = args or {}
+    run_ids = [str(x) for x in (args.get("run_ids") or []) if str(x).strip()]
+    include_ws = bool(args.get("include_workspace"))
+    dry_run = bool(args.get("dry_run"))
+    if not run_ids:
+        q = (args.get("goal_query") or "").strip() or None
+        model = (args.get("model") or "").strip() or None
+        status = (args.get("status") or "").strip() or None
+        before = None
+        if args.get("older_than_days"):
+            try:
+                from datetime import datetime, timedelta, timezone
+                before = (datetime.now(timezone.utc) - timedelta(days=float(args.get("older_than_days")))).isoformat()
+            except (TypeError, ValueError):
+                return "older_than_days must be a number."
+        if not (q or model or status or before):
+            return ("delete_runs needs either run_ids or a filter (status / goal_query / "
+                    "model / older_than_days) — refusing to delete ALL runs without a condition.")
+        status_list = [x.strip() for x in status.split(",") if x.strip()] if status else None
+        runs = engine.ledger.list_runs(status=status_list, limit=100000, q=q, model=model, before=before)
+        run_ids = [r["run_id"] for r in runs]
+    if not run_ids:
+        return "No runs matched — nothing deleted."
+    if dry_run:
+        preview = ", ".join(run_ids[:10]) + (" ..." if len(run_ids) > 10 else "")
+        return f"Would delete {len(run_ids)} run(s): {preview}"
+    n = engine.ledger.delete_runs(run_ids)
+    ws_deleted = 0
+    if include_ws:
+        for rid in run_ids:
+            ws = engine.workspace(rid)
+            if ws is not None and os.path.isdir(ws.path):
+                shutil.rmtree(ws.path, ignore_errors=True)
+                ws_deleted += 1
+    return f"Deleted {n} run(s)" + (f" and {ws_deleted} workspace(s)" if include_ws else "") + "."
 
 
 def _exec_resume_run(args):

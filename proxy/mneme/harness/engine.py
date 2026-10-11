@@ -205,6 +205,9 @@ class RunEngine:
         the judge checks the result when it declares done.
         profile=<name> merges that profile's budget/grant/skills/approval defaults
         UNDER the explicit arguments."""
+        if not kw.get("model"):
+            import os as _os
+            kw["model"] = _os.environ.get("MNEME_MODEL", "")
         if kw.get("profile"):
             if self.profiles is None:
                 raise LedgerError("profiles are not configured on this harness")

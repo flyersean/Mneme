@@ -432,7 +432,9 @@ class Ledger:
         return run
 
     def list_runs(self, status: Optional[Iterable[str]] = None, limit: int = 50,
-                  offset: int = 0, parent_run_id: Optional[str] = None) -> List[dict]:
+                  offset: int = 0, parent_run_id: Optional[str] = None,
+                  q: Optional[str] = None, model: Optional[str] = None,
+                  after: Optional[str] = None, before: Optional[str] = None) -> List[dict]:
         sql = "SELECT * FROM runs WHERE 1=1"
         params: list = []
         if status:
@@ -442,9 +444,53 @@ class Ledger:
         if parent_run_id is not None:
             sql += " AND parent_run_id=?"
             params.append(parent_run_id)
+        if q:
+            sql += " AND goal LIKE ?"
+            params.append(f"%{q}%")
+        if model:
+            sql += " AND model = ?"
+            params.append(model)
+        if after:
+            sql += " AND created_at >= ?"
+            params.append(after)
+        if before:
+            sql += " AND created_at <= ?"
+            params.append(before)
         sql += " ORDER BY created_at DESC, run_id DESC LIMIT ? OFFSET ?"
         params += [int(limit), int(offset)]
         return [self._decode("runs", r) for r in self._all(sql, params)]
+
+    def list_run_models(self) -> List[str]:
+        """Distinct model values seen across runs (for the filter dropdown)."""
+        return [r[0] for r in self._all("SELECT DISTINCT model FROM runs WHERE model != '' ORDER BY model")]
+
+    def delete_runs(self, run_ids: Iterable[str]) -> int:
+        """Permanently delete runs and their tasks/steps/tool_calls/events/artifacts/
+        checkpoints. Also clears any scheduler job that referenced a deleted run.
+        Returns the number of runs deleted."""
+        ids = [str(r) for r in run_ids]
+        if not ids:
+            return 0
+        qmarks = ",".join("?" for _ in ids)
+        with self._lock:
+            # events are append-only via a trigger; drop it for the bulk delete, then restore.
+            self._db.execute("DROP TRIGGER IF EXISTS events_no_delete")
+            for table in ("checkpoints", "artifacts", "tool_calls", "steps", "tasks", "events"):
+                self._db.execute(f"DELETE FROM {table} WHERE run_id IN ({qmarks})", ids)
+            cur = self._db.execute(f"DELETE FROM runs WHERE run_id IN ({qmarks})", ids)
+            n = cur.rowcount
+            # clear scheduler references (jobs + job_log live in the same ledger DB)
+            try:
+                self._db.execute(f"UPDATE jobs SET last_run_id='' WHERE last_run_id IN ({qmarks})", ids)
+                self._db.execute(f"DELETE FROM job_log WHERE run_id IN ({qmarks})", ids)
+            except Exception:
+                pass
+            self._db.commit()
+            self._db.execute(
+                "CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events "
+                "BEGIN SELECT RAISE(ABORT, 'events are append-only'); END")
+            self._db.commit()
+        return n
 
     def update_run(self, run_id: str, **fields) -> None:
         bad = set(fields) - _RUN_UPDATABLE

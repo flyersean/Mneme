@@ -66,7 +66,20 @@
       <div class="row"><input id="goal" placeholder="Goal — the model plans the tasks"><input id="profile" placeholder="profile (optional)" style="max-width:180px"><button onclick="createRun()">Start</button></div>
     </div>
     <div class="grid">
-      <div><h2>Runs</h2><table><thead><tr><th>Status</th><th>Goal</th><th>Created</th></tr></thead><tbody id="runs"></tbody></table></div>
+      <div>
+        <h2>Runs</h2>
+        <div class="row" style="flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px;">
+          <select id="f_status" onchange="loadRuns()"><option value="">all statuses</option><option>completed</option><option>failed</option><option>paused</option><option>cancelled</option><option>running</option><option>planning</option><option>verifying</option><option>awaiting_approval</option></select>
+          <input id="f_q" placeholder="goal contains…" style="max-width:200px" onkeydown="if(event.key==='Enter')loadRuns()">
+          <select id="f_model" onchange="loadRuns()"><option value="">all models</option></select>
+          <select id="f_age" onchange="loadRuns()"><option value="">any time</option><option value="1">last 24h</option><option value="7">last 7d</option><option value="30">last 30d</option></select>
+          <button onclick="loadRuns()">Apply</button>
+          <button onclick="clearFilters()">Clear</button>
+          <button class="danger" id="delBtn" onclick="deleteSelected()" style="display:none;">Delete selected</button>
+          <span id="selCount" class="hint" style="margin:0;"></span>
+        </div>
+        <table><thead><tr><th style="width:24px"><input type="checkbox" id="selAll" onclick="toggleAll(this)"></th><th>Status</th><th>Goal</th><th>Created</th></tr></thead><tbody id="runs"></tbody></table>
+      </div>
       <div id="detail" class="panel"><p class="hint">Select a run.</p></div>
     </div>
   </section>
@@ -112,6 +125,7 @@ async function copyText(t) {
   setTimeout(() => { $("msg").textContent = ""; }, 1500);
 }
 let current = null; let _rendered = null, _sig = null;
+let selected = new Set();
 async function api(path, opts) {
   const r = await fetch(path, opts && opts.body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(opts.body)} : opts);
   const j = await r.json().catch(() => ({}));
@@ -121,8 +135,52 @@ async function api(path, opts) {
 const post = (path, body) => api(path, {body: body || {}});
 
 async function loadRuns() {
-  const {runs} = await api("/runs?limit=100");
-  $("runs").innerHTML = runs.map(r => `<tr class="click" onclick="showRun('${r.run_id}')"><td>${badge(r.status)}</td><td>${esc(r.goal.slice(0,90))}<div class="mono">${r.run_id} <button onclick="event.stopPropagation();copyText('${r.run_id}')" title="Copy run ID" style="font-size:11px;padding:1px 5px;vertical-align:middle">⧉</button></div></td><td class="mono">${esc(r.created_at.slice(0,19))}</td></tr>`).join("") || `<tr><td colspan=3 class="hint">No runs yet.</td></tr>`;
+  const q = new URLSearchParams();
+  if ($("f_status").value) q.set("status", $("f_status").value);
+  if ($("f_q").value.trim()) q.set("q", $("f_q").value.trim());
+  if ($("f_model").value) q.set("model", $("f_model").value);
+  if ($("f_age").value) q.set("after", new Date(Date.now() - parseInt($("f_age").value) * 86400000).toISOString());
+  q.set("limit", "200");
+  const {runs} = await api("/runs?" + q.toString());
+  const keep = selected;
+  $("runs").innerHTML = runs.map(r => `<tr><td><input type="checkbox" data-id="${r.run_id}" ${keep.has(r.run_id) ? "checked" : ""} onclick="event.stopPropagation();toggleSel(this)"></td><td class="click" onclick="showRun('${r.run_id}')">${badge(r.status)}</td><td class="click" onclick="showRun('${r.run_id}')">${esc(r.goal.slice(0,90))}<div class="mono">${r.run_id} <button onclick="event.stopPropagation();copyText('${r.run_id}')" title="Copy run ID" style="font-size:11px;padding:1px 5px;vertical-align:middle">⧉</button></div></td><td class="mono click" onclick="showRun('${r.run_id}')">${esc(r.created_at.slice(0,19))}</td></tr>`).join("") || `<tr><td colspan=4 class="hint">No runs yet.</td></tr>`;
+  updateSelUI();
+}
+function toggleSel(cb) {
+  const id = cb.dataset.id;
+  cb.checked ? selected.add(id) : selected.delete(id);
+  updateSelUI();
+}
+function toggleAll(cb) {
+  document.querySelectorAll('#runs input[type="checkbox"][data-id]').forEach(c => {
+    if (c.checked !== cb.checked) { c.checked = cb.checked; cb.checked ? selected.add(c.dataset.id) : selected.delete(c.dataset.id); }
+  });
+  updateSelUI();
+}
+function updateSelUI() {
+  const n = selected.size;
+  $("selCount").textContent = n ? n + " selected" : "";
+  $("delBtn").style.display = n ? "" : "none";
+}
+function clearFilters() {
+  $("f_status").value = ""; $("f_q").value = ""; $("f_model").value = ""; $("f_age").value = "";
+  loadRuns();
+}
+async function loadModels() {
+  try {
+    const {models} = await api("/runs/models");
+    $("f_model").innerHTML = '<option value="">all models</option>' + models.map(m => `<option>${esc(m)}</option>`).join("");
+  } catch (e) {}
+}
+async function deleteSelected() {
+  const n = selected.size;
+  if (!n) return;
+  if (!confirm("Delete " + n + " selected run(s)? This is irreversible.")) return;
+  const ws = confirm("Also delete their workspace files on disk?\nOK = DB + workspace\nCancel = DB only (default)");
+  const r = await post("/runs/delete", { run_ids: [...selected], include_workspace: ws });
+  $("msg").textContent = "deleted " + r.deleted + " run(s)" + (ws ? " + " + (r.workspaces_deleted || 0) + " workspace(s)" : " (DB only)");
+  selected.clear();
+  loadRuns();
 }
 async function showRun(id) {
   const prevScroll = (current === id) ? (document.querySelector('#detail .events')?.scrollTop || 0) : 0;
@@ -194,7 +252,7 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
   Object.keys(loaders).forEach(k => $("tab-" + k).hidden = k !== tab);
   loaders[tab]();
 });
-function refresh() { loaders[tab](); if (tab === "runs" && current) showRun(current); }
+function refresh() { loaders[tab](); if (tab === "runs" && current) showRun(current); if (tab === "runs") loadModels(); }
 refresh();
 setInterval(() => { if (tab === "runs") refresh(); }, 5000);
 </script>
