@@ -192,13 +192,16 @@ the risk of a bad memory being treated as fact — they aren't a security bounda
 
 ## Model selection
 
-Mneme runs three models against one shared memory store:
+Mneme runs four models against one shared memory store:
 
 - **Chat** — answers you. Any OpenAI-compatible model; pick for capability.
 - **Embedder** — turns text into vectors. Must be **1024-dim**; it also fixes the
   similarity scale (see `inject_min_similarity` below).
 - **Labeler** — tags topics on every turn. Must be **non-thinking** (a thinking labeler
   stalls the pipeline).
+- **Decision (classifier)** — answers *typed* yes/no / multiple-choice / rubric questions
+  with calibrated probabilities instead of generating text. Powers the harness judge, the
+  tool-safety gate, and routing. See [Decision models](#decision-models).
 
 **Thinking models** (Gemma 3/4, etc.) are handled for you: reasoning is **off by
 default** (`think: false`), so the model answers directly. If a model hangs or times
@@ -208,6 +211,38 @@ out, suspect the proxy's config before the model. Opt back in with
 **Model templates** package known-good settings (sampling, thinking mode, output caps,
 per-model overrides, and optional corrected Modelfiles) so you select them at setup
 instead of rediscovering them. See [`model_templates.yaml`](model_templates.yaml).
+
+## Decision models (classifier layer)
+
+Mneme has a small **decision layer** that runs *typed* decisions instead of ad-hoc LLM
+calls with PASS/FAIL regexes. It uses dedicated **decision / classifier models** — the
+System One family (Jev, gpt-6-luna-decisions, …) — that do **not** generate text. They
+answer questions about a `state` and return **calibrated probabilities**:
+
+| Type | Question | Answer |
+|---|---|---|
+| `noul` | "Is this a bug report?" | yes/no probability (0.0–1.0) |
+| `choice` | "Which category?" | one option + a probability per option |
+| `score` | "Where on this rubric?" | probability-weighted position |
+
+Where it's used:
+
+- **Harness judge** — verification, plan approval, step confirmation, and goal-alignment
+  (drift) checks are `noul` verdicts over the evidence, not string matching.
+- **Tool-safety gate** — a `noul` verdict before destructive / out-of-scope actions.
+- **Routing / grading** — problem-type classification feeds the strategy layer.
+
+These call OpenRouter's **Decisions API** (`/api/alpha/decisions`), *not* chat-completions.
+Output tokens are free; input is billed; a round-trip is ~130–160 ms. The default model is
+`typesafe/jev-1.13`, overridable per call; the key comes from `MNEME_DECISION_API_KEY`
+(falls back to `OPENROUTER_API_KEY`).
+
+Extensions use the decision models without importing Mneme via **`POST /decide`**
+(`{state, questions, model?}` → calibrated answers), and the swarm engine has matching
+`decide` / `run` step types.
+
+The **labeler** is deliberately *not* a decision model: memory labels are open-vocabulary
+*generation*, which a fixed option set can't produce.
 
 ## Configuration
 
@@ -365,3 +400,8 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
   here for a conservative, memory-only setup.
 - `unified_mneme` — **legacy** full-build branch, superseded by `agent-harness`. Still
   around for history only; new installs should use `agent-harness`.
+- `classification-models` — **the decision-layer build** — everything in `agent-harness`
+  plus the decision / classifier model layer (see [Decision models](#decision-models)):
+  harness judge, tool-safety gate, `POST /decide`, and swarm `decide`/`run` steps.
+- `self-code` — the running agent's self-editing sandbox (it pushes only here); reviewed
+  and merged into the build branches.

@@ -2209,34 +2209,44 @@ function makeResizable(handleId, targetId, edge) {
     return size;
   };
 
-  handle.addEventListener('mousedown', (e) => {
+  // Pointer-capture based dragging: setPointerCapture() routes ALL
+  // subsequent pointer events to this handle — including events that
+  // occur while the pointer is over an iframe (which normally swallows
+  // them). So pointerup always lands here and a drag can never "stick"
+  // when released while hovering the preview pane.
+  let activePid = null;
+  const onMove = (ev) => {
+    if (edge === 'left') clampAndApply(ev.clientX);
+    else if (edge === 'right') clampAndApply(window.innerWidth - ev.clientX);
+    else clampAndApply(window.innerHeight - ev.clientY);
+  };
+  const stopDrag = () => {
+    try {
+      if (activePid !== null && handle.hasPointerCapture &&
+          handle.hasPointerCapture(activePid)) {
+        handle.releasePointerCapture(activePid);
+      }
+    } catch (err) {}
+    activePid = null;
+    handle.classList.remove('active');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try { handle.removeEventListener('pointermove', onMove); } catch (err) {}
+    try { handle.removeEventListener('pointerup', stopDrag); } catch (err) {}
+    try { handle.removeEventListener('pointercancel', stopDrag); } catch (err) {}
+    try { window.removeEventListener('blur', stopDrag); } catch (err) {}
+  };
+  handle.addEventListener('pointerdown', (e) => {
     e.preventDefault();
+    activePid = e.pointerId;
+    try { handle.setPointerCapture(activePid); } catch (err) {}
     handle.classList.add('active');
     document.body.style.cursor = isRow ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
-    // Iframes swallow mouse events once the pointer crosses them, so the
-    // document-level mouseup never fires and the drag "sticks". Disable
-    // pointer events on all iframes for the duration of the drag.
-    const frames = Array.from(document.querySelectorAll('iframe'));
-    frames.forEach(f => { f.style.pointerEvents = 'none'; });
-    const onMove = (ev) => {
-      if (edge === 'left') clampAndApply(ev.clientX);
-      else if (edge === 'right') clampAndApply(window.innerWidth - ev.clientX);
-      else clampAndApply(window.innerHeight - ev.clientY);
-    };
-    const onUp = () => {
-      handle.classList.remove('active');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      frames.forEach(f => { f.style.pointerEvents = ''; });
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      window.removeEventListener('blur', onUp);
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    // Safety net: if the window loses focus mid-drag (alt-tab), stop dragging.
-    window.addEventListener('blur', onUp);
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', stopDrag);
+    handle.addEventListener('pointercancel', stopDrag);
+    window.addEventListener('blur', stopDrag);
   });
 
   // Restore persisted size (if any) once panes are laid out.
@@ -2333,6 +2343,39 @@ def serve_html():
 # ──────────────────────────────────────────────────────────────────────────────
 # HTTP request handler
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _ai_transform(proxy_url, system_prompt, content, max_tokens=4096):
+    """Send a transformation request to the managing Mneme proxy.
+    Returns (reply_text, model_name). Raises RuntimeError on failure."""
+    base = proxy_url.rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    api_token = getattr(CanvasHTTPHandler, "api_token", "")
+    if api_token:
+        headers["Authorization"] = "Bearer " + api_token
+    with urlopen(Request(base + "/providers", headers=headers), timeout=10) as response:
+        model = json.load(response).get("current_model")
+    if not isinstance(model, str) or not model:
+        raise RuntimeError("Proxy did not report a current_model")
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ],
+        "stream": False,
+        "max_tokens": max_tokens,
+    }
+    request = Request(
+        base + "/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers, method="POST",
+    )
+    with urlopen(request, timeout=300) as response:
+        completion = json.load(response)
+    reply = completion["choices"][0]["message"]["content"]
+    if not isinstance(reply, str) or not reply.strip():
+        raise RuntimeError("Proxy returned an empty completion")
+    return reply.strip(), model
 
 class CanvasHTTPHandler(BaseHTTPRequestHandler):
     """HTTP handler for the canvas workspace server."""
@@ -2627,7 +2670,7 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
 
             # The running proxy is the authority on the active chat model. Read
             # it for each turn so provider/model switches take effect immediately.
-            base = self.proxy_url.rstrip("/")
+            base = proxy_url.rstrip("/")
             headers = {"Content-Type": "application/json"}
             if getattr(self, "api_token", ""):
                 headers["Authorization"] = "Bearer " + self.api_token
@@ -2874,6 +2917,7 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
                 self._send_error("Missing 'action' in request body", 400)
                 return
 
+
             # Apply writing/coding shortcut actions
             # In a full implementation, these would call the AI proxy.
             # For now, we provide simple built-in transformations.
@@ -2881,100 +2925,125 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
             message = ""
 
             if action == "suggest_edits":
-                # Placeholder: wraps content with edit markers
-                result_content = content
-                message = "Suggest edits: review the document for improvements. (AI integration required for full feature.)"
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "You are an editing assistant. Review the user's document and return the "
+                        "FULL text with your improvements applied directly: clearer wording, tighter "
+                        "prose, fixed grammar. Return ONLY the revised text, no commentary.",
+                        content)
+                    message = "AI suggested edits applied."
+                except Exception as exc:
+                    self._send_error(f"AI suggest edits failed: {exc}", 502)
+                    return
 
             elif action == "adjust_length":
-                # Placeholder: shortens by removing blank lines
-                lines = content.split("\n")
-                compressed = [l for l in lines if l.strip() or l == ""]
-                # Keep at most one consecutive blank line
-                result_content = ""
-                blank = False
-                for l in lines:
-                    if l.strip() == "":
-                        if not blank:
-                            result_content += l + "\n"
-                            blank = True
-                    else:
-                        result_content += l + "\n"
-                        blank = False
-                message = "Adjusted length: compressed blank lines."
+                direction = data.get("option") or "shorter"
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        f"Make the user's text {direction} while preserving meaning and key points. "
+                        f"Return ONLY the revised text.",
+                        content)
+                    message = f"AI adjusted length ({direction})."
+                except Exception as exc:
+                    self._send_error(f"AI adjust length failed: {exc}", 502)
+                    return
 
             elif action == "change_reading_level":
-                # Placeholder
-                result_content = content
-                message = "Change reading level: select a target level from the dropdown. (AI integration required.)"
+                level = data.get("option") or "general audience"
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        f"Rewrite the user's text at a {level} reading level. Keep the meaning and "
+                        f"structure. Return ONLY the rewritten text.",
+                        content)
+                    message = f"Reading level changed to: {level}"
+                except Exception as exc:
+                    self._send_error(f"AI reading-level change failed: {exc}", 502)
+                    return
 
             elif action == "final_polish":
-                # Placeholder: trim trailing whitespace
-                result_content = "\n".join(l.rstrip() for l in content.split("\n"))
-                message = "Final polish applied: trimmed trailing whitespace."
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "Apply a final polish to the user's text: fix grammar, punctuation, "
+                        "consistency, and flow without changing meaning. Return ONLY the polished text.",
+                        content)
+                    message = "AI final polish applied."
+                except Exception as exc:
+                    self._send_error(f"AI final polish failed: {exc}", 502)
+                    return
 
             elif action == "add_emojis":
-                # Placeholder: add emojis to common keywords
-                replacements = {
-                    "TODO": "📋 TODO",
-                    "FIXME": "🐛 FIXME",
-                    "NOTE": "📝 NOTE",
-                    "HACK": "🔧 HACK",
-                    "IMPORTANT": "⚠️ IMPORTANT",
-                    "bug": "🐛 bug",
-                    "fix": "🔧 fix",
-                    "feature": "✨ feature",
-                    "docs": "📚 docs",
-                    "test": "🧪 test",
-                }
-                result_content = content
-                for old, new in replacements.items():
-                    result_content = result_content.replace(old, new)
-                message = "Added emojis to common keywords."
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "Add tasteful, relevant emojis to the user's text where they enhance "
+                        "readability (headings, key items). Do not overdo it. Return ONLY the text.",
+                        content)
+                    message = "AI added emojis."
+                except Exception as exc:
+                    self._send_error(f"AI add emojis failed: {exc}", 502)
+                    return
 
             elif action == "review_code":
-                result_content = content
-                message = "Code review: analyze for logic and performance issues. (AI integration required.)"
+                try:
+                    review, _ = _ai_transform(self.proxy_url,
+                        "You are a senior code reviewer. Review the user's code and report: bugs, "
+                        "logic errors, performance issues, and style problems, each with line "
+                        "references where possible. Format as a concise numbered list. "
+                        "Do NOT rewrite the code unless a fix is one line.",
+                        content, max_tokens=2048)
+                    result_content = content  # review is informational; keep code unchanged
+                    message = "CODE REVIEW\n" + "=" * 40 + "\n" + review
+                except Exception as exc:
+                    self._send_error(f"AI code review failed: {exc}", 502)
+                    return
 
             elif action == "add_logs":
-                # Add print statements at function entries for Python
-                lines = content.split("\n")
-                new_lines = []
-                for l in lines:
-                    new_lines.append(l)
-                    if l.strip().startswith("def ") and l.strip().endswith(":"):
-                        indent = " " * (len(l) - len(l.lstrip()))
-                        func_name = l.strip().split("(")[0].replace("def ", "")
-                        new_lines.append(f'{indent}print("[LOG] Entering {func_name}()")')
-                result_content = "\n".join(new_lines)
-                message = "Added log statements at function entries."
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "Add useful logging statements to the user's code at function entries, "
+                        "branches, and error paths, using the language's standard logging idiom. "
+                        "Return ONLY the full code with logs added.",
+                        content)
+                    message = "AI added log statements."
+                except Exception as exc:
+                    self._send_error(f"AI add logs failed: {exc}", 502)
+                    return
 
             elif action == "add_comments":
-                # Add comments above functions and classes
-                lines = content.split("\n")
-                new_lines = []
-                for l in lines:
-                    stripped = l.strip()
-                    if stripped.startswith("def ") and not any(
-                        prev.strip().startswith("#") for prev in new_lines[-3:] if new_lines
-                    ):
-                        indent = " " * (len(l) - len(l.lstrip()))
-                        new_lines.append(f"{indent}# {stripped.split('(')[0].replace('def ', '')} — TODO: add docstring")
-                    elif stripped.startswith("class ") and not any(
-                        prev.strip().startswith("#") for prev in new_lines[-3:] if new_lines
-                    ):
-                        indent = " " * (len(l) - len(l.lstrip()))
-                        new_lines.append(f"{indent}# Class: {stripped.split('(')[0].replace('class ', '').replace(':', '')}")
-                    new_lines.append(l)
-                result_content = "\n".join(new_lines)
-                message = "Added comments above functions and classes."
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "Add clear docstrings/comments to the user's code for every function, "
+                        "class, and non-obvious block, in the language's standard style. "
+                        "Return ONLY the full commented code.",
+                        content)
+                    message = "AI added comments."
+                except Exception as exc:
+                    self._send_error(f"AI add comments failed: {exc}", 502)
+                    return
 
             elif action == "fix_bugs":
-                result_content = content
-                message = "Bug fix analysis: scan for common issues. (AI integration required for full feature.)"
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        "You are a bug-fixing assistant. Find and FIX the bugs in the user's code. "
+                        "Return the FULL corrected file, unchanged except for your fixes. "
+                        "Return ONLY code, no explanations.",
+                        content)
+                    message = "AI bug fixes applied."
+                except Exception as exc:
+                    self._send_error(f"AI bug fix failed: {exc}", 502)
+                    return
 
             elif action == "port_code":
-                result_content = content
-                message = "Port code: select target language from the dropdown. (AI integration required.)"
+                target = data.get("option") or "JavaScript"
+                try:
+                    result_content, _ = _ai_transform(self.proxy_url,
+                        f"Port the user's code to {target}. Preserve behavior exactly. "
+                        f"Return ONLY the ported code.",
+                        content)
+                    message = f"Code ported to {target}."
+                except Exception as exc:
+                    self._send_error(f"AI port failed: {exc}", 502)
+                    return
+
 
             else:
                 self._send_error(f"Unknown action: {action}", 400)
