@@ -93,6 +93,19 @@ label_model: "meta-llama/llama-3.2-3b-instruct"
 generated `start_proxy.sh` hardcoding `MNEME_BACKEND` — that overrides `backend.type`
 and is a known foot-gun.
 
+### Provider field-name quirks (OpenAI-compatible hosts differ)
+
+The OpenAI-compatible contract does **not** standardize the reasoning field name:
+
+- OpenRouter normalizes the thinking into `delta.reasoning`.
+- DeepSeek's own API streams it as `delta.reasoning_content`.
+
+The proxy parser reads both (`reasoning` and `reasoning_content`). If you point the chat
+model at a *third* host (xAI, Together, etc.) and it starts early-ending its tool chains
+while `<<SETTINGS>>` shows reasoning is on, the likely cause is that host streaming
+reasoning under yet another field name — check `_query_openrouter`'s stream loop in
+`proxy/mneme_proxy.py` and add that field to the `reasoning_parts` capture.
+
 ## The issues we hit (history, so you don't re-live them)
 
 - **GLM-5.3 word salad** → `temperature 1.0` + the `glm5.3-loop` template
@@ -107,6 +120,9 @@ and is a known foot-gun.
 - **Built-in code defaults once shipped `frequency_penalty 0.5` / `presence_penalty 0.3`**
   (GPT-family values) that leaked to every model. Now 0.0 — model-specific penalties
   belong only in that model's template.
+- **DeepSeek-direct reasoning was dropped (`think=0`).** DeepSeek streams thinking under
+  `reasoning_content`; the parser only read `reasoning` (OpenRouter's name). Fixed by
+  reading both. Symptom: single-turn chat worked, multi-step runs early-ended.
 
 ---
 
