@@ -1518,7 +1518,8 @@ _REASONING_STALE_FLOORS = (
 # makes the provider 400 with "Reasoning is mandatory for this endpoint". For
 # these, a no_reasoning call can't disable thinking; it is bounded with a small
 # budget instead. Slug-anchored, longest-first (same convention as the floors).
-_MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6")
+_MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6",
+                               "deepseek-v4-pro", "deepseek-pro")
 
 # Reasoning budget applied to a mandatory-reasoning model when a call asks for
 # NO reasoning (no_reasoning=True) — e.g. the terse yes/no self-report in
