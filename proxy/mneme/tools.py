@@ -72,16 +72,14 @@ def _within(path, root):
 
 
 def _writable(path):
-    """True when `path` is inside the model's writable area (workspace + scope
-    + run workspaces)."""
-    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE)
-            or _within(path, RUNS_ROOT))
+    """True when `path` is inside the model's writable area (tools dir + scope)."""
+    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE))
 
 
 def _writable_roots():
-    """Deduplicated list of writable roots (workspace + scope + run workspaces)."""
+    """Deduplicated list of writable roots (tools dir + scope)."""
     roots = []
-    for r in (TOOLS_DIR, MODEL_SCOPE, RUNS_ROOT):
+    for r in (TOOLS_DIR, MODEL_SCOPE):
         r = os.path.realpath(r)
         if not any(r == x or r.startswith(x + os.sep) for x in roots):
             roots.append(r)
@@ -400,7 +398,7 @@ NATIVE_BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a shell command on the Mneme host. Its working directory is the tools directory — the same place the write tool saves relative paths. Use an absolute path inside your writable scope (the model scope, the tools directory, or the run's workspace) to touch files elsewhere.",
+        "description": "Run a shell command on the Mneme host. Its working directory is the tools directory — the same place the write tool saves relative paths. Use an absolute path inside your writable scope (the model scope or the tools directory) to touch files elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -415,7 +413,7 @@ NATIVE_WRITE_TOOL = {
     "type": "function",
     "function": {
         "name": "write",
-        "description": "Write a file on the Mneme host. Relative paths are saved into the tools directory — the same directory the bash tool runs in. Use an absolute path inside your writable scope (the model scope, the tools directory, or the run's workspace) to write elsewhere. Returns the full path written.",
+        "description": "Write a file on the Mneme host. Relative paths are saved into the tools directory — the same directory the bash tool runs in. Use an absolute path inside your writable scope (the model scope or the tools directory) to write elsewhere. Returns the full path written.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -791,7 +789,7 @@ def _exec_write(file_path, content):
         if not _writable(full):
             record_blocked_write(full)
             return (f"[write blocked: {full} is outside the model write scope "
-                    f"({MODEL_SCOPE}, {TOOLS_DIR}, and run workspaces under {RUNS_ROOT}). "
+                    f"({MODEL_SCOPE}, {TOOLS_DIR}). "
                     f"Write inside that scope instead.]")
         os.makedirs(os.path.dirname(full) or TOOLS_DIR, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:

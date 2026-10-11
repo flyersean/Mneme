@@ -702,7 +702,13 @@ class RunEngine:
     def _verify(self, run_id: str, task: dict, step: dict, output: str, checks: List[dict],
                 tool_calls: Optional[List[dict]] = None):
         ws = self.workspace(run_id)
-        base = ws.ensure().dir("workspace") if ws else None
+        # Verify in the SAME scope the model worked in (the tools directory),
+        # matching chat — no separate per-run sandbox.
+        try:
+            from mneme.tools import TOOLS_DIR
+            base = TOOLS_DIR
+        except Exception:
+            base = ws.ensure().dir("workspace") if ws else None
         self.ledger.transition(run_id, "verifying", event="verification_started",
                                data={"task_id": task["task_id"], "checks": len(checks)})
         evidence = _verify._tool_evidence(tool_calls or [])

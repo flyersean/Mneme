@@ -61,17 +61,20 @@ def capability_text(engine, run: dict, query: str, brief: bool = False):
 
 
 def _artifacts_note(ws) -> str:
-    try:
-        return f" (final deliverables for the user go in {ws.dir('artifacts')})" if ws is not None else ""
-    except Exception:
-        return ""
+    return ""
 
 
 def _workspace_dir(ws) -> str:
+    # Runs work in the SAME scope as the chat tools (the tools directory) — no
+    # separate per-run sandbox. Relative write paths land in TOOLS_DIR; absolute
+    # paths must be inside TOOLS_DIR or MODEL_SCOPE.
     try:
-        return ws.ensure().dir("workspace") if ws is not None else "(none — use the tools directory)"
-    except OSError:
-        return "(unavailable)"
+        from mneme.tools import TOOLS_DIR
+        return TOOLS_DIR
+    except Exception:
+        import os
+        cd = os.environ.get("MNEME_CHUNK_DIR", "~/mneme/chunks")
+        return os.path.join(os.path.expanduser(cd), "tools")
 
 
 def build_task_messages(ctx: StepContext, _load_instruction: Optional[Callable] = None) -> list:
