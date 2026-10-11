@@ -1659,8 +1659,14 @@ const modelPicker = document.createElement("div");
 modelPicker.id = "model-picker";
 modelPicker.className = "palette";
 modelPicker.innerHTML =
+  '<div class="mp-view" data-view="providers">' +
+    '<div class="mp-providers">' +
+      '<div class="mp-provider">Providers</div>' +
+      '<div class="mp-provider-list"></div>' +
+    '</div>' +
+  '</div>' +
   '<div class="mp-view" data-view="models">' +
-    '<div class="mp-head"><span class="mp-prov-title"></span><button class="mp-key-btn" style="display:none">Set key</button></div>' +
+    '<div class="mp-head"><a class="mp-back">‹ providers</a><span class="mp-prov-title"></span><button class="mp-key-btn" style="display:none">Set key</button></div>' +
     '<input class="mp-search" placeholder="Search models…" />' +
     '<div class="mp-custom"><input class="mp-custom-input" placeholder="enter a model id…" /><button class="mp-custom-btn">Use</button></div>' +
     '<div class="mp-cur"></div><div class="mp-list"></div>' +
@@ -1673,6 +1679,8 @@ const mpProvTitle = modelPicker.querySelector(".mp-prov-title");
 const mpCustomInput = modelPicker.querySelector(".mp-custom-input");
 const mpCustomBtn = modelPicker.querySelector(".mp-custom-btn");
 const mpKeyBtn = modelPicker.querySelector(".mp-key-btn");
+const mpProviderList = modelPicker.querySelector(".mp-provider-list");
+const mpBack = modelPicker.querySelector(".mp-back");
 let mpCatalog = [];
 let mpModels = [];
 let mpCurrentProvider = "";     // provider the user is browsing
@@ -1699,6 +1707,21 @@ function updateKeyBtn(p) {
   if ((p || {}).kind === "ollama") { mpKeyBtn.style.display = "none"; return; }
   mpKeyBtn.style.display = "";
   mpKeyBtn.textContent = (p || {}).has_key ? "Update key" : "Add key";
+}
+
+function renderProviders() {
+  mpProviderList.innerHTML = mpCatalog.map(p => {
+    const cur = (p.name === mpActiveProvider) ? " cur" : "";
+    const key = (p.kind === "ollama") ? "local" : (p.has_key ? "key ✓" : "no key");
+    return '<div class="mp-prov' + cur + '" data-name="' + escAttr(p.name) + '">' +
+      '<span class="mp-prov-name">' + escAttr(p.label || p.name) + '</span>' +
+      '<span class="mp-prov-kind">' + escAttr(p.kind) + '</span>' +
+      '<span class="mp-prov-key">' + key + '</span>' +
+    '</div>';
+  }).join("");
+  mpProviderList.querySelectorAll(".mp-prov").forEach(el => {
+    el.onclick = () => selectProvider(el.dataset.name);
+  });
 }
 
 async function selectProvider(name) {
@@ -1746,24 +1769,28 @@ async function openModelPicker() {
     mpActiveProvider = d.current_provider || "";
     currentModelId = d.current_model || currentModelId;
     currentBackend = d.backend || "";
-    // Backend is fixed by config; the picker only switches the MODEL within the
-    // active provider, so load that provider's model list directly.
-    await selectProvider(mpActiveProvider);
+    // Open on the provider list so the user can pick a provider first.
+    renderProviders();
+    showView("providers");
   } catch (e) { renderModels(""); }
 }
 
 async function activateModel(id) {
   if (!id) return;
   try {
-    const d = await (await fetch("/models/switch", {
+    const d = await (await fetch("/providers/activate", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: id }),
+      body: JSON.stringify({ provider: mpCurrentProvider, model: id }),
     })).json();
     if (d.ok) {
       currentModelId = id;
+      mpActiveProvider = mpCurrentProvider;
       modelLabel.textContent = id;
+      toast("switched to " + mpCurrentProvider + " / " + id);
+    } else {
+      toast("switch failed: " + (d.error || "unknown"));
     }
-  } catch (e) {}
+  } catch (e) { toast("switch failed: " + e.message); }
   modelPicker.classList.remove("open");
 }
 
@@ -1851,6 +1878,7 @@ mpSearch.addEventListener("keydown", (e) => {
 mpCustomBtn.addEventListener("click", useCustomModel);
 mpCustomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { useCustomModel(); e.preventDefault(); } });
 mpKeyBtn.addEventListener("click", () => openKeyDialog(mpCurrentProvider));
+mpBack.addEventListener("click", () => { renderProviders(); showView("providers"); });
 keyDialog.querySelector(".kd-save").addEventListener("click", saveKey);
 keyDialog.querySelector(".kd-cancel").addEventListener("click", () => keyDialog.classList.remove("open"));
 keyDialog.querySelector(".kd-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveKey(); else if (e.key === "Escape") keyDialog.classList.remove("open"); });
