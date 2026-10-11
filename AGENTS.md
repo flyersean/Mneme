@@ -23,8 +23,10 @@ disagree, trust the linked spec — it is the source of truth.
 
 ## 0. Git workflow — WHICH BRANCH ARE YOU ON? (read this first)
 
-This repo has **two active branches** and **two running instances**. Before you
-edit anything, check `git branch --show-current`.
+This repo has **two active branches** and a **variable number of running proxy
+instances** — there can be any number of proxies up at once (self-code on 8080,
+standby on 8082, plus test/scratch instances on other ports). Before you edit
+anything, check `git branch --show-current` AND check what's actually running.
 
 ### You are on `self-code` (the self-coding agent, port 8080)
 
@@ -53,6 +55,17 @@ edit anything, check `git branch --show-current`.
   `no_new_privs` and breaks `sudo` inside the bash tool).
 - The push token lives in the secrets store (`secrets.yaml`, key `github`); do
   not log or echo it.
+- **Check what's running before assuming — there can be any number of proxies up
+  at once.** To list every proxy and its port:
+
+      ss -ltnp | grep -E ':80[0-9]{2}'     # or: pgrep -af mneme_proxy
+
+  Confirm which instance you're talking to with `curl -s localhost:<port>/health`.
+- **`start_proxy.sh` only restarts the proxy it is connected to.** Running
+  `chunks/instances/8080/start_proxy.sh` kills and restarts only the process on
+  port 8080 — it never touches a proxy on another port. If a process you expected
+  to die is still running, it's almost certainly a *different* proxy on another
+  port, not a failed kill.
 - Keep `AGENTS.md` and `WORKFLOW.md` in sync when the workflow changes.
 
 ---
