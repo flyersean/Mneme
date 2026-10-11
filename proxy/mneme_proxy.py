@@ -3363,11 +3363,13 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
         "top_k": int(os.environ.get("MNEME_TOP_K", "64")),
         "num_predict": _num_predict,
         "num_ctx": _num_ctx,
-        # Anti-repetition defaults. Degenerate repetition ("the same sentence
-        # x50") is a real failure mode at low temperature; frequency_penalty is
-        # the standard defense (penalizes tokens by how often they've appeared).
-        "frequency_penalty": float(os.environ.get("MNEME_FREQUENCY_PENALTY", "0.5")),
-        "presence_penalty": float(os.environ.get("MNEME_PRESENCE_PENALTY", "0.3")),
+        # Neutral sampling defaults. frequency/presence penalty default to 0.0
+        # (the OpenAI/DeepSeek/GLM API default) — non-zero penalties are a
+        # GPT-family anti-repetition hack that distorts models whose provider
+        # doesn't use them. Models that NEED them (GLM-5.3) opt in via their
+        # model template's per-model block, so they no longer leak everywhere.
+        "frequency_penalty": float(os.environ.get("MNEME_FREQUENCY_PENALTY", "0.0")),
+        "presence_penalty": float(os.environ.get("MNEME_PRESENCE_PENALTY", "0.0")),
     }
     # Per-model sampling overrides. A reasoning model's non-thinking mode often
     # wants a DIFFERENT recipe than the global default (Qwen3.8 non-thinking:

@@ -165,5 +165,17 @@ templates:
     models:
       "{model}":
         frequency_penalty: 0.7
+        presence_penalty: 0.3
         temperature: 1.0
         top_p: 0.95
+
+  deepseek-v4:
+    description: "DeepSeek V4 (Pro/Flash) — reasoning model; its own API defaults"
+    notes: "DeepSeek V4 defaults: temperature 1.0, top_p 1.0, no frequency/presence penalty. Thinking stays on (mandatory-reasoning list bounds it). The GLM anti-loop penalties (frequency 0.7 / presence 0.3) deliberately do NOT apply here."
+    sampling:
+      temperature: 1.0
+      top_p: 1.0
+    models:
+      "{model}":
+        temperature: 1.0
+        top_p: 1.0
