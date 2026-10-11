@@ -3020,7 +3020,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         _choices = obj.get("choices") or []
         _msg = (_choices[0].get("message") or {}) if _choices else {}
         _content = _msg.get("content") or ""
-        _thinking = _msg.get("reasoning") or ""
+        _thinking = _msg.get("reasoning") or _msg.get("reasoning_content") or ""
         _finish = _choices[0].get("finish_reason") if _choices else None
         _provider = obj.get("provider", "?")
         _completion_tokens = (obj.get("usage") or {}).get("completion_tokens", 0)
@@ -3183,9 +3183,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                             "tool_calls": [], "eval_count": 0,
                             "done_reason": "loop", "provider": provider}
                 _emit_token("content", delta["content"])
-            if delta.get("reasoning"):
-                reasoning_parts.append(delta["reasoning"])
-                _emit_token("reasoning", delta["reasoning"])
+            if delta.get("reasoning") or delta.get("reasoning_content"):
+                _r = delta.get("reasoning") or delta.get("reasoning_content")
+                reasoning_parts.append(_r)
+                _emit_token("reasoning", _r)
             for tc in delta.get("tool_calls") or []:
                 idx = tc.get("index", 0)
                 slot = tc_slots.setdefault(idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
@@ -9132,6 +9133,37 @@ if FLASK_OK:
             "in_model_scope": _within(target, _model_scope()),
             "content": content,
         })
+
+
+    @app.route("/fs/write", methods=["POST"])
+    def fs_write():
+        """Write text content to a file inside filesystem.browser_root. Uses the
+        same _within() path-traversal guard as /fs/read; out-of-scope writes are
+        rejected with 403. Accepts an absolute path or one relative to browser_root."""
+        data = request.get_json(force=True, silent=True) or {}
+        path = (data.get("path") or "").strip()
+        if not path:
+            return _cors_response({"ok": False, "error": "missing path"}, 400)
+        if "content" not in data:
+            return _cors_response({"ok": False, "error": "missing content"}, 400)
+        content = data["content"]
+        if not isinstance(content, str):
+            return _cors_response({"ok": False, "error": "content must be text"}, 400)
+        root = _browser_root()
+        if os.path.isabs(path):
+            target = os.path.realpath(os.path.expanduser(path))
+        else:
+            target = os.path.realpath(os.path.join(root, path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        try:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(content)
+            size = os.path.getsize(target)
+        except OSError as ex:
+            return _cors_response({"ok": False, "error": str(ex)}, 500)
+        print(f"  [FS-WRITE] {target} ({size} bytes)", flush=True)
+        return _cors_response({"ok": True, "size": size})
 
     @app.route("/fs/scope", methods=["POST"])
     def fs_scope():
