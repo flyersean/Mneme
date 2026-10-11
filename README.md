@@ -344,7 +344,7 @@ work well, some don't work at all. Tuning is part of using it. See
 |---|---|---|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat (memory, tools, grading all happen proxy-side) |
 | POST | `/search` | Direct memory retrieval without a generation |
-| GET | `/health` | `{"status": "ok", "backend": "<model>", "chunks": N}` |
+| GET | `/health` | `{"status": "ok", "backend": "<real chat model>", "model": "text-mneme:<N>k", "chunks": N}` |
 | GET | `/status` | chat / embedder / labeler connectivity (`ok` + last error) — feeds the header status dots |
 | GET | `/list`, `/detail/<chunk_id>` | Browse stored memory |
 | POST | `/memory/chunks/<id>/remove`, `/memory/chunks/<id>/bad` | Curation — set the removed/bad flags (reversible) |
@@ -355,6 +355,11 @@ work well, some don't work at all. Tuning is part of using it. See
 | GET | `/models`, `/v1/models` | List models |
 | GET | `/mcp/servers`, POST/DELETE `/mcp/servers[/<name>]` | MCP server management |
 | POST | `/shutdown` | Shut down this proxy (also the dashboard's "Shut down" button) |
+
+> **Note:** the `model` field in `/health` is `text-mneme:<N>k` — a fake
+> Hermes-compatibility id whose suffix is the context-window size in thousands of tokens
+> (e.g. `195k` ≈ 200k). It is not a real model; the model the proxy actually serves is the
+> `backend` field.
 
 Plus the web pages above (`/`, `/chat`, `/memory`, `/templates`, `/ollama`, `/runs`,
 `/strategies`, `/extensions`) and their JSON endpoints. The full list lives in
