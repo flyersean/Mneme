@@ -159,6 +159,29 @@ skills/, experiments/   scratch / support
 
 ---
 
+## Model-facing tools (what the model can DO, not just say)
+
+The proxy exposes these tools to the chat model so it can act, not just narrate. Each is
+gated by its own env flag; defaults are on.
+
+- **Run lifecycle** — `start_run` (delegate a durable goal that outlives the reply),
+  `inspect_run`, `resume_run`, `replan_run`, `note_run`, `pause_run`, `cancel_run`,
+  `retry_run`. Gated by `MNEME_TOOL_START_RUN`.
+- **`schedule_job`** — cron-style scheduling. Schedule string mirrors Hermes: an interval
+  (`30m` / `every 2h` / `45s` / `1d`) = recurring, an ISO timestamp = one-shot; `repeat`
+  caps runs. Gated by `MNEME_TOOL_SCHEDULE_JOB`. This is how a model follows through on
+  "I'll check on it / monitor this / report back later". A **deferred-intent nudge**
+  (label-model check on the final reply, `MNEME_DEFERRED_INTENT_NUDGE`) prompts the model to
+  use `schedule_job` when its reply promises a follow-up, instead of leaving a promise in text.
+- **`delete_runs`** — filter (`status` / `goal_query` / `model` / `older_than_days`) or explicit
+  `run_ids`, plus `include_workspace` (off by default) and `dry_run`. Gated by
+  `MNEME_TOOL_DELETE_RUNS`. Lets a user say "delete all runs older than 3 days" in chat.
+- **Parallel read-only tools** — `web_search`, `fetch_url`, `read_file`, `read_tool`,
+  `list_tools`, `read_image`, `inspect_run` run concurrently (default 4 workers,
+  `MNEME_TOOL_PARALLELISM`); mutating tools (flag/remove memory, `save_tool`) stay sequential.
+
+---
+
 ## Theming (light / dark / custom themes)
 
 The UI is themed entirely by CSS custom properties, and a theme is a single CSS file.
@@ -413,9 +436,17 @@ Rules that matter for you:
 
 - **Never change `model:` without also updating `model_template:`** — otherwise the new
   model runs on the old model's recipe (word salad / early-stop).
-- **Reasoning models must stay in `_MANDATORY_REASONING_MODELS`** (proxy/mneme_proxy.py).
-  If you add a new reasoning model, add its slug there too, else it gets
-  `reasoning.enabled=false` and early-ends its turns.
+- **Reasoning is template-driven.** Each template declares how its model reasons:
+  `reasoning_param` (`thinking` for Z.AI GLM, `reasoning` otherwise), `reasoning_field`
+  (`reasoning_content` vs `reasoning`), `clear_thinking` (bool), `reasoning_forced` (bool).
+  The slug lists (`_MANDATORY_REASONING_MODELS`, `_is_thinking_model`) remain only as
+  fallbacks for models without a template. Add a template block — not a slug — for a new
+  reasoning model.
+- **Templates are model-agnostic settings bundles.** A template's per-model block is keyed
+  `{model}` (a wildcard), so one template applies to whatever model is loaded; the name is
+  just which model the settings were tuned for, not a lock. Switch templates from the
+  `/templates` page ("Use" button) — it hot-applies (no restart) and never touches the model
+  or provider.
 - **Penalties (frequency/presence) are model-specific.** The neutral default is 0.0.
   GLM's anti-loop recipe (freq 0.7 / pres 0.3) lives ONLY in the `glm5.3-loop` template —
   do not put it in the global `sampling:` block.

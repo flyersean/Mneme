@@ -55,9 +55,15 @@ Mneme defaults to `sampling.reasoning_enabled: 0` (thinking OFF) to stop a reaso
 model from runaway-thinking on a trivial ask. **Reasoning models (DeepSeek-V4, GLM-5.3)
 must not have thinking disabled** — that's the early-end-of-turn failure above.
 
-The `_MANDATORY_REASONING_MODELS` list in `proxy/mneme_proxy.py` marks models whose
-endpoint can't be told "don't think". For those, "reasoning off" becomes a *bounded*
-budget instead of a disable:
+Each model's reasoning behavior is declared in its **template** (not a hardcoded slug
+list). The template keys:
+
+- `reasoning_param` — `thinking` (Z.AI GLM) vs `reasoning` (default). The request param.
+- `reasoning_field` — `reasoning_content` (Z.AI) vs `reasoning` (default). The replay field.
+- `clear_thinking` — bool (Z.AI preserved thinking).
+- `reasoning_forced` — bool (the endpoint can't be told "don't think").
+
+For a forced model, "reasoning off" becomes a *bounded* budget instead of a disable:
 
 - budget = `MNEME_MANDATORY_REASONING_BUDGET` (default 2000; we run 8000), capped at
   `max_tokens/2`.
@@ -130,13 +136,12 @@ reasoning under yet another field name — check `_query_openrouter`'s stream lo
 
 ### Maintenance requirement: model info goes stale
 
-`model_templates.yaml`, `_MANDATORY_REASONING_MODELS`, and `PROVIDER_CATALOG` are
-hand-curated. **They are wrong the moment a new model ships.** When you add or adopt a
-model, update all three together:
+`model_templates.yaml` and `PROVIDER_CATALOG` are hand-curated. **They are wrong the
+moment a new model ships.** When you add or adopt a model:
 
-1. Add a template with its known-good settings (or confirm neutral defaults are right).
-2. If it's a reasoning model, add its slug to `_MANDATORY_REASONING_MODELS`.
-3. If it's a new provider, add it to `PROVIDER_CATALOG` (base_url + key_env).
+1. Add a template with its known-good settings (or confirm neutral defaults are right) —
+   including the reasoning transport keys above for a reasoning model.
+2. If it's a new provider, add it to `PROVIDER_CATALOG` (base_url + key_env).
 
 Treat this as a standing requirement, not a one-off. A model with no template and no
 mandatory-reasoning entry silently gets neutral defaults + `reasoning.enabled=false` —

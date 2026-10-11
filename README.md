@@ -287,7 +287,12 @@ noise ~0.39 → use ~0.45; `voyage-4-lite` → ~0.62; `snowflake-arctic-embed2` 
   an absolute floor, recency-weighted scoring, source tracking, and full-page chunking for
   `fetch_url`. Embeddings self-heal across machines and embedders.
 - **Tools** — `search_memory`, `read_file`, `fetch_url` (with JS rendering), `web_search`,
-  plus `bash`/`write` (native), each with an on/off flag.
+  plus `bash`/`write` (native), each with an on/off flag. Read-only tools run in parallel
+  (default 4 workers), so "read A + read B + search the web" executes concurrently.
+- **Model-facing run tools** — the model can delegate (`start_run`), inspect/resume/pause/
+  cancel/retry runs, schedule recurring work (`schedule_job`, cron-style), and delete old
+  runs (`delete_runs`, by filter or id, with an opt-in workspace cleanup). A deferred-intent
+  nudge prompts it to schedule "I'll check on it" follow-ups instead of leaving promises in text.
 - **MCP client** — install any tool by pointing at an MCP server (stdio or HTTP); tools
   hot-add on config change or `POST /mcp/servers` with no restart.
 - **Provenance grading** — the model's sources are graded on *honesty*, not correctness
@@ -305,7 +310,9 @@ A **run** is a goal that outlives a single chat turn. The harness — not the mo
 its state: tasks, steps, tool calls, artifacts, checkpoints and an append-only event log
 live in `harness.db`. Each step is an ordinary Mneme turn, and only counts as done when
 the harness verifies it. Runs support planning, verification checks, pause/resume/retry,
-profiles, approvals, skills, scheduled jobs, and controlled self-improvement.
+profiles, approvals, skills, scheduled jobs, and controlled self-improvement. The runs page
+filters by status / goal / model / age, and lets you select and delete runs (DB rows only, or
+DB + workspace) — the model can do the same via `delete_runs`.
 
 ```bash
 curl -s localhost:8080/runs -H 'Content-Type: application/json' -d \
