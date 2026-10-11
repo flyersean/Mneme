@@ -58,9 +58,30 @@ anything, check `git branch --show-current` AND check what's actually running.
 - **Check what's running before assuming — there can be any number of proxies up
   at once.** To list every proxy and its port:
 
-      ss -ltnp | grep -E ':80[0-9]{2}'     # or: pgrep -af mneme_proxy
+      pgrep -af mneme_proxy              # list every proxy process + its args
+      curl -s localhost:<port>/health    # confirm which instance answers on a given port
 
-  Confirm which instance you're talking to with `curl -s localhost:<port>/health`.
+  **You (the model) diagnose connections from inside a bwrap sandbox — this matters.**
+  Your `bash` tool runs under bwrap, where `ss -p` / `ss -ltnp` / `lsof -i` show the
+  listening sockets but **cannot map a socket to its owning PID** (the `pid=` column is
+  empty) — bwrap hides that /proc mapping. `ps` / `pgrep` still see the host processes,
+  but you can't connect a port to a PID that way. Do NOT conclude "no proxy owns this
+  port" from an empty `ss -p` — that's a sandbox artifact, not the truth.
+
+  The authoritative port→PID map lives behind a public endpoint (no auth; it runs
+  `ss -ltnp` **host-side** inside the proxy process, outside your sandbox):
+
+      curl -s localhost:<port>/system/status
+      # {"instances":[{"port":8080,"model":"...","backend":"...","running":true,
+      #                "self":true,"owner_pid":12345}],
+      #  "self_port":8080,"processes":[...]}
+
+  `/system/status` returns every instance with its `port`, `model`, `backend`,
+  `running` flag, `self` flag, and `owner_pid` (host-resolved), plus the live proxy
+  `processes` list and the `self_port` of the proxy that answered. Use it to answer
+  "which process owns port N / is this instance up?". Giving your model account an HTTP
+  user/token does NOT change this — auth and the bwrap sandbox are orthogonal, so a
+  token will not make `ss -p` work in your sandbox.
 - **`start_proxy.sh` only restarts the proxy it is connected to.** Running
   `chunks/instances/8080/start_proxy.sh` kills and restarts only the process on
   port 8080 — it never touches a proxy on another port. If a process you expected
@@ -624,6 +645,7 @@ IGNORED — the proxy does not silently override its own config.
 | POST | `/save` | Flush staging buffer to storage |
 | POST | `/search` | Debug search `{"query": "...", "top_k": 3}` |
 | GET | `/health` | `{"status":"ok","backend":"<model>","chunks":N}` |
+| GET | `/system/status` | Every instance (`port`/`model`/`backend`/`running`/`owner_pid`) + live proxy processes — host-resolved, for the model's bwrap-sandboxed bash |
 | GET | `/status` | chat / embedder / labeler connectivity (`ok` + last error) — feeds the chat header dots |
 | GET | `/` `/chat` | Built-in chat UI |
 | GET/POST/PUT/DELETE | `/conversations`, `/conversations/<id>` | Persistent chat history (auto-titled from first message, renamable) |
