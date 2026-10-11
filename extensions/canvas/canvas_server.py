@@ -2349,7 +2349,7 @@ def _ai_transform(proxy_url, system_prompt, content, max_tokens=4096):
     Returns (reply_text, model_name). Raises RuntimeError on failure."""
     base = proxy_url.rstrip("/")
     headers = {"Content-Type": "application/json"}
-    api_token = getattr(CanvasHTTPHandler, "api_token", "")
+    api_token = os.environ.get("MNEME_API_TOKEN", "")
     if api_token:
         headers["Authorization"] = "Bearer " + api_token
     with urlopen(Request(base + "/providers", headers=headers), timeout=10) as response:
@@ -2670,7 +2670,7 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
 
             # The running proxy is the authority on the active chat model. Read
             # it for each turn so provider/model switches take effect immediately.
-            base = proxy_url.rstrip("/")
+            base = self.proxy_url.rstrip("/")
             headers = {"Content-Type": "application/json"}
             if getattr(self, "api_token", ""):
                 headers["Authorization"] = "Bearer " + self.api_token
