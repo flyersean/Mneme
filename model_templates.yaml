@@ -157,15 +157,15 @@ templates:
   # gate per-model plus anti-loop sampling. Models not using this template
   # are completely unaffected.
   glm5.3-loop:
-    description: "GLM-5.3 — strip prior reasoning from history + anti-loop sampling"
-    notes: "strip_reasoning is the client-side clear_thinking fix; frequency_penalty dampens loop onset. Raise to 0.8 if loops recur."
+    description: "GLM-5.3 — anti-loop sampling (temp 1.0); keep reasoning for tool-call continuity"
+    notes: "GLM default temperature is 1.0; lower temps degenerate into repetition loops. strip_reasoning stays OFF so the model keeps its reasoning across tool calls (fixes early-stop). Bump frequency_penalty to 0.8 if loops recur."
     sampling:
       frequency_penalty: 0.7
-      temperature: 0.9
+      temperature: 1.0
       top_p: 0.95
     models:
       "{model}":
-        strip_reasoning: true     # proxy strips reasoning/thinking from assistant history
+        strip_reasoning: false    # KEEP reasoning across tool calls (early-stop fix)
         frequency_penalty: 0.7
-        temperature: 0.9
+        temperature: 1.0
         top_p: 0.95
