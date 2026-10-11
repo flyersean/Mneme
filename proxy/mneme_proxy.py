@@ -6559,6 +6559,8 @@ def _is_near_empty(text):
 
 # Bounded "continue" prompts when the model gives up with a blank/shrug answer.
 MAX_EMPTY_RETRY = 2
+TOOL_PARALLELISM = int(os.environ.get("MNEME_TOOL_PARALLELISM", "4"))  # concurrent read-only tool calls (web_search/fetch_url/read_*)
+_PARALLEL_SAFE_READONLY = {"read_file", "fetch_url", "web_search", "list_tools", "read_tool", "read_image", "inspect_run"}  # side-effect-free, thread-safe
 
 
 def _recent_window(messages: list, recent_turns: int, max_tokens: int = None) -> list:
@@ -7210,13 +7212,40 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             followup.append({"role": "user", "content": "search_memory results:\n" + _truncate_tool_result(tool_result)})
 
         # Registry tools (list_tools/read_tool/read_image): user-message feedback.
-        for tc in registry_calls:
+        # Execute the read-only tools CONCURRENTLY — they're independent (the model
+        # asks for several at once, e.g. "read A + read B + search the web"), so
+        # serializing them is pure latency. Only the execution runs in parallel;
+        # staging/tracing/followup below stays sequential and in call order, so
+        # there's no race on the memory buffer or the message list.
+        _rres = [None] * len(registry_calls)
+        def _run_reg(i, tc):
+            try:
+                _rres[i] = mntools.execute_readonly_tool(tc["function"]["name"],
+                                                         tc["function"].get("arguments", {}) or {})
+            except Exception as _e:
+                _rres[i] = f"[tool error: {type(_e).__name__}: {_e}]"
+        # Only the side-effect-free tools run concurrently. Curation (flag/clear/
+        # remove memory) and save_tool mutate state, so they run sequentially in
+        # this thread first — their writes stay serialized. Results are collected
+        # by index, so the ordered processing below is unaffected.
+        _par_idxs = [i for i, tc in enumerate(registry_calls)
+                     if tc["function"]["name"] in _PARALLEL_SAFE_READONLY]
+        _par_set = set(_par_idxs)
+        for i, tc in enumerate(registry_calls):
+            if i not in _par_set:
+                _run_reg(i, tc)
+        if len(_par_idxs) > 1 and TOOL_PARALLELISM > 1:
+            with ThreadPoolExecutor(max_workers=min(TOOL_PARALLELISM, len(_par_idxs))) as _pool:
+                list(_pool.map(lambda i: _run_reg(i, registry_calls[i]), _par_idxs))
+        elif _par_idxs:
+            _run_reg(_par_idxs[0], registry_calls[_par_idxs[0]])
+        for i, tc in enumerate(registry_calls):
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
             _mark_call(nm, args)
             _t0 = time.time()
             _tool_rounds += 1
-            res = mntools.execute_readonly_tool(nm, args)
+            res = _rres[i]
             if nm == "read_image":
                 # Image re-view: the result is a data URL. Attach it as a REAL image
                 # block (not text) so a vision model actually sees it; stage a short
