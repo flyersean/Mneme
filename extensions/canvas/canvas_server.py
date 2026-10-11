@@ -2214,6 +2214,11 @@ function makeResizable(handleId, targetId, edge) {
     handle.classList.add('active');
     document.body.style.cursor = isRow ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
+    // Iframes swallow mouse events once the pointer crosses them, so the
+    // document-level mouseup never fires and the drag "sticks". Disable
+    // pointer events on all iframes for the duration of the drag.
+    const frames = Array.from(document.querySelectorAll('iframe'));
+    frames.forEach(f => { f.style.pointerEvents = 'none'; });
     const onMove = (ev) => {
       if (edge === 'left') clampAndApply(ev.clientX);
       else if (edge === 'right') clampAndApply(window.innerWidth - ev.clientX);
@@ -2223,11 +2228,15 @@ function makeResizable(handleId, targetId, edge) {
       handle.classList.remove('active');
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      frames.forEach(f => { f.style.pointerEvents = ''; });
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      window.removeEventListener('blur', onUp);
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+    // Safety net: if the window loses focus mid-drag (alt-tab), stop dragging.
+    window.addEventListener('blur', onUp);
   });
 
   // Restore persisted size (if any) once panes are laid out.
