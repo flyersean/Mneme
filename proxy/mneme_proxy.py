@@ -3956,6 +3956,68 @@ LABEL_PROMPT = (
     "Do not use quotes, punctuation, or conversational filler.\n\n"
 )
 
+_DEFERRED_INTENT_NUDGE = os.environ.get("MNEME_DEFERRED_INTENT_NUDGE", "1") == "1"
+_DEFERRED_HINT_RE = re.compile(
+    r"\b(I'll|I will|we'll|we will)\b.{0,60}\b(check|monitor|report|verify|test|follow\s*up|circle\s*back|keep\s*(an\s*eye|you\s*posted|watching)|let\s*you\s*know|watch|ping)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_DEFERRED_INTENT_PROMPT = (
+    "Classify whether this assistant reply promises a deferred follow-up action. "
+    "Reply with exactly one token: none, check_later, monitor_recurring, or report_when_done. "
+    "none = no deferred promise; check_later = will check/verify/test later; "
+    "monitor_recurring = will keep monitoring/checking periodically; "
+    "report_when_done = will report back when something finishes.\n\nReply: "
+)
+
+
+def _deferred_intent_label(content: str) -> str:
+    """Label-model classification of a final reply's deferred intent
+    (none | check_later | monitor_recurring | report_when_done)."""
+    clean = _clean_content(content)[:2000]
+    if not clean.strip():
+        return "none"
+    try:
+        conn = _aux_conn("label")
+        _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+        if conn["key"]:
+            _h["Authorization"] = f"Bearer {conn['key']}"
+        _h.update(conn["headers"])
+        if conn["kind"] == "openai":
+            r = requests.post(
+                f"{conn['base_url']}/chat/completions", headers=_h,
+                json={"model": LABEL_MODEL, "messages": [{"role": "user", "content": _DEFERRED_INTENT_PROMPT + clean}],
+                      "temperature": 0.0, "max_tokens": 10},
+                timeout=LABEL_TIMEOUT)
+            r.raise_for_status()
+            label = ((r.json().get("choices") or [{}])[0].get("message", {}).get("content") or "").strip().lower()
+        else:
+            r = requests.post(
+                f"{conn['base_url']}/api/generate",
+                json={"model": LABEL_MODEL, "prompt": _DEFERRED_INTENT_PROMPT + clean, "stream": False,
+                      "options": {"num_predict": 10, "num_ctx": 512, "temperature": 0.0}},
+                timeout=LABEL_TIMEOUT)
+            r.raise_for_status()
+            label = r.json().get("response", "").strip().lower()
+        for k in ("none", "check_later", "monitor_recurring", "report_when_done"):
+            if k in label:
+                return k
+        return "none"
+    except Exception as e:
+        print(f"  [DEFERRED-INTENT][ERROR] {type(e).__name__}: {e}", flush=True)
+        return "none"
+
+
+def _deferred_intent_pending(content: str) -> bool:
+    """True when a final reply promises a deferred follow-up. Cheap regex
+    pre-filter first (avoids a label call on every reply), then the label model
+    confirms — robust against paraphrases a pattern match would miss."""
+    if not (content or "").strip() or not _DEFERRED_INTENT_NUDGE:
+        return False
+    if not _DEFERRED_HINT_RE.search(content):
+        return False
+    return _deferred_intent_label(content) != "none"
+
+
 def _llm_topic_label(text: str) -> str:
     """Generate a semantic topic label using the labeler's own connection
     (label_provider, or the chat backend as a fallback).
@@ -6999,6 +7061,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
+    _deferred_nudged = False  # one-time deferred-intent nudge sent
     _seen_sigs = set()   # tool-call signatures seen this turn (a write clears them)
     _redundant = 0       # repeat calls this turn (grinding signal — triggers the hard stop)
     _bash_resources = {}  # resource key -> set of distinct bash sigs (structural-grind signal)
@@ -7134,6 +7197,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 print(f"  [CONTINUE] near-empty answer ({_near!r}) — prompting model to continue "
                       f"({_continue_attempts}/{MAX_EMPTY_RETRY})", flush=True)
                 followup.append({"role": "user", "content": _load_instruction("empty_answer_retry")})
+                result = _query_retry_timeout(followup, tools=msg_tools)
+                continue
+            # Deferred-intent nudge: the final reply promises a follow-up ("I'll
+            # check on it") but hasn't scheduled it — make the model pick a real
+            # mechanism (schedule_job / script / do-it-now) instead of leaving a
+            # promise in text that won't run once the turn ends.
+            if not _deferred_nudged and _deferred_intent_pending(result.get("content") or ""):
+                _deferred_nudged = True
+                print("  [DEFERRED-NUDGE] final reply promises a follow-up — nudging to schedule", flush=True)
+                followup.append({"role": "user", "content": _load_instruction("deferred_intent_nudge")})
                 result = _query_retry_timeout(followup, tools=msg_tools)
                 continue
             break

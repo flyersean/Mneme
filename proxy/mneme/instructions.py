@@ -176,6 +176,17 @@ DEFAULT_INSTRUCTIONS = {
         "a complete answer. If you are genuinely blocked, explain what you found and what "
         "is still missing — but only after you have actually tried again."
     ),
+
+    "deferred_intent_nudge": (
+        "=== DEFERRED FOLLOW-UP ===\n"
+        "Your reply promises a deferred follow-up (you said you will check/monitor/verify/report later), "
+        "but this session ends when you stop — a promise in text will NOT run on its own. To actually "
+        "follow through, choose ONE of these now:\n"
+        "1) schedule_job(name=..., goal=..., schedule='30m' or an ISO timestamp) to run the check later or recurringly, or\n"
+        "2) write the script now and state exactly how/when it should be run, or\n"
+        "3) if you cannot persist anything, say so plainly and do the check NOW instead.\n"
+        "Then give your final answer reflecting that choice."
+    ),
     "harness_task_context": (
         "=== MNEME HARNESS — RUN CONTEXT ===\n"
         "You are working on one task of a larger run. The harness keeps the run's state "
@@ -337,6 +348,7 @@ INSTRUCTION_META = {
     "step_back_concede": ("≥20 tool calls w/o answer — concede honestly (hard stop)", "{{count}}", "_step_back_directive"),
     "tool_failure_nudge": ("≥2 consecutive tool failures (soft, before overcome)", "{{count}}", "_tool_failure_nudge"),
     "empty_answer_retry": ("model returned a blank/shrug answer — prompt it to continue", "", "process_chat"),
+    "deferred_intent_nudge": ("model promised a deferred follow-up ('I'll check on it') without scheduling it", "", "process_chat"),
     "harness_task_context": ("a harness run executes a task step (system message for that step)", "{{goal}} {{task_position}} {{task_title}} {{workspace}} {{completed}} {{retry_note}} {{verify_note}} {{capabilities}} {{budget}}", "harness.chat_executor"),
     "harness_plan": ("a harness run needs a plan (new run with no tasks, or a replan)", "{{goal}} {{workspace}} {{max_tasks}} {{capabilities}} {{context}} {{budget}}", "harness.chat_executor"),
     "harness_judge": ("a harness verifier judges whether work is correct (bug fix vs objective alignment)", "{{criteria}} {{evidence}} {{output}} {{failed}}", "_harness_judge"),

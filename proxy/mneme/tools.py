@@ -19,6 +19,7 @@ import os
 import json
 import shutil
 import subprocess
+import signal
 import time
 import re as _re
 from html import unescape as _unescape
@@ -474,6 +475,24 @@ START_RUN_TOOL = {
     },
 }
 
+SCHEDULE_JOB_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "schedule_job",
+        "description": "Schedule a job to run later or on a recurring interval (cron-style). Use this when you promise to 'check on this', 'monitor this', 'report back when done', etc. — schedule it instead of leaving a promise in text that won't run after this turn ends. schedule is an interval ('30m', 'every 2h', '45s', '1d') for recurring, or an ISO timestamp ('2026-10-11T18:00:00') for a one-shot. repeat optionally caps the number of runs (default: 1 for one-shot, forever for recurring).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short name for the job (e.g. 'verify SearXNG is up')."},
+                "goal": {"type": "string", "description": "Self-contained goal the run executes when the job fires — what to check/do/report."},
+                "schedule": {"type": "string", "description": "When to run: '30m', 'every 2h', '45s', '1d' (recurring), or an ISO timestamp (one-shot at that wall-clock time)."},
+                "repeat": {"type": "integer", "description": "Optional cap on the number of runs. Default: 1 for one-shot, forever for recurring."},
+            },
+            "required": ["name", "goal", "schedule"],
+        },
+    },
+}
+
 RESUME_RUN_TOOL = {
     "type": "function",
     "function": {
@@ -725,6 +744,8 @@ def native_exec_names(client_tools):
     if os.environ.get("MNEME_TOOL_START_RUN", "1") == "1":
         out.update({"start_run", "resume_run", "replan_run", "note_run",
                     "pause_run", "cancel_run", "retry_run"})
+    if os.environ.get("MNEME_TOOL_SCHEDULE_JOB", "1") == "1":
+        out.add("schedule_job")
     return out
 
 
@@ -747,9 +768,10 @@ def assemble_tools(client_tools):
         add(t)
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
-                    "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL}
+                    "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
+                    "schedule_job": SCHEDULE_JOB_TOOL}
     for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-              "pause_run", "cancel_run", "retry_run"):
+              "pause_run", "cancel_run", "retry_run", "schedule_job"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -853,17 +875,24 @@ def _exec_bash(command):
             logf.write(header)
             logf.flush()
             start = logf.tell()
+            # start_new_session puts the bwrap child in its own process group, so a
+            # timeout can reap the WHOLE group (bwrap + bash + any `&` background
+            # children) instead of orphaning them.
             p = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
-                                 cwd=TOOLS_DIR, env=env)
+                                 cwd=TOOLS_DIR, env=env, start_new_session=True)
             try:
                 p.wait(timeout=BASH_TIMEOUT)
                 code = p.returncode
             except subprocess.TimeoutExpired:
                 try:
-                    p.kill()
+                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
                     p.wait()
                 except Exception:
-                    pass
+                    try:
+                        p.kill()
+                        p.wait()
+                    except Exception:
+                        pass
                 code = -1
         with open(log_path, "rb") as f:
             f.seek(start)
@@ -915,6 +944,8 @@ def execute_native_tool(name, args):
         return _exec_cancel_run(args)
     if name == "retry_run":
         return _exec_retry_run(args)
+    if name == "schedule_job":
+        return _exec_schedule_job(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1300,6 +1331,42 @@ def _exec_start_run(args):
                 f"Check progress with inspect_run(run_id=\"{rid}\").")
     except Exception as e:
         return f"[start_run error: {type(e).__name__}: {e}]"
+
+
+def _exec_schedule_job(args):
+    """Schedule a job (one-shot or recurring) via the harness scheduler."""
+    if engine is None or not getattr(engine, "jobs", None):
+        return ("Harness scheduler is disabled or not initialized — cannot schedule a job.")
+    args = args or {}
+    name = str(args.get("name") or "").strip()
+    goal = str(args.get("goal") or "").strip()
+    schedule = str(args.get("schedule") or "").strip()
+    if not goal:
+        return "schedule_job requires a non-empty goal."
+    if not schedule:
+        return "schedule_job requires a schedule (e.g. '30m', 'every 2h', or an ISO timestamp)."
+    from mneme.harness.jobs import parse_schedule
+    try:
+        parsed = parse_schedule(schedule)
+    except Exception as e:
+        return f"[schedule_job error: {type(e).__name__}: {e}]"
+    max_runs = parsed.get("max_runs")
+    if args.get("repeat") is not None:
+        try:
+            max_runs = int(args.get("repeat"))
+        except (TypeError, ValueError):
+            return "schedule_job: repeat must be an integer."
+        if max_runs < 1:
+            return "schedule_job: repeat must be >= 1."
+    try:
+        job = engine.jobs.create(name, goal, parsed["interval_s"],
+                                 start_in_s=parsed["start_in_s"], max_runs=max_runs,
+                                 created_by="model:schedule_job")
+        return (f"Job scheduled: {job['job_id']} [{job['name'] or goal[:40]}]. "
+                f"Next run ~{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(job['next_run_at']))}. "
+                f"Each fire starts a harness run — check it with inspect_run(run_id=...).")
+    except Exception as e:
+        return f"[schedule_job error: {type(e).__name__}: {e}]"
 
 
 def _exec_resume_run(args):

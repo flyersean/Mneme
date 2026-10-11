@@ -15,8 +15,10 @@ Runs keep going when the user disconnects — they are already durable; jobs add
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
+from datetime import datetime
 from typing import Callable, List, Optional
 
 from mneme.harness.ledger import TERMINAL_STATES, Ledger, LedgerError, new_id, now_iso
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     last_run_id TEXT DEFAULT '',
     runs_count  INTEGER DEFAULT 0,
     skipped     INTEGER DEFAULT 0,
+    max_runs    INTEGER,              -- NULL = forever; else auto-disable at runs_count >= max_runs
     created_by  TEXT DEFAULT 'user',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -53,11 +56,47 @@ CREATE TABLE IF NOT EXISTS job_log (
 """
 
 
+def parse_schedule(schedule: str) -> dict:
+    """Parse a Hermes-style schedule string into job parameters.
+
+    Returns {interval_s, start_in_s, max_runs}. An ISO timestamp is a one-shot
+    (max_runs=1); an interval ("30m"/"every 2h"/"45s"/"1d") is recurring
+    (max_runs=None, caller may cap with repeat). This mirrors Hermes's cron
+    surface so the model's learned schedule vocabulary transfers directly.
+    """
+    s = (schedule or "").strip()
+    if not s:
+        raise LedgerError("a schedule is required (e.g. '30m', 'every 2h', or an ISO timestamp)")
+    # ISO timestamp -> one-shot
+    try:
+        ts = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        delay = ts.timestamp() - time.time()
+        if delay <= 0:
+            raise LedgerError(f"schedule time {s!r} is in the past")
+        return {"interval_s": MIN_INTERVAL_S, "start_in_s": max(0.0, delay), "max_runs": 1}
+    except (ValueError, OverflowError):
+        pass
+    # interval: "30m", "45s", "2h", "1d", optionally "every 30m" / "every 2h"
+    m = re.match(r'^(?:every\s+)?(\d+)\s*(s|m|h|d)$', s, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2).lower()]
+        interval_s = n * mult
+        if interval_s < MIN_INTERVAL_S:
+            raise LedgerError(f"interval must be >= {MIN_INTERVAL_S}s")
+        return {"interval_s": interval_s, "start_in_s": interval_s, "max_runs": None}
+    raise LedgerError(f"unrecognized schedule {schedule!r} (use '30m', 'every 2h', or an ISO timestamp)")
+
+
 class JobStore:
     def __init__(self, ledger: Ledger):
         self.ledger = ledger
         with ledger._lock:
             ledger._db.executescript(_SCHEMA)
+            # migration: older DBs predate max_runs
+            cols = [r[1] for r in ledger._db.execute("PRAGMA table_info(jobs)").fetchall()]
+            if "max_runs" not in cols:
+                ledger._db.execute("ALTER TABLE jobs ADD COLUMN max_runs INTEGER")
             ledger._db.commit()
 
     def _decode(self, row) -> Optional[dict]:
@@ -72,7 +111,7 @@ class JobStore:
 
     def create(self, name: str, goal: str, interval_s: int, *, tasks=None, profile: str = "",
                budget: Optional[dict] = None, start_in_s: float = 0, overlap: bool = False,
-               created_by: str = "user") -> dict:
+               max_runs: Optional[int] = None, created_by: str = "user") -> dict:
         if not (goal or "").strip():
             raise LedgerError("a job needs a goal")
         try:
@@ -87,10 +126,10 @@ class JobStore:
         ts = now_iso()
         self.ledger._write(
             "INSERT INTO jobs (job_id, name, goal, tasks, profile, budget, interval_s, next_run_at, overlap, "
-            "created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "max_runs, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (job_id, (name or goal)[:120], goal.strip(), json.dumps(tasks), profile or "",
              json.dumps(budget or {}), interval_s, time.time() + float(start_in_s), 1 if overlap else 0,
-             created_by, ts, ts))
+             max_runs, created_by, ts, ts))
         self._log(job_id, "created")
         return self.get(job_id)
 
@@ -147,6 +186,11 @@ class JobStore:
     def record_run(self, job_id: str, run_id: str) -> None:
         self.ledger._write("UPDATE jobs SET last_run_id=?, runs_count=runs_count+1, updated_at=? WHERE job_id=?",
                            (run_id, now_iso(), job_id))
+        j = self.get(job_id)
+        # One-shot (max_runs=1) and capped jobs disable themselves once done — the
+        # "forgot to disable and fires forever" zombie can't happen.
+        if j is not None and j.get("max_runs") is not None and j["runs_count"] >= j["max_runs"]:
+            self.set_enabled(job_id, False)
         self._log(job_id, "run_started", run_id)
 
     def record_skip(self, job_id: str, detail: str) -> None:
