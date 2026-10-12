@@ -406,7 +406,11 @@ def _resolve_provider():
             os.environ[env] = _config_scalar(prov[pkey])
 
     _set("OPENROUTER_BASE_URL", "base_url")
-    _set("MNEME_MODEL", "model")
+    # Chat model is authoritative from the ACTIVE provider's block (OpenCode-style
+    # provider/model nesting). Top-level `model:` is a legacy fallback when the
+    # provider block declares no model (e.g. Ollama / pre-nesting configs).
+    if prov.get("model"):
+        os.environ["MNEME_MODEL"] = _config_scalar(prov["model"])
     _set("EMBED_MODEL", "embed_model")
     _set("LABEL_MODEL", "label_model")
     api_key_env = prov.get("api_key_env")
@@ -922,21 +926,53 @@ def _force_config_reload() -> bool:
         return False
 
 
-def _persist_model(model: str) -> bool:
-    """Persist the active chat model to the top-level `model:` key in the config
-    file so a switch survives a restart. Uses a targeted single-line replace so
-    the hand-maintained comments/formatting elsewhere in the file are untouched.
-    The top-level `model:` is the authoritative source of truth (it maps to
-    MNEME_MODEL before the provider-level `_set` fallback runs)."""
+def _set_provider_model(text: str, provider: str, model: str):
+    """Replace (or insert) the `model:` line inside the `  <provider>:` block.
+    Returns the new text, or None if the provider block is absent."""
+    lines = text.splitlines()
+    idx = None
+    for i, ln in enumerate(lines):
+        if ln.rstrip() == f"  {provider}:":
+            idx = i
+            break
+    if idx is None:
+        return None
+    for j in range(idx + 1, len(lines)):
+        if re.match(r'^  \S', lines[j]):  # next provider/section — block ended
+            lines.insert(j, f"    model: {model}")
+            break
+        if re.match(r'^    model:', lines[j]):
+            lines[j] = f"    model: {model}"
+            break
+    else:
+        lines.append(f"    model: {model}")
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _persist_model(model: str, provider: str = "") -> bool:
+    """Persist the active chat model so a switch survives a restart.
+
+    With `provider`, writes to that provider's block (`providers.<name>.model` —
+    the OpenCode-style nesting, authoritative for OpenAI-compatible backends).
+    Without it, writes the top-level `model:` line (Ollama / legacy fallback).
+    Targeted replace so the hand-maintained comments/formatting survive."""
     if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
         return False
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             text = f.read()
-        new_text, n = re.subn(r'(?m)^model:\s*.*$', f'model: "{model}"', text, count=1)
-        if n == 0:
-            print("  [MODEL-SWITCH] no top-level `model:` line to replace", flush=True)
-            return False
+        if provider:
+            new_text = _set_provider_model(text, provider, model)
+            if new_text is None:
+                # provider block absent — fall back to the top-level line
+                new_text, n = re.subn(r'(?m)^model:\s*.*$', f'model: "{model}"', text, count=1)
+                if n == 0:
+                    return False
+        else:
+            new_text, n = re.subn(r'(?m)^model:\s*.*$', f'model: "{model}"', text, count=1)
+            if n == 0:
+                print("  [MODEL-SWITCH] no top-level `model:` line to replace", flush=True)
+                return False
         tmp = CONFIG_PATH + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(new_text)
@@ -8726,7 +8762,7 @@ if FLASK_OK:
         MODEL = model
         os.environ["MNEME_MODEL"] = model
         os.environ["MNEME_PROVIDER"] = name
-        _persist_model(model)
+        _persist_model(model, name)
         _persist_backend_provider(name)
         print(f"  [PROVIDER-ACTIVATE] -> {name}/{model} (backend={MNEME_BACKEND})", flush=True)
         return _cors_response({"ok": True, "provider": name, "model": model, "backend": MNEME_BACKEND})
@@ -8743,7 +8779,7 @@ if FLASK_OK:
             return _cors_response({"ok": False, "error": "missing model"}, status=400)
         MODEL = model
         os.environ["MNEME_MODEL"] = model
-        persisted = _persist_model(model)
+        persisted = _persist_model(model, os.environ.get("MNEME_PROVIDER", ""))
         print(f"  [MODEL-SWITCH] -> {model} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "model": model, "persisted": persisted})
 
