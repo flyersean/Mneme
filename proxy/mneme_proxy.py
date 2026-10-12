@@ -6623,6 +6623,52 @@ def _execute_search_tool_calls(search_calls):
     trace = set()
     for tc in search_calls:
         fn = tc.get("function", {})
+        _tname = fn.get("name", "")
+        if _tname == "read_chunk":
+            _cid = (fn.get("arguments", {}).get("chunk_id", "") or "").strip()
+            if not _cid:
+                result_texts.append("read_chunk requires a chunk_id (the id shown in search_memory results).")
+                continue
+            _row = db.execute("SELECT topic_label, grade, messages, created_at FROM chunks WHERE chunk_id=?", (_cid,)).fetchone()
+            if not _row:
+                result_texts.append(f"No chunk with id '{_cid}'.")
+                continue
+            _label, _grd, _msgs_json, _created = _row[0], _row[1], _row[2], _row[3]
+            try:
+                _msgs = json.loads(_msgs_json)
+            except Exception:
+                _msgs = [{"role": "raw", "content": str(_msgs_json)[:2000]}]
+            _lines = [f"Chunk {_cid} | label: {_label} | grade: {_grd} | created: {_created}"]
+            for _m in _msgs:
+                if isinstance(_m, dict):
+                    _lines.append(f"{_m.get('role', '?')}: {_m.get('content', '')}")
+                else:
+                    _lines.append(f"?: {_m}")
+            result_texts.append("\n".join(_lines))
+            trace.add(_cid)
+            print(f"  [SEARCH-TOOL] read_chunk {_cid}", flush=True)
+            continue
+        if _tname == "list_chunks":
+            _args = fn.get("arguments", {}) or {}
+            try:
+                _lim = max(1, min(int(_args.get("limit", 25)), 100))
+            except (TypeError, ValueError):
+                _lim = 25
+            _kw = (_args.get("keyword") or "").strip()
+            if _kw:
+                _rows = db.execute("SELECT chunk_id, topic_label, created_at FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?", (f"%{_kw}%", _lim)).fetchall()
+            else:
+                _rows = db.execute("SELECT chunk_id, topic_label, created_at FROM chunks ORDER BY created_at DESC LIMIT ?", (_lim,)).fetchall()
+            if not _rows:
+                result_texts.append("No chunks found.")
+            else:
+                _lines = ["Recent memory chunks:"]
+                for _r in _rows:
+                    _lines.append(f"[{_r[0]}] ({str(_r[2])[:10]}) {_r[1]}")
+                result_texts.append("\n".join(_lines))
+                trace.update([_r[0] for _r in _rows])
+            print(f"  [SEARCH-TOOL] list_chunks limit={_lim} kw={_kw!r} -> {len(_rows)} rows", flush=True)
+            continue
         q = (fn.get("arguments", {}).get("query", "") or "").strip()
         # The model's tool-call args are untrusted — a sloppy model emits top_k
         # as "5" (string) not 5, which would crash _keyword_search/route_query on
@@ -7298,7 +7344,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # (_context_input_budget) before every re-query below, so it never bloats
         # past num_ctx - reserve. MAX_SERVER_ROUNDS remains the tool-work ceiling.)
         tcs = result.get("tool_calls") or []
-        search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "search_memory" and "search_memory" in _readonly_names]
+        search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("search_memory", "read_chunk", "list_chunks") and tc.get("function", {}).get("name") in _readonly_names]
         registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory"})]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         mcp_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _mcp_names]
