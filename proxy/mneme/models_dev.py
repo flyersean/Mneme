@@ -14,6 +14,11 @@ that in PROVIDER_CATALOG for the providers that deviate from the OpenAI-compatib
 default (deepseek/zai/...); every provider that resolves via this module falls back to
 the OpenAI-compatible default (reasoning/reasoning), which is correct for the vast
 majority of registry providers.
+
+TODO(future): if the hand-rolled wire contract (PROVIDER_CATALOG) becomes a recurring
+source of breakage, adopt a maintained Python provider layer. LiteLLM (MIT core,
+100+ providers, normalizes reasoning per provider) is the drop-in that would replace
+this module + PROVIDER_CATALOG's wire exceptions.
 """
 
 import json
@@ -21,6 +26,21 @@ import os
 
 _REG = None
 _REG_PATH = None
+
+# Base URLs for providers whose endpoint is NOT in models.dev's `api` field — their
+# endpoint lives in the Vercel AI SDK's dedicated packages. Verified against the SDK's
+# packages/*/src/*-provider.ts. Account-specific endpoints (azure, amazon-bedrock,
+# google-vertex, watsonx, cloudflare-ai-gateway, gitlab, salad-cloud, vercel, qvac,
+# sap-ai-core) can't be flat-mapped — they need per-account/resource config and are
+# deliberately absent here.
+MODELS_DEV_BASE_URL_OVERRIDES = {
+    "deepinfra": "https://api.deepinfra.com/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "perplexity": "https://api.perplexity.ai",
+    "aihubmix": "https://aihubmix.com/v1",
+    "venice": "https://api.venice.ai/api/v1",
+    "togetherai": "https://api.together.xyz/v1",
+}
 
 
 def _candidates():
@@ -67,6 +87,8 @@ def provider(pid):
 
 
 def base_url(pid):
+    if pid in MODELS_DEV_BASE_URL_OVERRIDES:
+        return MODELS_DEV_BASE_URL_OVERRIDES[pid]
     p = provider(pid)
     return (p.get("api") or "") if p else ""
 
@@ -98,3 +120,18 @@ def output_cap(pid, mid):
     if not m:
         return None
     return (m.get("limit") or {}).get("output")
+
+
+def models_list(pid):
+    """Model list for the picker: [{id, name, context, output, reasoning}]."""
+    out = []
+    for mid, m in models(pid).items():
+        lim = m.get("limit") or {}
+        out.append({
+            "id": mid,
+            "name": m.get("name") or mid,
+            "context": lim.get("context"),
+            "output": lim.get("output"),
+            "reasoning": bool(m.get("reasoning")),
+        })
+    return out

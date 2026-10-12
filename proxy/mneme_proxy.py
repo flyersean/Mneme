@@ -993,6 +993,47 @@ def _persist_model(model: str, provider: str = "") -> bool:
         return False
 
 
+def _persist_sampling_context(ctx: int, reserve: int) -> bool:
+    """Persist ctx_tokens + completion_reserve so an auto-set context window (from
+    models.dev) survives a restart."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        t2, n1 = re.subn(r'(?m)^(\s*ctx_tokens:\s*)\S+.*$', r'\g<1>' + str(ctx), text, count=1)
+        t3, n2 = re.subn(r'(?m)^(\s*completion_reserve:\s*)\S+.*$', r'\g<1>' + str(reserve), t2, count=1)
+        if n1 == 0 and n2 == 0:
+            return False
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(t3)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [MODELS-DEV] persist context failed: {e}", flush=True)
+        return False
+
+
+def _apply_models_dev_context(provider: str, model: str) -> bool:
+    """Auto-set ctx_tokens + completion_reserve from models.dev for the model, so a
+    switch picks up the model's real context window instead of a stale config value."""
+    ctx = models_dev.context_window(provider, model)
+    if not ctx:
+        return False
+    out = models_dev.output_cap(provider, model) or 0
+    # ~1/8 of the context, capped at 64k — some registry entries over-report output
+    # caps (e.g. ~943k), which would otherwise inflate the completion reserve.
+    reserve = max(4096, min(int(ctx) // 8, 65536))
+    if 0 < out < reserve:
+        reserve = int(out)  # respect the model's real output cap when smaller
+    os.environ["MNEME_CTX_TOKENS"] = str(ctx)
+    os.environ["MNEME_COMPLETION_RESERVE"] = str(reserve)
+    persisted = _persist_sampling_context(ctx, reserve)
+    print(f"  [MODELS-DEV] ctx={ctx} reserve={reserve} for {provider}/{model} (persisted={persisted})", flush=True)
+    return True
+
+
 def _persist_model_template(name: str) -> bool:
     """Persist the active model template to the top-level `model_template:` line so
     the selection survives a restart. Replaces the line if present, else appends it
@@ -8719,6 +8760,11 @@ if FLASK_OK:
             except Exception:
                 pass
             return _cors_response({"models": []})
+        # models.dev registry is the preferred source — it carries context window +
+        # reasoning per model (used for auto-config) and needs no live API call or key.
+        _md_models = models_dev.models_list(name)
+        if _md_models:
+            return _cors_response({"models": _md_models, "source": "models.dev"})
         key_env = info.get("key_env", "")
         key = os.environ.get(key_env, "") if key_env else ""
         if not key and key_env:
@@ -8778,6 +8824,7 @@ if FLASK_OK:
         MODEL = model
         os.environ["MNEME_MODEL"] = model
         os.environ["MNEME_PROVIDER"] = name
+        _apply_models_dev_context(name, model)
         _persist_model(model, name)
         _persist_backend_provider(name)
         if (CONFIG_DATA.get("model_template") or ""):
@@ -8798,6 +8845,7 @@ if FLASK_OK:
             return _cors_response({"ok": False, "error": "missing model"}, status=400)
         MODEL = model
         os.environ["MNEME_MODEL"] = model
+        _apply_models_dev_context(os.environ.get("MNEME_PROVIDER", ""), model)
         persisted = _persist_model(model, os.environ.get("MNEME_PROVIDER", ""))
         # Templates are optional and only for models that need specific settings
         # (e.g. Muse on Ollama). A switch therefore falls back to the default
