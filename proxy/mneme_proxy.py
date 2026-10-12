@@ -124,6 +124,7 @@ _AUX_OR_KEY: str = ""
 _REASONING_FIELD: str = "reasoning"
 _REASONING_PARAM: str = "reasoning"
 _REASONING_CLEAR = None  # clear_thinking value for the "thinking" param (None = omit)
+_EFFORT_MAP = {}         # effort overrides for the active provider (canonical -> provider)
 
 # Last-known connectivity for the chat provider, embedder, and labeler. Updated on
 # each real request (chat turn, embedding, topic-label) and surfaced via /status so
@@ -358,9 +359,11 @@ PROVIDER_CATALOG = {
     "anthropic":  {"label": "Anthropic", "base_url": "https://api.anthropic.com/v1", "key_env": "ANTHROPIC_API_KEY", "kind": "openai"},
     "google":     {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "key_env": "GOOGLE_API_KEY", "kind": "openai"},
     "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai",
-                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking"},
+                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking",
+                   "effort_map": {"xhigh": "max", "ultra": "max"}},
     "zai":        {"label": "Z.AI (GLM)", "base_url": "https://api.z.ai/api/paas/v4", "key_env": "GLM_API_KEY", "kind": "openai",
-                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking", "clear_thinking": False},
+                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking", "clear_thinking": False,
+                   "effort_map": {"low": "high", "medium": "high", "xhigh": "max", "ultra": "max"}},
     "groq":       {"label": "Groq", "base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY", "kind": "openai"},
     "mistral":    {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "key_env": "MISTRAL_API_KEY", "kind": "openai"},
     "xai":        {"label": "xAI", "base_url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY", "kind": "openai"},
@@ -376,7 +379,7 @@ PROVIDER_CATALOG = {
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         # Ollama: the model is authoritative under the top-level `model:` key
@@ -434,6 +437,7 @@ def _resolve_provider():
     _REASONING_FIELD = prov.get("reasoning_field") or _cat.get("reasoning_field") or "reasoning"
     _REASONING_PARAM = prov.get("reasoning_param") or _cat.get("reasoning_param") or "reasoning"
     _REASONING_CLEAR = prov.get("clear_thinking") if "clear_thinking" in prov else _cat.get("clear_thinking")
+    _EFFORT_MAP = prov.get("effort_map") or _cat.get("effort_map") or {}
 
 
 CONFIG_LOAD_ATTEMPTS = 6
@@ -3017,12 +3021,18 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             # `enabled:false` (the endpoint 400s), so bound it tightly instead.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
     if _transport["param"] == "thinking":
-        # Z.AI GLM: forced thinking + preserved thinking (clear_thinking:false),
-        # exactly what OpenCode sends. Never `reasoning:{enabled:false}`.
+        # Thinking providers (DeepSeek / Z.AI direct): forced thinking + preserved
+        # thinking (clear_thinking:false for Z.AI), exactly what OpenCode/Hermes
+        # send. Never `reasoning:{enabled:false}`. Effort (when requested) is sent
+        # as TOP-LEVEL `reasoning_effort`, mapped per provider (GLM-5.2 clamps to
+        # high/max; DeepSeek maps xhigh/ultra -> max).
         _th = {"type": "enabled"}
         if _transport["clear_thinking"] is not None:
             _th["clear_thinking"] = bool(_transport["clear_thinking"])
         payload["thinking"] = _th
+        if _reffort and not no_reasoning:
+            _eff = (_EFFORT_MAP or {}).get(_reffort.strip().lower(), _reffort)
+            payload["reasoning_effort"] = _eff
     elif _reasoning:
         payload["reasoning"] = _reasoning
     if tools:
