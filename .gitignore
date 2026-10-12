@@ -7,6 +7,8 @@ venv/
 
 # Mneme runtime state — generated at install/setup, never committed
 mneme.yaml
+mneme_users.yaml
+secrets.yaml
 chunks/
 *.db
 faiss.index
