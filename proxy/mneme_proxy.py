@@ -7348,7 +7348,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # past num_ctx - reserve. MAX_SERVER_ROUNDS remains the tool-work ceiling.)
         tcs = result.get("tool_calls") or []
         search_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in ("search_memory", "read_chunk", "list_chunks") and tc.get("function", {}).get("name") in _readonly_names]
-        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory"})]
+        registry_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in (_readonly_names - {"search_memory", "read_chunk", "list_chunks"})]
         native_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _native_names]
         mcp_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _mcp_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
