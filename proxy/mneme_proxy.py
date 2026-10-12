@@ -8755,7 +8755,13 @@ if FLASK_OK:
                 OR_BASE_URL = info["base_url"]
             key_env = info.get("key_env", "")
             if key_env:
-                OR_API_KEY = os.environ.get(key_env, "")
+                if key_env == "OPENROUTER_API_KEY" and _AUX_OR_KEY:
+                    # The generic carrier OPENROUTER_API_KEY was repointed at the chat
+                    # key by _resolve_provider; the real OpenRouter key is preserved in
+                    # _AUX_OR_KEY (same logic as _aux_conn for the embed/label path).
+                    OR_API_KEY = _AUX_OR_KEY
+                else:
+                    OR_API_KEY = os.environ.get(key_env, "")
             else:
                 OR_API_KEY = ""  # keyless local provider (vLLM / llama.cpp) — no key
             _persist_backend_type(MNEME_BACKEND)
@@ -8838,7 +8844,9 @@ if FLASK_OK:
                 import yaml as _yaml
                 with open(cfg, "r", encoding="utf-8") as f:
                     data = _yaml.safe_load(f.read()) or {}
-                model = data.get("model") or ((data.get("providers") or {}).get("openrouter") or {}).get("model")
+                _bprov = (data.get("backend") or {}).get("provider") or ""
+                _prov = (data.get("providers") or {}).get(_bprov) or {}
+                model = _prov.get("model") or data.get("model")
                 backend = (data.get("backend") or {}).get("type", "ollama")
             except Exception:
                 pass
