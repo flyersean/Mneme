@@ -27,6 +27,7 @@ from typing import List, Dict, Optional, Tuple
 import numpy as np
 import requests
 import subprocess
+import threading
 
 from mneme.util import _extract_text, _log_error, _split_content, _image_bytes_from_block, _image_token_estimate, _to_ollama_messages, _sniff_mime, _mime_to_ext
 from mneme.logfile import setup_logging
@@ -9187,12 +9188,18 @@ if FLASK_OK:
         name = ((request.get_json(force=True) or {}).get("name") or "").strip()
         if not name:
             return _cors_response({"error": "missing model name"}, status=400)
-        try:
-            subprocess.Popen(["ollama", "pull", name], start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return _cors_response({"ok": True, "message": f"pulling {name} in the background"})
-        except Exception as e:
-            return _cors_response({"error": str(e)}, status=500)
+        # POST /api/pull to the configured OLLAMA_URL — works for BOTH a local
+        # Ollama and a remote one (e.g. a pod reached via an SSH tunnel). The old
+        # `ollama pull` subprocess used the VPS's local CLI and hit whatever daemon
+        # was on 127.0.0.1:11434, which silently pulled on the wrong host when
+        # Ollama was remote.
+        def _pull():
+            try:
+                requests.post(f"{OLLAMA_URL}/api/pull", json={"name": name}, timeout=10)
+            except Exception:
+                pass
+        threading.Thread(target=_pull, daemon=True).start()
+        return _cors_response({"ok": True, "message": f"pulling {name} in the background"})
 
     @app.route("/ollama/rm", methods=["POST"])
     def ollama_rm():
