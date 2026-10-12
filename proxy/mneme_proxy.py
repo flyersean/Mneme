@@ -116,6 +116,15 @@ _OR_STREAM: bool = True          # OpenRouter stream toggle (non-streaming enabl
 # Defined BEFORE load_config() so _resolve_provider's assignment isn't clobbered.
 _AUX_OR_KEY: str = ""
 
+# Reasoning wire contract for the ACTIVE provider (resolved by _resolve_provider).
+# PROVIDER property, NOT model property: the same model on two providers can
+# carry reasoning differently — OpenRouter normalizes reasoning_content -> reasoning;
+# DeepSeek / Z.AI direct return reasoning_content raw. _reasoning_transport reads
+# these so the request and the replay agree on ONE symmetric field.
+_REASONING_FIELD: str = "reasoning"
+_REASONING_PARAM: str = "reasoning"
+_REASONING_CLEAR = None  # clear_thinking value for the "thinking" param (None = omit)
+
 # Last-known connectivity for the chat provider, embedder, and labeler. Updated on
 # each real request (chat turn, embedding, topic-label) and surfaced via /status so
 # the chat header can show a green/red dot per model without doing its own probes.
@@ -343,11 +352,15 @@ def _apply_config(data: Dict, path: str):
 # route to it without a hand-written config block; the provider choice + model are
 # persisted by POST /providers/activate. All are OpenAI-compatible except Ollama.
 PROVIDER_CATALOG = {
-    "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY", "kind": "openai"},
+    "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY", "kind": "openai",
+                   "reasoning_field": "reasoning", "reasoning_param": "reasoning"},
     "openai":     {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY", "kind": "openai"},
     "anthropic":  {"label": "Anthropic", "base_url": "https://api.anthropic.com/v1", "key_env": "ANTHROPIC_API_KEY", "kind": "openai"},
     "google":     {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "key_env": "GOOGLE_API_KEY", "kind": "openai"},
-    "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai"},
+    "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai",
+                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking"},
+    "zai":        {"label": "Z.AI (GLM)", "base_url": "https://api.z.ai/api/paas/v4", "key_env": "GLM_API_KEY", "kind": "openai",
+                   "reasoning_field": "reasoning_content", "reasoning_param": "thinking", "clear_thinking": False},
     "groq":       {"label": "Groq", "base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY", "kind": "openai"},
     "mistral":    {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "key_env": "MISTRAL_API_KEY", "kind": "openai"},
     "xai":        {"label": "xAI", "base_url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY", "kind": "openai"},
@@ -363,7 +376,7 @@ PROVIDER_CATALOG = {
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         # Ollama: the model is authoritative under the top-level `model:` key
@@ -415,6 +428,12 @@ def _resolve_provider():
     # non-streaming lets OpenRouter buffer + transparently fail over a mid-stream
     # stall. Config-only so flipping it later is a one-line edit, not a code change.
     _OR_STREAM = bool(prov.get("stream", True))
+    # Wire contract (provider property): response/replay field + request param.
+    # Catalog default, overridden by the config `providers.<name>` block.
+    _cat = PROVIDER_CATALOG.get(name) or {}
+    _REASONING_FIELD = prov.get("reasoning_field") or _cat.get("reasoning_field") or "reasoning"
+    _REASONING_PARAM = prov.get("reasoning_param") or _cat.get("reasoning_param") or "reasoning"
+    _REASONING_CLEAR = prov.get("clear_thinking") if "clear_thinking" in prov else _cat.get("clear_thinking")
 
 
 CONFIG_LOAD_ATTEMPTS = 6
@@ -2794,28 +2813,27 @@ def _model_mandates_reasoning(model) -> bool:
 
 
 def _reasoning_transport(model):
-    """How THIS model carries reasoning to/from its provider. Template / per-model
-    config wins; model-slug fallbacks keep pre-template models working.
+    """How THIS model carries reasoning to/from its provider.
 
-    Returns {"param", "field", "clear_thinking", "forced"}:
-      param  -> request param name: "thinking" (Z.AI GLM) | "reasoning" (default)
-      field  -> response/replay field: "reasoning_content" (Z.AI) | "reasoning" (default)
-      clear_thinking -> bool (Z.AI preserved thinking; None = omit)
-      forced -> bool, thinking cannot be disabled (GLM-5.3 / DeepSeek)
+    The WIRE contract (param / field / clear_thinking) is a PROVIDER property,
+    resolved by _resolve_provider() into globals — the same model on two
+    providers can carry reasoning differently (OpenRouter normalizes
+    reasoning_content -> reasoning; DeepSeek / Z.AI direct return
+    reasoning_content raw). The `forced` flag (whether this model MANDATES
+    reasoning) is a MODEL property, read from the per-model config / template
+    with a slug fallback.
 
-    This is the extension point for models with different reasoning requirements:
-    add a per-model block (or template) instead of a hardcoded slug check."""
+    Returns {"param", "field", "clear_thinking", "forced"}."""
     cfg = (CONFIG_DATA.get("models") or {}).get(model) or {}
-    glm = "glm" in (model or "").strip().lower()
-    param = cfg.get("reasoning_param") or ("thinking" if glm else "reasoning")
-    field = cfg.get("reasoning_field") or ("reasoning_content" if glm else "reasoning")
-    clear = cfg.get("clear_thinking")
-    if clear is None:
-        clear = False if glm else None
     forced = cfg.get("reasoning_forced")
     if forced is None:
-        forced = _model_mandates_reasoning(model) or glm
-    return {"param": param, "field": field, "clear_thinking": clear, "forced": forced}
+        forced = _model_mandates_reasoning(model)
+    return {
+        "param": _REASONING_PARAM,
+        "field": _REASONING_FIELD,
+        "clear_thinking": _REASONING_CLEAR,
+        "forced": forced,
+    }
 
 
 def _parse_retry_after(headers) -> Optional[float]:
