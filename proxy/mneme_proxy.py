@@ -89,6 +89,7 @@ from mneme.grading import (
     _verify_and_regrade,
 )
 import mneme.tools as mntools
+import mneme.models_dev as models_dev
 import mneme.secrets_store as secrets_store
 import mneme.curation as curation
 import mneme.templates as _templates
@@ -398,6 +399,15 @@ def _resolve_provider():
         # hand-written config block still resolves its base_url + key_env.
         _cat = PROVIDER_CATALOG[name]
         prov = {"base_url": _cat.get("base_url", ""), "api_key_env": _cat.get("key_env", "")}
+    if not prov:
+        # models.dev fallback: any OpenAI-compatible provider in the registry
+        # resolves base_url + key_env without a hand-written catalog entry. The
+        # reasoning wire contract defaults to reasoning/reasoning, which is correct
+        # for these providers (only deepseek/zai/... deviate, and they are in the
+        # catalog above).
+        _md_base = models_dev.base_url(name)
+        if _md_base:
+            prov = {"base_url": _md_base, "api_key_env": models_dev.key_env(name)}
     if not prov:
         return  # providers not configured — rely on env vars directly (back-compat)
 
