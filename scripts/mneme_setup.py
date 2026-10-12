@@ -48,7 +48,7 @@ OR_DEFAULT_LABEL = "meta-llama/llama-3.2-3b-instruct"  # non-thinking
 
 # Ollama defaults (local)
 OL_DEFAULT_EMBED = "qwen3-embedding:8b"   # 1024-dim (MRL-truncatable)
-OL_DEFAULT_LABEL = "qwen2.5:1.5b"              # small non-thinking labeler (better labels than 0.5b)
+OL_DEFAULT_LABEL = "llama3.2:3b"               # small non-thinking labeler; same model as the hosted default (meta-llama/llama-3.2-3b-instruct), so a local + hosted proxy share one labeler (like the embedder)
 
 # Hosted OpenAI-compatible providers (mirrors the proxy's PROVIDER_CATALOG). All
 # speak the same wire format — only base_url + key_env + model ids differ. Order
