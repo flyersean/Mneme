@@ -220,17 +220,26 @@ let cmEditor = null;
 function initYamlEditor() {
   const ta = document.getElementById('cfg_file');
   if (!ta) return;
-  cmEditor = CodeMirror.fromTextArea(ta, {
-    lineNumbers: true,
-    mode: 'yaml',
-    indentUnit: 2,
-    indentWithTabs: false,
-    tabSize: 2,
-    lineWrapping: false,
-  });
-  cmEditor.on('change', validateYaml);
-  validateYaml();
-  addResizeHandle();
+  cmEditor = null;
+  // Create the editor only after the modal is visible and laid out:
+  // CodeMirror measures font metrics at construction time, and measuring
+  // inside a just-shown (not yet laid out) container yields wrong char
+  // widths/line heights, which makes the cursor jump around.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!document.getElementById('cfgModal').classList.contains('open')) return;
+    cmEditor = CodeMirror.fromTextArea(ta, {
+      lineNumbers: true,
+      mode: 'yaml',
+      indentUnit: 2,
+      indentWithTabs: false,
+      tabSize: 2,
+      lineWrapping: false,
+    });
+    cmEditor.on('change', validateYaml);
+    validateYaml();
+    addResizeHandle();
+    cmEditor.refresh();
+  }));
 }
 
 function addResizeHandle() {

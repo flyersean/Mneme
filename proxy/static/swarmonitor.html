@@ -109,7 +109,8 @@
   // ── State ──────────────────────────────────────────────────────────────
   const tabs = [];          // { id, path, name, content, cm, dirty }
   let activeTabId = null;
-  let cmEditor = null;      // CodeMirror instance for the ACTIVE tab
+  let cmEditor = null;
+  let editorGen = 0;      // CodeMirror instance for the ACTIVE tab
   let autoReloadTimer = null;
   let lastReloaded = {};    // id -> last content hash for auto-reload change detection
   let seq = 0;
@@ -272,19 +273,29 @@
     const ta = document.getElementById('cmTextarea');
     ta.value = tab.content || '';
     const mode = modeFor(tab.path);
-    cmEditor = CodeMirror.fromTextArea(ta, {
-      lineNumbers: true,
-      mode: mode,
-      indentUnit: 2,
-      indentWithTabs: false,
-      tabSize: 2,
-      lineWrapping: false
-    });
-    cmEditor.on('change', () => {
-      const t = tabs.find((x) => x.id === activeTabId);
-      if (t) t.dirty = true;
-    });
-    requestAnimationFrame(() => requestAnimationFrame(() => { if (cmEditor) cmEditor.refresh(); }));
+    cmEditor = null;
+    // Create the editor only after the new textarea is laid out: CodeMirror
+    // measures font metrics at construction time, and measuring a node that
+    // was just inserted yields wrong char widths/line heights, which makes
+    // the cursor jump around. The generation counter drops stale creations
+    // if the user switches tabs before the deferred init runs.
+    const gen = ++editorGen;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (gen !== editorGen || !document.getElementById('cmTextarea')) return;
+      cmEditor = CodeMirror.fromTextArea(ta, {
+        lineNumbers: true,
+        mode: mode,
+        indentUnit: 2,
+        indentWithTabs: false,
+        tabSize: 2,
+        lineWrapping: false
+      });
+      cmEditor.on('change', () => {
+        const t = tabs.find((x) => x.id === activeTabId);
+        if (t) t.dirty = true;
+      });
+      cmEditor.refresh();
+    }));
   }
 
   function activateTab(id) {
