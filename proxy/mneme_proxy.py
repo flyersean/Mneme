@@ -7267,6 +7267,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
+    _search_rounds = 0   # search_memory calls this turn (grind -> clue-seeking signal)
+    _search_words = {}   # meaningful query word -> count (keyword repetition signal)
+    _clue_nudged = False # one-time "look for clues" nudge sent
     _deferred_nudged = False  # one-time deferred-intent nudge sent
     _seen_sigs = set()   # tool-call signatures seen this turn (a write clears them)
     _redundant = 0       # repeat calls this turn (grinding signal — triggers the hard stop)
@@ -7488,7 +7491,31 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 args = tc["function"].get("arguments", {}) or {}
                 _mark_call("search_memory", args)
                 _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
+                # Track search_memory queries for the grind -> clue-seeking signal.
+                # read_chunk / list_chunks ARE the clue-seeking actions, so they
+                # don't count toward the grind.
+                if tc["function"].get("name") == "search_memory":
+                    _search_rounds += 1
+                    _q = (args.get("query") or "").strip()
+                    for _w in _q.split():
+                        _w = _w.strip().strip(".,!?;:\"'()[]").lower()
+                        if len(_w) >= 3 and _w not in _KEYWORD_STOPWORDS:
+                            _search_words[_w] = _search_words.get(_w, 0) + 1
             followup.append({"role": "user", "content": "search_memory results:\n" + _truncate_tool_result(tool_result)})
+            # Anti-grind -> clue-seeking nudge. Keyword grinding is legitimate while
+            # it works (the fact may be keyword-searchable), so allow several
+            # searches. But once the model has run a handful with no answer, or the
+            # same keyword keeps recurring, prompt it to switch from searching to
+            # scanning labels (list_chunks) and reading chunks in full (read_chunk).
+            if not _clue_nudged and (_search_rounds >= 6 or any(c >= 3 for c in _search_words.values())):
+                _clue_nudged = True
+                followup.append({"role": "user", "content":
+                    "You've run several keyword searches without a clear answer. "
+                    "Switch from searching to looking for clues: call list_chunks() to "
+                    "scan recent chunk labels for a relevant thread, then read_chunk() "
+                    "a promising chunk in full \u2014 the fact may be buried in a chunk "
+                    "whose label is about something else."})
+                print(f"  [CLUE-NUDGE] {_search_rounds} searches, keyword repetition={any(c >= 3 for c in _search_words.values())} \u2014 prompting clue-seeking", flush=True)
 
         # Registry tools (list_tools/read_tool/read_image): user-message feedback.
         # Execute the read-only tools CONCURRENTLY — they're independent (the model
