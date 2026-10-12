@@ -985,12 +985,10 @@ backend:
   provider: @@BPROV@@      # which `providers:` entry to use (ignored when type=ollama)
   ollama_url: http://localhost:11434   # used only when type=ollama
 
-# The chat / embed / label models — authoritative for BOTH backends. The proxy
-# reads these directly (mapped to MNEME_MODEL / EMBED_MODEL / LABEL_MODEL), so
-# editing them here is enough: the generated start script clears the inherited
-# model env vars instead of exporting them, letting these keys win. This is the
-# single source of truth for model identity; the providers.openrouter.* copies
-# below remain for the OpenRouter request path.
+# The chat model is authoritative from the ACTIVE provider's block
+# (providers.<name>.model — OpenCode-style nesting). The top-level `model:` below
+# is a legacy fallback. The embed/label models stay top-level and follow
+# embed_provider / label_provider.
 model: "@@MAIN@@"
 embed_model: "@@EMBED@@"
 label_model: "@@LABEL@@"
@@ -1016,6 +1014,10 @@ providers:
     fallback_models: ["google/gemini-2.5-flash"]   # OpenRouter failover (ignored by other providers)
     provider: {{}}            # OpenRouter provider prefs (e.g. preferred_max_latency)
     stream: true             # false = let OpenRouter buffer + fail over
+    # Reasoning wire contract (PROVIDER property) is auto-applied from the built-in
+    # catalog: OpenRouter -> reasoning/reasoning; DeepSeek / Z.AI direct ->
+    # reasoning_content + thinking. To override, add `reasoning_field` /
+    # `reasoning_param` / `effort_map` here.
 
 # Default generation settings. A selected model_template WINS over these; the
 # per-model overrides under `models:` beat both. Keys the template supplies are
