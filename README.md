@@ -6,7 +6,9 @@
 OpenAI-compatible client and a model backend, archives conversations into searchable
 memory, retrieves the relevant parts back into later turns, and gives the model a
 persistent tool layer. It runs against **local Ollama models** or any **hosted
-OpenAI-compatible provider** (OpenRouter, OpenAI, DeepSeek, Groq, …). Point Pi,
+OpenAI-compatible provider** (OpenRouter, OpenAI, DeepSeek, Groq, … — plus any
+of the 200+ providers in the [models.dev](https://models.dev) registry, whose base
+URL and key env var resolve automatically). Point Pi,
 Open WebUI, a script, or any OpenAI-compatible app at it.
 
 ```text
@@ -209,11 +211,13 @@ out, suspect the proxy's config before the model. Opt back in with
 `MNEME_REASONING_ENABLED=1`.
 
 **Model templates** package known-good settings (sampling, thinking mode, output caps,
-per-model overrides, and optional corrected Modelfiles) so you select them at setup
-instead of rediscovering them. See [`model_templates.yaml`](model_templates.yaml). Switching models? Read
-[docs/model-switching.md](docs/model-switching.md) first — a model switch that leaves the
-old model's template/penalties in place is the #1 cause of word-salad and early-stop
-failures, and it's a 3-line fix once you know the checklist.
+per-model overrides, and optional corrected Modelfiles) — but they are **optional**. A
+model switch automatically clears any active template and falls back to built-in
+defaults, so you only pick a template for a model that needs specific settings (e.g.
+Muse on Ollama). Provider *settings* (base URL, key, and the reasoning wire format —
+which field/param a provider uses) are a separate layer, resolved from the models.dev
+registry and a small per-provider override map, never from the template. See
+[`model_templates.yaml`](model_templates.yaml) and [docs/model-switching.md](docs/model-switching.md).
 
 ## Decision models (classifier layer)
 
@@ -255,8 +259,9 @@ line at startup showing the final value of every setting.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `backend.type` / `backend.provider` | `openai` / `openrouter` | which backend + which `providers:` entry |
-| `model` | *(blank)* | chat model — pick one in the chat page's model picker (persisted to `model:`) |
+| `backend.type` / `backend.provider` | `openai` / `openrouter` | which backend + which `providers:` entry — any models.dev provider resolves base URL + key automatically |
+| `providers.<name>.model` | *(blank)* | chat model, nested under the active provider (authoritative; the top-level `model:` is a legacy fallback) |
+| `model_template` | *(none)* | optional template — blank = built-in defaults (runs most models) |
 | `providers.<name>.embed_model` | `qwen/qwen3-embedding-8b` | embedding model (1024-dim) |
 | `providers.<name>.label_model` | `meta-llama/llama-3.2-3b-instruct` | topic-labeling model (non-thinking) |
 | `sampling.temperature` | `0.2` | creativity — lower is more deterministic |
@@ -393,14 +398,15 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
 
 | Path | What it is |
 |---|---|
-| `proxy/` | The proxy — `mneme_proxy.py` + the `mneme/` modules (tools, curation, templates, chat commands, auth) |
-| `scripts/` | `install.sh` (Linux) + `install_mac.sh` (macOS, untested), `mneme` (start an instance from its dir), `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel) |
+| `proxy/` | The proxy — `mneme_proxy.py` + the `mneme/` modules (tools, curation, templates, models_dev, chat commands, auth) |
+| `scripts/` | `install.sh` (Linux) + `install_mac.sh` (macOS, untested), `mneme` (start an instance from its dir), `mneme_setup.py` (wizard), `mneme_connect.py` (SSH tunnel), `fetch_models_dev.sh` (refresh the models.dev registry) |
 | `extensions/` | HTTP clients: `swarm/`, `pi/`, `gateways/` |
 | `docs/` | Harness guide/spec, model notes, provenance + strategy specs |
 | `tests/` | The deterministic suite |
 | `AGENTS.md` | Instructions *for AI coding agents* — give it to any agent you point at this repo |
 | `mneme.yaml.example` | Annotated reference config — every setting explained |
 | `model_templates.yaml` | Shipped model templates |
+| `models-dev.api.json` | models.dev registry cache (base URLs, context windows, reasoning support) — refresh with `scripts/fetch_models_dev.sh` |
 
 ## Branches
 
