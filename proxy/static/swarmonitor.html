@@ -284,7 +284,7 @@
       const t = tabs.find((x) => x.id === activeTabId);
       if (t) t.dirty = true;
     });
-    setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (cmEditor) cmEditor.refresh(); }));
   }
 
   function activateTab(id) {

@@ -353,7 +353,7 @@ function initCm() {
   cmEditor.on('change', validateCfg);
   validateCfg();
   addResizeHandle();
-  setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (cmEditor) cmEditor.refresh(); }));
 }
 
 function validateCfg() {

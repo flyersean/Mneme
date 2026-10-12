@@ -183,7 +183,7 @@ async function openCfg(name) {
   if (document.getElementById('cfg_file')) {
     initYamlEditor();
     // CodeMirror can't measure inside display:none — re-measure once the modal is laid out.
-    setTimeout(() => { if (cmEditor) cmEditor.refresh(); }, 0);
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (cmEditor) cmEditor.refresh(); }));
   }
 }
 
