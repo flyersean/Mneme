@@ -152,14 +152,47 @@ SEARCH_MEMORY_TOOL = {
     "type": "function",
     "function": {
         "name": "search_memory",
-        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions.",
+        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. To dig for a fact you don't yet know: search, treat the returned chunks (ids + labels + previews) as clues, then read_chunk() a promising one in full or re-search with an exact term you uncovered.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What to search for — be specific"},
+                "query": {"type": "string", "description": "What to search for — be specific. For method='keyword', put the exact word/name/path to match."},
                 "top_k": {"type": "integer", "description": "Number of results (default 5)"},
+                "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only. Leave empty to search all memory."},
+                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact substring match on the query words — use when hunting a specific name, path, or error string."},
             },
             "required": ["query"],
+        },
+    },
+}
+
+READ_CHUNK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_chunk",
+        "description": "Read one memory chunk in full by its chunk_id (the id shown in search_memory results). Use to drill into a promising chunk — a label or preview may hint that its full text holds the fact or name you're after.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_id": {"type": "string", "description": "The chunk id, e.g. 'mem_1234567890123456'"},
+            },
+            "required": ["chunk_id"],
+        },
+    },
+}
+
+LIST_CHUNKS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_chunks",
+        "description": "List recent memory chunks with their topic labels (newest first). Use to scan memory for a thread or clue when you don't have a good query yet — e.g. look for a label about the person, identity, or topic you're investigating.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "How many chunks to list (default 25)"},
+                "keyword": {"type": "string", "description": "Optional — only list chunks whose text contains this word"},
+            },
+            "required": [],
         },
     },
 }
@@ -608,7 +641,7 @@ RETRY_RUN_TOOL = {
 # Registry-write tool (save_tool). Mutates the tools table + canonical dir, so it
 # is NOT in READONLY_SERVER_TOOLS; gated by MNEME_TOOL_SAVE_TOOL (default on).
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
 
 # Curation tools (retract/restore memory). Registered separately because they are
 # gated by their own config flags rather than MNEME_TOOL_<NAME>, and because they
