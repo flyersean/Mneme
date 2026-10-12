@@ -855,7 +855,8 @@ def _reload_sampling_if_changed():
     # models), so a template switch on hot-reload changes the temperature/penalties
     # too — not just the per-model overrides. (The old code only merged `models`,
     # so switching templates left the previous template's sampling in force.)
-    _tpl_name = (data.get("model_template") or "").strip()
+    _mt = data.get("model_template")
+    _tpl_name = _mt.strip() if isinstance(_mt, str) else ""
     if _tpl_name:
         try:
             data = _templates.apply_template(
@@ -1043,12 +1044,13 @@ def _persist_model_template(name: str) -> bool:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             text = f.read()
+        _val = name if name else '""'
         if re.search(r'(?m)^model_template:', text):
-            new_text, n = re.subn(r'(?m)^model_template:\s*.*$', f'model_template: {name}', text, count=1)
+            new_text, n = re.subn(r'(?m)^model_template:\s*.*$', f'model_template: {_val}', text, count=1)
         elif re.search(r'(?m)^model:', text):
-            new_text, n = re.subn(r'(?m)^(model:\s*.*)$', r'\1\nmodel_template: ' + name, text, count=1)
+            new_text, n = re.subn(r'(?m)^(model:\s*.*)$', r'\1\nmodel_template: ' + _val, text, count=1)
         else:
-            new_text = text.rstrip() + f'\nmodel_template: {name}\n'
+            new_text = text.rstrip() + f'\nmodel_template: {_val}\n'
             n = 1
         if n == 0:
             return False
@@ -1660,6 +1662,7 @@ _REASONING_STALE_FLOORS = (
 # budget instead. Slug-anchored, longest-first (same convention as the floors).
 _MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6",
                                "deepseek-v4-pro", "deepseek-pro",
+                               "muse",  # meta/muse-spark-* mandates reasoning (OpenRouter 400s on disabled)
                                "glm")  # "glm" catches glm-latest / glm-5.3-flash / glm-5.x
 
 # Reasoning budget applied to a mandatory-reasoning model when a call asks for
