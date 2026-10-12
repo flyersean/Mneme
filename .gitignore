@@ -25,3 +25,8 @@ scripts/relaunch_effort.sh
 scripts/run_large_input_test.py
 scripts/set_hf.py
 scripts/weather_test.py
+
+# extension dev scratch
+*.bak
+*.bak2
+extensions/swarm/pass1/
