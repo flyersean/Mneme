@@ -92,12 +92,23 @@ providers:
     fallback_models: ["google/gemini-2.5-flash"]
     provider: {}                 # e.g. { preferred_max_latency: { p90: 30 } }
     stream: true                 # true = stream; false = let OR buffer + fail over
+    # Reasoning wire contract — a PROVIDER property, not a model property. The same
+    # model on two providers can carry reasoning differently: OpenRouter normalizes
+    # every upstream model's reasoning to `reasoning` (param=reasoning, field=reasoning
+    # — the OpenAI-style default, so these two lines are optional for OpenRouter).
+    reasoning_field: reasoning
+    reasoning_param: reasoning
   deepseek:
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
     model: deepseek-chat
     embed_model: ""                       # empty -> disable embeddings (reuse another's)
     label_model: meta-llama/llama-3.2-3b-instruct
+    # DeepSeek direct returns reasoning as `reasoning_content` (raw, not normalized)
+    # and takes the `thinking` request param. xhigh/ultra clamp to `max`.
+    reasoning_field: reasoning_content
+    reasoning_param: thinking
+    effort_map: {xhigh: max, ultra: max}
 
 # Default generation settings. Per-model overrides under `models:` beat these.
 sampling:

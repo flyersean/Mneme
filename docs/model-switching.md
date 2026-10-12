@@ -55,13 +55,24 @@ Mneme defaults to `sampling.reasoning_enabled: 0` (thinking OFF) to stop a reaso
 model from runaway-thinking on a trivial ask. **Reasoning models (DeepSeek-V4, GLM-5.3)
 must not have thinking disabled** — that's the early-end-of-turn failure above.
 
-Each model's reasoning behavior is declared in its **template** (not a hardcoded slug
-list). The template keys:
+Reasoning has TWO layers, and they must not be conflated:
 
-- `reasoning_param` — `thinking` (Z.AI GLM) vs `reasoning` (default). The request param.
-- `reasoning_field` — `reasoning_content` (Z.AI) vs `reasoning` (default). The replay field.
-- `clear_thinking` — bool (Z.AI preserved thinking).
-- `reasoning_forced` — bool (the endpoint can't be told "don't think").
+- **Provider settings** (wire contract) — declared on the `providers.<name>` block. How
+  reasoning travels on THAT provider's wire:
+  - `reasoning_field` — the response/replay field (`reasoning` for OpenRouter's normalized
+    output; `reasoning_content` for DeepSeek / Z.AI direct). ONE symmetric field — the
+    proxy reads and echoes back the SAME field.
+  - `reasoning_param` — the request param (`reasoning` default; `thinking` for DeepSeek /
+    Z.AI direct).
+  - `effort_map` — maps your `reasoning_effort` onto the provider's accepted levels (e.g.
+    DeepSeek `xhigh/ultra -> max`, GLM-5.2 `low/medium -> high`).
+  - `clear_thinking` — bool, only for the `thinking` param (Z.AI preserved thinking).
+- **Model settings** — declared in the template (or the `models.<name>` block): sampling
+  (temperature/top_p/penalties), `reasoning_forced` (the model can't be told "don't
+  think"), and `reasoning_effort`.
+
+The same model on two providers keeps the SAME model settings but may need DIFFERENT
+provider settings — that's why the wire contract lives on the provider, not the model.
 
 For a forced model, "reasoning off" becomes a *bounded* budget instead of a disable:
 
