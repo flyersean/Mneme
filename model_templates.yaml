@@ -158,20 +158,17 @@ templates:
   # are completely unaffected.
   glm5.3-loop:
     description: "GLM-5.3 — match OpenCode's working payload: no penalties, forced thinking"
-    notes: "Captured OpenCode 1.19 payload for glm-5.3-flash: NO frequency/presence penalty, NO top_p, and thinking forced on via thinking:{type:enabled,clear_thinking:false}. The old anti-loop penalties (0.7/0.3) fight the model. temperature 0.5 = OpenCode's title-gen value (its main call omits temp)."
+    notes: "Model settings only: temperature 0.5, no frequency/presence penalty, no top_p, reasoning forced on. The thinking wire shape (thinking:{type:enabled,clear_thinking:false}) is a PROVIDER property, configured under the providers.<name> block, not here."
     sampling:
       temperature: 0.5
     models:
       "{model}":
         temperature: 0.5
-        reasoning_param: thinking
-        reasoning_field: reasoning_content
-        clear_thinking: false
         reasoning_forced: true
 
   deepseek-v4:
     description: "DeepSeek V4 (Pro/Flash) — reasoning model; its own API defaults"
-    notes: "DeepSeek V4 transport (mirrors Hermes): thinking:{type:enabled} + reasoning_content echoed back on every assistant tool-call message. temperature 1.0, top_p 1.0, no frequency/presence penalty. The GLM anti-loop penalties (frequency 0.7 / presence 0.3) deliberately do NOT apply here."
+    notes: "Model settings only: temperature 1.0, top_p 1.0, no frequency/presence penalty, reasoning forced on. The reasoning wire transport (thinking vs reasoning_content) is a PROVIDER property, configured under the providers.<name> block, not here."
     sampling:
       temperature: 1.0
       top_p: 1.0
@@ -179,6 +176,4 @@ templates:
       "{model}":
         temperature: 1.0
         top_p: 1.0
-        reasoning_param: thinking
-        reasoning_field: reasoning_content
         reasoning_forced: true
