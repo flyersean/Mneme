@@ -244,6 +244,7 @@ _CONFIG_ENV_MAP = {
     "tools.inspect_run": "MNEME_TOOL_INSPECT_RUN",
     "tools.start_run": "MNEME_TOOL_START_RUN",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
+    "runtime.local_only": "MNEME_LOCAL_ONLY",
     # Agent harness (durable runs) — see docs/harness/.
     "harness.enabled": "MNEME_HARNESS",
     "harness.db_path": "MNEME_HARNESS_DB",
@@ -754,6 +755,7 @@ IMAGE_GC_INTERVAL = int(os.environ.get("MNEME_IMAGE_GC_INTERVAL", "1800"))
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. Code default is "1" (conservative); the setup wizard writes the branch-appropriate storage.memory_only into the config — agent-harness -> false (full build), main -> true (memory-only) — and that config value overrides this default.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
+LOCAL_ONLY = os.environ.get("MNEME_LOCAL_ONLY", "0") == "1"  # "1" = run fully local: skip the OpenRouter Decisions API (classifier) and default the label model to the chat model. Harness judges fail-open without it.
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
 
 # ── Memory curation flags ────────────────────────────────────────────────
@@ -4098,7 +4100,7 @@ def _clean_content(text: str) -> str:
     return text
 
 
-LABEL_MODEL = os.environ.get("LABEL_MODEL", "meta-llama/llama-3.2-3b-instruct")
+LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -8149,6 +8151,8 @@ def _jev_noul_verdict(state: dict, name: str, question: dict, timeout: int = 10)
     (bool, why) verdict. Rejects only when Jev is CONFIDENT the answer is no
     (below REJECT_AT); borderline answers are accepted (fail-open) with the
     confidence recorded so the ledger stays visible."""
+    if LOCAL_ONLY:
+        return True, "local-only — accepting (classifier disabled)"
     try:
         r = decide(state, {name: question}, timeout=timeout)
         p = noul_prob(r, name)
@@ -8210,6 +8214,8 @@ def _harness_goal_aligned(state: dict):
              "The step's work and tool calls directly serve the stated goal.",
              "The model has drifted into a sub-task or loop that does not serve the goal "
              "(e.g. endlessly searching for a deleted file it should just recreate).")
+    if LOCAL_ONLY:
+        return True, "local-only — assuming aligned (classifier disabled)"
     try:
         r = decide(state, {"goal_aligned": q}, timeout=10)
         p = noul_prob(r, "goal_aligned")
@@ -8869,6 +8875,8 @@ if FLASK_OK:
         carries a calibrated probability (noul -> yes/no, choice -> one option,
         score -> position on a rubric). Extensions call this to use the classifier
         models without importing the Mneme repo."""
+        if LOCAL_ONLY:
+            return _cors_response({"ok": False, "error": "decision models disabled in local-only mode"}, status=403)
         from mneme.decisions import decide
         data = request.get_json(force=True, silent=True) or {}
         state = data.get("state")

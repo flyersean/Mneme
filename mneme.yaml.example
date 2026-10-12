@@ -361,6 +361,12 @@ runtime:
   # Choose "lock" when you're running an agent that might edit Mneme itself.
   hot_reload: true
 
+  # Run fully local: when true, Mneme never calls the hosted classifier (OpenRouter
+  # Decisions API — Jev/gpt-6-luna) and defaults the label model to the chat model.
+  # The harness judges fail open without the classifier. Set true to run on Ollama
+  # alone; false (default) keeps the classifier layer for stronger verification.
+  local_only: false
+
 # Logging — the proxy owns its own log at $MNEME_CHUNK_DIR/proxy.log (append mode,
 # so re-runs and restarts don't wipe it). `max_entries` caps EVERY log the proxy
 # writes (proxy log, thinking.log, errors.log, extension logs) to the newest N

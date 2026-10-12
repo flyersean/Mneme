@@ -932,7 +932,7 @@ def _template_owned_keys(model_template):
         return set(), {}
 
 
-def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True, model_template="", embed_model=""):
+def _common_yaml(instance_dir, db_path, port, inject, ctx_tokens, memory_only, mcp_servers=None, hot_reload=True, model_template="", embed_model="", local_only="false"):
     reserve, tool = _budget_parts(ctx_tokens)
     _mcp_block = _mcp_yaml(mcp_servers)
     _hot_reload_s = "true" if hot_reload else "false"
@@ -1136,6 +1136,7 @@ models: {{}}
 # Runtime behavior.
 runtime:
   hot_reload: {_hot_reload_s}   # true = config/prompts/swarm_config live-edit (changes apply immediately)
+  local_only: {local_only}      # true = run fully local (no hosted classifier / label models)
                                 # false = LOCKED — changes take effect only after a restart
 
 # Logging — the proxy owns its own per-port log at {instance_dir}/proxy-<port>.log (append mode).
@@ -1147,11 +1148,14 @@ logging:
 """
 
 
-def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider="", embed_backend="", label_backend=""):
+def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider="", embed_backend="", label_backend="", local_only=None):
     """Write mneme.yaml for the chosen backend into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     inject_s = "true" if str(inject) == "1" else "false"
     mo_s = "true" if memory_only else "false"
+    if local_only is None:
+        local_only = (detect_branch(REPO_ROOT) == "agent-harness")
+    lo_s = "true" if local_only else "false"
     if backend == "openrouter":
         btype, bprov = "openai", provider
     else:
@@ -1159,7 +1163,7 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
     # Named `cfg_text`, not `yaml` — a local called `yaml` shadows the imported
     # PyYAML module for the rest of this function, which is a landmine for any
     # later edit that needs yaml.safe_load/dump here.
-    cfg_text = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template, models.get("embed_model", ""))
+    cfg_text = _common_yaml(instance_dir, db_path, port, inject_s, models.get("ctx_size", 64000), mo_s, mcp_servers, hot_reload, model_template, models.get("embed_model", ""), lo_s)
     # json.dumps() escaping is YAML-compatible inside double-quoted scalars, so a
     # custom model id containing a quote/backslash can't produce malformed YAML.
     # EMBED_BACKEND / LABEL_BACKEND pin a role to a transport that DIFFERS from the
