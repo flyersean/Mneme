@@ -2635,6 +2635,10 @@ class CanvasHTTPHandler(BaseHTTPRequestHandler):
                 self._send_error("Expected a JSON object", 400)
                 return
             messages = data.get("messages")
+            if not isinstance(messages, list) or not messages:
+                message = data.get("message")
+                if isinstance(message, str) and message.strip():
+                    messages = [{"role": "user", "content": message}]
             if (not isinstance(messages, list) or not messages or
                     any(not isinstance(msg, dict) or
                         msg.get("role") not in ("system", "user", "assistant", "tool") or
@@ -3073,7 +3077,17 @@ def create_server(workspace_dir, host="0.0.0.0", port=DEFAULT_PORT, proxy_url=No
             self.api_token = os.environ.get("MNEME_API_TOKEN", "")
             super().__init__(*args, **kwargs)
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    class QuietThreadingHTTPServer(ThreadingHTTPServer):
+        """Drop client-disconnect noise: if the client closes the socket
+        before the response finishes writing (e.g. a probe curl hitting its
+        --max-time during a long chat completion), do not print a traceback."""
+        def handle_error(self, request, client_address):
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                return
+            super().handle_error(request, client_address)
+
+    server = QuietThreadingHTTPServer((host, port), Handler)
     return server
 
 
