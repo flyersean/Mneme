@@ -4636,13 +4636,14 @@ SEARCH_MEMORY_TOOL = {
     "type": "function",
     "function": {
         "name": "search_memory",
-        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions.",
+        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. If a normal semantic search comes up empty while digging for an exact name, path, or error string, retry with method='keyword' to match the exact text.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What to search for — be specific"},
                 "top_k": {"type": "integer", "description": "Number of results (default 5)"},
-                "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only (e.g. 'conv_…'). Leave empty to search all memory."}
+                "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only (e.g. 'conv_…'). Leave empty to search all memory."},
+                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact substring match on the query words — use when hunting a specific name, file path, error string, or exact term semantic search would miss."}
             },
             "required": ["query"]
         }
@@ -6642,16 +6643,26 @@ def _execute_search_tool_calls(search_calls):
             print("  [SEARCH-TOOL] empty query — skipped (nudging model)", flush=True)
             continue
         _session = (fn.get("arguments", {}).get("session", "") or "").strip()
-        hits = route_query(q, top_k=k, session=_session)
-        if not hits:
-            # FAISS can't see chunks stored unembedded (pending_embed) — e.g. a
-            # just-chunked large input. Keyword search reads their text straight from
-            # SQLite, so fall back to it instead of "no results", which otherwise makes
-            # a diligent reasoning model grind search → empty.
-            kw = _keyword_search(q, k)
-            if kw:
-                hits = [cid for _, cid in kw]
-                print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
+        _method = (fn.get("arguments", {}).get("method", "auto") or "auto").strip().lower()
+        if _method == "keyword":
+            # Explicit substring search — the model is hunting a specific word,
+            # name, path, or error string that vector similarity would miss.
+            hits = [cid for _, cid in _keyword_search(q, k)]
+            print(f"  [SEARCH-TOOL] keyword '{q[:80]}' -> {len(hits)} hits", flush=True)
+        elif _method == "semantic":
+            # Vector/meaning match only — no keyword fallback.
+            hits = route_query(q, top_k=k, session=_session)
+        else:
+            # auto (default): semantic first, keyword fallback on a miss.
+            hits = route_query(q, top_k=k, session=_session)
+            if not hits:
+                # FAISS can't see chunks stored unembedded (pending_embed) — e.g. a
+                # just-chunked large input. Keyword search reads their text straight
+                # from SQLite, so fall back to it instead of "no results".
+                kw = _keyword_search(q, k)
+                if kw:
+                    hits = [cid for _, cid in kw]
+                    print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
         trace.update(hits)
         if hits:
             lines = ["Search results from Mneme memory:"]
