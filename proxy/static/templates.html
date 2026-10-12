@@ -104,7 +104,7 @@ function setMsg(t, ok) {
 }
 
 async function useTemplate(name) {
-  setMsg('Activating ' + name + '…', true);
+  setMsg('Activating ' + (name || 'default (no template)') + '…', true);
   try {
     const r = await fetch('/templates/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     const j = await r.json();
@@ -122,8 +122,15 @@ async function load() {
   const j = await r.json();
   templates = j.templates || [];
   const rows = document.getElementById('rows');
-  if (!templates.length) { rows.innerHTML = '<tr><td colspan="4">No templates yet.</td></tr>'; return; }
-  rows.innerHTML = templates.map(t => {
+  const anyActive = templates.some(t => t.active);
+  const defaultRow = `<tr>
+    <td><code>(default)</code></td>
+    <td>No template — built-in defaults (runs most models)</td>
+    <td>${anyActive ? '' : '<span class="badge active">active</span>'}</td>
+    <td style="white-space:nowrap;">${anyActive ? `<button class="btn primary" onclick="useTemplate('')">Use default</button>` : ''}</td>
+  </tr>`;
+  if (!templates.length) { rows.innerHTML = defaultRow; return; }
+  rows.innerHTML = defaultRow + templates.map(t => {
     const tags = [];
     tags.push(t.user ? '<span class="badge user">user</span>' : '<span class="badge">shipped</span>');
     if (t.has_modelfile) tags.push('<span class="badge mf">modelfile</span>');

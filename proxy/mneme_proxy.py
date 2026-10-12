@@ -8770,6 +8770,9 @@ if FLASK_OK:
         os.environ["MNEME_PROVIDER"] = name
         _persist_model(model, name)
         _persist_backend_provider(name)
+        if (CONFIG_DATA.get("model_template") or ""):
+            _persist_model_template("")
+            _force_config_reload()
         print(f"  [PROVIDER-ACTIVATE] -> {name}/{model} (backend={MNEME_BACKEND})", flush=True)
         return _cors_response({"ok": True, "provider": name, "model": model, "backend": MNEME_BACKEND})
 
@@ -8786,6 +8789,12 @@ if FLASK_OK:
         MODEL = model
         os.environ["MNEME_MODEL"] = model
         persisted = _persist_model(model, os.environ.get("MNEME_PROVIDER", ""))
+        # Templates are optional and only for models that need specific settings
+        # (e.g. Muse on Ollama). A switch therefore falls back to the default
+        # (no-template) settings rather than carrying a mismatched template over.
+        if (CONFIG_DATA.get("model_template") or ""):
+            _persist_model_template("")
+            _force_config_reload()
         print(f"  [MODEL-SWITCH] -> {model} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "model": model, "persisted": persisted})
 
@@ -9287,7 +9296,13 @@ if FLASK_OK:
         data = request.get_json(force=True, silent=True) or {}
         name = (data.get("name") or "").strip()
         if not name:
-            return _cors_response({"error": "name required"}, status=400)
+            # "No template" — clear the active template and fall back to the built-in
+            # default sampling / per-model slug reasoning (runs most models).
+            if not _persist_model_template(""):
+                return _cors_response({"error": "could not clear model_template"}, status=500)
+            _force_config_reload()
+            return _cors_response({"ok": True, "name": "", "active": "",
+                                   "restart_required": not HOT_RELOAD})
         shipped = _templates.load_templates(_templates.default_templates_path(REPO_ROOT))
         user = _templates.load_templates(USER_TEMPLATES_PATH)
         if name not in shipped and name not in user:
