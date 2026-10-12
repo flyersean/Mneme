@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/static/vendor/codemirror.min.css">
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/theme.js"></script>
 <title>Mneme — Swarm Monitor</title>
@@ -57,7 +56,7 @@
   .tab .close { color:var(--muted); font-size:15px; line-height:1; cursor:pointer; }
   .tab .close:hover { color:var(--red); }
   .editor-host { flex:1; overflow:hidden; padding:8px; display:flex; flex-direction:column; }
-  .editor-host .CodeMirror { flex:1; border:1px solid var(--line); border-radius:7px; font-size:13px; height:100%; }
+  .editor-host .plain-editor { flex:1; }
   .editor-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:14px; border:1px dashed var(--line); border-radius:7px; }
 </style>
 </head>
@@ -96,7 +95,7 @@
     </div>
   </section>
 </main>
-<script src="/static/vendor/codemirror.min.js"></script>
+<script src="/static/vendor/plaineditor.js"></script>
 <script src="/static/vendor/yaml.min.js"></script>
 <script src="/static/vendor/js-yaml.min.js"></script>
 <script>
@@ -110,7 +109,7 @@
   const tabs = [];          // { id, path, name, content, cm, dirty }
   let activeTabId = null;
   let cmEditor = null;
-  let editorGen = 0;      // CodeMirror instance for the ACTIVE tab
+  // (editor is created synchronously on tab switch — no deferred-init guard needed)
   let autoReloadTimer = null;
   let lastReloaded = {};    // id -> last content hash for auto-reload change detection
   let seq = 0;
@@ -261,41 +260,25 @@
   function clearEditor() {
     saveActiveIntoState();
     if (cmEditor) {
-      try { cmEditor.toTextArea(); } catch (e) { /* ignore */ }
+      try { cmEditor.destroy(); } catch (e) { /* ignore */ }
       cmEditor = null;
     }
     editorHost.innerHTML = '<div class="editor-empty" id="editorEmpty">Open a file from the browser to view or edit it.</div>';
   }
 
   function initEditorForTab(tab) {
-    // Replace the placeholder with a fresh textarea, then wrap it in CodeMirror.
+    // Replace the placeholder with a fresh textarea, then wrap it in PlainEditor
+    // (a native textarea + line-number gutter — no font-measurement subsystem,
+    // so the caret cannot drift the way a hidden-measure editor can).
     editorHost.innerHTML = '<textarea id="cmTextarea"></textarea>';
     const ta = document.getElementById('cmTextarea');
     ta.value = tab.content || '';
-    const mode = modeFor(tab.path);
-    cmEditor = null;
-    // Create the editor only after the new textarea is laid out: CodeMirror
-    // measures font metrics at construction time, and measuring a node that
-    // was just inserted yields wrong char widths/line heights, which makes
-    // the cursor jump around. The generation counter drops stale creations
-    // if the user switches tabs before the deferred init runs.
-    const gen = ++editorGen;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (gen !== editorGen || !document.getElementById('cmTextarea')) return;
-      cmEditor = CodeMirror.fromTextArea(ta, {
-        lineNumbers: true,
-        mode: mode,
-        indentUnit: 2,
-        indentWithTabs: false,
-        tabSize: 2,
-        lineWrapping: false
-      });
-      cmEditor.on('change', () => {
-        const t = tabs.find((x) => x.id === activeTabId);
-        if (t) t.dirty = true;
-      });
-      cmEditor.refresh();
-    }));
+    cmEditor = PlainEditor.create(ta, { tabSize: 2 });
+    cmEditor.on('change', () => {
+      const t = tabs.find((x) => x.id === activeTabId);
+      if (t) t.dirty = true;
+    });
+    cmEditor.refresh();
   }
 
   function activateTab(id) {

@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="/static/vendor/codemirror.min.css">
 <link rel="stylesheet" href="/static/theme.css">
 <script src="/static/theme.js"></script>
 <title>Mneme — Dashboard</title>
@@ -73,7 +72,7 @@
   .terminal { background:var(--code-bg); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; padding:14px 16px; white-space:pre-wrap; word-break:break-all; min-height:280px; max-height:48vh; overflow-y:auto; }
 
   /* ── Per-proxy config editor ── */
-  #cfgModal .CodeMirror { border:1px solid var(--line); border-radius:7px 7px 0 0; font-size:13px; height:60vh; min-height:320px; }
+  #cfgModal .plain-editor { border:1px solid var(--line); border-radius:7px 7px 0 0; font-size:13px; height:60vh; min-height:320px; }
   .modal-overlay.wide .modal { width:min(1040px,94vw); }
   .cm-resize { height:9px; cursor:ns-resize; background:var(--panel); border:1px solid var(--line); border-top:none; border-radius:0 0 7px 7px; }
   .cm-resize:hover { background:var(--accent-soft); }
@@ -159,7 +158,7 @@
     </div>
     <div class="modal-body">
       <div class="editor-toolbar">
-        <button id="cfgFormat">Format</button>
+        <button id="cfgFormat">Check</button>
         <span class="editor-status" id="cfgStatus"></span>
       </div>
       <div class="cfg-note" id="cfgNote"></div>
@@ -172,7 +171,7 @@
   </div>
 </div>
 
-<script src="/static/vendor/codemirror.min.js"></script>
+<script src="/static/vendor/plaineditor.js"></script>
 <script src="/static/vendor/yaml.min.js"></script>
 <script src="/static/vendor/js-yaml.min.js"></script>
 <script>
@@ -345,32 +344,39 @@ async function openConfig(port) {
 }
 
 function initCm() {
-  if (cmEditor) { cmEditor.toTextArea(); cmEditor = null; }
+  if (cmEditor) { cmEditor.destroy(); cmEditor = null; }
   const ta = document.getElementById('cfgFile');
-  // Create the editor only after the modal is visible and laid out:
-  // CodeMirror measures font metrics at construction time, and measuring
-  // inside a just-shown (not yet laid out) container yields wrong char
-  // widths/line heights, which makes the cursor jump around.
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (!document.getElementById('cfgModal').classList.contains('open')) return;
-    cmEditor = CodeMirror.fromTextArea(ta, {
-      lineNumbers: true, mode: 'yaml', indentUnit: 2, indentWithTabs: false, tabSize: 2, lineWrapping: false
-    });
-    cmEditor.on('change', validateCfg);
-    validateCfg();
-    addResizeHandle();
-    cmEditor.refresh();
-  }));
+  // PlainEditor wraps the textarea in a native <textarea> + line-number gutter.
+  // Native textareas have no hidden measure element, so the caret always sits
+  // where the user clicked — it cannot jump or land at the wrong column.
+  cmEditor = PlainEditor.create(ta, { tabSize: 2 });
+  cmEditor.on('change', validateCfg);
+  validateCfg();
+  addResizeHandle();
+  cmEditor.refresh();
 }
 
 function validateCfg() {
   const st = document.getElementById('cfgStatus');
-  try { jsyaml.load(cmEditor.getValue()); st.textContent = '✓ valid YAML'; st.className = 'editor-status ok'; }
-  catch (e) { st.textContent = '✗ ' + e.message; st.className = 'editor-status err'; }
+  try {
+    jsyaml.load(cmEditor.getValue());
+    st.textContent = '✓ Pass — valid YAML';
+    st.className = 'editor-status ok';
+    cmEditor.setErrorLine(0);
+  } catch (e) {
+    const line = (e.mark && e.mark.line != null) ? e.mark.line + 1 : 0;
+    const col = (e.mark && e.mark.column != null) ? e.mark.column + 1 : 0;
+    const reason = e.reason || e.message || 'invalid YAML';
+    let msg = '✗ ' + reason;
+    if (line) { msg += ' — line ' + line; if (col) msg += ', col ' + col; }
+    st.textContent = msg;
+    st.className = 'editor-status err';
+    cmEditor.setErrorLine(line);
+  }
 }
 
 function addResizeHandle() {
-  const cm = document.querySelector('#cfgModal .CodeMirror');
+  const cm = document.querySelector('#cfgModal .plain-editor');
   if (!cm) return;
   document.querySelectorAll('#cfgModal .cm-resize').forEach(h => h.remove());
   const handle = document.createElement('div');
@@ -386,7 +392,10 @@ function addResizeHandle() {
   });
 }
 
-function closeCfg() { document.getElementById('cfgModal').classList.remove('open'); }
+function closeCfg() {
+  document.getElementById('cfgModal').classList.remove('open');
+  if (cmEditor) { cmEditor.destroy(); cmEditor = null; }
+}
 
 async function saveConfig() {
   const content = cmEditor ? cmEditor.getValue() : document.getElementById('cfgFile').value;
@@ -406,8 +415,9 @@ document.getElementById('cfgCancel').addEventListener('click', closeCfg);
 document.getElementById('cfgSave').addEventListener('click', saveConfig);
 document.getElementById('cfgFormat').addEventListener('click', () => {
   if (!cmEditor) return;
-  try { cmEditor.setValue(jsyaml.dump(jsyaml.load(cmEditor.getValue()), { indent: 2 })); }
-  catch (e) { alert('Cannot format: ' + e.message); }
+  // Parse-only check: never mutates the buffer (the old Format button
+  // rewrote the file via jsyaml.dump, which dropped comments).
+  validateCfg();
 });
 document.getElementById('cfgModal').addEventListener('click', (e) => { if (e.target === document.getElementById('cfgModal')) closeCfg(); });
 
