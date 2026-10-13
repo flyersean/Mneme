@@ -2424,11 +2424,17 @@ def _cosine_search(query_vec: np.ndarray, top_k: int, threshold: float):
                     if i >= 0 and float(s) >= threshold]
         return []
 
-def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
-    """SQLite LIKE keyword fallback when FAISS is sparse.
-    
-    Splits query into words, searches messages column for each,
-    deduplicates, returns [(0.0, chunk_id), ...] ordered by recency.
+def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: bool = False):
+    """SQLite LIKE keyword search.
+
+    Default (by_match=False): split into words, search each, dedupe, ordered by
+    recency (newest first) — the auto-fallback path where fresh context wins.
+
+    by_match=True (explicit keyword digging): match-count ordering — chunks
+    matching MORE query words rank first, recency only as a tiebreaker, and the
+    per-word recency LIMIT is dropped so an old chunk is not truncated out. For a
+    single word there is no relevance gradient, so this returns every match up to
+    a generous cap and lets read_chunk narrow it down.
     """
     if not query or not query.strip():
         return []
@@ -2437,24 +2443,46 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None):
     if not words:
         return []
     exclude_ids = exclude_ids if exclude_ids is not None else set()
-    seen = set()
-    results = []
-    # Search each word, collect matching chunk_ids
+    if not by_match:
+        seen = set()
+        results = []
+        # Search each word, collect matching chunk_ids (newest first)
+        for word in words:
+            pattern = f"%{word}%"
+            rows = db.execute(
+                "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
+                (pattern, top_k * 2)
+            ).fetchall()
+            for (cid,) in rows:
+                if cid not in seen and cid not in exclude_ids:
+                    seen.add(cid)
+                    results.append((0.0, cid))  # score 0.0 = keyword match, no semantic score
+                if len(results) >= top_k:
+                    break
+            if len(results) >= top_k:
+                break
+        return results[:top_k]
+    # by_match: count word matches per chunk, rank by match count desc then
+    # recency desc. No per-word LIMIT — every match is considered so an old
+    # chunk survives instead of being truncated by recency.
+    match_counts = {}
+    recency = {}
     for word in words:
         pattern = f"%{word}%"
         rows = db.execute(
-            "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
-            (pattern, top_k * 2)
+            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ?",
+            (pattern,)
         ).fetchall()
-        for (cid,) in rows:
-            if cid not in seen and cid not in exclude_ids:
-                seen.add(cid)
-                results.append((0.0, cid))  # score 0.0 = keyword match, no semantic score
-            if len(results) >= top_k:
-                break
-        if len(results) >= top_k:
-            break
-    return results[:top_k]
+        for cid, created in rows:
+            if cid in exclude_ids:
+                continue
+            match_counts[cid] = match_counts.get(cid, 0) + 1
+            recency[cid] = created or ""
+    ranked = sorted(match_counts.keys(),
+                    key=lambda cid: (-match_counts[cid], recency.get(cid, "")),
+                    reverse=False)  # match-count desc, then OLDEST first (invert recency bias)
+    cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
+    return [(0.0, cid) for cid in ranked[:cap]]
 
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
     """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
@@ -6674,7 +6702,9 @@ def _execute_search_tool_calls(search_calls):
         if _method == "keyword":
             # Explicit substring search — the model is hunting a specific word,
             # name, path, or error string that vector similarity would miss.
-            hits = [cid for _, cid in _keyword_search(q, k)]
+            # by_match=True drops the recency bias: old chunks matching the word
+            # are kept and ranked by match count, so a buried fact is not cut off.
+            hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
             print(f"  [SEARCH-TOOL] keyword '{q[:80]}' -> {len(hits)} hits", flush=True)
         elif _method == "semantic":
             # Vector/meaning match only — no keyword fallback.
@@ -7496,9 +7526,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     "You've run several keyword searches without a clear answer. "
                     "Switch from searching to looking for clues: call list_chunks() to "
                     "scan recent chunk labels for a relevant thread, then read_chunk() "
-                    "a promising chunk in full \u2014 the fact may be buried in a chunk "
+                    "a promising chunk in full — the fact may be buried in a chunk "
                     "whose label is about something else."})
-                print(f"  [CLUE-NUDGE] {_search_rounds} searches, keyword repetition={any(c >= 3 for c in _search_words.values())} \u2014 prompting clue-seeking", flush=True)
+                print(f"  [CLUE-NUDGE] {_search_rounds} searches, keyword repetition={any(c >= 3 for c in _search_words.values())} — prompting clue-seeking", flush=True)
 
         # Registry tools (list_tools/read_tool/read_image): user-message feedback.
         # Execute the read-only tools CONCURRENTLY — they're independent (the model
