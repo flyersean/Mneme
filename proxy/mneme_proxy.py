@@ -4630,23 +4630,6 @@ def _chunk_large_messages(msgs: list) -> list:
             modified.append(m)
     return modified
 
-SEARCH_MEMORY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "search_memory",
-        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. If a normal semantic search comes up empty while digging for an exact name, path, or error string, retry with method='keyword' to match the exact text.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "What to search for — be specific"},
-                "top_k": {"type": "integer", "description": "Number of results (default 5)"},
-                "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only (e.g. 'conv_…'). Leave empty to search all memory."},
-                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact substring match on the query words — use when hunting a specific name, file path, error string, or exact term semantic search would miss."}
-            },
-            "required": ["query"]
-        }
-    }
-}
 MAX_SIBLINGS        = int(os.environ.get("MNEME_MAX_SIBLINGS", "3"))      # max chunks per topic (was 5 — caps sibling blowup)
 MAX_CHUNK_WORDS     = int(os.environ.get("MNEME_MAX_CHUNK_WORDS", "500"))    # split user messages longer than this
 
