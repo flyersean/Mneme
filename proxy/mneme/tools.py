@@ -121,6 +121,7 @@ embed = None       # callable: str -> np.ndarray (normalized) | None
 ledger = None      # bound by mneme_proxy at harness startup (mneme.harness.Ledger | None)
 engine = None      # bound by mneme_proxy at harness startup (mneme.harness.RunEngine | None)
 delete_proxy = None  # bound by mneme_proxy — fn(port) -> status string (delete a proxy instance)
+skills = None      # bound by mneme_proxy — the SkillRegistry (for search_skills)
 
 
 def reload_config():
@@ -658,7 +659,23 @@ RETRY_RUN_TOOL = {
 # Registry-write tool (save_tool). Mutates the tools table + canonical dir, so it
 # is NOT in READONLY_SERVER_TOOLS; gated by MNEME_TOOL_SAVE_TOOL (default on).
 # Read-only server tools that are ALWAYS exposed (never stripped on hard-stop).
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL)
+SEARCH_SKILLS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_skills",
+        "description": "Search the skill library for a reusable how-to procedure relevant to your task and read its full instructions. Skills (e.g. proxy-delegation, swarm-creation) are normally auto-injected when relevant, but this lets you pull one on demand or list them all. Pass a query to find matching skills; omit the query to list every skill name + description.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for (e.g. 'delegate to another proxy', 'build a swarm'). Omit to list all skills."},
+                "top_k": {"type": "integer", "description": "Number of skills to return (default 5)."},
+            },
+        },
+    },
+}
+
+
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL, SEARCH_SKILLS_TOOL)
 
 # Curation tools (retract/restore memory). Registered separately because they are
 # gated by their own config flags rather than MNEME_TOOL_<NAME>, and because they
@@ -1340,6 +1357,33 @@ def _format_run_detail(d):
     return "\n".join(out)
 
 
+def _exec_search_skills(args):
+    """Search the skill library for relevant procedures; return full bodies."""
+    q = (args or {}).get("query") or ""
+    try:
+        k = int((args or {}).get("top_k") or 5)
+    except (TypeError, ValueError):
+        k = 5
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    if not q.strip():
+        all_skills = skills.list()
+        if not all_skills:
+            return "No skills are loaded."
+        return "\n".join(f"[{s['name']}] {s['description']}" for s in all_skills)
+    try:
+        picked = skills.select(q, k=k)
+    except Exception as e:
+        return f"[search_skills error: {type(e).__name__}: {e}]"
+    if not picked:
+        return f"No skills matched '{q}'."
+    parts = []
+    for s in picked:
+        body = (s.get("body") or "").strip()
+        parts.append(f"=== {s['name']} ===\n{s['description']}\n\n{body}")
+    return "\n\n".join(parts)
+
+
 def _exec_inspect_run(args):
     """Inspect the harness run ledger (read-only). No run_id -> list recent runs."""
     if ledger is None:
@@ -1623,6 +1667,8 @@ def execute_readonly_tool(name, args):
         return _exec_restore_memory(args)
     if name == "remove_memory":
         return _exec_remove_memory(args)
+    if name == "search_skills":
+        return _exec_search_skills(args)
     if name == "inspect_run":
         return _exec_inspect_run(args)
     if name == "save_tool":
