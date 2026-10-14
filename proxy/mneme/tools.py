@@ -120,6 +120,7 @@ db = None          # sqlite3.Connection
 embed = None       # callable: str -> np.ndarray (normalized) | None
 ledger = None      # bound by mneme_proxy at harness startup (mneme.harness.Ledger | None)
 engine = None      # bound by mneme_proxy at harness startup (mneme.harness.RunEngine | None)
+delete_proxy = None  # bound by mneme_proxy — fn(port) -> status string (delete a proxy instance)
 
 
 def reload_config():
@@ -546,6 +547,22 @@ DELETE_RUNS_TOOL = {
     },
 }
 
+DELETE_PROXY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_proxy",
+        "description": "Permanently remove a Mneme proxy instance by port: kills its process and deletes its instances/<port>/ folder. Use to clean up delegate/worker proxies you spun up that are no longer needed (zombie proxies). Refuses to delete the proxy you are running on. Irreversible. See /system/status to list running instances and their ports first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "port": {"type": "integer", "description": "The HTTP port of the proxy instance to remove."},
+            },
+            "required": ["port"],
+        },
+    },
+}
+
+
 RESUME_RUN_TOOL = {
     "type": "function",
     "function": {
@@ -801,6 +818,8 @@ def native_exec_names(client_tools):
         out.add("schedule_job")
     if os.environ.get("MNEME_TOOL_DELETE_RUNS", "1") == "1":
         out.add("delete_runs")
+    if os.environ.get("MNEME_TOOL_DELETE_PROXY", "1") == "1":
+        out.add("delete_proxy")
     return out
 
 
@@ -824,9 +843,9 @@ def assemble_tools(client_tools):
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
-                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL}
+                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL}
     for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs"):
+              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -1003,6 +1022,8 @@ def execute_native_tool(name, args):
         return _exec_schedule_job(args)
     if name == "delete_runs":
         return _exec_delete_runs(args)
+    if name == "delete_proxy":
+        return _exec_delete_proxy(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1466,6 +1487,20 @@ def _exec_delete_runs(args):
                 shutil.rmtree(ws.path, ignore_errors=True)
                 ws_deleted += 1
     return f"Deleted {n} run(s)" + (f" and {ws_deleted} workspace(s)" if include_ws else "") + "."
+
+
+def _exec_delete_proxy(args):
+    """Delete a proxy instance by port: kill its process + remove its folder."""
+    port = (args or {}).get("port")
+    if port is None:
+        return "delete_proxy needs a port (the proxy instance's HTTP port)."
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return f"invalid port {port!r} — expected an integer."
+    if delete_proxy is None:
+        return "Proxy deletion is unavailable here (delete_proxy hook not bound)."
+    return delete_proxy(port)
 
 
 def _exec_resume_run(args):
