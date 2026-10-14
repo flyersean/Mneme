@@ -4835,6 +4835,34 @@ def _cap_per_topic(ordered_ids, chunk_cache, cap):
     return out
 
 
+_SKILL_BODY_CAP = 1600  # chars per skill body injected into the chat path
+
+
+def _skills_block(query: str) -> str:
+    """Top-k skills relevant to `query`, formatted as a SKILLS block.
+
+    The harness already uses skills for planning; this surfaces them to the
+    normal chat path too. Reference-only: it tells the model which procedures
+    exist, it does not instruct it to run them. Empty string when the harness is
+    off or no skill is relevant.
+    """
+    if SKILLS is None:
+        return ""
+    try:
+        picked = SKILLS.select(query, k=2)
+    except Exception:
+        return ""
+    if not picked:
+        return ""
+    parts = []
+    for sk in picked:
+        body = (sk.get("body") or "").strip()
+        if len(body) > _SKILL_BODY_CAP:
+            body = body[:_SKILL_BODY_CAP] + "\n...[truncated — see the skill library]"
+        parts.append(f"[skill: {sk['name']}] — {sk['description']}\n{body}")
+    return "=== RELEVANT SKILLS (reference) ===\n" + "\n\n".join(parts)
+
+
 def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
     if not MEMORY_ENABLED:
         return "", "other"  # memory disabled — no retrieval/injection
@@ -7173,7 +7201,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # INTO the user message, separated only by a "---" line, which blurred "current
     # message" vs "injected past context" and made the model echo the embedded
     # user:/assistant: dialogue under load.)
-    _tail_parts = [p for p in (context, dynamic_tail) if (p or "").strip()]
+    _tail_parts = [p for p in (context, _skills_block(user_msg), dynamic_tail) if (p or "").strip()]
     tail = "\n\n".join(_tail_parts)
     if tail.strip():
         # Guard against double-injection: if a system message already carries the
@@ -8239,6 +8267,7 @@ def _reset_memory():
 # their own ledger file beside the shared memory DB, so every proxy sharing the
 # DB directory sees every run. See docs/harness/.
 HARNESS = None
+SKILLS = None  # skills registry, surfaced to the chat path (set in _init_harness)
 
 
 from mneme.decisions import decide, noul, noul_prob, ACCEPT_AT, REJECT_AT
@@ -8366,7 +8395,7 @@ def _harness_command(text: str):
 
 
 def _init_harness():
-    global HARNESS
+    global HARNESS, SKILLS
     if os.environ.get("MNEME_HARNESS", "1") != "1":
         print("  [HARNESS] disabled (harness.enabled: false)", flush=True)
         return
@@ -8391,6 +8420,7 @@ def _init_harness():
         # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
                                                 os.path.join(DB_DIR, "skills")])
+        SKILLS = _skills  # surface the same registry to the chat path
         _profiles = ProfileStore(_hledger)
         _evolution = _evo.Evolution(_hledger, appliers={
             "profile": _evo.CallableApplier(
