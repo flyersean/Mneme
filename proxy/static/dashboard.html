@@ -193,7 +193,8 @@ async function loadInstances() {
         : (it.running
             ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
             : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
-      const actions = dash + cfg + lifecycle;
+      const remove = it.self ? '' : `<button class="danger" onclick="removeProxy(${it.port})">Remove</button>`;
+      const actions = dash + cfg + lifecycle + remove;
       rows.insertAdjacentHTML('beforeend',
         `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td>${badge}</td><td>${actions}</td></tr>`);
     }
@@ -205,6 +206,16 @@ async function loadInstances() {
 async function act(action, port) {
   try {
     const r = await fetch('/overview/' + action, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({port})});
+    const j = await r.json();
+    if (j.error) { alert(j.error); }
+    setTimeout(loadInstances, 800);
+  } catch (e) { alert(e.message); }
+}
+
+async function removeProxy(port) {
+  if (!confirm(`Remove the proxy on port ${port}? This kills its process and deletes its config folder — irreversible.`)) return;
+  try {
+    const r = await fetch('/overview/instances/' + port + '/delete', {method:'POST'});
     const j = await r.json();
     if (j.error) { alert(j.error); }
     setTimeout(loadInstances, 800);

@@ -244,6 +244,7 @@ _CONFIG_ENV_MAP = {
     "tools.web_search": "MNEME_TOOL_WEB_SEARCH",
     "tools.inspect_run": "MNEME_TOOL_INSPECT_RUN",
     "tools.start_run": "MNEME_TOOL_START_RUN",
+    "tools.delete_proxy": "MNEME_TOOL_DELETE_PROXY",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     # Agent harness (durable runs) — see docs/harness/.
     "harness.enabled": "MNEME_HARNESS",
@@ -8388,6 +8389,53 @@ def _harness_command(text: str):
         return f"command failed: {type(e).__name__}: {e}"
 
 
+def _delete_proxy_impl(port: int) -> str:
+    """Kill the proxy on `port` and delete its instances/<port>/ folder.
+
+    Refuses to delete self. Returns a human status string. Used by both the
+    delete_proxy tool (bound below) and the /overview/instances/<port>/delete
+    endpoint. Resolves owner PIDs host-side via `ss -ltnp` (the model's own bash
+    runs under bwrap and can't see the pid= column).
+    """
+    import shutil, signal, time as _time
+    port = int(port)
+    if port == PORT:
+        return f"refusing to delete self (this proxy is on port {port})."
+    inst_dir = os.path.join(DB_DIR, "instances", str(port))
+    pids = []
+    try:
+        out = subprocess.run(["ss", "-ltnp"], capture_output=True, text=True, timeout=3).stdout
+        for line in out.splitlines():
+            if not line.startswith("LISTEN"):
+                continue
+            parts = line.split()
+            if len(parts) >= 4 and parts[3].rsplit(":", 1)[-1] == str(port):
+                pids.extend(int(x) for x in re.findall(r"pid=(\d+)", line))
+    except Exception:
+        pass
+    pids = sorted(set(pids))
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    _time.sleep(1)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    deleted = False
+    if os.path.isdir(inst_dir):
+        shutil.rmtree(inst_dir, ignore_errors=True)
+        deleted = True
+    return (f"deleted proxy on port {port}: killed {len(pids)} process(es); "
+            + ("removed instance folder." if deleted else "no instance folder to remove."))
+
+
+mntools.delete_proxy = _delete_proxy_impl  # fn(port) -> status, for the delete_proxy tool
+
+
 def _init_harness():
     global HARNESS, SKILLS
     if os.environ.get("MNEME_HARNESS", "1") != "1":
@@ -9087,6 +9135,12 @@ if FLASK_OK:
                         "running": True, "self": True})
         out.sort(key=lambda d: d["port"])
         return _cors_response({"instances": out, "self_port": PORT})
+
+    @app.route("/overview/instances/<int:port>/delete", methods=["POST"])
+    def overview_instance_delete(port):
+        msg = _delete_proxy_impl(port)
+        print(f"  [DELETE-PROXY] {msg}", flush=True)
+        return _cors_response({"ok": True, "message": msg})
 
     def _port_owner(port):
         """PID(s) owning a listen socket on `port`, resolved host-side via
