@@ -288,6 +288,44 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
             return err
         return _guard(lambda: respond({"skill": reg.restore_version(name, int(_body().get("version") or 0))}))
 
+    @app.route("/skills/<name>/active", methods=["POST"])
+    def harness_skill_set_active(name):
+        reg, err = _skills()
+        if err:
+            return err
+        if reg.get(name) is None:
+            return respond({"error": f"no such skill: {name}"}, 404)
+        a = _body().get("active", True)
+        if isinstance(a, str):
+            active = a.lower() not in ("false", "0", "no", "off")
+        else:
+            active = bool(a)
+        reg.set_active(name, active)
+        return respond({"skill": reg.get(name)})
+
+    @app.route("/skills/<name>", methods=["DELETE"])
+    def harness_skill_delete(name):
+        reg, err = _skills()
+        if err:
+            return err
+        sk = reg.get(name)
+        if sk is None:
+            return respond({"error": f"no such skill: {name}"}, 404)
+        src = sk.get("source") or ""
+        if src.startswith("file:"):
+            path = src[5:]
+            parent = _os.path.dirname(path)
+            # Only remove the on-disk skill dir if it is clearly a skill: the dir is
+            # named after the skill and lives under a skills/ or skill-library/ path.
+            if _os.path.basename(parent) == name and ("/skills/" in path or "/skill-library/" in path):
+                try:
+                    import shutil as _shutil
+                    _shutil.rmtree(parent, ignore_errors=True)
+                except Exception:
+                    pass
+        reg.delete(name)
+        return respond({"deleted": name})
+
     # ── evolution (Phase 6) ──
     def _evo():
         eng, err = _engine()

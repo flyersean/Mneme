@@ -161,7 +161,19 @@ mneme.yaml.example      THE authoritative proxy config (every key + comment)
 mneme_users.yaml.example  gateway users template (username / password_hash / token)
 model_templates.yaml    model templates
 tests/                  unittest suite (NOT pytest): python3 -m unittest tests.test_<name>
-skills/, experiments/   scratch / support
+skills/                 DEFAULT-install skills (loaded automatically at startup via
+                        SkillRegistry.load_dir → REPO_ROOT/skills + <db-dir>/skills).
+                        A few core skills only: skill-creator, find-and-install-skills,
+                        systematic-debugging, verification-before-completion,
+                        swarm-creation.
+skill-library/          OPTIONAL skill library (NOT loaded by default). Organized by
+                        category (engineering/, meta/, …) with CATALOG.md as the manifest
+                        (name/description/license/attribution per skill). Install one on
+                        demand: scripts/install-skill.sh <name> [proxy-port] (copies it
+                        into skills/; port makes it live without a restart). License rule:
+                        MIT/Apache/BSD → port with attribution; proprietary/"all rights
+                        reserved" → self-author, never copy. See skill-library/README.md.
+experiments/            scratch / support
 ```
 
 ## Core concepts (the basics, with links)

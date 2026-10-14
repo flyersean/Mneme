@@ -175,6 +175,14 @@ class SkillRegistry:
         self.ledger._write("UPDATE skills SET active=?, updated_at=? WHERE name=?",
                            (1 if active else 0, now_iso(), name))
 
+    def delete(self, name: str) -> bool:
+        """Hard-delete a skill: remove the row and all of its versions. Returns True if it existed."""
+        if self.get(name) is None:
+            return False
+        self.ledger._write("DELETE FROM skill_versions WHERE name=?", (name,))
+        self.ledger._write("DELETE FROM skills WHERE name=?", (name,))
+        return True
+
     def load_dir(self, path: str) -> List[str]:
         """Load every <dir>/<name>/SKILL.md (a new version only when the file changed)."""
         loaded = []

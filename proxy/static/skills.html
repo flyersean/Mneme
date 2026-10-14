@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/theme.js"></script>
+<title>Mneme — Skill Management</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  header { background: var(--card); border-bottom: 1px solid var(--border); padding: 18px 28px; position: sticky; top: 0; z-index: 10; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; max-width: 900px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 20px 80px; }
+
+  .notice { background: var(--accent-soft); border: 1px solid var(--accent-soft); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--accent); margin-bottom: 18px; }
+  .notice b { font-weight: 600; }
+  .notice.warn { background: var(--warn-soft); border-color: var(--amber-soft); color: var(--amber); }
+
+  .filters { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  .filters-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filters-bar .f.grow { flex: 1 1 auto; }
+  .filters-bar .f.grow input { min-width: 0; width: 100%; }
+  .filters-toggle { white-space: nowrap; }
+  .filters-extra { margin-top: 10px; }
+  .filters-extra.collapsed { display: none; }
+  .frow { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .f { display: flex; flex-direction: column; gap: 4px; }
+  .f label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .f input, .f select {
+    border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px;
+    font-size: 13px; background: var(--panel); color: var(--text); min-width: 130px; font-family: inherit;
+  }
+  .f input:focus, .f select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .f.grow input { min-width: 230px; }
+
+  button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 7px; padding: 8px 13px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  button:hover { background: var(--accent-soft); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); background: var(--panel); }
+  button.danger:hover { background: var(--danger-soft); }
+  button.ok { color: var(--ok); border-color: var(--ok); background: var(--panel); }
+  button.ok:hover { background: var(--ok-soft); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.tiny { padding: 4px 9px; font-size: 12px; }
+
+  .resultbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .count { color: var(--muted); font-size: 13px; }
+  .resultbar .right { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bulkbar { display: none; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--warn-soft); border: 1px solid var(--amber-soft); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: var(--amber); }
+  .bulkbar.on { display: flex; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.inactive { opacity: .55; }
+  tbody tr:hover { background: var(--panel); }
+  .sname { font-weight: 600; }
+  .sver { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .sdesc { max-width: 420px; color: var(--fg); }
+  .tags { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); white-space: nowrap; }
+  .tag.src-file { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .tag.src-user { background: var(--panel); border-color: var(--border); }
+  .tag.src-model { background: var(--warn-soft); border-color: var(--amber-soft); color: var(--warn); }
+  .tag.active { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
+  .tag.off { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+  .stats { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .rowacts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .err { background: var(--danger-soft); border: 1px solid var(--red); color: var(--danger); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; display: none; }
+  .err.on { display: block; }
+
+  /* ── Drawer ── */
+  .drawer-back { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: none; z-index: 40; }
+  .drawer-back.on { display: block; }
+  .drawer { position: fixed; top: 0; right: 0; height: 100%; width: min(720px, 94vw); background: var(--card); border-left: 1px solid var(--border); z-index: 41; transform: translateX(100%); transition: transform .18s ease; overflow-y: auto; }
+  .drawer.on { transform: translateX(0); }
+  .drawer-head { position: sticky; top: 0; background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .drawer-body { padding: 16px 18px 60px; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 5px 12px; font-size: 13px; margin-bottom: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .sect { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 18px 0 8px; }
+  .bodypre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+  .form label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 12px 0 4px; }
+  .form input[type=text], .form textarea {
+    width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
+    font-size: 13px; background: var(--panel); color: var(--text); font-family: inherit;
+  }
+  .form textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; min-height: 220px; resize: vertical; }
+  .form .hint { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .hist-row { border-left: 3px solid var(--border); padding: 5px 0 5px 10px; margin-bottom: 6px; font-size: 13px; }
+
+  @media (max-width: 720px) {
+    .filters { position: sticky; top: 0; z-index: 5; }
+    .filters-bar { gap: 6px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Skill Management <button class="intro-btn" type="button" onclick="toggleIntro('skills-intro')" title="Help" aria-label="Toggle help">?</button></h1>
+  <div class="intro" id="skills-intro">
+    <p>
+      Review, edit and manage Mneme skills. A skill is a named procedure injected
+      as-needed when it matches the current task (top-k by name/description/tags).
+      <b>Deactivate</b> keeps a skill but stops injecting it; <b>delete</b> removes it
+      entirely (from the registry and, for file-backed skills, from disk). <b>Create</b>
+      writes a new skill. Edits create a new version; old versions are kept and can be
+      restored.
+    </p>
+  </div>
+</header>
+<nav class="mneme-nav"></nav>
+
+<main>
+  <div class="notice">
+    <b>Two tiers.</b> The <code>skills/</code> directory is the default install (loaded
+    automatically). The optional library lives in <code>skill-library/</code> — install one
+    with <code>scripts/install-skill.sh &lt;name&gt;</code> to copy it into <code>skills/</code>.
+    Skills shown here are those currently in the registry (default + anything installed).
+  </div>
+  <div class="err" id="err"></div>
+
+  <div class="filters">
+    <div class="filters-bar">
+      <div class="f grow">
+        <input id="search" placeholder="Search skills (name, description, tags)…" autocomplete="off">
+      </div>
+      <button class="primary" id="apply">Search</button>
+      <button type="button" class="filters-toggle" id="ftoggle" onclick="toggleFilters()">Filters ▾</button>
+    </div>
+    <div class="filters-extra" id="fextra">
+      <div class="frow">
+        <div class="f">
+          <label for="active">State</label>
+          <select id="active">
+            <option value="">All</option>
+            <option value="1">Active only</option>
+            <option value="0">Inactive only</option>
+          </select>
+        </div>
+        <div class="f">
+          <label for="source">Source</label>
+          <select id="source"><option value="">Any</option></select>
+        </div>
+        <div class="f">
+          <label for="order">Sort</label>
+          <select id="order">
+            <option value="name">Name</option>
+            <option value="version">Version</option>
+            <option value="uses">Most used</option>
+            <option value="successes">Most successful</option>
+          </select>
+        </div>
+        <div class="f">
+          <button id="clear">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="resultbar">
+    <div class="count" id="count">—</div>
+    <div class="right">
+      <button class="primary" id="newbtn">New skill</button>
+      <button class="tiny" id="selall">Select all</button>
+      <button class="tiny" id="selnone">Clear selection</button>
+    </div>
+  </div>
+
+  <div class="bulkbar" id="bulkbar">
+    <span id="bulkcount">0 selected</span>
+    <button class="danger" id="bulkoff">Deactivate selected</button>
+    <button class="danger" id="bulkdel">Delete selected</button>
+    <button id="bulkcancel">Cancel</button>
+  </div>
+
+  <div id="listwrap"></div>
+</main>
+
+<div class="drawer-back" id="back"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div><b id="dtitle">Skill</b><div id="dsub" style="color:var(--muted);font-size:12px"></div></div>
+    <div style="display:flex;gap:8px;" id="dheadacts"></div>
+  </div>
+  <div class="drawer-body" id="dbody"></div>
+</aside>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { skills: [], selected: new Set(), current: null, mode: "view" };
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function showErr(msg) { $("err").textContent = msg; $("err").classList.add("on"); }
+function clearErr() { $("err").classList.remove("on"); }
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let body = {};
+  try { body = await r.json(); } catch (e) { body = {}; }
+  if (!r.ok) throw new Error(body.error || (r.status + " " + r.statusText));
+  return body;
+}
+function srcKind(s) { return String(s || "").split(":")[0]; }
+
+async function loadAll() {
+  clearErr();
+  try {
+    const d = await api("/skills?all=1");
+    state.skills = d.skills || [];
+    fillSources();
+    $("count").textContent = state.skills.length + " skill(s) in registry";
+    render(); updateBulk();
+  } catch (e) {
+    showErr("Could not load skills: " + e.message);
+  }
+}
+
+function fillSources() {
+  const sel = $("source");
+  const cur = sel.value;
+  const kinds = [...new Set(state.skills.map((s) => srcKind(s.source)))].sort();
+  sel.innerHTML = '<option value="">Any</option>';
+  kinds.forEach((k) => {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = k; sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+
+function filtered() {
+  const q = $("search").value.trim().toLowerCase();
+  const active = $("active").value;
+  const source = $("source").value;
+  const order = $("order").value;
+  let list = state.skills.filter((s) => {
+    if (active === "1" && !s.active) return false;
+    if (active === "0" && s.active) return false;
+    if (source && srcKind(s.source) !== source) return false;
+    if (q) {
+      const hay = [s.name, s.description, (s.tags || []).join(" ")].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if (order === "name") list.sort((a, b) => a.name.localeCompare(b.name));
+  else if (order === "version") list.sort((a, b) => (b.version || 0) - (a.version || 0));
+  else if (order === "uses") list.sort((a, b) => (b.uses || 0) - (a.uses || 0));
+  else if (order === "successes") list.sort((a, b) => (b.successes || 0) - (a.successes || 0));
+  return list;
+}
+
+function tagHtml(s) {
+  const t = [];
+  const k = srcKind(s.source);
+  const kcls = k === "file" ? "src-file" : (k === "model" ? "src-model" : "src-user");
+  if (k) t.push(`<span class="tag ${kcls}">${esc(k)}</span>`);
+  t.push(s.active ? '<span class="tag active">active</span>' : '<span class="tag off">inactive</span>');
+  (s.tags || []).slice(0, 6).forEach((x) => t.push(`<span class="tag">${esc(x)}</span>`));
+  return t.join(" ");
+}
+
+function render() {
+  const wrap = $("listwrap");
+  const list = filtered();
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty">No skills match these filters.</div>';
+    return;
+  }
+  const rows = list.map((s) => {
+    const on = state.selected.has(s.name);
+    return `
+      <tr class="${s.active ? "" : "inactive"}">
+        <td><input type="checkbox" data-sel="${esc(s.name)}" ${on ? "checked" : ""}></td>
+        <td>
+          <div class="sname">${esc(s.name)}</div>
+          <div class="sver">v${s.version || 1}</div>
+        </td>
+        <td class="sdesc" title="${esc(s.description)}">${esc(String(s.description || "").slice(0, 160))}</td>
+        <td><div class="tags">${tagHtml(s)}</div></td>
+        <td class="stats">${s.uses || 0} uses<br>${s.successes || 0} ok / ${s.failures || 0} fail</td>
+        <td>
+          <div class="rowacts">
+            <button class="tiny" data-open="${esc(s.name)}">View</button>
+            <button class="tiny" data-edit="${esc(s.name)}">Edit</button>
+            ${s.active
+              ? `<button class="tiny" data-active="${esc(s.name)}" data-to="0">Deactivate</button>`
+              : `<button class="tiny ok" data-active="${esc(s.name)}" data-to="1">Activate</button>`}
+            <button class="tiny danger" data-del="${esc(s.name)}">Delete</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:34px"></th><th>Skill</th><th>Description</th>
+      <th>Tags / state</th><th>Stats</th><th>Actions</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function updateBulk() {
+  const n = state.selected.size;
+  $("bulkbar").classList.toggle("on", n > 0);
+  $("bulkcount").textContent = n + " selected";
+}
+
+async function openDetail(name) {
+  clearErr();
+  try {
+    const d = await api("/skills/" + encodeURIComponent(name));
+    const s = d.skill || {};
+    state.current = s; state.mode = "view";
+    $("dtitle").textContent = s.name || name;
+    $("dsub").textContent = "version " + (s.version || 1) + " · " + (s.active ? "active" : "inactive");
+    $("dheadacts").innerHTML =
+      `<button class="primary" data-edit2="${esc(name)}">Edit</button>
+       <button class="${s.active ? "danger" : "ok"}" data-active2="${esc(name)}" data-to="${s.active ? "0" : "1"}">${s.active ? "Deactivate" : "Activate"}</button>
+       <button class="danger" data-del2="${esc(name)}">Delete</button>
+       <button id="dclose">Close</button>`;
+    $("dbody").innerHTML = `
+      <dl class="kv">
+        <dt>Description</dt><dd>${esc(s.description || "—")}</dd>
+        <dt>Source</dt><dd>${esc(s.source || "—")}</dd>
+        <dt>Created by</dt><dd>${esc(s.created_by || "—")}</dd>
+        <dt>Created</dt><dd>${esc(when(s.created_at))}</dd>
+        <dt>Updated</dt><dd>${esc(when(s.updated_at))}</dd>
+        <dt>Stats</dt><dd>${s.uses || 0} uses · ${s.successes || 0} ok · ${s.failures || 0} fail</dd>
+        <dt>Requires</dt><dd>${(s.requires || []).map(esc).join(", ") || "—"}</dd>
+      </dl>
+      <div class="sect">Body</div>
+      <div class="bodypre">${esc(s.body || "(empty)")}</div>
+      <div class="sect">History</div>
+      <div id="dhist">${historyHtml(d.history || [])}</div>`;
+    $("back").classList.add("on");
+    $("drawer").classList.add("on");
+  } catch (e) {
+    showErr("Could not load skill: " + e.message);
+  }
+}
+
+function historyHtml(hist) {
+  if (!hist || !hist.length) return '<div style="color:var(--muted);font-size:13px">No version history.</div>';
+  return hist.map((h) => `
+    <div class="hist-row">
+      <b>v${h.version}</b> <span style="color:var(--muted)">· ${esc(h.actor || "?")} · ${esc(when(h.created_at))}</span>
+      ${h.reason ? `<div style="color:var(--muted);font-size:12px">${esc(h.reason)}</div>` : ""}
+      <button class="tiny" data-restore="${esc(state.current && state.current.name || "")}" data-ver="${h.version}">Restore</button>
+    </div>`).join("");
+}
+
+function openForm(nameOrNull) {
+  clearErr();
+  const editing = nameOrNull != null;
+  const s = editing ? (state.skills.find((x) => x.name === nameOrNull) || {}) : {};
+  state.mode = editing ? "edit" : "create";
+  $("dtitle").textContent = editing ? ("Edit " + nameOrNull) : "New skill";
+  $("dsub").textContent = editing ? "saves as a new version" : "creates a new skill";
+  $("dheadacts").innerHTML = `<button class="primary" id="fsave">Save</button><button id="dclose">Close</button>`;
+  $("dbody").innerHTML = `
+    <div class="form">
+      <label for="fname">Name (lowercase a-z 0-9 _ . -)</label>
+      <input type="text" id="fname" ${editing ? "disabled" : ""} placeholder="my-skill" value="${esc(s.name || "")}">
+      <label for="fdesc">Description (the retrieval hook — name the trigger and the action)</label>
+      <input type="text" id="fdesc" value="${esc(s.description || "")}">
+      <label for="ftags">Tags (comma-separated)</label>
+      <input type="text" id="ftags" value="${esc((s.tags || []).join(", "))}">
+      <label for="freq">Requires (comma-separated skill names, optional)</label>
+      <input type="text" id="freq" value="${esc((s.requires || []).join(", "))}">
+      <label for="fbody">Body (markdown — numbered steps, pitfalls, verification)</label>
+      <textarea id="fbody"></textarea>
+      <div class="hint">Only name + description are required. Body is loaded into the agent's context when the skill is injected.</div>
+    </div>`;
+  // Load body as text (not innerHTML) to avoid escaping problems.
+  if (editing) {
+    api("/skills/" + encodeURIComponent(nameOrNull)).then((d) => {
+      if (d.skill) $("fbody").value = d.skill.body || "";
+    }).catch((e) => { $("fbody").value = ""; });
+  } else {
+    $("fbody").value = "";
+  }
+  $("back").classList.add("on");
+  $("drawer").classList.add("on");
+}
+
+async function saveForm() {
+  clearErr();
+  const editing = state.mode === "edit";
+  const name = $("fname").value.trim().toLowerCase();
+  const description = $("fdesc").value.trim();
+  const body = $("fbody").value;
+  const tags = $("ftags").value.split(",").map((t) => t.trim()).filter(Boolean);
+  const requires = $("freq").value.split(",").map((t) => t.trim()).filter(Boolean);
+  if (!name) { showErr("Name is required."); return; }
+  if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(name)) { showErr("Invalid name — lowercase letters, digits, _ . - (max 64)."); return; }
+  if (!description) { showErr("Description is required."); return; }
+  try {
+    await api("/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description, body, tags, requires, actor: "user", reason: editing ? "edited in management UI" : "created in management UI" }),
+    });
+    closeDrawer();
+    await loadAll();
+  } catch (e) {
+    showErr("Save failed: " + e.message);
+  }
+}
+
+async function setActive(name, active) {
+  clearErr();
+  try {
+    await api("/skills/" + encodeURIComponent(name) + "/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: !!active }),
+    });
+    await loadAll();
+    if (state.mode === "view" && state.current && state.current.name === name) {
+      openDetail(name);
+    }
+  } catch (e) {
+    showErr("Update failed: " + e.message);
+  }
+}
+
+async function delSkill(name) {
+  clearErr();
+  if (!confirm("Delete skill '" + name + "'? This removes it from the registry and, for file-backed skills, deletes its directory on disk. This cannot be undone.")) return;
+  try {
+    await api("/skills/" + encodeURIComponent(name), { method: "DELETE" });
+    state.selected.delete(name);
+    closeDrawer();
+    await loadAll();
+  } catch (e) {
+    showErr("Delete failed: " + e.message);
+  }
+}
+
+async function restoreVersion(name, version) {
+  clearErr();
+  try {
+    await api("/skills/" + encodeURIComponent(name) + "/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version: Number(version) }),
+    });
+    await openDetail(name);
+  } catch (e) {
+    showErr("Restore failed: " + e.message);
+  }
+}
+
+function closeDrawer() {
+  $("back").classList.remove("on");
+  $("drawer").classList.remove("on");
+  state.current = null;
+}
+
+// ── wiring ──
+$("apply").addEventListener("click", render);
+$("search").addEventListener("keydown", (e) => { if (e.key === "Enter") render(); });
+$("active").addEventListener("change", render);
+$("source").addEventListener("change", render);
+$("order").addEventListener("change", render);
+$("clear").addEventListener("click", () => {
+  $("search").value = ""; $("active").value = ""; $("source").value = ""; $("order").value = "name";
+  render();
+});
+$("newbtn").addEventListener("click", () => openForm(null));
+$("selall").addEventListener("click", () => { filtered().forEach((s) => state.selected.add(s.name)); render(); updateBulk(); });
+$("selnone").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkcancel").addEventListener("click", () => { state.selected.clear(); render(); updateBulk(); });
+$("bulkoff").addEventListener("click", async () => {
+  for (const n of [...state.selected]) await setActive(n, false);
+  state.selected.clear();
+});
+$("bulkdel").addEventListener("click", async () => {
+  if (!confirm("Delete " + state.selected.size + " skill(s)? This cannot be undone.")) return;
+  for (const n of [...state.selected]) await delSkill(n);
+  state.selected.clear();
+});
+$("back").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+$("listwrap").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.open) openDetail(t.dataset.open);
+  else if (t.dataset && t.dataset.edit) openForm(t.dataset.edit);
+  else if (t.dataset && t.dataset.active) setActive(t.dataset.active, t.dataset.to === "1");
+  else if (t.dataset && t.dataset.del) delSkill(t.dataset.del);
+});
+$("listwrap").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset && t.dataset.sel) {
+    if (t.checked) state.selected.add(t.dataset.sel);
+    else state.selected.delete(t.dataset.sel);
+    updateBulk();
+  }
+});
+
+// Drawer action delegation (header buttons + history restore).
+$("drawer").addEventListener("click", async (e) => {
+  const t = e.target;
+  if (t.id === "dclose") { closeDrawer(); return; }
+  if (t.id === "fsave") { saveForm(); return; }
+  if (t.dataset && t.dataset.edit2) { openForm(t.dataset.edit2); return; }
+  if (t.dataset && t.dataset.active2) { setActive(t.dataset.active2, t.dataset.to === "1"); return; }
+  if (t.dataset && t.dataset.del2) { delSkill(t.dataset.del2); return; }
+  if (t.dataset && t.dataset.restore) { restoreVersion(t.dataset.restore, t.dataset.ver); return; }
+});
+
+function toggleFilters() {
+  const extra = $("fextra");
+  extra.classList.toggle("collapsed");
+  $("ftoggle").textContent = extra.classList.contains("collapsed") ? "Filters ▸" : "Filters ▾";
+}
+if (window.innerWidth <= 720) {
+  $("fextra").classList.add("collapsed");
+  $("ftoggle").textContent = "Filters ▸";
+}
+
+loadAll();
+</script>
+</body>
+</html>

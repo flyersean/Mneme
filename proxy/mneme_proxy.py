@@ -8777,6 +8777,18 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"error": "strategies UI not found"}, status=404)
 
+    # ── Skill management (page; the REST API lives in the harness /skills routes) ──
+    _SKILLS_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "skills.html")
+
+    @app.route("/skills/ui", methods=["GET"])
+    def skills_ui():
+        try:
+            with open(_SKILLS_HTML_PATH, "r", encoding="utf-8") as f:
+                return f.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+        except Exception as e:
+            print(f"  [SKILLS-UI][ERR] {str(e)[:100]}", flush=True)
+            return _cors_response({"error": "skills UI not found"}, status=404)
+
     @app.route("/strategies", methods=["GET"])
     def strategies_list():
         try:

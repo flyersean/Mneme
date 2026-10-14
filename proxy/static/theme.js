@@ -73,6 +73,7 @@ document.addEventListener("DOMContentLoaded", function () {
     ["/", "Dashboard"], ["/chat", "Chat"], ["/memory", "Memory"],
     ["/instructions", "Instructions"], ["/templates", "Templates"],
     ["/ollama", "Ollama"], ["/runs/ui", "Runs"], ["/strategies/ui", "Strategies"],
+    ["/skills/ui", "Skills"],
     ["/extensions", "Extensions"], ["/swarmonitor", "Swarm Monitor"],
     ["/tokens", "Tokens"], ["/users", "Users"]
   ];
