@@ -638,7 +638,7 @@ mntools.reload_config()  # tools.py is imported before load_config(); refresh it
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
-mntools.set_scope(model_scope=("/" if YOLO else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
 _apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
@@ -877,7 +877,7 @@ def _reload_sampling_if_changed():
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
-        mntools.set_scope(model_scope=("/" if YOLO else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
     if "debug" in data:
         CONFIG_DATA["debug"] = data.get("debug") or {}
         _apply_thinking_log()
