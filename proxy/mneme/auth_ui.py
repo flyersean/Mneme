@@ -155,6 +155,8 @@ def register(app, get_auth, cors_response):
     def _authorize():
         if request.method == "OPTIONS" or request.path in ("/health", "/system/status"):
             return None
+        if os.environ.get("MNEME_YOLO", "0") == "1":
+            return None  # yolo: auth off
         if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
             return None
         if not get_auth():
