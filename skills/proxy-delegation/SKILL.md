@@ -1,6 +1,6 @@
 ---
 name: proxy-delegation
-description: Delegate a self-contained task to a separate Mneme proxy (a worker) — as a single chat turn or a full harness run — and collect the answer. Use for jobs that are independent, parallelizable, need a different model/config, or should be isolated from your own memory and context. Also covers managing (reuse vs delete) the worker proxies you create.
+description: Delegate a self-contained task to a separate Mneme proxy (a worker) — as a single chat turn or a full harness run — and collect the answer. Use for jobs that are independent, parallelizable, need a different model/config, or should be isolated from your own memory and context. Also covers enumerating and managing (reuse vs delete) the worker proxies you create.
 ---
 
 # Skill: delegating to another proxy
@@ -21,6 +21,22 @@ parallel (one worker each), or a job wanting a different model/config.
 
 `answers.json`: `{"port": 8082, "chat_model": "<model id>"}` (add `chat_backend`,
 `ctx_size` as needed). One port = one worker; never reuse a port for another job.
+
+## Enumerate workers
+
+`GET /system/status` is the source of truth for what proxies exist on this box —
+not `/health`, and not a raw `curl` of each port.
+
+- It returns `instances` with `port`, `running`, `model`, `owner_pid`, `self`.
+- `running: false` means the instance folder still exists but the process is
+  down — created, not deleted. A port that shows up here is a known worker,
+  alive or dead.
+- ⚠ Do NOT probe up/down with `curl -o /dev/null -w %{http_code} <port>/health`:
+  a gateway may forward a dead port's request to a healthy peer and return 200
+  with a chat reply, so a dead port looks alive. Only `instances[].running` (a
+  real probe the proxy itself makes) is trustworthy.
+- The list only covers `instances/` under this proxy's own chunk dir; workers
+  created under a different chunk dir are invisible here. Track what you spawn.
 
 ## Delegate — two modes (the goal must stand alone)
 
@@ -57,10 +73,10 @@ planning and verifying; a chat turn for a quick single-shot question.
 
 A worker keeps running until you kill its process AND delete its folder:
 
-1. Kill the process on that port.
+1. Kill the process on that port (or call the `delete_proxy` tool with the port).
 2. Delete `<chunk_dir>/instances/<port>/`.
 
 Reuse a worker (keep the folder) when you will delegate again soon — faster than
-recreating. Delete it for one-off jobs. If a "delete proxy" button or surface
-exists, prefer it over manual removal; otherwise remove the folder. An orphaned
-proxy on a port is a leftover delegate — clean it up.
+recreating. Delete it for one-off jobs. Prefer the `delete_proxy` tool or the
+dashboard Remove button over manual removal. An orphaned proxy on a port is a
+leftover delegate — clean it up.

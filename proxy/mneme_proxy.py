@@ -245,6 +245,7 @@ _CONFIG_ENV_MAP = {
     "tools.inspect_run": "MNEME_TOOL_INSPECT_RUN",
     "tools.start_run": "MNEME_TOOL_START_RUN",
     "tools.delete_proxy": "MNEME_TOOL_DELETE_PROXY",
+    "tools.search_skills": "MNEME_TOOL_SEARCH_SKILLS",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     "runtime.local_only": "MNEME_LOCAL_ONLY",
     "runtime.yolo": "MNEME_YOLO",
@@ -8497,6 +8498,7 @@ def _init_harness():
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
                                                 os.path.join(DB_DIR, "skills")])
         SKILLS = _skills  # surface the same registry to the chat path
+        mntools.skills = _skills  # and to the search_skills tool
         _profiles = ProfileStore(_hledger)
         _evolution = _evo.Evolution(_hledger, appliers={
             "profile": _evo.CallableApplier(
