@@ -53,6 +53,84 @@ Other endpoints an extension may want:
 
 See the main [README](../README.md#extensions) for the same table with more context.
 
+## Authenticating (API tokens)
+
+A running proxy is either **open** or **guarded**:
+
+- **Open** — no users have been created yet. Every endpoint works with no credential.
+- **Guarded** — at least one user exists. Every request must present a credential or it
+  returns `401`. (`/health` and `/system/status` stay open so an extension can poll
+  readiness without auth.)
+
+The model is deliberately boring: **your extension is a user.** Mneme mints an API token
+for it, and the extension presents that token on every request — exactly the way a
+browser presents its session cookie. There is no login flow and no handshake; the token
+*is* the credential.
+
+### Getting a token
+
+1. **UI (recommended).** Log in to the dashboard, open **Tokens**, enter a label for
+   what the token is for, and press **Generate**. Copy the value — it is shown only once.
+2. **CLI (server-side).** `python3 proxy/mneme/auth.py addtoken -u <username> -l "my-extension"`.
+
+### Presenting the token
+
+Send it as a Bearer header on every request. This is the one canonical mechanism and it
+is identical from every language — set a single HTTP header:
+
+```text
+Authorization: Bearer <token>
+```
+
+The same token is also accepted as `?token=<token>` or a `mneme_token` cookie, and HTTP
+Basic (`username:password`) works too. Use the Bearer header as your default; the others
+exist for clients that cannot set a header.
+
+Treat the token like a password — keep it in the extension's own config or environment,
+never commit it or paste it into chat. Any env-var name works (the swarm uses
+`MNEME_API_TOKEN`); read whatever name your extension uses at startup.
+
+### In any language
+
+Your extension only ever adds a header. Same idea everywhere:
+
+```bash
+curl http://localhost:8080/search?query=... -H "Authorization: Bearer $TOKEN"
+```
+
+```python
+# Python (requests)
+requests.get("http://localhost:8080/list", headers={"Authorization": f"Bearer {TOKEN}"})
+```
+
+```javascript
+// Node (fetch)
+await fetch("http://localhost:8080/list", { headers: { Authorization: `Bearer ${TOKEN}` } })
+```
+
+```go
+// Go (net/http)
+req, _ := http.NewRequest("GET", "http://localhost:8080/list", nil)
+req.Header.Set("Authorization", "Bearer "+token)
+```
+
+### In an `extension.yaml` manifest
+
+If the Extensions page manages your extension, declare the token as a `secret` config
+field and the page injects it as an env var when it runs you:
+
+```yaml
+config:
+  - key: MNEME_API_TOKEN
+    label: API token
+    type: secret
+    required: true
+```
+
+The person who runs it pastes the token from **Tokens**; your extension just reads the
+env var at startup. When the proxy is open (no users), leave the field empty and send no
+header.
+
 ## The included extensions
 
 ### `gateways/` — CLI and Telegram access
