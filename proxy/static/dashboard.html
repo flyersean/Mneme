@@ -43,6 +43,8 @@
   button.stop:hover { border-color:var(--red); }
   button.danger { color:#fff; background:var(--red); border-color:var(--red); font-weight:600; padding:7px 16px; }
   button.danger:hover { background:var(--red); border-color:var(--red); filter:brightness(1.12); }
+  button.x { color:var(--red); border-color:var(--red); font-weight:700; font-size:16px; padding:2px 10px; margin-left:6px; background:transparent; }
+  button.x:hover { background:var(--red); color:#fff; }
 
   .status { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
   .row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); font-size:14px; }
@@ -90,6 +92,7 @@
   <h1>Mneme — Dashboard</h1>
   <div class="toolbar">
     <button class="add-proxy" id="addProxyBtn">＋ Add proxy</button>
+    <button id="yoloBtn" onclick="toggleYolo()">Yolo: off</button>
     <button onclick="loadInstances()">Refresh</button>
     <button id="reloadBtn">Reload config</button>
     <span id="reloadMsg"></span>
@@ -180,6 +183,7 @@ async function loadInstances() {
   try {
     const r = await fetch('/overview/instances');
     const j = await r.json();
+    setYolo(!!j.yolo);
     const list = j.instances || [];
     if (!list.length) { rows.innerHTML = '<tr><td colspan="5">No instances found.</td></tr>'; return; }
     rows.innerHTML = '';
@@ -193,7 +197,7 @@ async function loadInstances() {
         : (it.running
             ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
             : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
-      const remove = it.self ? '' : `<button class="danger" onclick="removeProxy(${it.port})">Remove</button>`;
+      const remove = it.self ? '' : `<button class="x" title="Remove proxy" onclick="removeProxy(${it.port})">×</button>`;
       const actions = dash + cfg + lifecycle + remove;
       rows.insertAdjacentHTML('beforeend',
         `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td>${badge}</td><td>${actions}</td></tr>`);
@@ -209,6 +213,23 @@ async function act(action, port) {
     const j = await r.json();
     if (j.error) { alert(j.error); }
     setTimeout(loadInstances, 800);
+  } catch (e) { alert(e.message); }
+}
+
+function setYolo(on) {
+  const b = document.getElementById('yoloBtn');
+  if (!b) return;
+  b.textContent = on ? 'Yolo: ON' : 'Yolo: off';
+  b.className = on ? 'danger' : '';
+}
+async function toggleYolo() {
+  const b = document.getElementById('yoloBtn');
+  const on = b && b.textContent.indexOf('ON') !== -1;
+  if (!on && !confirm('Enable YOLO? Auth turns off, the filesystem opens up, and every tool turns on. Only do this behind a tunnel/firewall.')) return;
+  try {
+    const r = await fetch('/overview/yolo', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: !on})});
+    const j = await r.json();
+    setYolo(!!j.yolo);
   } catch (e) { alert(e.message); }
 }
 

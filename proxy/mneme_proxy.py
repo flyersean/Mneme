@@ -246,6 +246,8 @@ _CONFIG_ENV_MAP = {
     "tools.start_run": "MNEME_TOOL_START_RUN",
     "tools.delete_proxy": "MNEME_TOOL_DELETE_PROXY",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
+    "runtime.local_only": "MNEME_LOCAL_ONLY",
+    "runtime.yolo": "MNEME_YOLO",
     # Agent harness (durable runs) — see docs/harness/.
     "harness.enabled": "MNEME_HARNESS",
     "harness.db_path": "MNEME_HARNESS_DB",
@@ -636,7 +638,7 @@ mntools.reload_config()  # tools.py is imported before load_config(); refresh it
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
-mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
+mntools.set_scope(model_scope=("/" if YOLO else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
 _apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
@@ -756,6 +758,8 @@ IMAGE_GC_INTERVAL = int(os.environ.get("MNEME_IMAGE_GC_INTERVAL", "1800"))
 INJECT_SYSTEM = os.environ.get("MNEME_INJECT_SYSTEM", "1")  # "0" to skip Mneme instructions injection
 MEMORY_ONLY = os.environ.get("MNEME_MEMORY_ONLY", "1") == "1"  # "1" = memory-only mode: no strategy/learning (no strategy save/injection, no novel-procedure, no capability-edge/overcome, no belief evolution, no learning mode). Keeps memory retrieval + grading + the full tool loop. Code default is "1" (conservative); the setup wizard writes the branch-appropriate storage.memory_only into the config — agent-harness -> false (full build), main -> true (memory-only) — and that config value overrides this default.
 MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master switch: "0" disables ALL memory — no retrieval/injection (build_context), no staging/archiving (conversation + tool results), and search_memory auto-off. Run through the proxy with tools only (system prompt + tool loop stay).
+LOCAL_ONLY = os.environ.get("MNEME_LOCAL_ONLY", "0") == "1"  # "1" = run fully local: skip the OpenRouter Decisions API (classifier) and default the label model to the chat model. Harness judges fail-open without it.
+YOLO = os.environ.get("MNEME_YOLO", "0") == "1"  # trust this box: auth off + full filesystem + all tools
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
 
 # ── Memory curation flags ────────────────────────────────────────────────
@@ -873,7 +877,7 @@ def _reload_sampling_if_changed():
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
-        mntools.set_scope(model_scope=_fs.get("model_scope"), browser_root=_fs.get("browser_root"))
+        mntools.set_scope(model_scope=("/" if YOLO else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
     if "debug" in data:
         CONFIG_DATA["debug"] = data.get("debug") or {}
         _apply_thinking_log()
@@ -1112,6 +1116,31 @@ def _persist_backend_provider(name: str) -> bool:
         return True
     except Exception as e:
         print(f"  [PROVIDER] persist backend.provider failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
+
+def _persist_yolo(enabled: bool) -> bool:
+    """Persist `runtime.yolo` to the config file (2-space indent under `runtime:`)."""
+    if not CONFIG_PATH or not os.path.isfile(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        val = "true" if enabled else "false"
+        new_text, n = re.subn(r'(?m)^  yolo:\s*.*$', f'  yolo: {val}', text, count=1)
+        if n == 0:
+            line = f'  yolo: {val}'
+            if re.search(r'(?m)^runtime:\s*$', text):
+                new_text, _ = re.subn(r'(?m)^(runtime:\s*)$', r'\1\n' + line, text, count=1)
+            else:
+                new_text = text.rstrip("\n") + "\n\nruntime:\n" + line + "\n"
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, CONFIG_PATH)
+        return True
+    except Exception as e:
+        print(f"  [YOLO] persist failed: {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -1524,7 +1553,7 @@ def _refresh_runtime_constants():
     """
     global INJECT_MIN_SIMILARITY, STRATEGY_MIN_SIMILARITY, MAX_INJECTED_TOKENS
     global TOPIC_SWITCH_SIM, TOPIC_SWITCH_GRACE, NOVEL_INJECT_FLOOR
-    global MAX_PER_TOPIC, KEYWORD_FALLBACK
+    global MAX_PER_TOPIC, KEYWORD_FALLBACK, YOLO
     global AGE_DECAY_DAYS, MAX_SIBLINGS
     global MAX_HISTORY_MESSAGES, CHAT_TIMEOUT, OLLAMA_CHAT_TIMEOUT, FIRST_TOKEN_TIMEOUT, STALE_CHUNK_TIMEOUT
     INJECT_MIN_SIMILARITY = float(os.environ.get("MNEME_INJECT_MIN_SIMILARITY", "0.45"))
@@ -1535,6 +1564,7 @@ def _refresh_runtime_constants():
     NOVEL_INJECT_FLOOR = float(os.environ.get("MNEME_NOVEL_INJECT_FLOOR", "0.60"))
     MAX_PER_TOPIC = int(os.environ.get("MNEME_MAX_PER_TOPIC", "3"))
     KEYWORD_FALLBACK = os.environ.get("MNEME_KEYWORD_FALLBACK", "0") == "1"
+    YOLO = os.environ.get("MNEME_YOLO", "0") == "1"
     try:
         AGE_DECAY_DAYS = float(os.environ.get("MNEME_AGE_DECAY_DAYS", "7"))
     except (TypeError, ValueError):
@@ -4128,7 +4158,7 @@ def _clean_content(text: str) -> str:
     return text
 
 
-LABEL_MODEL = os.environ.get("LABEL_MODEL", "meta-llama/llama-3.2-3b-instruct")
+LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -8277,6 +8307,8 @@ def _jev_noul_verdict(state: dict, name: str, question: dict, timeout: int = 10)
     (bool, why) verdict. Rejects only when Jev is CONFIDENT the answer is no
     (below REJECT_AT); borderline answers are accepted (fail-open) with the
     confidence recorded so the ledger stays visible."""
+    if LOCAL_ONLY:
+        return True, "local-only — accepting (classifier disabled)"
     try:
         r = decide(state, {name: question}, timeout=timeout)
         p = noul_prob(r, name)
@@ -8338,6 +8370,8 @@ def _harness_goal_aligned(state: dict):
              "The step's work and tool calls directly serve the stated goal.",
              "The model has drifted into a sub-task or loop that does not serve the goal "
              "(e.g. endlessly searching for a deleted file it should just recreate).")
+    if LOCAL_ONLY:
+        return True, "local-only — assuming aligned (classifier disabled)"
     try:
         r = decide(state, {"goal_aligned": q}, timeout=10)
         p = noul_prob(r, "goal_aligned")
@@ -9045,6 +9079,8 @@ if FLASK_OK:
         carries a calibrated probability (noul -> yes/no, choice -> one option,
         score -> position on a rubric). Extensions call this to use the classifier
         models without importing the Mneme repo."""
+        if LOCAL_ONLY:
+            return _cors_response({"ok": False, "error": "decision models disabled in local-only mode"}, status=403)
         from mneme.decisions import decide
         data = request.get_json(force=True, silent=True) or {}
         state = data.get("state")
@@ -9134,13 +9170,26 @@ if FLASK_OK:
                         "backend": os.environ.get("MNEME_BACKEND", "ollama"),
                         "running": True, "self": True})
         out.sort(key=lambda d: d["port"])
-        return _cors_response({"instances": out, "self_port": PORT})
+        return _cors_response({"instances": out, "self_port": PORT, "yolo": YOLO})
 
     @app.route("/overview/instances/<int:port>/delete", methods=["POST"])
     def overview_instance_delete(port):
         msg = _delete_proxy_impl(port)
         print(f"  [DELETE-PROXY] {msg}", flush=True)
         return _cors_response({"ok": True, "message": msg})
+
+    @app.route("/overview/yolo", methods=["POST"])
+    def overview_yolo():
+        enabled = bool((request.get_json(silent=True) or {}).get("enabled", False))
+        global YOLO
+        YOLO = enabled
+        os.environ["MNEME_YOLO"] = "1" if enabled else "0"
+        _fs_ = CONFIG_DATA.get("filesystem") or {}
+        mntools.set_scope(model_scope=("/" if enabled else _fs_.get("model_scope")),
+                          browser_root=_fs_.get("browser_root"))
+        _persist_yolo(enabled)
+        print(f"  [YOLO] {'ON' if enabled else 'OFF'} — auth off, full filesystem, all tools", flush=True)
+        return _cors_response({"ok": True, "yolo": enabled})
 
     def _port_owner(port):
         """PID(s) owning a listen socket on `port`, resolved host-side via
@@ -11085,6 +11134,8 @@ if __name__ == "__main__":
             print(f"  [AUTH] ON ({n} user{'s' if n != 1 else ''}) — login required", flush=True)
         else:
             print("  [AUTH] OFF (open) — add a user: python3 proxy/mneme/auth.py adduser", flush=True)
+        if YOLO:
+            print("  [YOLO] auth off, full filesystem, all tools — do not expose this port", flush=True)
         app.run(host=_bind, port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",
