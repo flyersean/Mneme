@@ -90,6 +90,7 @@ class SkillRegistry:
     def __init__(self, ledger: Ledger, dirs: Iterable[str] = (), embed: Optional[Callable] = None):
         self.ledger = ledger
         self.embed = embed
+        self._emb_cache = {}  # (name, version) -> normalized vector, reused across selects
         with ledger._lock:
             ledger._db.executescript(_SCHEMA)
             ledger._db.commit()
@@ -129,6 +130,7 @@ class SkillRegistry:
                reason: str = "", source: str = "", **fields) -> dict:
         """Create a skill or add a new version. Unchanged content is a no-op."""
         name = (name or "").strip().lower()
+        self._emb_cache.clear()
         if not _NAME_RE.match(name):
             raise LedgerError(f"invalid skill name {name!r} (lowercase letters, digits, _ . -)")
         if not (description or "").strip():
@@ -181,6 +183,7 @@ class SkillRegistry:
             return False
         self.ledger._write("DELETE FROM skill_versions WHERE name=?", (name,))
         self.ledger._write("DELETE FROM skills WHERE name=?", (name,))
+        self._emb_cache.clear()
         return True
 
     def load_dir(self, path: str) -> List[str]:
@@ -224,7 +227,12 @@ class SkillRegistry:
             text = " ".join([s["name"].replace("-", " ").replace("_", " "), s["description"], " ".join(s["tags"])])
             if qv is not None:
                 try:
-                    sv = self.embed(text)
+                    key = (s["name"], s.get("version"))
+                    sv = self._emb_cache.get(key)
+                    if sv is None:
+                        sv = self.embed(text)
+                        if sv is not None:
+                            self._emb_cache[key] = sv
                     score = float(sum(a * b for a, b in zip(qv, sv)))
                 except Exception:
                     score = 0.0

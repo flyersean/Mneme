@@ -8496,7 +8496,8 @@ def _init_harness():
         mntools.ledger = _hledger  # read-only run-ledger access for the inspect_run tool
         # Skills: shipped skills/ + user skills beside the shared DB (<db dir>/skills).
         _skills = SkillRegistry(_hledger, dirs=[os.path.join(REPO_ROOT, "skills"),
-                                                os.path.join(DB_DIR, "skills")])
+                                                os.path.join(DB_DIR, "skills")],
+                                embed=embed)
         SKILLS = _skills  # surface the same registry to the chat path
         mntools.skills = _skills  # and to the search_skills tool
         _profiles = ProfileStore(_hledger)
