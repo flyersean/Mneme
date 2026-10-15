@@ -83,8 +83,9 @@ last tasks get the least of you.
 
 Ensure the work happens in an isolated workspace: create a git worktree
 with `bash` (e.g. `git worktree add ../<name> -b <branch>`) or verify the
-existing one. Never start implementation on a main/master branch without
-your human partner's explicit consent.
+existing one — unless you are already in an isolated workspace (a Mneme
+harness run workspace counts). Never start implementation on a main/master
+branch without your human partner's explicit consent.
 
 Conversation memory does not survive compaction. An inline executor that
 loses its place re-implements tasks whose commits already exist — the same

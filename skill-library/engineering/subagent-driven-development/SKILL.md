@@ -116,7 +116,7 @@ digraph process {
 
 ## Setup
 
-Ensure the work happens in an isolated workspace: use a git worktree to create one or verify the existing one. Never start implementation on a main/master branch without your human partner's explicit consent.
+Ensure the work happens in an isolated workspace: use a git worktree to create one or verify the existing one — unless you are already in an isolated workspace (a Mneme harness run workspace counts). Never start implementation on a main/master branch without your human partner's explicit consent.
 
 Conversation memory does not survive compaction. In real sessions, controllers that lost their place have re-dispatched entire completed task sequences — the single most expensive failure observed. Track progress in a ledger file, not only in todos.
 

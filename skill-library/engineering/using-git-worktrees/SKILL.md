@@ -14,11 +14,15 @@ Ensure work happens in an isolated workspace. Prefer your platform's native work
 
 **Core principle:** Detect existing isolation first. Then use native tools. Then fall back to git. Never fight the harness.
 
+**Mneme harness workspaces are isolated — treat them as your worktree.** A harness run workspace (e.g. `<mneme>/chunks/runs/run_XXXX/workspace`) is a copy of the project checked out on a run-labeled branch by the harness. It is already isolated from the mainline: do NOT `git worktree add` *inside* it (git rejects it, and the workspace is not the main project root), and do not navigate back to the shared checkout to work there. When you are already running inside one, skip straight to Step 2 — never `git worktree add` just to satisfy this skill.
+
 **Announce at start:** "I'm using the using-git-worktrees skill to set up an isolated workspace."
 
 ## Step 0: Detect Existing Isolation
 
 **Before creating anything, check if you are already in an isolated workspace.**
+
+**Harness run workspace check (do this first):** if your current directory is inside a Mneme harness run workspace — a path like `<mneme>/chunks/runs/run_*/workspace` — you are already isolated (the harness checked out a run-labeled copy for you). Skip to Step 2. Do NOT `git worktree add` here, and do not leave it to work in the shared checkout.
 
 ```bash
 GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
