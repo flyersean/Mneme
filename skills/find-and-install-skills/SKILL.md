@@ -53,6 +53,10 @@ GitHub URL, "when to use / when not to use", and the full SKILL.md inline.
 
 ## 2. Fetch the skill
 
+Raw GitHub URLs dead-end often (404 on `main`-vs-`master`, renamed repos, moved files).
+If a raw URL 404s, fall back to the rendered page: `fetch_url("https://agenticskills.io/skills/<slug>")`
+or the repo's rendered file view, before giving up on the skill.
+
 ```bash
 # the raw GitHub SKILL.md (from the page's Manual install block)
 curl -sL https://raw.githubusercontent.com/<owner>/<repo>/<branch>/skills/<name>/SKILL.md
@@ -63,6 +67,19 @@ curl -sL https://raw.githubusercontent.com/<owner>/<repo>/<branch>/skills/<name>
 
 `npx skills add <owner>/<repo>@<name>` installs for Claude/Cursor/Codex — use it only to
 fetch content, never as the Mneme install step.
+
+## 2.5 Probe the environment BEFORE promising the skill works
+
+Ecosystem skills assume the host can reach whatever service they use. The Mneme host
+may be walled (e.g. AWS IPs are hard-blocked by YouTube). Before installing a skill whose
+job depends on an external service, run ONE minimal live probe of that dependency:
+
+- If the probe works → install normally.
+- If the probe fails with a block/ban (not a bug) → still install the skill, but the
+  SKILL.md MUST document the block and the escape hatches (cookies, proxy, delegation
+  to a non-cloud host) at the TOP, in a 'CRITICAL reality' section. Never ship a skill
+  that silently assumes an unreachable service. One probe suffices — don't burn retries
+  on what is an IP-level wall.
 
 ## 3. License gate (do this BEFORE installing)
 
@@ -137,6 +154,9 @@ python3 -c "import sys; sys.path.insert(0,'proxy'); from mneme.harness.skills im
   isn't injectable until restart unless you also `POST /skills`.
 - **Name mismatch.** `name:` and the directory name must match, and the name must be
   lowercase `[a-z0-9_.-]`, or the loader rejects it.
+- **Not recording a host-level wall in the skill.** If the skill's core dependency is blocked
+  from this host (cloud-IP bans, geo-blocks), the SKILL.md must say so up front with the
+  documented escape hatches — otherwise every future session rediscovers the failure.
 - **Installing to `skills/` but not the library.** The skill then vanishes on a fresh
   clone. Save to `skill-library/` too and record it in `CATALOG.md`.
 
@@ -148,3 +168,4 @@ python3 -c "import sys; sys.path.insert(0,'proxy'); from mneme.harness.skills im
 4. It's saved to `skill-library/<category>/<name>/` AND installed into `skills/<name>/`.
 5. `CATALOG.md` has a row for it with license + attribution.
 6. `GET /skills?q=<name>` returns it, and the parse check prints OK.
+7. If the skill depends on an external service, the environment was probed and any host-level block is documented in the SKILL.md.
