@@ -891,6 +891,12 @@ def _reload_sampling_if_changed():
         if key in sampling and sampling[key] is not None:
             os.environ[env] = _config_scalar(sampling[key])
             changed.append(key)
+        elif env in os.environ:
+            # Key removed/unset in the config (e.g. a template switch that dropped
+            # reasoning_effort) — clear the stale env var so the reverted value
+            # doesn't linger and keep being sent on every request.
+            del os.environ[env]
+            changed.append(f"{key}->unset")
     if "temperature" in sampling and sampling["temperature"] is not None \
             and "MNEME_TEMPERATURE" not in _USER_PINNED_ENV:
         OLLAMA_TEMP = float(sampling["temperature"])
@@ -3156,7 +3162,10 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         # MNEME_REASONING_BUDGET > "auto" = max_tokens/2. "0"/"off" disables
         # (legacy behaviour). Always capped at max_tokens/2. Read from CONFIG_DATA
         # at request time, so it hot-reloads with the rest of the `models:` block.
-        if _reasoning_on and not no_reasoning:
+        # effort and max_tokens are mutually exclusive in the OpenAI/OpenRouter
+        # schema — sending both is a 400. Effort-based control (reasoning.effort)
+        # wins over the budget; max_tokens is only for budget-based control.
+        if _reasoning_on and not no_reasoning and "effort" not in _reasoning:
             _rb = _mc.get("reasoning_budget")
             _bud = str(OR_REASONING_BUDGET if _rb is None else _rb).strip().lower()
             if _bud not in ("0", "off", "no", "none", "disabled"):
