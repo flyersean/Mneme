@@ -51,13 +51,6 @@ fi
 cd "$REPO"
 
 # --- Guardrails -------------------------------------------------------------
-if [ -n "$(git status --porcelain)" ]; then
-    say "* Unsaved changes in the repo. Deploy only uses committed code."
-    say "  Either commit them first, or discard them if they're junk:"
-    git status --short
-    exit 1
-fi
-
 if [ "$instance" = "8080" ]; then
     say "WARNING: PRODUCTION deploy - this restarts your LIVE proxy on port 8080."
     say "   Everyone using it will see a brief interruption."
@@ -65,6 +58,13 @@ if [ "$instance" = "8080" ]; then
         say "   Re-run as: mneme-deploy production --yes   to confirm you mean it."
         exit 1
     fi
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+    say "* Unsaved changes in the repo. Deploy only uses committed code."
+    say "  Either commit them first, or discard them if they're junk:"
+    git status --short
+    exit 1
 fi
 
 # --- 1. Tests ---------------------------------------------------------------
