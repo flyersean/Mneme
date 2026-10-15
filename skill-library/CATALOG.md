@@ -48,3 +48,9 @@ its license and attribution.
 All "obra/superpowers" entries are adapted from https://github.com/obra/superpowers,
 MIT License, Copyright (c) 2025 Jesse Vincent. The full attribution line is in each
 skill's SKILL.md body.
+
+### other/
+
+| Skill | What it does | License |
+|---|---|---|
+| youtube-transcript | Extract transcript/captions from a YouTube video (captions API first, audio+whisper fallback; documents cloud-IP bot blocking) | MIT — tejask0/agent-skills |
