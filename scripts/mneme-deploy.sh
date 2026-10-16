@@ -108,7 +108,8 @@ say "--- Deploy gate 1/3: compile check of all Python code ---"
 say "Compile check passed."
 
 # --- 2. Deploy gate: smoke import of the proxy (hard fail, both tiers) ------
-if ! python3 -c "import importlib.util
+if ! python3 -c "import sys, importlib.util
+sys.path.insert(0, 'proxy')
 spec = importlib.util.spec_from_file_location('mneme_proxy_smoke', 'proxy/mneme_proxy.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
