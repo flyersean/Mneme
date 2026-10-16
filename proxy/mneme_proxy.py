@@ -2560,6 +2560,12 @@ def _curation_retract(chunk_id: str, reason: str = "") -> str:
             return "[flag_bad_memory: not permitted on this proxy (curation disabled)]"
         curation.set_bad_chunk(db, chunk_id, True, actor="model", reason=reason)
         print(f"  [CURATION] model flagged {chunk_id} as bad: {reason[:80]}", flush=True)
+        try:
+            _d = curation.flag_poisoned_descendants(db, chunk_id, reason=reason or "")
+            if _d.get("flagged"):
+                print(f"  [POISON] flagged {_d['flagged']} downstream chunk(s) of {chunk_id}", flush=True)
+        except Exception as _e:
+            _log_error("curation:poison_descendants", _e)
         return (
             f"[flag_bad_memory: MARKED {chunk_id} as a bad chunk. Nothing has changed "
             f"about how this memory is used — it is still in use, unmodified, and not "
@@ -5806,6 +5812,13 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
                     _cited.append(_c)
             if _cited:
                 curation.record_provenance(db, chunk_id, _cited)
+                try:
+                    _poison = curation.flag_if_cites_poisoned(db, chunk_id, _cited)
+                    if _poison:
+                        print(f"  [POISON] {chunk_id} cites flagged/fabricated chunks: "
+                              f"{_poison['poisoned_by']}", flush=True)
+                except Exception as _e:
+                    _log_error("archive:poison", _e)
             # `injected_ids` is threaded from the caller (snapshotted at enqueue
             # time), NOT read from a global — see archive_staging's docstring.
             curation.record_context(db, chunk_id, list(injected_ids or []), MODEL)
