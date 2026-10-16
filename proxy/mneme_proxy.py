@@ -169,6 +169,7 @@ def _memory_health():
         "label": {"model": LABEL_MODEL, **_s("label")},
         "credits": _credit_status(),
         "host": _host_status(),
+        "brownout": _brownout_status(),
     }
 
 
@@ -858,6 +859,82 @@ def _host_status():
     except Exception:
         out["load"] = None
     return out
+
+
+# ── Brownout (auto-shed under memory pressure) + DB ownership marker ──
+# Brownout: when the host is under memory pressure, pause STARTING background
+# paid work (the re-embed drain) so a spike sheds load instead of inviting the
+# OOM killer. Auto-triggered from /proc — no model decision, no API tokens.
+# Folded alongside runtime.local_only: both are "degrade gracefully" switches.
+BROWNOUT_RAM_PCT = float(os.environ.get("MNEME_BROWNOUT_RAM_PCT", "80.0"))
+_LAST_RAM_PCT = {"v": None}
+
+
+def _memory_pressure():
+    """True when host RAM is at/above the brownout threshold (auto-shed signal)."""
+    hs = _host_status()
+    _LAST_RAM_PCT["v"] = hs.get("ram_pct")
+    return _LAST_RAM_PCT["v"] is not None and _LAST_RAM_PCT["v"] >= BROWNOUT_RAM_PCT
+
+
+def _brownout_status():
+    active = _memory_pressure()
+    return {"ram_pct": _LAST_RAM_PCT["v"], "threshold": BROWNOUT_RAM_PCT,
+            "active": active}
+
+
+def _db_owner_marker():
+    """Write/read a DB ownership marker (<db_path>.owner). Returns (prev, me).
+
+    This is an AUDIT marker, not a lock — shared-memory access is never blocked.
+    It exists to surface the 8083-class footgun (a DIFFERENT checkout/schema
+    opening the same DB) in the log + health, while legitimate multi-proxy
+    shared access keeps working."""
+    marker_path = DB_PATH + ".owner"
+    me = {"pid": os.getpid(), "port": PORT, "checkout": os.getcwd(),
+          "schema": (_SCHEMA_MIGRATIONS[-1][0] if _SCHEMA_MIGRATIONS else 0),
+          "model": MODEL,
+          "at": datetime.now(timezone.utc).isoformat()}
+    prev = None
+    try:
+        if os.path.exists(marker_path):
+            with open(marker_path) as f:
+                prev = json.load(f)
+    except Exception:
+        prev = None
+    try:
+        with open(marker_path, "w") as f:
+            json.dump(me, f)
+    except Exception:
+        pass
+    return prev, me
+
+
+def _check_db_owner():
+    prev, me = _db_owner_marker()
+    if not prev or prev.get("pid") == me["pid"]:
+        return
+    prev_pid = prev.get("pid")
+    alive = False
+    if prev_pid:
+        try:
+            os.kill(prev_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+    if not alive:
+        return  # stale marker from a dead process — ignore
+    same_schema = prev.get("schema") == me["schema"]
+    same_checkout = prev.get("checkout") == me["checkout"]
+    if same_schema and same_checkout:
+        print(f"[DB-SHARED] {DB_PATH} also open by pid {prev_pid} "
+              f"(port {prev.get('port')}) — shared-memory mode (allowed)", flush=True)
+    else:
+        print(f"[WARN] {DB_PATH} open by a DIFFERENT checkout/schema: "
+              f"pid {prev_pid} (checkout {prev.get('checkout')}, "
+              f"schema v{prev.get('schema')}) vs self "
+              f"(checkout {me['checkout']}, schema v{me['schema']}) — "
+              f"possible 8083-class misconfiguration", flush=True)
 
 
 # ── Memory curation flags ────────────────────────────────────────────────
@@ -2184,6 +2261,8 @@ def _migrate_schema():
 
 
 _migrate_schema()
+
+_check_db_owner()
 
 # Memory curation schema (retraction / recurrence / provenance / decision log).
 # Additive + idempotent, same style as the migrations above.
@@ -11165,6 +11244,10 @@ def _reembed_pending(limit: int = 200):
         if cs["low"]:
             print(f"  [EMBED-RETRY] deferred: credits low "
                   f"(${cs['balance']:.2f} < floor ${CREDIT_FLOOR:.2f})", flush=True)
+            break
+        if _memory_pressure():
+            print(f"  [EMBED-RETRY] deferred: memory pressure "
+                  f"(ram {_LAST_RAM_PCT['v']}% >= {BROWNOUT_RAM_PCT}%)", flush=True)
             break
         rows = db.execute(
             "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
