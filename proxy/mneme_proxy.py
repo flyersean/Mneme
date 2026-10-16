@@ -10672,6 +10672,9 @@ if FLASK_OK:
             "embed": _h["embed"],
             "chat": _h["chat"],
             "label": _h["label"],
+            "credits": _h["credits"],
+            "host": _h["host"],
+
         })
 
     @app.route("/status", methods=["GET"])
