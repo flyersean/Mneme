@@ -2713,6 +2713,34 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
     return [(0.0, cid) for cid in ranked[:cap]]
 
+def _query_snippet(content: str, query: str, radius: int = 160) -> str:
+    """Query-biased snippet: return the window around the first query-term match
+    in `content`, so the matched context (not the chunk head) is what the model
+    sees. A fact buried mid-chunk (e.g. "my dogs name is Luke" inside a chunk
+    about retrieval strategy) is still the visible preview for a "dog" query.
+    Falls back to a head-preview when no term matches."""
+    if not content:
+        return ""
+    if not query:
+        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
+    low = content.lower()
+    best = -1
+    for w in query.split():
+        w = w.strip().lower()
+        if len(w) < 2 or w in _KEYWORD_STOPWORDS:
+            continue
+        i = low.find(w)
+        if i >= 0 and (best == -1 or i < best):
+            best = i
+    if best == -1:
+        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
+    start = max(0, best - radius)
+    end = min(len(content), best + radius)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(content) else ""
+    return prefix + content[start:end] + suffix
+
+
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
     """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
 
@@ -6993,7 +7021,7 @@ def _execute_search_tool_calls(search_calls):
                     print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
         trace.update(hits)
         if hits:
-            lines = ["Search results from Mneme memory:"]
+            lines = [f"Search results from Mneme memory ({len(hits)} matching chunks — every one contains a search term; read them all before concluding a fact is absent):"]
             for h in hits:
                 cid = h  # route_query returns chunk_id strings, not tuples
                 crow = db.execute("SELECT topic_label, grade, messages, source, trust FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
@@ -7006,13 +7034,13 @@ def _execute_search_tool_calls(search_calls):
                     try:
                         msgs = json.loads(msgs_json)
                         for m in msgs[:5]:
-                            c = m.get("content", "")[:MAX_PREVIEW_CHARS]
+                            c = _query_snippet(m.get("content", ""), q)
                             if c:
                                 lines.append(f"  {m['role']}: {c}")
                     except Exception as e:
                         _log_error("search_tool:parse_msgs", e)
                 lines.append("")
-            result_texts.append("\n".join(lines[:30]))  # cap
+            result_texts.append("\n".join(lines))
             print(f"  [SEARCH-TOOL] found {len(hits)} results", flush=True)
         else:
             result_texts.append("No matching memories found.")
