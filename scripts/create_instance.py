@@ -7,8 +7,8 @@ Usage:
 
 Clones chunks/instances/<from_port>/mneme.yaml + start_proxy.sh into
 chunks/instances/<port>/, rewriting only what must differ per instance:
-port number and main chat model. Everything else (embedder, penalties,
-memory DB path) is inherited from the source instance.
+port number and main chat model. The memory DB is isolated per-instance by
+default; pass --db-path to connect to an existing (shared) memory DB instead.
 
 This deliberately does NOT shell out to mneme_setup.py — that wizard is
 interactive-only (no CLI flags), so non-interactive reuse would mean
@@ -33,12 +33,22 @@ def find_main_model(cfg_text):
     return m.group(1).strip()
 
 
+def find_db_path(cfg_text):
+    """Value of storage.db_path (the shared-memory DB path), or None."""
+    m = re.search(r'^\s*db_path:\s*"?([^"\n]+?)"?\s*$', cfg_text, re.M)
+    return m.group(1).strip() if m else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--model", required=True,
                     help="main chat model id, e.g. deepseek/deepseek-chat")
     ap.add_argument("--from-port", type=int, default=8080)
+    ap.add_argument("--db-path", default=None,
+                    help="storage.db_path for the new instance. Omit to auto-create "
+                         "an isolated per-instance DB (chunks/instances/<port>/mneme.db); "
+                         "pass an existing path to SHARE memory with that proxy.")
     ap.add_argument("--start", action="store_true",
                     help="start the new instance after creating it")
     args = ap.parse_args()
@@ -63,13 +73,14 @@ def main():
     # Port appears as 'port: 8080', URLs, and paths — replace all occurrences.
     cfg = re.sub(rf"\b{args.from_port}\b", str(args.port), cfg)
 
-    # Give the new instance its OWN memory DB — never share the source's DB.
-    # (The port rewrite above already fixes chunk_dir, but the shared db_path
-    #  contains no port number, so it must be rewritten explicitly.)
-    cfg = cfg.replace(
-        "/home/ubuntu/mneme/chunks/mneme.db",
-        f"/home/ubuntu/mneme/chunks/instances/{args.port}/mneme.db",
-    )
+    # Memory DB: the creator chooses shared or isolated.
+    #   --db-path <existing>  -> connect to that DB (shared memory with another proxy)
+    #   (omit)                -> auto-create an isolated per-instance DB
+    src_db = find_db_path(cfg)
+    if src_db:
+        new_db = args.db_path or os.path.join(
+            INSTANCES, str(args.port), "mneme.db")
+        cfg = cfg.replace(src_db, new_db, 1)
 
     # Replace ONLY lines naming the main chat model — embedder untouched.
     lines = []
