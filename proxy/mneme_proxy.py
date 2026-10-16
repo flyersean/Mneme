@@ -147,6 +147,29 @@ def _set_status(kind: str, ok: bool, error: str = ""):
     st["at"] = datetime.now(timezone.utc).isoformat()
 
 
+def _memory_health():
+    """Memory + backend health snapshot: chunk counts and provider status."""
+    total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    embedded = db.execute("SELECT COUNT(*) FROM chunks WHERE pending_embed=0 AND vector IS NOT NULL").fetchone()[0]
+    pending = db.execute("SELECT COUNT(*) FROM chunks WHERE pending_embed=1").fetchone()[0]
+
+    def _s(kind):
+        st = _PROVIDER_STATUS.get(kind, {})
+        return {"ok": st.get("ok"), "error": st.get("error", ""), "at": st.get("at", "")}
+
+    return {
+        "chunks": {
+            "total": total,
+            "embedded": embedded,
+            "pending": pending,
+            "pct_unembedded": round(pending / total * 100, 1) if total else 0.0,
+        },
+        "embed": {"model": EMBED_MODEL, **_s("embed")},
+        "chat": {"model": MODEL, **_s("chat")},
+        "label": {"model": LABEL_MODEL, **_s("label")},
+    }
+
+
 def _record_chat_status(result):
     """Update the chat provider's status from a query_model result dict."""
     if not isinstance(result, dict):
@@ -2351,6 +2374,7 @@ def embed(text: str):
 
 
 mntools.embed = embed  # bind the tool system's embed function
+mntools.set_health_provider(_memory_health)  # bind the tool system's health snapshot
 
 
 # ─── Memory curation hooks ───────────────────────────────────────────────
@@ -8766,6 +8790,7 @@ if FLASK_OK:
             snap = _settings_snapshot()
             snap["model"]["template"] = CONFIG_DATA.get("model_template", "")
             snap["chunks"] = len(_id_map)
+            snap["memory_health"] = _memory_health()
             return _cors_response(snap)
         except Exception as e:
             return _cors_response({"error": str(e)}, status=500)
@@ -10546,11 +10571,16 @@ if FLASK_OK:
 
     @app.route("/health", methods=["GET"])
     def health():
+        _h = _memory_health()
         return _cors_response({
             "status": "ok",
             "model": FAKE_MODEL_ID,
             "backend": MODEL,
             "chunks": len(_id_map),
+            "memory": _h["chunks"],
+            "embed": _h["embed"],
+            "chat": _h["chat"],
+            "label": _h["label"],
         })
 
     @app.route("/status", methods=["GET"])

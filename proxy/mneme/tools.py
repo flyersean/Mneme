@@ -199,6 +199,19 @@ LIST_CHUNKS_TOOL = {
     },
 }
 
+MNEME_HEALTH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "mneme_health",
+        "description": "Check your own memory and embedder health. Reports total/embedded/pending chunk counts, the percentage of memory that is unembedded (invisible to semantic search), and whether the embedder/chat/labeler backends are ok or failing. Use when the user asks about memory or embedder health, or when you suspect retrieval is degraded (few or no search results, or you are about to answer from recall without having retrieved the fact).",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
 LIST_TOOLS_TOOL = {
     "type": "function",
     "function": {
@@ -675,7 +688,7 @@ SEARCH_SKILLS_TOOL = {
 }
 
 
-READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL, SEARCH_SKILLS_TOOL)
+READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, MNEME_HEALTH_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL, SEARCH_SKILLS_TOOL)
 
 # Curation tools (retract/restore memory). Registered separately because they are
 # gated by their own config flags rather than MNEME_TOOL_<NAME>, and because they
@@ -1647,8 +1660,53 @@ def _exec_retry_run(args):
         return f"[retry_run error: {type(e).__name__}: {e}]"
 
 
+_health_provider = None
+
+
+def _exec_health(args=None):
+    """Report the proxy's memory + embedder health. Read-only."""
+    if _health_provider is None:
+        return "Mneme health unavailable (not bound)."
+    try:
+        h = _health_provider()
+    except Exception as e:
+        return f"Mneme health check failed: {type(e).__name__}: {e}"
+    c = h.get("chunks", {}) or {}
+    total = c.get("total", 0)
+    embedded = c.get("embedded", 0)
+    pending = c.get("pending", 0)
+    pct = c.get("pct_unembedded", 0)
+    lines = ["Mneme memory health:"]
+    lines.append(f"- chunks: total={total} embedded={embedded} pending={pending} ({pct}% unembedded)")
+    for kind, label in (("embed", "embedder"), ("chat", "chat model"), ("label", "labeler")):
+        st = h.get(kind, {}) or {}
+        model = st.get("model", "")
+        ok = st.get("ok")
+        err = st.get("error", "")
+        if ok is True:
+            lines.append(f"- {label}: OK ({model})")
+        elif ok is False:
+            lines.append(f"- {label}: FAILING ({model}) — {err}")
+        else:
+            lines.append(f"- {label}: unknown ({model}) — no call yet")
+    if pending:
+        lines.append(f"- status: DEGRADED — {pending} chunks pending re-embed (invisible to semantic search; keyword search still works)")
+    else:
+        lines.append("- status: HEALTHY")
+    return "\n".join(lines)
+
+
+def set_health_provider(fn):
+    """Install the proxy's health-snapshot callable (returns the memory/backend
+    health dict used by the mneme_health tool)."""
+    global _health_provider
+    _health_provider = fn
+
+
 def execute_readonly_tool(name, args):
     """Dispatch a read-only registry tool (list_tools/read_tool/read_image/read_file/fetch_url) or web_search."""
+    if name == "mneme_health":
+        return _exec_health(args)
     if name == "list_tools":
         return _exec_list_tools((args or {}).get("query") or None, (args or {}).get("problem_type") or None)
     if name == "read_tool":
