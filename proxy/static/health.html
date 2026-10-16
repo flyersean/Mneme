@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/theme.css">
+<script src="/static/theme.js"></script>
+<title>Mneme — Health</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  main { padding:24px 28px; max-width:880px; margin:0 auto; }
+  h1 { margin:0; font-size:20px; font-weight:650; }
+  .sub { color:var(--muted); font-size:13px; margin:4px 0 20px; }
+  .banner { padding:14px 16px; border-radius:10px; font-size:15px; font-weight:600; margin-bottom:20px; border:1px solid var(--line); }
+  .banner.healthy { background:var(--green-soft); color:var(--green); border-color:var(--green); }
+  .banner.degraded { background:var(--amber-soft); color:var(--amber); border-color:var(--amber); }
+  .banner.down { background:var(--red-soft); color:var(--red); border-color:var(--red); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  h2 { margin:0 0 14px; font-size:14px; font-weight:650; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .stats { display:flex; gap:14px; flex-wrap:wrap; }
+  .stat { flex:1; min-width:110px; background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:14px 12px; }
+  .stat .num { display:block; font-size:26px; font-weight:700; color:var(--fg); }
+  .stat .num.pending { color:var(--amber); }
+  .stat .lbl { display:block; font-size:12px; color:var(--muted); margin-top:3px; }
+  .bar { height:12px; background:var(--bg); border:1px solid var(--line); border-radius:999px; overflow:hidden; margin-top:16px; }
+  .bar-fill { height:100%; background:var(--accent); width:0%; transition:width .5s ease; border-radius:999px; }
+  .bar-fill.done { background:var(--green); }
+  .bar-label { font-size:12px; color:var(--muted); margin-top:6px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  tr:last-child td { border-bottom:none; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
+  .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .badge.ok { background:var(--green-soft); color:var(--green); border:1px solid var(--green); }
+  .badge.fail { background:var(--red-soft); color:var(--red); border:1px solid var(--red); }
+  .badge.unknown { background:var(--bg); color:var(--muted); border:1px solid var(--line); }
+  .err { color:var(--red); font-size:12px; margin-top:4px; }
+</style>
+</head>
+<body>
+<nav class="mneme-nav"></nav>
+<main>
+  <h1>System Health</h1>
+  <div class="sub" id="updated">loading…</div>
+
+  <div class="banner" id="banner">checking…</div>
+
+  <section>
+    <h2>Memory</h2>
+    <div class="stats">
+      <div class="stat"><span class="num" id="total">—</span><span class="lbl">total chunks</span></div>
+      <div class="stat"><span class="num" id="embedded">—</span><span class="lbl">embedded (searchable)</span></div>
+      <div class="stat"><span class="num pending" id="pending">—</span><span class="lbl">pending re-embed</span></div>
+    </div>
+    <div class="bar"><div class="bar-fill" id="barfill"></div></div>
+    <div class="bar-label" id="barlabel">—</div>
+  </section>
+
+  <section>
+    <h2>Backends</h2>
+    <table>
+      <thead><tr><th>component</th><th>model</th><th>status</th><th>detail</th></tr></thead>
+      <tbody id="backends"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Instance</h2>
+    <div class="stats">
+      <div class="stat"><span class="num mono" id="backend" style="font-size:15px">—</span><span class="lbl">chat backend</span></div>
+      <div class="stat"><span class="num" id="faiss">—</span><span class="lbl">FAISS vectors</span></div>
+      <div class="stat"><span class="num mono" id="proxyid" style="font-size:15px">—</span><span class="lbl">proxy model id</span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/health', { cache: 'no-store' });
+    const h = await r.json();
+    render(h);
+  } catch (e) {
+    const b = document.getElementById('banner');
+    b.className = 'banner down';
+    b.textContent = 'Health endpoint unreachable: ' + e.message;
+  }
+  document.getElementById('updated').textContent =
+    'last updated ' + new Date().toLocaleTimeString() + ' · auto-refreshes every 5s';
+}
+
+function badge(ok) {
+  if (ok === true) return '<span class="badge ok">OK</span>';
+  if (ok === false) return '<span class="badge fail">FAILING</span>';
+  return '<span class="badge unknown">unknown</span>';
+}
+
+function render(h) {
+  const mem = h.memory || {};
+  const total = mem.total ?? 0;
+  const embedded = mem.embedded ?? 0;
+  const pending = mem.pending ?? 0;
+  const pct = mem.pct_unembedded ?? 0;
+
+  document.getElementById('total').textContent = total;
+  document.getElementById('embedded').textContent = embedded;
+  document.getElementById('pending').textContent = pending;
+
+  const embPct = total ? Math.round(embedded / total * 100) : 100;
+  const fill = document.getElementById('barfill');
+  fill.style.width = embPct + '%';
+  fill.className = 'bar-fill' + (pending === 0 ? ' done' : '');
+  document.getElementById('barlabel').textContent =
+    embPct + '% embedded · ' + pct + '% unembedded';
+
+  // Banner
+  const banner = document.getElementById('banner');
+  const embedOk = h.embed ? h.embed.ok : null;
+  if (embedOk === false) {
+    banner.className = 'banner down';
+    banner.textContent = 'Embedder DOWN — memory is not being indexed. New chunks will be stored unembedded.';
+  } else if (pending > 0) {
+    banner.className = 'banner degraded';
+    banner.textContent = 'Degraded — ' + pending + ' chunks pending re-embed (' + pct + '% of memory invisible to semantic search). Draining in the background.';
+  } else {
+    banner.className = 'banner healthy';
+    banner.textContent = 'Healthy — memory fully embedded and searchable.';
+  }
+
+  // Backends table
+  const rows = [['embedder', h.embed], ['chat model', h.chat], ['labeler', h.label]];
+  const tb = document.getElementById('backends');
+  tb.innerHTML = rows.map(([name, st]) => {
+    st = st || {};
+    const err = (st.ok === false && st.error) ? '<div class="err">' + st.error + '</div>' : '';
+    const at = st.at ? '<div class="mono" style="color:var(--muted);font-size:11px">last: ' + st.at + '</div>' : '';
+    return '<tr><td>' + name + '</td><td class="mono">' + (st.model || '—') + '</td><td>' + badge(st.ok) + '</td><td>' + err + at + '</td></tr>';
+  }).join('');
+
+  document.getElementById('backend').textContent = h.backend || '—';
+  document.getElementById('faiss').textContent = h.chunks ?? '—';
+  document.getElementById('proxyid').textContent = h.model || '—';
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

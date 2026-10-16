@@ -70,7 +70,7 @@ document.addEventListener("DOMContentLoaded", function () {
    * renders the full link set, marks the current page active, and hides the
    * admin-only "Users" link for non-admin accounts. One source of truth. */
   var NAV_LINKS = [
-    ["/", "Dashboard"], ["/chat", "Chat"], ["/memory", "Memory"],
+    ["/", "Dashboard"], ["/health/ui", "Health"], ["/chat", "Chat"], ["/memory", "Memory"],
     ["/instructions", "Instructions"], ["/templates", "Templates"],
     ["/ollama", "Ollama"], ["/runs/ui", "Runs"], ["/strategies/ui", "Strategies"],
     ["/skills/ui", "Skills"],

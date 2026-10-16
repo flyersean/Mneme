@@ -8657,6 +8657,7 @@ if FLASK_OK:
     _DASHBOARD_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html")
     _CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "chat.html")
     _SWARMONITOR_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "swarmonitor.html")
+    _HEALTH_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "health.html")
 
     def _serve_html(path, err_tag):
         try:
@@ -8677,6 +8678,10 @@ if FLASK_OK:
     @app.route("/swarmonitor", methods=["GET"])
     def swarmonitor_ui():
         return _serve_html(_SWARMONITOR_HTML_PATH, "SWARMMONITOR-UI")
+
+    @app.route("/health/ui", methods=["GET"])
+    def health_ui():
+        return _serve_html(_HEALTH_HTML_PATH, "HEALTH-UI")
 
     @app.route("/static/<path:filename>")
     def static_asset(filename):
