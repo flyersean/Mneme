@@ -146,7 +146,7 @@ sys.exit(0 if (c or "").strip() else 1)' && \
     return
   fi
   verdict="$(printf '%s' "$res" | python3 -c '
-import json, sys
+import json, os, sys
 try: hits = json.load(sys.stdin).get("results") or []
 except Exception: print("SEARCH_UNPARSED"); sys.exit(0)
 marker = [h for h in hits if "zebra-uno-42" in json.dumps(h) and isinstance(h.get("similarity"), (int, float))]
@@ -162,12 +162,12 @@ elif "instance_origin" in h: print("SEARCH_ORIGIN_EMPTY")  # field exists but em
 else: print("SEARCH_NOORIGINFIELD")  # /search does not expose instance_origin (pre-a5866b7 API)
 ')"
   case "$verdict" in
-    SEARCH_OK-WRONGORIGIN*) pass "check 3: scored hit ($verdict) -- origin present but does not match staging port; may be a pre-existing row, note it";;
-    SEARCH_OK*) pass "check 3: scored hit ($verdict) -- origin present but does not match staging port; may be a pre-existing row, note it";;
+    SEARCH_OK-WRONGORIGIN*) manual "check 3: scored hit ($verdict) -- chunk written by a different instance than this staging run; investigate provenance";;
+    SEARCH_OK*) pass "check 3: scored hit ($verdict) -- origin matches staging port";;
     SEARCH_NOORIGINFIELD) pass "check 3: scored hit works, but /search API does not expose instance_origin (pre-a5866b7 deployed code); verify origin via DB row by hand";;
-    SEARCH_ORIGIN_EMPTY)  note "check 3: WARN -- marker hit carries EMPTY instance_origin; origin stamping not verifiable via API; check staging run logs/DB row by hand" && exit 0;;
+    SEARCH_ORIGIN_EMPTY)  note "check 3: WARN -- marker hit carries EMPTY instance_origin; origin stamping not degrading later checks" ;;
     SEARCH_NOMARKER)    manual "check 3: search clean but no scored marker hit (cold-start/detailer lag acceptable) -- verify warm";;
-        SEARCH_UNPARSED*)   manual "check 3: /search response unparseable -- verify by hand: $(printf '%s' "$res" | head -c 200)";;
+    SEARCH_UNPARSED*)   manual "check 3: /search response unparseable -- verify by hand: $(printf '%s' "$res" | head -c 200)";;
     *)                 manual "check 3: search verification incomplete -- verify by hand";;
   esac
 }

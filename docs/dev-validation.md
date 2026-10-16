@@ -34,7 +34,7 @@ live 8080 or 7979 proxies.
    retrieved after the flush proves both the round trip and FAISS-index
    consistency. An empty-but-clean result is a WARN during a cold-start
    boot (marked MANUAL by the script); on a warm DB it should return
-   results. A hit with an empty `instance_origin` FAILS the check (the
+   results. A hit with an empty `instance_origin` is a WARN, not a FAIL (the
    column is `TEXT DEFAULT ''`, so presence alone is not a pass).
 
 4. **Chat completion responds within 30 s.** A trivial
