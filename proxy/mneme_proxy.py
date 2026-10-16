@@ -2780,6 +2780,8 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
     _status_line = f"[HOST: ram {_ram} | disk {_disk} | credits {_cred}]"
     if _cs["low"]:
         _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
+    if _hs.get("ram_pct") is not None and _hs["ram_pct"] >= BROWNOUT_RAM_PCT:
+        _status_line += " [BROWNOUT: shedding background work]"
     _body = ctx + f"\n\n{_status_line}" + (f"\n[context budget: {_total} token window, ~{_used} used, "
                    f"~{_remaining} remaining for tool results + answer]")
     # Surface the current session id so the model knows its own identity — useful
@@ -10753,6 +10755,7 @@ if FLASK_OK:
             "label": _h["label"],
             "credits": _h["credits"],
             "host": _h["host"],
+            "brownout": _h["brownout"],
 
         })
 
