@@ -2014,96 +2014,100 @@ db.execute("PRAGMA synchronous=NORMAL")
 capability.db = db  # bind the extracted capability module's db handle
 mntools.db = db      # bind the tool system's db handle
 
-db.executescript("""
-    CREATE TABLE IF NOT EXISTS chunks (
-        chunk_id    TEXT PRIMARY KEY,
-        topic_label TEXT NOT NULL,
-        messages    TEXT NOT NULL,          -- JSON array of {role, content}
-        thinking    TEXT DEFAULT '',
-        strategy    TEXT DEFAULT '',
-        vector      BLOB,                   -- 1024 × float32 = 4096 bytes
-        grade       TEXT DEFAULT 'C',
-        consensus   REAL DEFAULT 0.0,
-        outcome     TEXT DEFAULT '',
-        problem_type TEXT DEFAULT 'other',
-        source      TEXT DEFAULT 'unknown',
-        cycle       INTEGER DEFAULT 0,
-        created_at  TEXT NOT NULL
-    );
-    
-    CREATE TABLE IF NOT EXISTS strategies (
-        strategy_id   TEXT PRIMARY KEY,
-        problem_type  TEXT NOT NULL,
-        strategy_text TEXT NOT NULL,
-        source_chunk  TEXT,
-        grade         TEXT DEFAULT 'B',
-        created_at    TEXT NOT NULL
-    );
-    
-    CREATE TABLE IF NOT EXISTS preferences (
-        pref_key   TEXT PRIMARY KEY,
-        pref_value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    
-    CREATE TABLE IF NOT EXISTS capability_edges (
-        problem_type TEXT PRIMARY KEY,
-        attempts     INTEGER DEFAULT 0,
-        failures     INTEGER DEFAULT 0,   -- D/F grades
-        last_grade   TEXT DEFAULT '',
-        flagged      INTEGER DEFAULT 0,   -- 1 = known capability edge
-        updated_at   TEXT NOT NULL
-    );
-    
-    CREATE TABLE IF NOT EXISTS tools (
-        tool_id       TEXT PRIMARY KEY,
-        problem_type  TEXT NOT NULL,
-        name          TEXT NOT NULL,
-        description   TEXT DEFAULT '',
-        script_path   TEXT DEFAULT '',
-        tested_at     TEXT DEFAULT '',
-        success_count INTEGER DEFAULT 0,
-        retired       INTEGER DEFAULT 0
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
-    CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
-    CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
-    CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type);
-""")
+# ─── Versioned, serialized schema migrations ─────────────────────
+# Multiple proxies may share one DB (shared memory) and start concurrently.
+# Each migration is applied exactly once (recorded in schema_migrations), under
+# SQLite's cross-process write lock (BEGIN IMMEDIATE), so concurrent migrators
+# serialize instead of racing. "already exists"/"duplicate column" is treated as
+# an idempotent no-op; any OTHER error is fatal and rolls back, so a buggy
+# migration cannot half-apply to a DB other processes are reading.
+_SCHEMA_MIGRATIONS = [
+    (1, "base tables + indexes", [
+        "CREATE TABLE IF NOT EXISTS chunks (chunk_id TEXT PRIMARY KEY, "
+        "topic_label TEXT NOT NULL, messages TEXT NOT NULL, "
+        "thinking TEXT DEFAULT '', strategy TEXT DEFAULT '', vector BLOB, "
+        "grade TEXT DEFAULT 'C', consensus REAL DEFAULT 0.0, "
+        "outcome TEXT DEFAULT '', problem_type TEXT DEFAULT 'other', "
+        "source TEXT DEFAULT 'unknown', cycle INTEGER DEFAULT 0, "
+        "created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS strategies (strategy_id TEXT PRIMARY KEY, "
+        "problem_type TEXT NOT NULL, strategy_text TEXT NOT NULL, "
+        "source_chunk TEXT, grade TEXT DEFAULT 'B', created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS preferences (pref_key TEXT PRIMARY KEY, "
+        "pref_value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS capability_edges (problem_type TEXT PRIMARY KEY, "
+        "attempts INTEGER DEFAULT 0, failures INTEGER DEFAULT 0, "
+        "last_grade TEXT DEFAULT '', flagged INTEGER DEFAULT 0, "
+        "updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS tools (tool_id TEXT PRIMARY KEY, "
+        "problem_type TEXT NOT NULL, name TEXT NOT NULL, "
+        "description TEXT DEFAULT '', script_path TEXT DEFAULT '', "
+        "tested_at TEXT DEFAULT '', success_count INTEGER DEFAULT 0, "
+        "retired INTEGER DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(problem_type)",
+        "CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type)",
+        "CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type)",
+    ]),
+    (2, "chunk/strategy/capability/tools columns", [
+        "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
+        "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
+        "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
+        "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
+        "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
+        "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
+        "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
+        "ALTER TABLE tools ADD COLUMN embedding BLOB",
+        "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
+        "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
+    ]),
+]
 
-# ─── Schema migrations for existing DBs ─────────────────────────
-for migration in (
-    "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
-    "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
-    "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
-    "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
-    "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
-    "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
-    "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
-    "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
-    "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
-    "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-    "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
-    "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
-    "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
-    "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
-    "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
-    "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
-    "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
-    "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
-    "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
-    "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
-    "ALTER TABLE tools ADD COLUMN embedding BLOB",
-    "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
-    "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
-    "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
-):
-    try:
-        db.execute(migration)
-    except sqlite3.OperationalError:
-        pass  # column already exists
-db.commit()
+
+def _migrate_schema():
+    """Apply pending schema migrations once, serialized across processes."""
+    db.execute("CREATE TABLE IF NOT EXISTS schema_migrations "
+               "(version INTEGER PRIMARY KEY, applied_at TEXT)")
+    db.commit()
+    applied = {r[0] for r in db.execute("SELECT version FROM schema_migrations")}
+    for version, desc, statements in _SCHEMA_MIGRATIONS:
+        if version in applied:
+            continue
+        db.execute("BEGIN IMMEDIATE")  # take SQLite's cross-process write lock
+        try:
+            for stmt in statements:
+                try:
+                    db.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    msg = str(e)
+                    if "already exists" in msg or "duplicate column" in msg:
+                        continue  # idempotent — already applied
+                    raise
+            db.execute("INSERT OR REPLACE INTO schema_migrations (version, applied_at) "
+                       "VALUES (?, datetime('now'))", (version,))
+            db.commit()
+            print(f"[MIGRATE] applied schema v{version}: {desc}", flush=True)
+        except Exception:
+            db.rollback()
+            raise
+
+
+_migrate_schema()
+
 # Memory curation schema (retraction / recurrence / provenance / decision log).
 # Additive + idempotent, same style as the migrations above.
 curation.ensure_schema(db)
