@@ -23,31 +23,47 @@ disagree, trust the linked spec — it is the source of truth.
 
 ## 0. Git workflow — WHICH BRANCH ARE YOU ON? (read this first)
 
-This repo has **two active branches** and a **variable number of running proxy
-instances** — there can be any number of proxies up at once (self-code on 8080,
-standby on 8082, plus test/scratch instances on other ports). Before you edit
-anything, check `git branch --show-current` AND check what's actually running.
+This repo has **two active branches** and **two primary proxy instances**:
 
-### You are on `self-code` (the self-coding agent, port 8080)
+| branch | instance | port | checkout          | role                          |
+|--------|----------|------|-------------------|-------------------------------|
+| main   | A        | 8080 | ~/mneme/repo      | STABLE — your own runtime     |
+| dev    | B        | 7979 | ~/mneme/test-repo | DEVELOPMENT — code under test |
 
-- This is **your sandbox**. Edit freely. Commit and push **only** to `self-code`:
+Before you edit anything, check `git branch --show-current` AND check what's
+actually running. The two checkouts are separate clones that both push/pull to
+GitHub (origin) as the shared remote.
 
-      git pull --rebase origin self-code      # sync first
-      git add -A && git commit -m "what and why"
-      git push origin self-code
+### You are instance A — the coder (port 8080, branch main)
 
-- **NEVER** touch `classification-models` — never check it out, never push to it.
-- The standby instance (port 8082) runs `classification-models` from
-  `/home/ubuntu/mneme/repo-standby`. Do **not** edit that checkout or that instance.
-- If you break something, that's fine — the standby is a clean fallback. Just
-  keep pushing to `self-code` so your work is never lost.
+- **You RUN from `main` in `~/mneme/repo`. That code is stable. NEVER edit it.**
+- All development happens on **`dev`** in **`~/mneme/test-repo`** — that is the only
+  code you edit. Commit and push **only** to `dev`:
 
-### You are on `classification-models` (the standby/fixer, port 8082)
+      cd ~/mneme/test-repo
+      git pull --rebase origin dev                 # sync first
+      # ... edit ...
+      git add -A && git commit -m "feat: what and why"   # conventional commits
+      git push origin dev
 
-- This is the **stable** branch. Make only careful, minimal, verified fixes.
-- The self-coding agent works on `self-code` in `/home/ubuntu/mneme/repo`; do
-  not edit that checkout.
-- Push fixes to `classification-models` only after verifying they work.
+- **Test on B (port 7979)**: restart it after committing, then verify:
+
+      cd ~/mneme/chunks/instances/7979 && nohup setsid bash start_proxy.sh > boot.log 2>&1 < /dev/null &
+
+- **NEVER** touch `main` (never check it out to edit, never push to it) and NEVER
+  restart or kill port 8080 — that is your own process. Promotion (`dev` -> `main`)
+  is Sean's action; do it only when he explicitly asks.
+- If B breaks, that's the design working: A is still alive. Fix `dev`, restart B,
+  carry on.
+
+### You are instance B — the test (port 7979, branch dev)
+
+- You run the **development** code. Report what breaks; do not touch main or 8080.
+- B runs `runtime.local_only: true` — no classifier, chat model does the labeling.
+
+### Separate memory DBs (never cross them)
+
+- A = `~/mneme/chunks/mneme.db`   ·   B = `~/mneme/chunks/dev/mneme.db`
 
 ### Rules that apply everywhere
 
