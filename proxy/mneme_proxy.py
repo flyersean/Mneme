@@ -2688,7 +2688,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
         for word in words:
             pattern = f"%{word}%"
             rows = db.execute(
-                "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT chunk_id FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' ORDER BY created_at DESC LIMIT ?",
                 (pattern, top_k * 2)
             ).fetchall()
             for (cid,) in rows:
@@ -2708,7 +2708,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     for word in words:
         pattern = f"%{word}%"
         rows = db.execute(
-            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ?",
+            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'",
             (pattern,)
         ).fetchall()
         for cid, created in rows:
@@ -7057,6 +7057,15 @@ def _execute_search_tool_calls(search_calls):
                 if kw:
                     hits = [cid for _, cid in kw]
                     print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
+        # REMOVED chunks must never be surfaced to the model: read_chunk follows
+        # via load_chunk(allow_removed=False) and would fail with "No chunk
+        # with id" — search and read must agree on chunk visibility.
+        if hits:
+            _ph = ','.join('?' * len(hits))
+            _keep = {r[0] for r in db.execute(
+                f"SELECT chunk_id FROM chunks WHERE chunk_id IN ({_ph}) "
+                "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'", tuple(hits))}
+            hits = [h for h in hits if h in _keep]
         trace.update(hits)
         if hits:
             lines = [f"Search results from Mneme memory ({len(hits)} matching chunks — every one contains a search term; read them all before concluding a fact is absent):"]
