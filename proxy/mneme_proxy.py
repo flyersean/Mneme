@@ -167,6 +167,8 @@ def _memory_health():
         "embed": {"model": EMBED_MODEL, **_s("embed")},
         "chat": {"model": MODEL, **_s("chat")},
         "label": {"model": LABEL_MODEL, **_s("label")},
+        "credits": _credit_status(),
+        "host": _host_status(),
     }
 
 
@@ -785,6 +787,78 @@ MEMORY_ENABLED = os.environ.get("MNEME_MEMORY_ENABLED", "1") == "1"  # master sw
 LOCAL_ONLY = os.environ.get("MNEME_LOCAL_ONLY", "0") == "1"  # "1" = run fully local: skip the OpenRouter Decisions API (classifier) and default the label model to the chat model. Harness judges fail-open without it.
 YOLO = os.environ.get("MNEME_YOLO", "0") == "1"  # trust this box: auth off + full filesystem + all tools
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
+
+# ── Host + credit monitoring ─────────────────────────────────────────
+# Low-balance guard: OpenRouter credits are a finite bank. When the balance
+# drops below a configurable floor, Mneme stops STARTING new paid work (re-embed
+# drain, background embedding/labeling) so a depleted bank never strands open
+# processes mid-run. This is a LOW-WATER MARK, not a rate limit — useful work
+# still burns credits freely above the floor. Fail-open: if the balance can't be
+# read (no key / network down), nothing is halted.
+CREDIT_FLOOR = float(os.environ.get("MNEME_CREDIT_FLOOR", "5.0"))  # USD
+_CREDIT_CACHE = {"balance": None, "at": 0.0}
+_CREDIT_TTL = 60.0
+
+
+def _fetch_credit_balance():
+    """OpenRouter credit balance (USD) or None. Cached ~60s; no LLM tokens."""
+    now = time.time()
+    if _CREDIT_CACHE["balance"] is not None and now - _CREDIT_CACHE["at"] < _CREDIT_TTL:
+        return _CREDIT_CACHE["balance"]
+    _CREDIT_CACHE["at"] = now
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        _CREDIT_CACHE["balance"] = None
+        return None
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/credits",
+                         headers={"Authorization": f"Bearer {key}"}, timeout=5)
+        if r.status_code != 200:
+            _CREDIT_CACHE["balance"] = None
+            return None
+        d = (r.json() or {}).get("data", {})
+        bal = float(d.get("total_credits") or 0) - float(d.get("total_usage") or 0)
+        _CREDIT_CACHE["balance"] = bal
+        return bal
+    except Exception:
+        _CREDIT_CACHE["balance"] = None
+        return None
+
+
+def _credit_status():
+    bal = _fetch_credit_balance()
+    return {"balance": bal, "floor": CREDIT_FLOOR,
+            "low": bal is not None and bal < CREDIT_FLOOR}
+
+
+def _host_status():
+    """Cheap local host snapshot (/proc + statvfs) — no API tokens."""
+    out = {}
+    try:
+        with open("/proc/meminfo") as f:
+            mi = {}
+            for ln in f:
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    mi[k.strip()] = v.strip()
+        total = int(mi.get("MemTotal", "0").split()[0])
+        avail = int(mi.get("MemAvailable", "0").split()[0])
+        out["ram_pct"] = round((total - avail) / total * 100, 1) if total else 0.0
+    except Exception:
+        out["ram_pct"] = None
+    try:
+        st = os.statvfs(CHUNK_DIR or "/")
+        total_b = st.f_blocks * st.f_frsize
+        free_b = st.f_bavail * st.f_frsize
+        out["disk_pct"] = round((total_b - free_b) / total_b * 100, 1) if total_b else 0.0
+    except Exception:
+        out["disk_pct"] = None
+    try:
+        out["load"] = round(os.getloadavg()[0], 2)
+    except Exception:
+        out["load"] = None
+    return out
+
 
 # ── Memory curation flags ────────────────────────────────────────────────
 # Retraction lets a specific chunk be marked false (and later restored) instead
@@ -2622,7 +2696,15 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
     _reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
     _used = _estimate_tokens(ctx)
     _remaining = max(0, _total - _reserve - _used)
-    _body = ctx + (f"\n\n[context budget: {_total} token window, ~{_used} used, "
+    _cs = _credit_status()
+    _hs = _host_status()
+    _ram = f"{_hs.get('ram_pct')}%" if _hs.get('ram_pct') is not None else "?"
+    _disk = f"{_hs.get('disk_pct')}%" if _hs.get('disk_pct') is not None else "?"
+    _cred = f"${_cs['balance']:.2f}" if _cs.get('balance') is not None else "?"
+    _status_line = f"[HOST: ram {_ram} | disk {_disk} | credits {_cred}]"
+    if _cs["low"]:
+        _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
+    _body = ctx + f"\n\n{_status_line}" + (f"\n[context budget: {_total} token window, ~{_used} used, "
                    f"~{_remaining} remaining for tool results + answer]")
     # Surface the current session id so the model knows its own identity — useful
     # for provenance, tracing a chunk back to its conversation, and handoffs like
@@ -11076,6 +11158,11 @@ def _reembed_pending(limit: int = 200):
     total number re-embedded."""
     total_fixed = 0
     while True:
+        cs = _credit_status()
+        if cs["low"]:
+            print(f"  [EMBED-RETRY] deferred: credits low "
+                  f"(${cs['balance']:.2f} < floor ${CREDIT_FLOOR:.2f})", flush=True)
+            break
         rows = db.execute(
             "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
             (limit,),
