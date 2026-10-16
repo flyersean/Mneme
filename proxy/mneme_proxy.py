@@ -2028,7 +2028,8 @@ db.executescript("""
         problem_type TEXT DEFAULT 'other',
         source      TEXT DEFAULT 'unknown',
         cycle       INTEGER DEFAULT 0,
-        created_at  TEXT NOT NULL
+        created_at  TEXT NOT NULL,
+        instance_origin TEXT DEFAULT ''
     );
     
     CREATE TABLE IF NOT EXISTS strategies (
@@ -2098,6 +2099,7 @@ for migration in (
     "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
     "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
     "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
+    "ALTER TABLE chunks ADD COLUMN instance_origin TEXT DEFAULT ''",
 ):
     try:
         db.execute(migration)
@@ -4116,14 +4118,14 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             INSERT OR REPLACE INTO chunks
             (chunk_id, topic_label, messages, thinking, strategy, vector, grade,
              consensus, outcome, problem_type, source, cycle, created_at, session_id,
-             indexable, superseded_by, pending_embed, embed_model, dim, trust)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             indexable, superseded_by, pending_embed, embed_model, dim, trust, instance_origin)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
               blob, grade, consensus, outcome, problem_type,
               source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
               1 if is_indexable else 0, "",
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
-              trust))
+              trust, str(PORT)))
 
     _db_write_retry(_insert_chunk)
     
