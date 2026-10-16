@@ -4106,6 +4106,14 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         the same port label (e.g. one falls back to the default env port). For
         an unambiguous instance, correlate with the DB_PATH/chunk dir of the
         instance that owns the chunk table being audited.
+      - Shared-DB caveat: when two processes write the SAME chunk table, the
+        stamp is the writing PROCESS, not the owning instance — e.g. in a
+        shared DB, "7979" means the 7979 process wrote the row, even if the
+        table belongs to the 8080 instance's chunk dir.
+      - save_chunk is the only INSERT INTO chunks, but not the only writer of
+        chunk columns: curation.ensure_schema() also ALTERs the chunks table
+        (retracted/derived_from/etc.), and curation applies UPDATEs to it.
+        Those paths preserve instance_origin; note them when auditing.
       - '' means the row predates this feature (legacy row, origin unknown) —
         it is NOT the same as "written by an unidentified future path".
       - INSERT OR REPLACE rewrites the row wholesale: any re-save through this
