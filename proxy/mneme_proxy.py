@@ -2458,8 +2458,16 @@ def _cosine_search(query_vec: np.ndarray, top_k: int, threshold: float):
         if FAISS_OK and _index is not None:
             k = min(top_k, len(_id_map))
             scores, idxs = _index.search(query_vec.reshape(1, -1), k)
-            return [(float(s), _id_map[i]) for s, i in zip(scores[0], idxs[0])
-                    if i >= 0 and float(s) >= threshold]
+            if scores is None or len(scores) == 0 or len(scores[0]) == 0:
+                return []  # empty/desynced index — fall back to keyword search
+            out = []
+            for s, i in zip(scores[0], idxs[0]):
+                ii = int(i)
+                if ii < 0 or ii >= len(_id_map):
+                    continue  # index/_id_map desync during re-embed
+                if float(s) >= threshold:
+                    out.append((float(s), _id_map[ii]))
+            return out
         return []
 
 def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: bool = False):
@@ -10998,43 +11006,54 @@ if FLASK_OK:
 
 def _reembed_pending(limit: int = 200):
     """Re-embed chunks stored unembedded (pending_embed=1) due to an embed
-    failure. Runs at startup; returns number re-embedded."""
-    rows = db.execute(
-        "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
-        (limit,),
-    ).fetchall()
-    fixed = 0
-    for cid, msgs_json in rows:
-        try:
-            msgs = json.loads(msgs_json)
-        except Exception:
-            continue
-        text = " ".join(
-            _extract_text(m.get("content", ""))
-            for m in msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool")
-        )
-        if not text.strip():
-            continue
-        vec = embed(text)
-        if vec is None:
-            continue  # embedder still down — leave pending, retry next startup
-        db.execute(
-            "UPDATE chunks SET vector=?, pending_embed=0, embed_model=?, dim=? WHERE chunk_id=?",
-            (_vec_to_blob(vec), EMBED_MODEL, DIM, cid),
-        )
-        db.commit()
-        with faiss_lock():
-            _load_index_from_disk()
-            if FAISS_OK and _index is not None:
-                _index.add(vec.reshape(1, -1))
-            if cid not in _id_map:
-                _id_map.append(cid)
-            _save_index()
-        fixed += 1
-        print(f"  [EMBED-RETRY] {cid} re-embedded ({len(text)} chars)", flush=True)
-    if fixed:
-        print(f"  [EMBED-RETRY] re-embedded {fixed} pending chunks", flush=True)
-    return fixed
+    failure. Runs in the background at startup and drains the ENTIRE backlog
+    (not just one batch) so a large embedder outage self-heals. Returns the
+    total number re-embedded."""
+    total_fixed = 0
+    while True:
+        rows = db.execute(
+            "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
+            (limit,),
+        ).fetchall()
+        if not rows:
+            break
+        fixed = 0
+        for cid, msgs_json in rows:
+            try:
+                msgs = json.loads(msgs_json)
+            except Exception:
+                continue
+            text = " ".join(
+                _extract_text(m.get("content", ""))
+                for m in msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool")
+            )
+            if not text.strip():
+                continue
+            vec = embed(text)
+            if vec is None:
+                continue  # embedder still down — leave pending, retry next pass
+            db.execute(
+                "UPDATE chunks SET vector=?, pending_embed=0, embed_model=?, dim=? WHERE chunk_id=?",
+                (_vec_to_blob(vec), EMBED_MODEL, DIM, cid),
+            )
+            db.commit()
+            with faiss_lock():
+                _load_index_from_disk()
+                if FAISS_OK and _index is not None:
+                    _index.add(vec.reshape(1, -1))
+                if cid not in _id_map:
+                    _id_map.append(cid)
+                _save_index()
+            fixed += 1
+            print(f"  [EMBED-RETRY] {cid} re-embedded ({len(text)} chars)", flush=True)
+        total_fixed += fixed
+        if fixed == 0:
+            # Nothing in this batch could be embedded (embedder down, or the
+            # remaining chunks have empty text) — stop to avoid spinning.
+            break
+    if total_fixed:
+        print(f"  [EMBED-RETRY] re-embedded {total_fixed} pending chunks", flush=True)
+    return total_fixed
 
 
 def _embedding_health_check() -> bool:
