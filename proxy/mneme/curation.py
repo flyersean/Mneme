@@ -741,3 +741,58 @@ def self_confirm_label(chunk: dict) -> str:
     if chunk.get("self_confirm"):
         return "[SELF-CONFIRMED — support traces back to model's own output]"
     return ""
+
+
+def flag_if_cites_poisoned(db, chunk_id, cited_ids):
+    """Proactive provenance poisoning: a newly-archived chunk that CITES an
+    F-graded (fabricated), retracted, or already-flagged chunk is itself suspect
+    and is queued for review. Stops a single fabrication propagating through the
+    citation chain — the citation to phantom/marked memory is surfaced before the
+    new chunk can be trusted or further cited."""
+    bad = []
+    for cid in (cited_ids or []):
+        if cid == chunk_id:
+            continue
+        try:
+            row = db.execute(
+                "SELECT grade, retracted, proposed_retract FROM chunks WHERE chunk_id=?",
+                (cid,)).fetchone()
+        except Exception:
+            row = None
+        if not row:
+            continue
+        if row[0] == "F" or (row[1] or "") or (row[2] or ""):
+            bad.append(cid)
+    if not bad:
+        return None
+    reason = "cites fabricated/flagged chunk(s): " + ", ".join(bad[:5])
+    db.execute("UPDATE chunks SET proposed_retract='system', proposed_reason=? "
+               "WHERE chunk_id=? AND (proposed_retract IS NULL OR proposed_retract='')",
+               (reason, chunk_id))
+    db.commit()
+    return {"chunk_id": chunk_id, "poisoned_by": bad}
+
+
+def flag_poisoned_descendants(db, chunk_id, reason=""):
+    """Retroactive provenance poisoning: flag every chunk that cites or saw
+    `chunk_id` (transitive), for when a chunk is discovered to be fabricated.
+    Non-destructive — queues for human review via proposed_retract, never retracts."""
+    try:
+        lin = lineage(db, chunk_id, max_depth=10)
+    except Exception:
+        return {"root": chunk_id, "flagged": 0, "total_descendants": 0}
+    flagged = 0
+    for n in lin.get("descendants", []):
+        cid = n["chunk_id"]
+        try:
+            row = db.execute("SELECT proposed_retract, retracted FROM chunks WHERE chunk_id=?",
+                             (cid,)).fetchone()
+        except Exception:
+            row = None
+        if row and not (row[0] or "") and not (row[1] or ""):
+            db.execute("UPDATE chunks SET proposed_retract='system', proposed_reason=? WHERE chunk_id=?",
+                       (reason or f"derived from fabricated chunk {chunk_id}", cid))
+            flagged += 1
+    db.commit()
+    return {"root": chunk_id, "flagged": flagged,
+            "total_descendants": len(lin.get("descendants", []))}
