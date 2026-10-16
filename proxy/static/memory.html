@@ -115,6 +115,10 @@
   .tag.uncorr { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .tag.gradeA { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
   .tag.gradeF { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+  /* Collapsible provenance readout (grade + trust + lineage) — hidden by default */
+  .prov { margin-top: 4px; font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .prov summary { cursor: pointer; color: var(--accent); user-select: none; font-size: 11px; }
+  .prov summary:hover { text-decoration: underline; }
   /* The bad-chunk control: a BUTTON in the flags column, styled as a pill so it
      sits with the other tags while still reading as clickable. */
   .badbtn {
@@ -388,6 +392,20 @@ function rowTags(c) {
   return t.join(" ");
 }
 
+function provReadout(c) {
+  const rows = [];
+  if (c.grade) rows.push('<b>grade:</b> ' + esc(c.grade));
+  if (c.trust) rows.push('<b>trust:</b> ' + esc(c.trust));
+  if (c.source) rows.push('<b>source:</b> ' + esc(c.source));
+  if (c.model) rows.push('<b>model:</b> ' + esc(c.model));
+  if (c.retracted) rows.push('<b>retracted:</b> ' + esc(c.retracted));
+  if (c.proposed_retract) rows.push('<b>flagged:</b> ' + esc(c.proposed_retract));
+  if (c.self_confirm) rows.push('<b>self-confirming</b>');
+  if (!c.independent_sources) rows.push('<b>uncorroborated</b>');
+  if (c.derived_from && c.derived_from.length) rows.push('<b>cites:</b> ' + esc(c.derived_from.join(', ')));
+  return rows.join(' &middot; ') || '(none)';
+}
+
 function render() {
   const wrap = $("listwrap");
   if (!state.chunks.length) {
@@ -402,6 +420,7 @@ function render() {
         <td>
           <div class="topic">${esc(c.topic_label || "(no topic)")}</div>
           <div class="when">${esc(when(c.created_at))}</div>
+          <details class="prov"><summary>provenance</summary>${provReadout(c)}</details>
         </td>
         <td class="preview">${esc(c.preview)}</td>
         <td><div class="tags">${rowTags(c)}</div></td>
