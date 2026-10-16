@@ -2,7 +2,7 @@
 # mneme-deploy — safely restart a Mneme instance on the latest committed code.
 #
 # Usage:
-#   mneme-deploy staging              # restart the staging instance (port 8083)
+#   mneme-deploy staging              # restart the test instance (port 7979)
 #   mneme-deploy production --yes     # restart the LIVE instance (port 8080)
 #
 # How it works (simple on purpose):
@@ -21,7 +21,7 @@ say() { printf '%s\n' "$1"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        staging)     instance=8083 ;;
+        staging)     instance=7979 ;;
         production)  instance=8080 ;;
         --yes)       prod_yes=1 ;;
         *) say "Usage: mneme-deploy staging | mneme-deploy production --yes"; exit 1 ;;
@@ -48,7 +48,10 @@ if [ -z "$START" ]; then
     exit 1
 fi
 
-cd "$REPO"
+case "$instance" in
+    7979) cd /home/ubuntu/mneme/test-repo ;;
+    *)    cd "$REPO" ;;
+esac
 
 # --- Guardrails -------------------------------------------------------------
 if [ "$instance" = "8080" ]; then
