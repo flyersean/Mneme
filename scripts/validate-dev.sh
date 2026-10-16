@@ -93,7 +93,8 @@ check_health() {
 import json,sys
 try: d=json.load(sys.stdin); e=d.get("embed") or {}
 except Exception: print("parse-failed"); sys.exit(1)
-v=e.get("ok"); print("ok=%s err[%s]" % ("ok" if v is True else ("missing" if v is None else str(v))), e.get("error","")); sys.exit(0)
+v=e.get("ok"); lbl=("ok" if v is True else ("missing" if v is None else str(v)))
+print("ok=%s err[%s]" % (lbl, e.get("error",""))); sys.exit(0)
 ' 2>/dev/null)"
   case "$line" in
     ok=ok*) pass "check 2a: embedder backend reports ok ($line)";;
