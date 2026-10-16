@@ -63,6 +63,14 @@ def main():
     # Port appears as 'port: 8080', URLs, and paths — replace all occurrences.
     cfg = re.sub(rf"\b{args.from_port}\b", str(args.port), cfg)
 
+    # Give the new instance its OWN memory DB — never share the source's DB.
+    # (The port rewrite above already fixes chunk_dir, but the shared db_path
+    #  contains no port number, so it must be rewritten explicitly.)
+    cfg = cfg.replace(
+        "/home/ubuntu/mneme/chunks/mneme.db",
+        f"/home/ubuntu/mneme/chunks/instances/{args.port}/mneme.db",
+    )
+
     # Replace ONLY lines naming the main chat model — embedder untouched.
     lines = []
     for ln in cfg.splitlines():
