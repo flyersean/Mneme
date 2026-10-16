@@ -8083,6 +8083,14 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _glabel = {"A": "great", "B": "pass", "F": "fail"}.get(grade, grade)
     print(f"  [GRADE] {_glabel}: {grade}", flush=True)
 
+    # Surface a provenance failure to the user. A fabricated citation (F) or an
+    # unverified assertion (D) must be visible in the reply — not just logged —
+    # so the user can act on it. Mechanical: it does not depend on the model
+    # remembering to report its own grade (models do this inconsistently).
+    if grade in ("D", "F") and (result.get("content") or "").strip():
+        _flag = "fabricated or unverifiable citation" if grade == "F" else "unverified claim"
+        result["content"] = (result["content"] or "") + f"\n\n[GRADE: {grade} — {_flag}]"
+
     _answer = result.get("content", "")
     try:
         _trail = _extract_combined_tool_trail(messages, since_last_user=True)
