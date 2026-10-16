@@ -4098,6 +4098,20 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     pending_embed=1 and no vector, so it is not lost, but it is also not added
     to FAISS until a background job re-embeds it. This replaces the old silent
     zero-vector behavior (a zero vector stored fine but never matched anything).
+
+    instance_origin semantics (write-provenance audit marker):
+      - The value stamped is the proxy's BOUND PORT as a label ("8080"/"7979").
+        It identifies the *process* that bound that port, not a global instance
+        ID — two proxies on different chunk dirs could in principle both report
+        the same port label (e.g. one falls back to the default env port). For
+        an unambiguous instance, correlate with the DB_PATH/chunk dir of the
+        instance that owns the chunk table being audited.
+      - '' means the row predates this feature (legacy row, origin unknown) —
+        it is NOT the same as "written by an unidentified future path".
+      - INSERT OR REPLACE rewrites the row wholesale: any re-save through this
+        function re-stamps the origin of *this* process over the previous one.
+        save_chunk is the only INSERT INTO chunks in the codebase, so origin
+        never silently resets to ''.
     """
     # Source-tiered indexing: only index user/page/tool content, not model hallucinations
     is_indexable = True
@@ -10632,7 +10646,8 @@ if FLASK_OK:
         for score, chunk_id, method in hybrid:
             row = db.execute(
                 "SELECT topic_label, grade, created_at, outcome, source, session_id, cycle, "
-                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
+                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason, "
+                "COALESCE(instance_origin,'') "
                 "FROM chunks WHERE chunk_id=?", (chunk_id,)
             ).fetchone()
             if not row:
@@ -10642,7 +10657,7 @@ if FLASK_OK:
             if session and row[5] != session:
                 continue
             entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "session_id": row[5], "cycle": row[6], "similarity": round(score, 4), "method": method,
-                     "removed": row[7], "removed_reason": row[8] or ""}
+                     "removed": row[7], "removed_reason": row[8] or "", "instance_origin": row[9]}
             chunks.append(entry)
         return _cors_response({"results": chunks[:top_k]})
 
