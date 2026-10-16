@@ -163,6 +163,7 @@ def _memory_health():
             "embedded": embedded,
             "pending": pending,
             "pct_unembedded": round(pending / total * 100, 1) if total else 0.0,
+            "measured_at": datetime.now(timezone.utc).isoformat(),
         },
         "embed": {"model": EMBED_MODEL, **_s("embed")},
         "chat": {"model": MODEL, **_s("chat")},
@@ -858,6 +859,7 @@ def _host_status():
         out["load"] = round(os.getloadavg()[0], 2)
     except Exception:
         out["load"] = None
+    out["at"] = datetime.now(timezone.utc).isoformat()
     return out
 
 
@@ -2777,7 +2779,8 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
     _ram = f"{_hs.get('ram_pct')}%" if _hs.get('ram_pct') is not None else "?"
     _disk = f"{_hs.get('disk_pct')}%" if _hs.get('disk_pct') is not None else "?"
     _cred = f"${_cs['balance']:.2f}" if _cs.get('balance') is not None else "?"
-    _status_line = f"[HOST: ram {_ram} | disk {_disk} | credits {_cred}]"
+    _ts = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    _status_line = f"[HOST: ram {_ram} | disk {_disk} | credits {_cred} @ {_ts}]"
     if _cs["low"]:
         _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
     if _hs.get("ram_pct") is not None and _hs["ram_pct"] >= BROWNOUT_RAM_PCT:
