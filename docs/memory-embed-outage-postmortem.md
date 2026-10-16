@@ -50,3 +50,33 @@ inspection.
 - Proactive watchdog alerting (actively notifying on backend failures,
   rather than just reporting via `/health`) is deferred to a future
   cycle.
+
+## Detection & Timeline
+
+- The outage went unnoticed for its full five-day duration because
+  `/health` returned `ok` regardless of embedder state.
+- Detected Oct 16, via manual inspection of the memory figures after the
+  `mneme_health` tool and health figures landed — not by any automated
+  signal (none existed).
+- Discovered state at detection: ~2,594 of ~2,987 chunks (~87%)
+  unembedded, the backlog having grown across restarts.
+
+## Residual gaps (recorded for honesty)
+
+- The drain is still *startup-only*: `_reembed_pending` is enqueued once
+  at startup. If the embedder recovers without a restart, the backlog
+  sits until the next restart. The 200 limit is now per-batch, not per
+  startup, but a mid-flight recovery does not self-heal.
+- Over-length text can leave chunks `pending_embed` silently even when
+  the embedder is healthy — an outage-compounding behavior.
+- `embed.at=""` right after startup means "never attempted", which is
+  indistinguishable from healthy on the first request.
+- Deferred: proactive watchdog alerting on backend failures.
+
+## Verification (as of Oct 16)
+
+- `mneme.db` (main instance A): total=3126, pending=0 — backlog drained.
+- `chunks/dev/mneme.db` (instance B): total=37, pending=0 — drained.
+- Reproduction recipe for the original blind spot: point `embed_backend`
+  at an invalid key, restart, and confirm `/health` now shows
+  `embed.ok: false` and `pending > 0`.
