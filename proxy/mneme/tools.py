@@ -154,7 +154,7 @@ SEARCH_MEMORY_TOOL = {
     "type": "function",
     "function": {
         "name": "search_memory",
-        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. To dig for a fact you don't yet know: search, treat the returned chunks (ids + labels + previews) as clues, then read_chunk() a promising one in full or re-search with an exact term you uncovered.",
+        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. To dig for a fact you don't yet know: search, treat the returned chunks (ids + labels + previews) as clues, then read_chunk() a promising one in full or re-search with an exact term you uncovered. DEEP SEARCH (fallback only, never the first move): when a direct search returns only partial info, read the top 2-3 returned chunks in full, note any mem_... ids they reference ('see also' or 'source' tags), and read_chunk() those referenced chunks — the full fact often lives one hop away. HARD LIMITS: max 2 levels of hops, max 8 chunk reads total per fact; stop the moment the fact is found; if a level yields no new on-topic references, declare the fact absent rather than searching further.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -172,7 +172,7 @@ READ_CHUNK_TOOL = {
     "type": "function",
     "function": {
         "name": "read_chunk",
-        "description": "Read one memory chunk in full by its chunk_id (the id shown in search_memory results). Use to drill into a promising chunk — a label or preview may hint that its full text holds the fact or name you're after.",
+        "description": "Read one memory chunk in full by its chunk_id (the id shown in search_memory results). Use to drill into a promising chunk — a label or preview may hint that its full text holds the fact or name you're after. The full text may reference other chunks by id (mem_... in 'see also' or 'source' tags); reading those referenced chunks is how deep search follows the chain.",
         "parameters": {
             "type": "object",
             "properties": {
