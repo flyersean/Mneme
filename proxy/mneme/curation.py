@@ -245,6 +245,7 @@ def list_chunks(db, filters=None, limit=200, offset=0):
       session        session_id
       since / until  ISO date or datetime bounds on created_at (inclusive)
       order          'newest' (default) | 'oldest'
+      chunk_id       substring match on chunk_id (paste a full or partial id)
     """
     f = dict(filters or {})
     where, args = [], []
@@ -256,6 +257,11 @@ def list_chunks(db, filters=None, limit=200, offset=0):
         # of the stored content (the label is derived, the content is verbatim).
         where.append("(messages LIKE ? OR topic_label LIKE ?)")
         args.extend([f"%{kw}%", f"%{kw}%"])
+    cid = (f.get("chunk_id") or "").strip()
+    if cid:
+        # Direct chunk-id lookup — follows a trail when a model cites a chunk id.
+        where.append("chunk_id LIKE ?")
+        args.append(f"%{cid}%")
     if f.get("source"):
         where.append("source = ?")
         args.append(f["source"])

@@ -11011,6 +11011,7 @@ if FLASK_OK:
             "grade": _q("grade"), "trust": _q("trust"), "session": _q("session"),
             "removed": _q("removed"), "since": _q("since"), "until": _q("until"),
             "order": _q("order") or "newest",
+            "chunk_id": _q("chunk_id"),
             "proposed": _flag("proposed"), "self_confirm": _flag("self_confirm"),
             "uncorroborated": _flag("uncorroborated"),
         }

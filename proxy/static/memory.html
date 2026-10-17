@@ -216,6 +216,10 @@
     <div class="filters-extra" id="fextra">
       <div class="frow">
         <div class="f">
+          <label for="chunk_id">Chunk ID</label>
+          <input id="chunk_id" placeholder="mem_…" autocomplete="off">
+        </div>
+        <div class="f">
           <label for="removed">Removed state</label>
           <select id="removed">
             <option value="">All chunks</option>
@@ -330,6 +334,7 @@ function qs() {
   const p = new URLSearchParams();
   const add = (k, v) => { if (v) p.set(k, v); };
   add("keyword", $("keyword").value.trim());
+  add("chunk_id", $("chunk_id").value.trim());
   add("removed", $("removed").value);
   add("source", $("source").value);
   add("model", $("model").value);
