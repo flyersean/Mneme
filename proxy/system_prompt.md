@@ -67,6 +67,15 @@ If injected memory lacks detail, use the search_memory function:
 This searches the Mneme database directly and returns full message
 content. Use it when you need more than what was auto-injected.
 
+Deep search (fallback only, never the first move): when a direct search
+returns only partial info, read the top 2-3 returned chunks in full,
+note the other chunk ids they reference ('see also: mem_...', 'source:
+mem_...' tags), and read_chunk() those. The full fact often lives one
+hop away. HARD LIMITS: at most 2 levels of hops and 8 chunk reads
+total; stop the moment the fact is found; if a hop yields no new
+on-topic references, declare the fact absent instead of searching
+further. Never deep search for a fact a plain search already returned.
+
 ## Reading Pages (fetch_url)
 
 When you fetch a page with fetch_url, Mneme saves the FULL page text to
