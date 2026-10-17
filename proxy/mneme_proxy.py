@@ -2751,17 +2751,17 @@ def _query_snippet(content: str, query: str, radius: int = 160) -> str:
 
 
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
-    """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
+    """Merge FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
 
-    Returns list of (score, chunk_id, method) tuples. Keyword matches carry a
-    score of 0.0 (no semantic signal), so this is gated behind KEYWORD_FALLBACK
-    (default off) — substring hits pollute context otherwise.
+    Keyword runs ALONGSIDE semantic — semantic catches meaning, keyword catches
+    the exact terms/facts that vector similarity misses (names, numbers, quoted
+    phrases). Returns list of (score, chunk_id, method) tuples; keyword matches
+    carry score 0.0 (no semantic signal) so they sort after semantic hits.
     """
     faiss_ids = {cid for _, cid in faiss_results}
     combined = [(s, cid, "faiss") for s, cid in faiss_results]
-    if KEYWORD_FALLBACK and len(combined) < top_k:
-        needed = top_k - len(combined)
-        kw_results = _keyword_search(query, needed, exclude_ids=faiss_ids)
+    if KEYWORD_FALLBACK:
+        kw_results = _keyword_search(query, top_k, exclude_ids=faiss_ids)
         combined.extend([(s, cid, "keyword") for s, cid in kw_results])
     return combined
 
@@ -4759,7 +4759,10 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=Non
     
     scored_combined = [(combined(s, cid), cid) for s, cid, _ in hybrid]
     scored_combined.sort(reverse=True)
-    return [cid for _, cid in scored_combined[:top_k]]
+    # With keyword merged alongside semantic, return up to 2*top_k so keyword
+    # hits (score 0.0, sorted last) are not squeezed out by the top_k cap.
+    _cap = top_k * 2 if KEYWORD_FALLBACK else top_k
+    return [cid for _, cid in scored_combined[:_cap]]
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -7068,7 +7071,12 @@ def _execute_search_tool_calls(search_calls):
             hits = [h for h in hits if h in _keep]
         trace.update(hits)
         if hits:
-            lines = [f"Search results from Mneme memory ({len(hits)} matching chunks — every one contains a search term; read them all before concluding a fact is absent):"]
+            _n = len(hits)
+            _hdr = f"Search results from Mneme memory ({_n} matching chunks"
+            if _n >= 30:
+                _hdr += " — that is a lot; refine the query with a more specific term to narrow down"
+            _hdr += " — every returned chunk contains a search term; READ them with read_chunk to find the fact, it is in the content not the label):"
+            lines = [_hdr]
             for h in hits:
                 cid = h  # route_query returns chunk_id strings, not tuples
                 crow = db.execute("SELECT topic_label, grade, messages, source, trust FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
