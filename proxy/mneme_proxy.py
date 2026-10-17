@@ -2727,7 +2727,10 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     ranked = sorted(match_counts.keys(),
                     key=lambda cid: (-match_counts[cid], recency.get(cid, "")),
                     reverse=False)  # match-count desc, then OLDEST first (invert recency bias)
-    cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
+    # Fallback path only (phrase search handles precise queries now). A small
+    # cap: a word-split result is a lead for read_chunk, not a browsing surface —
+    # don't flood the model with near-miss chunks when one broad word matches.
+    cap = max(top_k, 30)
     return [(0.0, cid) for cid in ranked[:cap]]
 
 def _query_snippet(content: str, query: str, radius: int = 160) -> str:
@@ -7048,12 +7051,31 @@ def _execute_search_tool_calls(search_calls):
         _session = (fn.get("arguments", {}).get("session", "") or "").strip()
         _method = (fn.get("arguments", {}).get("method", "auto") or "auto").strip().lower()
         if _method == "keyword":
-            # Explicit substring search — the model is hunting a specific word,
-            # name, path, or error string that vector similarity would miss.
-            # by_match=True drops the recency bias: old chunks matching the word
-            # are kept and ranked by match count, so a buried fact is not cut off.
-            hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
-            print(f"  [SEARCH-TOOL] keyword '{q[:80]}' -> {len(hits)} hits", flush=True)
+            # PHRASE-FIRST keyword search — the SAME search surface users have on
+            # the memory management page (GET /memory/chunks?keyword=... in
+            # curation.list_chunks): exact substring match of the WHOLE query over
+            # messages AND topic_label, newest first, limited to top_k. A natural
+            # 2-4 word phrase ("my name is") returns only chunks where that exact
+            # phrase appears (~7 chunks), not every chunk containing "name".
+            # Word-split by_match searching is kept ONLY as a fallback for when
+            # the phrase hits nothing (single rare words, partial identifiers).
+            try:
+                _phr = db.execute(
+                    "SELECT chunk_id FROM chunks WHERE (messages LIKE ? OR topic_label LIKE ?) "
+                    "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (f"%{q}%", f"%{q}%", k)).fetchall()
+            except Exception as _e:
+                print(f"  [SEARCH-TOOL] phrase search failed ({_e}) — falling back", flush=True)
+                _phr = []
+            hits = [r[0] for r in _phr]
+            if hits:
+                print(f"  [SEARCH-TOOL] keyword phrase '{q[:80]}' -> {len(hits)} hits", flush=True)
+            else:
+                # by_match=True drops the recency bias: old chunks matching the word
+                # are kept and ranked by match count, so a buried fact is not cut off.
+                hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
+                print(f"  [SEARCH-TOOL] keyword phrase miss — word-split fallback '{q[:80]}' -> {len(hits)} hits", flush=True)
         elif _method == "semantic":
             # Vector/meaning match only — no keyword fallback.
             hits = route_query(q, top_k=k, session=_session)
