@@ -577,6 +577,21 @@ DELETE_PROXY_TOOL = {
 }
 
 
+RESTART_PROXY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "restart_proxy",
+        "description": "Restart a Mneme proxy by port, using that instance's own start script (a clean stop+start that preserves its config). Omit port — or pass your own port — to restart the proxy you are running in; the restart is scheduled after your current response flushes, so this call returns normally first. Pass another port to restart a different proxy. Use this instead of hunting PIDs or killing leftover processes by hand.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "port": {"type": "integer", "description": "HTTP port to restart. Omit to restart the proxy you are running in."},
+            },
+        },
+    },
+}
+
+
 RESUME_RUN_TOOL = {
     "type": "function",
     "function": {
@@ -837,7 +852,7 @@ def native_exec_names(client_tools):
     out = set()
     if os.environ.get("MNEME_YOLO", "0") == "1":
         out.update({"bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-                    "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"})
+                    "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy", "restart_proxy"})
         return out
     if NATIVE_TOOLS_MODE == "on":
         out.update({"bash", "write"})
@@ -856,6 +871,8 @@ def native_exec_names(client_tools):
         out.add("delete_runs")
     if os.environ.get("MNEME_TOOL_DELETE_PROXY", "1") == "1":
         out.add("delete_proxy")
+    if os.environ.get("MNEME_TOOL_RESTART_PROXY", "1") == "1":
+        out.add("restart_proxy")
     return out
 
 
@@ -879,9 +896,10 @@ def assemble_tools(client_tools):
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
-                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL}
+                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL,
+                    "restart_proxy": RESTART_PROXY_TOOL}
     for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"):
+              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy", "restart_proxy"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -1060,6 +1078,8 @@ def execute_native_tool(name, args):
         return _exec_delete_runs(args)
     if name == "delete_proxy":
         return _exec_delete_proxy(args)
+    if name == "restart_proxy":
+        return _exec_restart_proxy(args)
     return f"[unknown native tool: {name}]"
 
 
@@ -1564,6 +1584,39 @@ def _exec_delete_proxy(args):
     if delete_proxy is None:
         return "Proxy deletion is unavailable here (delete_proxy hook not bound)."
     return delete_proxy(port)
+
+
+def _exec_restart_proxy(args):
+    """Restart a proxy by port (default: self). Spawns the instance's start script detached."""
+    port = (args or {}).get("port")
+    if port is None:
+        port = os.environ.get("MNEME_PORT", "")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return f"invalid port {port!r} — expected an integer."
+    chunk_dir = os.environ.get("MNEME_CHUNK_DIR", "")
+    inst_root = os.path.dirname(chunk_dir) if chunk_dir else "/home/ubuntu/mneme/chunks/instances"
+    inst_dir = os.path.join(inst_root, str(port))
+    script = None
+    for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
+        p = os.path.join(inst_dir, cand)
+        if os.path.isfile(p):
+            script = p
+            break
+    if not script:
+        return f"no start script for port {port} (looked in {inst_dir})"
+    is_self = (str(port) == os.environ.get("MNEME_PORT", ""))
+    import subprocess
+    def _spawn():
+        subprocess.Popen(["bash", script], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if is_self:
+        import threading, time
+        threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
+    else:
+        _spawn()
+    return ("Restart requested for proxy on port %d" % port) + (" (this proxy — restarting in a moment)" if is_self else "") + "."
 
 
 def _exec_resume_run(args):
