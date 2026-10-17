@@ -193,8 +193,9 @@ async function loadInstances() {
       const dash = `<button class="dash" onclick="window.open('http://localhost:${it.port}/','_blank')">Dashboard</button>`;
       const cfg = `<button class="config" onclick="openConfig(${it.port})">Config</button>`;
       const lifecycle = it.self
-        ? `<button class="stop" onclick="shutdownSelf()">Shutdown</button>`
-        : (it.running
+        ? `<button class="stop" onclick="shutdownSelf()">Shutdown</button><button class="restart" onclick="act('restart',${it.port})">Restart</button>`
+        : `<button class="restart" onclick="act('restart',${it.port})">Restart</button>` +
+          (it.running
             ? `<button class="stop" onclick="act('stop',${it.port})">Stop</button>`
             : `<button class="start" onclick="act('start',${it.port})">Start</button>`);
       const remove = it.self ? '' : `<button class="x" title="Remove proxy" onclick="removeProxy(${it.port})">×</button>`;
