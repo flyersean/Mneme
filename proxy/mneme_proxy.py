@@ -2676,8 +2676,16 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     """
     if not query or not query.strip():
         return []
-    words = [w.strip() for w in query.split()
+    _q = query.strip()
+    words = [w.strip() for w in _q.split()
              if len(w.strip()) >= 2 and w.strip().lower() not in _KEYWORD_STOPWORDS]
+    # Keep the full multi-word phrase as a search term. The memory page matches
+    # "my name is" exactly (LIKE %my name is%); collapsing it to "name" here
+    # throws away the high-signal phrase and returns thousands of broad "name"
+    # chunks instead of the few chunks where the phrase actually appears.
+    # Search the phrase first, then the individual non-stopword terms.
+    if len(_q.split()) >= 2:
+        words = [_q] + [w for w in words if w.lower() != _q.lower()]
     if not words:
         return []
     exclude_ids = exclude_ids if exclude_ids is not None else set()
