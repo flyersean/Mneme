@@ -74,8 +74,11 @@
       wrapper.className = ('plain-editor' + (ta.className ? ' ' + ta.className : '') + (on ? ' pe-wrapped' : ''));
       syncScroll();
     }
+    // NB: set wrap AFTER insertion (below) — applying the wrap attribute
+    // pre-insertion leaves the engine with stale intrinsic metrics and the
+    // textarea renders in a tiny auto-sized box. setWrap()/toggle path works
+    // because it runs post-insertion; creation must take the same path.
     text.wrap = 'off';
-    if (opts.wrap) applyWrap(true);
     text.value = ta.value || '';
 
     var errbar = document.createElement('div');
@@ -87,6 +90,8 @@
 
     ta.parentNode.insertBefore(wrapper, ta);
     ta.parentNode.removeChild(ta);
+
+    if (opts.wrap) applyWrap(true);
 
     var listeners = { change: [] };
     var errorLine = 0; // 1-based line to highlight, 0 = none
