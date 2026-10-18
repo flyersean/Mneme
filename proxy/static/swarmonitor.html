@@ -78,6 +78,7 @@
       <button id="newFileBtn" title="Create a new file in the current directory">New file</button>
     </div>
     <div class="browser-crumb" id="browserCrumb">Loading…</div>
+    <label class="check" style="padding:4px 8px;font-size:12px;"><input type="checkbox" id="treeRefresh"> Tree auto-refresh</label>
     <div class="tree" id="tree">
       <div class="empty">Loading…</div>
     </div>
@@ -86,6 +87,7 @@
     <div class="editor-toolbar">
       <button id="refreshBtn" class="primary">Refresh</button>
       <button id="saveBtn" class="save">Save</button>
+      <label class="check"><input type="checkbox" id="wrapChk"> Word wrap</label>
       <label class="check"><input type="checkbox" id="autoReload"> Auto-reload</label>
       <span class="editor-status" id="editorStatus"></span>
     </div>
@@ -108,7 +110,7 @@
   // ── State ──────────────────────────────────────────────────────────────
   const tabs = [];          // { id, path, name, content, cm, dirty }
   let activeTabId = null;
-  let cmEditor = null;
+  let cmEditor, wrapState = null;
   // (editor is created synchronously on tab switch — no deferred-init guard needed)
   let autoReloadTimer = null;
   let lastReloaded = {};    // id -> last content hash for auto-reload change detection
@@ -273,7 +275,8 @@
     editorHost.innerHTML = '<textarea id="cmTextarea"></textarea>';
     const ta = document.getElementById('cmTextarea');
     ta.value = tab.content || '';
-    cmEditor = PlainEditor.create(ta, { tabSize: 2 });
+    wrapState = $('wrapChk').checked;
+    cmEditor = PlainEditor.create(ta, { tabSize: 2, wrap: wrapState });
     cmEditor.on('change', () => {
       const t = tabs.find((x) => x.id === activeTabId);
       if (t) t.dirty = true;
@@ -497,6 +500,17 @@
   $('saveBtn').addEventListener('click', saveActive);
   $('autoReload').addEventListener('change', startAutoReload);
   startAutoReload();
+
+  // ── Word-wrap toggle ────────────────────────────────────────────────────
+  $('wrapChk').addEventListener('change', () => {
+    wrapState = $('wrapChk').checked;
+    if (cmEditor && cmEditor.setWrap) cmEditor.setWrap(wrapState);
+  });
+
+  // ── File-browser auto-refresh ──────────────────────────────────────────
+  setInterval(() => {
+    if ($('treeRefresh').checked && currentDir != null) loadDir(currentDir);
+  }, 4000);
 
   // ── Boot: start at filesystem.browser_root (server default) ────────────
   loadDir('');

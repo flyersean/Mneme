@@ -42,6 +42,8 @@
       '  font-family:inherit;font-size:13px;line-height:1.5;',
       '  white-space:pre;overflow:auto;tab-size:2;word-wrap:normal;',
       '  overflow-wrap:normal;}',
+      '.pe-text.pe-wrap-on{white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word !important;}',
+      '.plain-editor.pe-wrapped .pe-gutter{display:none;}',
       '.pe-errbar{position:absolute;left:0;right:0;display:none;',
       '  pointer-events:none;z-index:2;background:rgba(255,80,80,0.16);}'
     ].join('');
@@ -66,7 +68,14 @@
     var text = document.createElement('textarea');
     text.className = 'pe-text';
     text.spellcheck = false;
+    function applyWrap(on) {
+      text.wrap = on ? 'on' : 'off';
+      text.className = 'pe-text' + (on ? ' pe-wrap-on' : '');
+      wrapper.className = ('plain-editor' + (ta.className ? ' ' + ta.className : '') + (on ? ' pe-wrapped' : ''));
+      syncScroll();
+    }
     text.wrap = 'off';
+    if (opts.wrap) applyWrap(true);
     text.value = ta.value || '';
 
     var errbar = document.createElement('div');
@@ -194,6 +203,7 @@
 
     var editor = {
       getValue: function () { return text.value; },
+      setWrap: function (on) { applyWrap(!!on); },
       setValue: function (s) { text.value = String(s == null ? '' : s); emit(); },
       refresh: function () { renderGutter(); syncScroll(); },
       focus: function () { text.focus(); },
