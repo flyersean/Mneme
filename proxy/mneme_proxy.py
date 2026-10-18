@@ -93,6 +93,7 @@ import mneme.tools as mntools
 import mneme.models_dev as models_dev
 import mneme.secrets_store as secrets_store
 import mneme.curation as curation
+import mneme.sanitizer as sanitizer
 import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
 import mneme.strategy_history as _strat_hist
@@ -2805,6 +2806,116 @@ def _system_prompt_block() -> str:
     return block + "\n\n"
 
 
+def _relative_age(iso: str) -> str:
+    """Human relative age for an ISO timestamp ('45m ago', '3d ago', '2mo ago').
+    Returns '' if the timestamp is missing/unparseable."""
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - t).total_seconds()
+        if s < 0: s = 0
+        if s < 60: return f"{int(s)}s ago"
+        if s < 3600: return f"{int(s//60)}m ago"
+        if s < 86400: return f"{int(s//3600)}h ago"
+        if s < 86400*45: return f"{int(s//86400)}d ago"
+        return f"{int(s//(86400*30))}mo ago"
+    except Exception:
+        return ""
+
+
+def _user_timezone_name() -> str:
+    """Timezone preference if set, else '' (caller falls back to host tz)."""
+    try:
+        row = db.execute("SELECT pref_value FROM preferences WHERE pref_key='timezone'").fetchone()
+        if row and str(row[0]).strip():
+            return str(row[0]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _last_user_activity() -> str:
+    """Time since the user's most recent completed turn, from the conversations
+    DB (MAX(updated_at) over all conversations). At build time this turn's row
+    has NOT been persisted yet (persistence happens after the reply), so this
+    is genuinely 'your previous message', not 'now'."""
+    try:
+        cpath = os.path.join(DB_DIR, "conversations.db")
+        if not os.path.exists(cpath):
+            return ""
+        conn = sqlite3.connect(cpath, timeout=3)
+        try:
+            r = conn.execute("SELECT MAX(updated_at) FROM conversations").fetchone()
+        finally:
+            conn.close()
+        if r and r[0]:
+            return _relative_age(r[0])
+    except Exception:
+        pass
+    return ""
+
+
+def _time_header() -> str:
+    """TIME line: calendar date, UTC time, user's local time (timezone
+    preference, host-tz fallback), and human-time since their last message.
+    Separated from the [HOST:] machine-status line so the model gets natural
+    temporal grounding every turn."""
+    now_u = datetime.now(timezone.utc)
+    tzname = _user_timezone_name()
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            local = now_u.astimezone(ZoneInfo(tzname))
+            local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local ({tzname})"
+        except Exception:
+            local_s = f"local unknown (bad 'timezone' pref: {tzname})"
+    else:
+        local = now_u.astimezone()  # host timezone
+        local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local (host tz - set 'timezone' preference for the user's real local time)"
+    last = _last_user_activity()
+    last_s = f" | your previous message: {last}" if last else ""
+    return f"\n[TIME: {now_u.strftime('%a %Y-%m-%d %H:%M UTC')} | {local_s}{last_s}]"
+
+
+
+def _missed_reminders() -> str:
+    """Catch-up-on-login for deferred-topic reminders. The scheduler fires a
+    reminder's run whether or not the user is around, and a one-shot then
+    disables itself (record_run in harness/jobs.py) — output goes to the run
+    ledger, never into the user's chat. This delivers it instead: the first
+    context build after the fire injects the (possibly missed) reminder text,
+    then stamps jobs.notified_at so it surfaces exactly once."""
+    try:
+        hpath = os.path.join(DB_DIR, "harness.db")
+        if not os.path.exists(hpath):
+            return ""
+        conn = sqlite3.connect(hpath, timeout=3)
+        try:
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
+                conn.commit()
+            except Exception:
+                pass  # column already exists
+            rows = conn.execute(
+                "SELECT job_id, goal, updated_at FROM jobs "
+                "WHERE goal LIKE 'Reminder:%' AND runs_count >= 1 "
+                "AND notified_at IS NULL "
+                "AND updated_at >= datetime('now', '-30 days') "
+                "ORDER BY updated_at ASC LIMIT 3").fetchall()
+            now_s = datetime.now(timezone.utc).isoformat()
+            for jid, _g, _u in rows:
+                conn.execute("UPDATE jobs SET notified_at=? WHERE job_id=?", (now_s, jid))
+            conn.commit()
+        finally:
+            conn.close()
+        if not rows:
+            return ""
+        lines = ["- " + g + " [fired " + str(u)[:16].replace("T", " ") + " UTC]" for jid, g, u in rows]
+        return ("\n[MISSED REMINDERS — these fired while you were away. "
+                "Bring the topic up naturally in your reply (e.g. \"we were going to …\"); "
+                "do NOT execute or build anything:]\n" + "\n".join(lines))
+    except Exception:
+        return ""
+
 def _finalize_context(ctx: str, session_id: str = "default") -> str:
     """Append the context-budget line. The system prompt is no longer prepended
     here — it is the fixed system-message prefix added separately by
@@ -2827,7 +2938,7 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
         _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
     if _hs.get("ram_pct") is not None and _hs["ram_pct"] >= BROWNOUT_RAM_PCT:
         _status_line += " [BROWNOUT: shedding background work]"
-    _body = ctx + f"\n\n{_status_line}" + (f"\n[context budget: {_total} token window, ~{_used} used, "
+    _body = ctx + f"\n\n{_status_line}" + _time_header() + _missed_reminders() + (f"\n[context budget: {_total} token window, ~{_used} used, "
                    f"~{_remaining} remaining for tool results + answer]")
     # Surface the current session id so the model knows its own identity — useful
     # for provenance, tracing a chunk back to its conversation, and handoffs like
@@ -4309,6 +4420,9 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     to FAISS until a background job re-embeds it. This replaces the old silent
     zero-vector behavior (a zero vector stored fine but never matched anything).
     """
+    # SANITIZER: detect degenerate (mojibake/word-salad) output BEFORE storing.
+    _degenerate, _deg_why = sanitizer.is_degenerate_chunk(messages)
+
     # Source-tiered indexing: only index user/page/tool content, not model hallucinations
     is_indexable = True
     if source and source.startswith("model"):
@@ -4337,9 +4451,19 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
               trust))
 
-    _db_write_retry(_insert_chunk)
-    
-    # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
+        _db_write_retry(_insert_chunk)
+
+    # SANITIZER: soft-remove via curation path (reversible, logged; row preserved).
+    if _degenerate:
+        is_indexable = False
+        try:
+            curation.set_removed(db, chunk_id, True, actor="system",
+                                 reason="sanitizer: degenerate output detected - " + _deg_why[:200])
+            print("  [SANITIZER] chunk %s soft-removed: %s" % (chunk_id, _deg_why[:80]), flush=True)
+        except Exception as _e:
+            print("  [SANITIZER] set_removed failed (chunk still stored): %s" % _e, flush=True)
+
+    # Add to FAISS (only if indexable AND actually embedded) (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:
         with faiss_lock():
             _load_index_from_disk()
@@ -5329,8 +5453,12 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
         _retr_note = ""
         if chunk.get("retracted_reason"):
             _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
+        # Relative age ("3d ago") beside the raw timestamp — the model reasons in
+        # human time ("we discussed that last week") far more naturally than in ISO.
+        _age = _relative_age(chunk.get("created_at") or "")
+        _age_tag = f" ({_age})" if _age else ""
         msg_text = (f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag}{_curationtag}{_retr_note} "
-                    f"[src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n")
+                    f"[src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]}{_age_tag} {topic} ---\n")
         # If next sequential chunk exists, hint it
         _lines = []
         for m in chunk.get("messages", []):

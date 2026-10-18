@@ -42,6 +42,8 @@
       '  font-family:inherit;font-size:13px;line-height:1.5;',
       '  white-space:pre;overflow:auto;tab-size:2;word-wrap:normal;',
       '  overflow-wrap:normal;}',
+      '.pe-text.pe-wrap-on{white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word !important;}',
+      '.plain-editor.pe-wrapped .pe-gutter{display:none;}',
       '.pe-errbar{position:absolute;left:0;right:0;display:none;',
       '  pointer-events:none;z-index:2;background:rgba(255,80,80,0.16);}'
     ].join('');
@@ -66,6 +68,16 @@
     var text = document.createElement('textarea');
     text.className = 'pe-text';
     text.spellcheck = false;
+    function applyWrap(on) {
+      text.wrap = on ? 'on' : 'off';
+      text.className = 'pe-text' + (on ? ' pe-wrap-on' : '');
+      wrapper.className = ('plain-editor' + (ta.className ? ' ' + ta.className : '') + (on ? ' pe-wrapped' : ''));
+      syncScroll();
+    }
+    // NB: set wrap AFTER insertion (below) — applying the wrap attribute
+    // pre-insertion leaves the engine with stale intrinsic metrics and the
+    // textarea renders in a tiny auto-sized box. setWrap()/toggle path works
+    // because it runs post-insertion; creation must take the same path.
     text.wrap = 'off';
     text.value = ta.value || '';
 
@@ -78,6 +90,8 @@
 
     ta.parentNode.insertBefore(wrapper, ta);
     ta.parentNode.removeChild(ta);
+
+    if (opts.wrap) applyWrap(true);
 
     var listeners = { change: [] };
     var errorLine = 0; // 1-based line to highlight, 0 = none
@@ -194,6 +208,7 @@
 
     var editor = {
       getValue: function () { return text.value; },
+      setWrap: function (on) { applyWrap(!!on); },
       setValue: function (s) { text.value = String(s == null ? '' : s); emit(); },
       refresh: function () { renderGutter(); syncScroll(); },
       focus: function () { text.focus(); },

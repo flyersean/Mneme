@@ -317,7 +317,7 @@ live in `harness.db`. Each step is an ordinary Mneme turn, and only counts as do
 the harness verifies it. Runs support planning, verification checks, pause/resume/retry,
 profiles, approvals, skills, scheduled jobs, and controlled self-improvement. The runs page
 filters by status / goal / model / age, and lets you select and delete runs (DB rows only, or
-DB + workspace) — the model can do the same via `delete_runs`.
+DB + workspace) — the model can do the same via `delete_runs`. Scheduled jobs (recurring cron-style or one-shot) get their own **Scheduled** tab on the runs page — create, enable/disable, run now, and delete — and the same actions are plain HTTP endpoints for agents (`GET /jobs`, `POST /jobs/<id>/delete`, …).
 
 ```bash
 curl -s localhost:8080/runs -H 'Content-Type: application/json' -d \
@@ -357,6 +357,8 @@ work well, some don't work at all. Tuning is part of using it. See
 | GET/POST | `/instructions` | Read/edit the injected prompts |
 | GET/POST/PUT/DELETE | `/conversations`, `/conversations/<id>` | Persistent chat history (auto-titled from the first message, renamable) |
 | POST | `/runs`, GET `/runs`, `/runs/<id>` | Create / list / inspect agent runs |
+| GET/POST | `/jobs`, GET `/jobs/<id>` | List / create scheduled jobs, inspect one (recurring or one-shot) |
+| POST | `/jobs/<id>/trigger`, `/enable`, `/disable`, `/delete` | Run a job now, re-enable, pause, or delete it (the `/runs` page's Scheduled tab uses these) |
 | GET | `/models`, `/v1/models` | List models |
 | GET | `/mcp/servers`, POST/DELETE `/mcp/servers[/<name>]` | MCP server management |
 | POST | `/shutdown` | Shut down this proxy (also the dashboard's "Shut down" button) |

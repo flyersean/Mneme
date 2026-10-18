@@ -140,3 +140,18 @@ html { zoom: 1.25; }
   /* Wide tables scroll horizontally instead of blowing out the page. */
   table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
+
+/* Pinned-nav overflow menu (theme.js renderNav) — Menu button + dropdown */
+.mneme-nav{position:relative}
+.mneme-nav .nav-menu-btn{padding:5px 12px;border-radius:7px;font-size:13px;background:var(--panel);border:1px solid var(--line);color:var(--fg);cursor:pointer}
+.mneme-nav .nav-menu-btn:hover{border-color:var(--accent);color:var(--accent)}
+.mneme-nav .mneme-menu{display:none;position:absolute;top:calc(100% + 6px);left:0;min-width:260px;max-height:70vh;overflow:auto;padding:8px;border-radius:8px;background:var(--bg);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:60}
+.mneme-nav .mneme-menu.open{display:block}
+.mneme-nav .mneme-menu-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:2px 4px}
+.mneme-nav .mneme-menu-row.active{background:var(--panel)}
+.mneme-nav .mneme-menu-row label{font-size:11px;opacity:.75;white-space:nowrap;cursor:pointer;display:flex;align-items:center;gap:4px}
+
+/* Clear-all-pins row in the nav overflow menu */
+.mneme-menu .mneme-menu-clear { justify-content: center; border-top: 1px solid rgba(128,128,128,.35); margin-top: 6px; padding-top: 6px; }
+.mneme-menu .mneme-menu-clear button { background: none; border: 1px solid rgba(128,128,128,.5); border-radius: 6px; color: inherit; padding: 2px 10px; cursor: pointer; font-size: .85em; }
+.mneme-menu .mneme-menu-clear button:hover { color: var(--danger, #e55); }

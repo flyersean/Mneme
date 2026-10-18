@@ -527,7 +527,7 @@ SCHEDULE_JOB_TOOL = {
     "type": "function",
     "function": {
         "name": "schedule_job",
-        "description": "Schedule a job to run later or on a recurring interval (cron-style). Use this when you promise to 'check on this', 'monitor this', 'report back when done', etc. — schedule it instead of leaving a promise in text that won't run after this turn ends. schedule is an interval ('30m', 'every 2h', '45s', '1d') for recurring, or an ISO timestamp ('2026-10-11T18:00:00') for a one-shot. repeat optionally caps the number of runs (default: 1 for one-shot, forever for recurring).",
+        "description": "Schedule a job to run later or on a recurring interval (cron-style). Use this when you promise to 'check on this', 'monitor this', 'report back when done', etc. — schedule it instead of leaving a promise in text that won't run after this turn ends. schedule is an interval ('30m', 'every 2h', '45s', '1d') for recurring, or an ISO timestamp ('2026-10-11T18:00:00') for a one-shot. repeat optionally caps the number of runs (default: 1 for one-shot, forever for recurring). REMINDERS: when the user defers a topic ('come back to this later', 'revisit tomorrow', 'pick this up next week'), schedule a REMINDER, not the task — the firing goal must be conversational, e.g. 'Reminder: on <date> the user deferred <topic>. Say: we were discussing <topic> <N days> ago — want to pick it up / refine it now? Do NOT build, execute, or work on it autonomously; await the user. The turns discussing the reminder are saved to memory as chunks carrying timestamps, so the topic stays retriable with temporal context.",
         "parameters": {
             "type": "object",
             "properties": {
