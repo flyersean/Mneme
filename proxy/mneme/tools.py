@@ -959,9 +959,12 @@ def _bash_log_tail(limit: int = 4000) -> str:
 
 
 def _exec_bash(command):
-    """Run a shell command inside a bubblewrap sandbox: the filesystem is
-    read-only except for the model's writable roots (TOOLS_DIR + MODEL_SCOPE).
-    Falls back to a plain subprocess when bwrap is unavailable.
+    """Run a shell command, sandboxed with bubblewrap when YOLO is OFF: the
+    filesystem is read-only except for the model's writable roots (TOOLS_DIR +
+    MODEL_SCOPE). With YOLO ON the command runs as a plain subprocess with the
+    proxy's own uid/gid/groups (Hermes-style full access, incl. docker socket
+    group membership). Also falls back to a plain subprocess when bwrap is
+    unavailable.
 
     stdout+stderr are redirected to a persistent log file (not a pipe) so that
     background processes — servers the model starts with `&` — keep writing to a
@@ -979,7 +982,9 @@ def _exec_bash(command):
         env["PIP_TARGET"] = pylibs
         env["PYTHONPATH"] = pylibs + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         bwrap = shutil.which("bwrap")
-        if bwrap:
+        # YOLO ON = full access: no bwrap sandbox, run as the proxy's own
+        # user with its full group set. YOLO OFF = sandbox (current behavior).
+        if bwrap and os.environ.get("MNEME_YOLO", "0") != "1":
             cmd = [bwrap, "--ro-bind", "/", "/"]
             for r in _writable_roots():
                 cmd += ["--bind", r, r]
