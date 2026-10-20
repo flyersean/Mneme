@@ -886,6 +886,9 @@ def _brownout_status():
             "active": active}
 
 
+_DB_ALREADY_OWNED = False  # set True by _check_db_owner() when a live other pid owns the DB
+
+
 def _db_owner_marker():
     """Write/read a DB ownership marker (<db_path>.owner). Returns (prev, me).
 
@@ -905,15 +908,27 @@ def _db_owner_marker():
                 prev = json.load(f)
     except Exception:
         prev = None
-    try:
-        with open(marker_path, "w") as f:
-            json.dump(me, f)
-    except Exception:
-        pass
+    # Only claim the marker when no live owner holds it — never clobber a live
+    # owner's marker, or a secondary process would hide the real owner and defeat
+    # the non-owner self-heal guard.
+    prev_live = False
+    if prev and prev.get("pid") and prev.get("pid") != me["pid"]:
+        try:
+            os.kill(prev["pid"], 0)
+            prev_live = True
+        except OSError:
+            prev_live = False
+    if not prev_live:
+        try:
+            with open(marker_path, "w") as f:
+                json.dump(me, f)
+        except Exception:
+            pass
     return prev, me
 
 
 def _check_db_owner():
+    global _DB_ALREADY_OWNED
     prev, me = _db_owner_marker()
     if not prev or prev.get("pid") == me["pid"]:
         return
@@ -927,6 +942,11 @@ def _check_db_owner():
             alive = False
     if not alive:
         return  # stale marker from a dead process — ignore
+    # A LIVE other process already owns this DB — we are shared/secondary access.
+    # Non-owners must NOT run the destructive startup self-heal (mass re-embed on
+    # embed-config mismatch), or a subprocess with a different embed config could
+    # wipe the owner's vectors.
+    _DB_ALREADY_OWNED = True
     same_schema = prev.get("schema") == me["schema"]
     same_checkout = prev.get("checkout") == me["checkout"]
     if same_schema and same_checkout:
@@ -11515,6 +11535,31 @@ def _reembed_pending(limit: int = 200):
     return total_fixed
 
 
+_REEMBED_POLL_SECONDS = int(os.environ.get("MNEME_REEMBED_POLL", "30"))
+
+
+def _reembed_loop():
+    """Drain the pending-embed backlog immediately, then re-check every
+    MNEME_REEMBED_POLL seconds. Runs in its own daemon thread so chunks that
+    become pending AFTER startup (a non-owner import clearing vectors, or a
+    mid-run embedder outage) still self-heal. Single-threaded by design: this is
+    the ONLY caller of _reembed_pending, so two drains never race (the startup
+    one-shot enqueue was removed after it double-added FAISS vectors)."""
+    while True:
+        try:
+            n = _reembed_pending()
+            if n:
+                print(f"  [EMBED-RETRY] periodic pass re-embedded {n} pending chunk(s)", flush=True)
+        except Exception as e:
+            _log_error("reembed:loop", e)
+        time.sleep(_REEMBED_POLL_SECONDS)
+
+
+def _start_reembed_loop():
+    t = threading.Thread(target=_reembed_loop, name="mneme-reembed", daemon=True)
+    t.start()
+
+
 def _embedding_health_check() -> bool:
     """Startup: verify the embedder returns DIM-dim vectors, and detect any
     stored vector that can't be used with the current embedder — a conflicting
@@ -11534,6 +11579,12 @@ def _embedding_health_check() -> bool:
         ok = False
     else:
         print(f"  [HEALTH] embedder OK: {EMBED_MODEL} dim={probe.shape[0]}", flush=True)
+    if _DB_ALREADY_OWNED:
+        # Non-owner (shared/secondary access to a live DB): skip the destructive
+        # self-heal below. A subprocess importing with a different embed config
+        # must NOT mass-clear the owner's vectors.
+        print("  [HEALTH] shared-memory mode: skipping re-embed self-heal (non-owner)", flush=True)
+        return ok
     # 2. Conflicting dim: wrong-length vectors are unusable — mark for re-embed.
     bad = db.execute(
         "UPDATE chunks SET vector=NULL, pending_embed=1 "
@@ -11596,7 +11647,7 @@ materialize_instructions()
 # not blocked on N sequential embed round-trips (the non-blocking chunk path stores
 # them pending_embed and defers embedding to here). The bg worker queue reuses the
 # check_same_thread=False connection and the faiss file lock, so it is safe.
-_enqueue(_reembed_pending)
+_start_reembed_loop()
 # Calibrate noise baseline AFTER FAISS is loaded, then CLAMP it below the inject
 # floor. _calibrate_noise() embeds random gibberish and measures its similarity
 # to the nearest chunks; that value drifts UP as the corpus grows (more chunks =
