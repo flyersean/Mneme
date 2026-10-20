@@ -4451,28 +4451,28 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
               trust))
 
-        try:
-            _db_write_retry(_insert_chunk)
-        except Exception as _e:
-            _log_error("save_chunk:insert", _e)
-            raise
+    try:
+        _db_write_retry(_insert_chunk)
+    except Exception as _e:
+        _log_error("save_chunk:insert", _e)
+        raise
 
-        # POST-INSERT VERIFICATION: re-read the row and confirm it actually landed.
-        # SQLite commit success has not always meant the row exists in-memory in this
-        # deployment (the insert-loss bug this patch exists to catch); log loudly.
-        try:
-            row = db.execute(
-                "SELECT chunk_id FROM chunks WHERE chunk_id=?",
-                (chunk_id,)).fetchone()
-            if row is None:
-                _log_error("save_chunk:missing-after-insert",
-                           RuntimeError(
-                               f"chunk {chunk_id} NOT in DB after successful insert "
-                               f"(db={os.environ.get('MNEME_DB_PATH','?')})"))
-            else:
-                print("  [save_chunk:valid] chunk id present", flush=True)
-        except Exception as _ve:
-            _log_error("save_chunk:verify", _ve)
+    # POST-INSERT VERIFICATION: re-read the row and confirm it actually landed.
+    # SQLite commit success has not always meant the row exists in-memory in this
+    # deployment (the insert-loss bug this patch exists to catch); log loudly.
+    try:
+        row = db.execute(
+            "SELECT chunk_id FROM chunks WHERE chunk_id=?",
+            (chunk_id,)).fetchone()
+        if row is None:
+            _log_error("save_chunk:missing-after-insert",
+                       RuntimeError(
+                           f"chunk {chunk_id} NOT in DB after successful insert "
+                           f"(db={os.environ.get('MNEME_DB_PATH','?')})"))
+        else:
+            print("  [save_chunk:valid] chunk id present", flush=True)
+    except Exception as _ve:
+        _log_error("save_chunk:verify", _ve)
 
     # SANITIZER: soft-remove via curation path (reversible, logged; row preserved).
     if _degenerate:
