@@ -69,26 +69,105 @@ document.addEventListener("DOMContentLoaded", function () {
   /* Canonical nav — every page includes <nav class="mneme-nav"></nav> and this
    * renders the full link set, marks the current page active, and hides the
    * admin-only "Users" link for non-admin accounts. One source of truth. */
+  /* Canonical nav — PINNED TABS + OVERFLOW MENU (Gmail/Linear pattern).
+   * Header shows up to 10 user-pinned buttons (default 5) plus a Menu button,
+   * fixed in the LEFT slot. Menu lists
+   * every page, each with a "Pin" checkbox that saves to localStorage
+   * (mneme_nav_pins). The current page is always visible in the header.
+   * If a page renders its own nav server-side (auth pages), leave it alone. */
   var NAV_LINKS = [
     ["/", "Dashboard"], ["/health/ui", "Health"], ["/chat", "Chat"], ["/memory", "Memory"],
     ["/instructions", "Instructions"], ["/templates", "Templates"],
     ["/ollama", "Ollama"], ["/runs/ui", "Runs"], ["/strategies/ui", "Strategies"],
     ["/skills/ui", "Skills"],
     ["/extensions", "Extensions"], ["/swarmonitor", "Swarm Monitor"],
-    ["/tokens", "Tokens"], ["/users", "Users"]
+    ["/secrets", "Secrets"], ["/tokens", "Tokens"], ["/users", "Users"]
   ];
+  var ADMIN_ONLY = ["/users", "/secrets", "/tokens", "/providers"];
+  var PIN_KEY = "mneme_nav_pins";
+  var MAX_PINS = 10;
+  var DEFAULT_PINS = ["/", "/chat", "/memory", "/health/ui", "/runs/ui"];
   var nav = document.querySelector(".mneme-nav");
-  if (nav) {
+  if (nav && !nav.children.length) {
     var path = location.pathname;
-    nav.innerHTML = NAV_LINKS.map(function (l) {
-      var active = (path === l[0] || (l[0] !== "/" && path.indexOf(l[0]) === 0)) ? " active" : "";
-      return '<a href="' + l[0] + '"' + (active ? ' class="active"' : "") + '>' + l[1] + '</a>';
-    }).join("");
-    fetch("/auth/me").then(function (r) { return r.json(); }).then(function (d) {
-      if (d.username && !d.admin) {
-        var a = nav.querySelector('a[href="/users"]');
-        if (a) a.style.display = "none";
+    function linkFor(p) {
+      for (var i = 0; i < NAV_LINKS.length; i++)
+        if (NAV_LINKS[i][0] === p) return NAV_LINKS[i];
+      for (var i = 0; i < NAV_LINKS.length; i++)
+        if (NAV_LINKS[i][0] !== "/" && p.indexOf(NAV_LINKS[i][0]) === 0) return NAV_LINKS[i];
+      return null;
+    }
+    var current = linkFor(path) || NAV_LINKS[0];
+    function pins() {
+      try {
+        var p = JSON.parse(localStorage.getItem(PIN_KEY) || "null");
+        if (p && p.slice) return p.filter(function (x) { return linkFor(x); });
+      } catch (e) {}
+      return DEFAULT_PINS.slice();
+    }
+    function build(admin, keepMenuOpen) {
+      var _m = nav.querySelector(".mneme-menu");
+      var wasOpen = !!(keepMenuOpen && _m && _m.classList.contains("open"));
+      var pinned = pins().filter(function (h) {
+        return admin || ADMIN_ONLY.indexOf(h) === -1;
+      }).slice(0, MAX_PINS);
+      if (pinned.indexOf(current[0]) === -1) pinned.push(current[0]);
+      var html = '' +
+        '<button type="button" class="nav-menu-btn" aria-haspopup="true">Menu \u2630</button>' +
+        pinned.map(function (h) {
+        var l = linkFor(h);
+        var active = h === current[0] ? ' class="active"' : "";
+        return '<a href="' + h + '"' + active + '>' + l[1] + '</a>';
+      }).join("");
+      html += '<div class="mneme-menu" role="menu">' + NAV_LINKS.map(function (l) {
+        var hide = (!admin && ADMIN_ONLY.indexOf(l[0]) !== -1) ? ' style="display:none"' : "";
+        var act = l === current ? " active" : "";
+        var pin = pins().indexOf(l[0]) !== -1;
+        return '<div class="mneme-menu-row"' + hide + act + '>' +
+          '<a href="' + l[0] + '"' + (act ? ' class="active"' : "") + '>' + l[1] + '</a>' +
+          '<label><input type="checkbox" data-pin="' + l[0] + '"' + (pin ? " checked" : "") + '>Pin</label>' +
+          '</div>';
+      }).join("") + '<div class="mneme-menu-row mneme-menu-clear"><button type="button" data-clearpins="1">Clear all pins</button></div>' + '</div>';
+      nav.innerHTML = html;
+      if (wasOpen) {
+        var m2 = nav.querySelector(".mneme-menu");
+        var b2 = nav.querySelector(".nav-menu-btn");
+        if (m2) m2.classList.add("open");
+        if (b2) b2.setAttribute("aria-expanded", "true");
       }
+      var btn = nav.querySelector(".nav-menu-btn");
+      var menu = nav.querySelector(".mneme-menu");
+      if (btn && menu) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          menu.classList.toggle("open");
+          btn.setAttribute("aria-expanded", menu.classList.contains("open"));
+        });
+        document.addEventListener("click", function (e) {
+          if (!menu.contains(e.target)) menu.classList.remove("open");
+        });
+        menu.addEventListener("click", function (e) {
+          var c = e.target.closest ? e.target.closest("[data-clearpins]") : null;
+          if (!c) return;
+          e.stopPropagation();
+          localStorage.setItem(PIN_KEY, JSON.stringify([]));
+          build(admin, true);
+        });
+        menu.addEventListener("change", function (e) {
+          var t = e.target;
+          var p = pins();
+          var i = p.indexOf(t.dataset.pin);
+          if (t.checked && i === -1) p.push(t.dataset.pin);
+          if (!t.checked && i !== -1) p.splice(i, 1);
+          if (p.length > MAX_PINS) p = p.slice(0, MAX_PINS);
+          localStorage.setItem(PIN_KEY, JSON.stringify(p));
+          build(admin, true);
+        });
+      }
+    }
+    build(true); /* assume admin until /auth/me says otherwise */
+    fetch("/auth/me").then(function (r) { return r.json(); }).then(function (d) {
+      build(!!d.admin);
     }).catch(function () {});
   }
 

@@ -49,6 +49,7 @@
     <button data-tab="profiles">Profiles</button>
     <button data-tab="metrics">Metrics</button>
     <button data-tab="command">Command</button>
+    <button data-tab="sched">Scheduled</button>
   </div>
 
   <section id="tab-runs">
@@ -96,6 +97,10 @@
     <h2>Harness command</h2><p class="hint">Same commands as typing <span class="mono">/help</span> in chat.</p>
     <div class="row"><input id="cmd" placeholder="/status last" onkeydown="if(event.key==='Enter')runCmd()"><button onclick="runCmd()">Run</button></div>
     <pre id="cmdOut"></pre>
+  </section>
+    <section id="tab-sched" hidden>
+    <h2>Scheduled jobs</h2><p class="hint">Recurring &amp; one-shot jobs. </p>
+    <table><thead><tr><th>Status</th><th>Name</th><th>Goal</th><th>Interval</th><th>Next run (UTC)</th><th>Runs</th><th></th></tr></thead><tbody id="sched"></tbody></table>
   </section>
 </main>
 <script>
@@ -235,7 +240,12 @@ async function runCmd() {
   const text = $("cmd").value.trim(); if (!text) return;
   try { $("cmdOut").textContent = (await post("/harness/command", {text})).reply; } catch (e) { $("cmdOut").textContent = e.message; }
 }
-const loaders = {runs: loadRuns, skills: loadSkills, evolution: loadEvo, profiles: loadProfiles, metrics: loadMetrics, command: () => {}};
+async function loadSched() {
+  const {jobs} = await api("/jobs");
+  $("sched").innerHTML = jobs.map(j => `<tr><td>${badge(j.enabled ? "running" : "paused")}</td><td><b>${esc(j.name || "")}</b></td><td class="mono">${esc((j.goal || "").slice(0,90))}</td><td class="mono">${j.interval_s ? j.interval_s + "s" : "one-shot"}</td><td class="mono">${j.enabled && j.next_run_at ? new Date(j.next_run_at * 1000).toISOString().slice(0, 19) : "—"}</td><td>${j.runs_count ?? 0}${j.skipped ? " (+" + j.skipped + " skipped)" : ""}</td><td><button onclick="schedAct('${j.job_id}','${j.enabled ? "disable" : "enable"}')">${j.enabled ? "Disable" : "Enable"}</button> <button onclick="schedAct('${j.job_id}','trigger')">Run now</button> <button onclick="if(confirm('Delete this job (irreversible)?'))schedAct('${j.job_id}','delete')">Delete</button></td></tr>`).join("") || `<tr><td colspan=7 class="hint">No scheduled jobs.</td></tr>`;
+}
+async function schedAct(id, act) { try { await post(`/jobs/${id}/${act}`); } catch (e) { $("msg").textContent = e.message; } loadSched(); }
+const loaders = {runs: loadRuns, skills: loadSkills, evolution: loadEvo, profiles: loadProfiles, metrics: loadMetrics, command: () => {}, sched: loadSched};
 let tab = "runs";
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));

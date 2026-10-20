@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     runs_count  INTEGER DEFAULT 0,
     skipped     INTEGER DEFAULT 0,
     max_runs    INTEGER,              -- NULL = forever; else auto-disable at runs_count >= max_runs
+    notified_at TEXT                   -- set when the proxy has delivered this fired reminder into the user's chat (catch-up-on-login)
     created_by  TEXT DEFAULT 'user',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -97,6 +98,8 @@ class JobStore:
             cols = [r[1] for r in ledger._db.execute("PRAGMA table_info(jobs)").fetchall()]
             if "max_runs" not in cols:
                 ledger._db.execute("ALTER TABLE jobs ADD COLUMN max_runs INTEGER")
+            if "notified_at" not in cols:
+                ledger._db.execute("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
             ledger._db.commit()
 
     def _decode(self, row) -> Optional[dict]:
@@ -159,6 +162,13 @@ class JobStore:
                            (1 if enabled else 0, now_iso(), job_id))
         self._log(job_id, "enabled" if enabled else "disabled")
         return self.get(job_id)
+
+    def delete(self, job_id: str) -> dict:
+        """Hard-delete a job row and its log rows. Irreversible."""
+        job = self.require(job_id)
+        self.ledger._write("DELETE FROM job_log WHERE job_id=?", (job_id,))
+        self.ledger._write("DELETE FROM jobs WHERE job_id=?", (job_id,))
+        return job
 
     def trigger(self, job_id: str) -> dict:
         """Make a job due now (the next scheduler tick runs it)."""

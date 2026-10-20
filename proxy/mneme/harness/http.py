@@ -497,9 +497,10 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         if err:
             return err
         return _guard(lambda: respond({"job": jobs.trigger(job_id) if action == "trigger"
+                                       else jobs.delete(job_id) if action == "delete"
                                        else jobs.set_enabled(job_id, action == "enable")}))
 
-    for _ja in ("enable", "disable", "trigger"):
+    for _ja in ("enable", "disable", "trigger", "delete"):
         app.add_url_rule(f"/jobs/<job_id>/{_ja}", f"harness_job_{_ja}",
                          (lambda a: lambda job_id: _job_action(job_id, a))(_ja), methods=["POST"])
 

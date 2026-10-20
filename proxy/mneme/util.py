@@ -182,7 +182,6 @@ def _log_error(where: str, e: Exception):
     log) so errors.log can't grow without bound."""
     try:
         cd = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
-        from mneme.logfile import capped_append
         capped_append(os.path.join(cd, "errors.log"),
                       f"{datetime.now(timezone.utc).isoformat()} | {where} | "
                       f"{type(e).__name__} | {e} | tb: "

@@ -75,18 +75,11 @@ _AUTH_STYLE = (
 
 # Shared nav (matches the other pages) so the account pages feel like part of the
 # same site rather than an isolated modal.
-_SITE_NAV = ('<nav class="mneme-nav">'
-             '<a href="/">Dashboard</a>'
-             '<a href="/chat">Chat</a>'
-             '<a href="/memory">Memory</a>'
-             '<a href="/instructions">Instructions</a>'
-             '<a href="/templates">Templates</a>'
-             '<a href="/ollama">Ollama</a>'
-             '<a href="/runs/ui">Runs</a>'
-             '<a href="/strategies/ui">Strategies</a>'
-             '<a href="/extensions">Extensions</a>'
-             '<a href="/secrets">Secrets</a>'
-             '</nav>')
+# Empty container: theme.js builds the pinned-buttons + Menu UI here.
+# Auth pages must NOT hardcode their own link list — that was a second
+# nav system fighting theme.js (and the original cause of Secrets-link
+# disappearing). Server renders the empty element; JS fills it.
+_SITE_NAV = '<nav class="mneme-nav"></nav>'
 
 
 def _page(title, body, nav=False, signout=False):
@@ -214,8 +207,8 @@ def register(app, get_auth, cors_response):
     # ── first-run account creation (localhost only) ──────────────────────────
     def _create_form():
         return ('<form method="post">'
-                '<label>Username</label><input name="username" autofocus>'
-                '<label>Password</label><input type="password" name="password">'
+                '<label>Username</label><input name="username" autofocus autocomplete="off">'
+                '<label>Password</label><input type="password" name="password" autocomplete="new-password">'
                 '<label>Confirm password</label><input type="password" name="confirm">'
                 '<button type="submit">Create account</button></form>')
 
@@ -357,12 +350,12 @@ def register(app, get_auth, cors_response):
         body += (f'<h2>Add account</h2>'
                  f'<form method="post"><input type="hidden" name="action" value="add">'
                  f'<label>Username</label><input name="username" autocomplete="off">'
-                 f'<label>Password</label><input type="password" name="password">'
+                 f'<label>Password</label><input type="password" name="password" autocomplete="new-password">'
                  f'<button type="submit">Add account</button></form>')
         body += (f'<h2>Reset a password</h2>'
                  f'<form method="post"><input type="hidden" name="action" value="resetpw">'
                  f'<label>Username</label><input name="username" autocomplete="off">'
-                 f'<label>New password</label><input type="password" name="password">'
+                 f'<label>New password</label><input type="password" name="password" autocomplete="new-password">'
                  f'<button type="submit">Reset password</button></form>')
         return _page("Users", body, nav=True, signout=True)
 
@@ -420,7 +413,7 @@ def register(app, get_auth, cors_response):
             + '<h2>Add secret</h2>'
             + '<form method="post"><input type="hidden" name="action" value="save">'
             '<label>Name</label><input name="name" placeholder="e.g. mcp-github-token" autocomplete="off">'
-            '<label>Value</label><input type="password" name="value" placeholder="secret value" autocomplete="off">'
+            '<label>Value</label><input type="password" name="value" placeholder="secret value" autocomplete="new-password">'
             '<button type="submit">Save secret</button></form>'
             + '<h2>Saved secrets</h2>'
             + '<div class="card" style="padding:12px 20px">' + "".join(rows) + '</div>'

@@ -247,6 +247,52 @@ gated by its own env flag; defaults are on.
 
 ---
 
+## Managing scheduled jobs (an agent task — do it in chat, not by hand)
+
+Users will rarely click the UI. Most of the time they say *"clean up my old
+scheduled jobs"* or *"test the button"* — and expect the agent to do it via the
+HTTP API (or the `schedule_job` tool). The Scheduled tab on `/runs/ui` is built
+on the same endpoints, so what the agent does and what the user sees never drift.
+
+**The endpoints** (all on the proxy itself, same host/port as `/runs`):
+
+| Call | Meaning |
+|---|---|
+| `GET /jobs` | list every job: `job_id`, `name`, `goal`, `enabled`, `interval_s`, `max_runs`, `next_run_at`, `runs_count`, `skipped` |
+| `POST /jobs` | create: `{"name", "goal", "interval_s", "max_runs", "start_in_s", "created_by"}` — interval_s omitted = one-shot ISO-style |
+| `GET /jobs/<job_id>` | one job + its run log |
+| `POST /jobs/<job_id>/trigger` | make it due now (fires within `scheduler_tick`, default 15s) — the "Run now" button |
+| `POST /jobs/<job_id>/enable` / `disable` | pause/resume |
+| `POST /jobs/<job_id>/delete` | hard delete (job row + its log) — irreversible, confirm with the user first |
+
+**How to read a stale jobs table.** Tell-tale signs, all visible from `GET /jobs`:
+- `enabled: false` + `runs_count >= max_runs` → dead one-shot, safe to delete.
+- Huge `skipped` counters + 15s intervals → pollers colliding with unfinished
+  previous runs; usually leftover experiment monitoring that has nothing left
+  to watch. Disable first, ask before deleting.
+- `next_run_at` in the past + `enabled: true` but `runs_count` frozen → the
+  scheduler isn't picking it up; check the job's goal runs a real goal.
+
+**Standard cleanup the agent should run** (confirm the target list first):
+
+1. `GET /jobs` → bucket rows: dead one-shots / stale pollers / live reminders.
+2. Propose the buckets to the user, naming rows by `name` (never just job_id).
+3. On approval: disable the stalers, delete the dead one-shots via
+   `POST /jobs/<id>/delete` (one call per job — no bulk route).
+4. Re-`GET /jobs` and report the before/after counts. Clipboard numbers mean
+   nothing; always re-list after mutating.
+
+**Testing a new endpoint or button:** target a disposable job (an old e2e-check
+or a job you create yourself), `POST .../delete`, then verify the row is gone
+from `GET /jobs` — and only then report success. An edit verified by grep alone
+is not verified: static `runs.html` is served from disk (no restart), but route
+changes in `proxy/mneme/harness/http.py` need a proxy restart to appear.
+
+The scheduler tick, lease, and `auto_apply` behaviour are specified in
+`docs/harness/SPEC.md` + `docs/harness/USER_GUIDE.md` — trust those over this.
+
+---
+
 ## Theming (light / dark / custom themes)
 
 The UI is themed entirely by CSS custom properties, and a theme is a single CSS file.
