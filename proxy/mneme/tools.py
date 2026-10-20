@@ -979,6 +979,15 @@ def _exec_bash(command):
         pylibs = os.path.join(TOOLS_DIR, "pylibs")
         os.makedirs(pylibs, exist_ok=True)
         env = dict(os.environ)
+        # Scrub the proxy's own DB/config paths so a subprocess that imports
+        # mneme_proxy can't accidentally open the production DB: the config
+        # loader re-exports storage.db_path as MNEME_DB_PATH (tools.py sees the
+        # runtime os.environ), and a child with a mismatched embed config would
+        # then run the destructive self-heal against the owner's vectors. The
+        # model can re-export any of these explicitly if it genuinely needs a
+        # proxy-aware child process.
+        for _k in ("MNEME_DB_PATH", "MNEME_HARNESS_DB", "MNEME_CONFIG", "MNEME_CHUNK_DIR"):
+            env.pop(_k, None)
         env["PIP_TARGET"] = pylibs
         env["PYTHONPATH"] = pylibs + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         bwrap = shutil.which("bwrap")
