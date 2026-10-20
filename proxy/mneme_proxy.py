@@ -4366,6 +4366,38 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
               trust, str(PORT)))
 
     _db_write_retry(_insert_chunk)
+
+    # Post-insert verification: the chunk row MUST be visible on a fresh
+    # short-lived connection right after commit. If it is not, the insert
+    # silently vanished (the Oct-19 "unknown chunk" bug class: [ARCHIVE] logs
+    # SUCCESS while no row ever lands and only provenance's CurationError
+    # notices). Fail LOUDLY here and DO NOT add the id to the FAISS idmap —
+    # a retrieval vector with no DB row behind it corrupts lookups (dangling
+    # idmap) instead of merely losing a log entry.
+    def _verify_insert():
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT 1 FROM chunks WHERE chunk_id=?",
+                               (chunk_id,)).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+    _persisted = False
+    for _attempt in range(3):
+        try:
+            _persisted = _verify_insert()
+            break
+        except sqlite3.OperationalError as _ve:
+            time.sleep(0.2 * (_attempt + 1))  # transient reader lock — retry
+    else:
+        _log_error("save_chunk:verify", _ve)
+    if not _persisted:
+        _log_error("save_chunk:missing-after-insert",
+                   RuntimeError(
+                       f"chunk {chunk_id} not readable from {DB_PATH} after "
+                       f"commit (source={source}, session={session_id}) — "
+                       f"skipping FAISS add"))
+        return
     
     # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:

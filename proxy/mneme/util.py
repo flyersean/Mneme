@@ -8,6 +8,7 @@ side effects that touch the outside world).
 import base64
 import hashlib
 import os
+import traceback
 from datetime import datetime, timezone
 
 
@@ -184,7 +185,8 @@ def _log_error(where: str, e: Exception):
         from mneme.logfile import capped_append
         capped_append(os.path.join(cd, "errors.log"),
                       f"{datetime.now(timezone.utc).isoformat()} | {where} | "
-                      f"{type(e).__name__} | {e}")
+                      f"{type(e).__name__} | {e} | tb: "
+                      f"{traceback.format_exc()[:2000]}")
     except Exception:
         pass  # error log must never itself crash the proxy
     try:
