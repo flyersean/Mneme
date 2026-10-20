@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil
+import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil, signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -2184,7 +2184,37 @@ class _LockedConnection(sqlite3.Connection):
 db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60,
                      factory=_LockedConnection)
 db.execute("PRAGMA journal_mode=WAL")
-db.execute("PRAGMA synchronous=NORMAL")
+db.execute("PRAGMA synchronous=FULL")
+
+def _checkpoint_and_close():
+    """Checkpoint the WAL and close the shared connection cleanly.
+
+    Called from the SIGTERM/SIGINT handler so a graceful stop does not leave an
+    uncommitted transaction in the WAL (which, combined with synchronous=NORMAL,
+    could wedge or drop later commits on restart). Idempotent: safe even if the
+    connection is already closed.
+    """
+    try:
+        with _db_lock:
+            try:
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+    try:
+        db.close()
+    except Exception:
+        pass
+
+
+def _shutdown_signal(signum=None, frame=None):
+    _checkpoint_and_close()
+    sys.exit(0)
 capability.db = db  # bind the extracted capability module's db handle
 mntools.db = db      # bind the tool system's db handle
 
@@ -4428,6 +4458,32 @@ def _gc_images(grace_seconds=None) -> int:
     return removed
 
 
+def _insert_chunk_verified(chunk_id: str, insert_fn, retries: int = 3, backoff: float = 0.5) -> bool:
+    """Insert a chunk and verify the row actually landed, retrying on insert-loss.
+
+    ``insert_fn`` performs the write (e.g. ``lambda: _db_write_retry(_insert_chunk)``).
+    After each insert we re-read the row; a "successful" commit that left no row
+    (the insert-loss bug) is retried instead of silently dropped. Returns True once
+    the row is present, False after all retries are exhausted. Exceptions from
+    insert_fn (e.g. a locked/busy error _db_write_retry could not clear) propagate.
+    """
+    for attempt in range(retries + 1):
+        insert_fn()
+        try:
+            row = db.execute(
+                "SELECT chunk_id FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
+        except Exception:
+            row = None
+        if row is not None:
+            print("  [save_chunk:valid] chunk id present", flush=True)
+            return True
+        if attempt < retries:
+            print(f"  [save_chunk:missing-after-insert] {chunk_id} attempt "
+                  f"{attempt + 1}/{retries + 1} - retrying", flush=True)
+            time.sleep(backoff * (attempt + 1))
+    return False
+
+
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
@@ -4472,27 +4528,15 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
               trust))
 
     try:
-        _db_write_retry(_insert_chunk)
+        _inserted = _insert_chunk_verified(chunk_id, lambda: _db_write_retry(_insert_chunk))
     except Exception as _e:
         _log_error("save_chunk:insert", _e)
         raise
-
-    # POST-INSERT VERIFICATION: re-read the row and confirm it actually landed.
-    # SQLite commit success has not always meant the row exists in-memory in this
-    # deployment (the insert-loss bug this patch exists to catch); log loudly.
-    try:
-        row = db.execute(
-            "SELECT chunk_id FROM chunks WHERE chunk_id=?",
-            (chunk_id,)).fetchone()
-        if row is None:
-            _log_error("save_chunk:missing-after-insert",
-                       RuntimeError(
-                           f"chunk {chunk_id} NOT in DB after successful insert "
-                           f"(db={os.environ.get('MNEME_DB_PATH','?')})"))
-        else:
-            print("  [save_chunk:valid] chunk id present", flush=True)
-    except Exception as _ve:
-        _log_error("save_chunk:verify", _ve)
+    if not _inserted:
+        _log_error("save_chunk:missing-after-insert",
+                   RuntimeError(
+                       f"chunk {chunk_id} NOT in DB after insert retries "
+                       f"(db={os.environ.get('MNEME_DB_PATH','?')})"))
 
     # SANITIZER: soft-remove via curation path (reversible, logged; row preserved).
     if _degenerate:
@@ -11666,6 +11710,8 @@ print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _shutdown_signal)
+    signal.signal(signal.SIGINT, _shutdown_signal)
     if FLASK_OK:
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep
