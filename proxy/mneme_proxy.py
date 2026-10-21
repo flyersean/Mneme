@@ -980,6 +980,12 @@ ALLOW_MODEL_REMOVE = os.environ.get("MNEME_ALLOW_MODEL_REMOVE", "0") == "1"
 # is dangerous: with nothing to contradict it the model may re-hallucinate the
 # same fact. Mirror of the existing [G:F — FAILED ...] treatment.
 INJECT_RETRACTED = os.environ.get("MNEME_INJECT_RETRACTED", "1") == "1"
+# Chunk-header time format A/B experiment:
+#   full      (default) raw timestamp + terse age  "2026-10-18T14:28:46 (2d ago)"
+#   relative  only verbose elapsed words          "2 and a half weeks ago"
+#   absolute  only raw timestamp
+# The created_at is ALWAYS stored on the chunk row; this is presentation only.
+CHUNK_HEADER_TIME = (os.environ.get("MNEME_CHUNK_HEADER_TIME", "full").strip().lower() or "full")
 # Flag self-confirmation loops in the injected header. (Recurrence/support-tier
 # labelling was removed — the assert_count/independent_sources counters were
 # never wired to the archive path, so the "single/repeated/corroborated" tiers
@@ -2870,6 +2876,56 @@ def _relative_age(iso: str) -> str:
         return f"{int(s//(86400*30))}mo ago"
     except Exception:
         return ""
+
+
+def _age_words(s: float) -> str:
+    """Verbose, human-shaped elapsed time. Granularity decays with age —
+    seconds when fresh, minutes/hours same-day, days then weeks then months —
+    matching how people naturally talk about time, so the model attends to it
+    as information rather than log metadata. s = elapsed seconds (>= 0)."""
+    if s < 120:
+        return f"{int(s)} seconds ago"
+    m = s / 60.0
+    if m < 2:        return "a couple of minutes ago"
+    if m < 55:       return f"{int(round(m))} minutes ago"
+    if m < 80:       return "about an hour ago"
+    if m < 110:      return "about an hour and a half ago"
+    h = s / 3600.0
+    if h < 36:
+        if h < 2:    return "an hour or two ago"
+        if h < 23:   return f"{int(round(h))} hours ago"
+        if h < 30:   return "about a day ago"
+        return "over a day ago"
+    d = s / 86400.0
+    if d < 2:        return "yesterday-ish, about a day and a half ago" if d > 1.3 else "about a day and a half ago"
+    if d < 7:        return f"{int(round(d))} days ago"
+    w = d / 7.0
+    if w < 9:
+        if w < 1.6:  return "about a week ago"
+        if w < 1.8:  return "about a week and a half ago"
+        # half-week precision: 2½ weeks, 3 weeks, 8½ weeks …
+        whole = int(w)
+        frac = w - whole
+        if frac >= 0.4 and frac <= 0.65:
+            unit = "week" if whole == 1 else "weeks"
+            return f"{whole} and a half {unit} ago"
+        return f"{int(round(w))} weeks ago"
+    mo = d / 30.0
+    if mo < 11.7:    return f"{int(round(mo))} months ago"
+    y = d / 365.0
+    if y < 1.35:     return "over a year ago"
+    if y < 2:        return "a year and a half ago" if y >= 1.5 else "over a year ago"
+    return f"{int(round(y))} years ago"
+
+
+def _elapsed_secs(iso: str) -> float:
+    """Elapsed seconds since an ISO timestamp; -1 if missing/unparseable."""
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - t).total_seconds()
+        return max(s, 0.0)
+    except Exception:
+        return -1.0
 
 
 def _user_timezone_name() -> str:
@@ -5538,12 +5594,23 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
         _retr_note = ""
         if chunk.get("retracted_reason"):
             _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
-        # Relative age ("3d ago") beside the raw timestamp — the model reasons in
-        # human time ("we discussed that last week") far more naturally than in ISO.
-        _age = _relative_age(chunk.get("created_at") or "")
-        _age_tag = f" ({_age})" if _age else ""
+        # Chunk time presentation — A/B experiment (MNEME_CHUNK_HEADER_TIME).
+        # full: raw timestamp + terse age; relative: verbose words only
+        # (attention experiment — human phrasing like "2 and a half weeks ago");
+        # absolute: raw timestamp only. created_at always stays in the DB row.
+        _ts = (chunk.get("created_at") or "")[:19]
+        if CHUNK_HEADER_TIME == "relative":
+            _es = _elapsed_secs(chunk.get("created_at") or "")
+            _time_tag = _age_words(_es) if _es >= 0 else ("time unknown" if _ts else "")
+        elif CHUNK_HEADER_TIME == "absolute":
+            _time_tag = _ts
+        else:
+            # default "full" — raw timestamp + terse age
+            _age = _relative_age(chunk.get("created_at") or "")
+            _time_tag = _ts + (f" ({_age})" if _age else "")
+        _time_tag = f"{_time_tag} " if _time_tag else ""
         msg_text = (f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag}{_curationtag}{_retr_note} "
-                    f"[src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]}{_age_tag} {topic} ---\n")
+                    f"[src:{chunk.get('source','?')}] {_time_tag}{topic} ---\n")
         # If next sequential chunk exists, hint it
         _lines = []
         for m in chunk.get("messages", []):
