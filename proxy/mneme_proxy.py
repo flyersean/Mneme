@@ -9786,7 +9786,7 @@ if FLASK_OK:
         the detached start-script spawn."""
         unit = f"mneme@{port}.service"
         try:
-            r = subprocess.run(["systemctl", "list-unit-files", unit],
+            r = subprocess.run(["systemctl", "cat", unit],
                                capture_output=True, text=True, timeout=5)
             if r.returncode != 0:
                 return False
