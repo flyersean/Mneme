@@ -9780,11 +9780,33 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
+    def _systemd_restart(port):
+        """Restart a proxy under systemd (the canonical supervisor). Returns True
+        if the unit exists and the restart was scheduled; False to fall back to
+        the detached start-script spawn."""
+        unit = f"mneme@{port}.service"
+        try:
+            r = subprocess.run(["systemctl", "list-unit-files", unit],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return False
+        except Exception:
+            return False
+        try:
+            subprocess.Popen(["sudo", "-n", "systemctl", "restart", unit],
+                             start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
     @app.route("/overview/start", methods=["POST"])
     def overview_start():
         port = int((request.get_json(force=True) or {}).get("port", 0))
         if not port:
             return _cors_response({"error": "missing port"}, status=400)
+        if _systemd_restart(port):
+            return _cors_response({"ok": True, "port": port, "supervisor": "systemd"})
         inst_dir = os.path.join(_instances_root(), str(port))
         script = None
         for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
@@ -9807,21 +9829,23 @@ if FLASK_OK:
         port = int((request.get_json(force=True) or {}).get("port", 0))
         if not port:
             return _cors_response({"error": "missing port"}, status=400)
-        inst_dir = os.path.join(_instances_root(), str(port))
-        script = None
-        for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
-            p = os.path.join(inst_dir, cand)
-            if os.path.isfile(p):
-                script = p
-                break
-        if not script:
-            return _cors_response({"ok": False, "error": f"no start script for port {port}"}, status=404)
         is_self = (port == PORT)
         def _spawn():
+            if _systemd_restart(port):
+                return
+            inst_dir = os.path.join(_instances_root(), str(port))
+            script = None
+            for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
+                p = os.path.join(inst_dir, cand)
+                if os.path.isfile(p):
+                    script = p
+                    break
+            if not script:
+                return
             subprocess.Popen(["bash", script], cwd=REPO_ROOT, start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if is_self:
-            # Let this response flush before the start script kills this process.
+            # Let this response flush before systemd SIGTERMs this process.
             threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
         else:
             _spawn()
