@@ -11580,6 +11580,7 @@ def _reembed_pending(limit: int = 200):
 
 
 _REEMBED_POLL_SECONDS = int(os.environ.get("MNEME_REEMBED_POLL", "30"))
+_ALLOW_REINDEX = os.environ.get("MNEME_ALLOW_REINDEX", "0") == "1"
 
 
 def _reembed_loop():
@@ -11628,6 +11629,13 @@ def _embedding_health_check() -> bool:
         # self-heal below. A subprocess importing with a different embed config
         # must NOT mass-clear the owner's vectors.
         print("  [HEALTH] shared-memory mode: skipping re-embed self-heal (non-owner)", flush=True)
+        return ok
+    if not _ALLOW_REINDEX:
+        # Owner, but the destructive self-heal is not explicitly enabled. Report
+        # the state but do NOT mass-clear vectors: a config typo or an accidental
+        # embed-model switch would otherwise wipe every embedding and force a
+        # full re-embed. Set MNEME_ALLOW_REINDEX=1 to opt into the self-heal.
+        print("  [HEALTH] re-index self-heal disabled (MNEME_ALLOW_REINDEX not set)", flush=True)
         return ok
     # 2. Conflicting dim: wrong-length vectors are unusable — mark for re-embed.
     bad = db.execute(
