@@ -2285,6 +2285,9 @@ _SCHEMA_MIGRATIONS = [
         "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
         "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
     ]),
+    (3, "instance_origin column (dev)", [
+        "ALTER TABLE chunks ADD COLUMN instance_origin TEXT DEFAULT ''",
+    ]),
 ]
 
 
@@ -2750,7 +2753,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
         for word in words:
             pattern = f"%{word}%"
             rows = db.execute(
-                "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT chunk_id FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' ORDER BY created_at DESC LIMIT ?",
                 (pattern, top_k * 2)
             ).fetchall()
             for (cid,) in rows:
@@ -2770,7 +2773,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     for word in words:
         pattern = f"%{word}%"
         rows = db.execute(
-            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ?",
+            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'",
             (pattern,)
         ).fetchall()
         for cid, created in rows:
@@ -2781,7 +2784,10 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     ranked = sorted(match_counts.keys(),
                     key=lambda cid: (-match_counts[cid], recency.get(cid, "")),
                     reverse=False)  # match-count desc, then OLDEST first (invert recency bias)
-    cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
+    # Fallback path only (phrase search handles precise queries now). A small
+    # cap: a word-split result is a lead for read_chunk, not a browsing surface —
+    # don't flood the model with near-miss chunks when one broad word matches.
+    cap = max(top_k, 30)
     return [(0.0, cid) for cid in ranked[:cap]]
 
 def _query_snippet(content: str, query: str, radius: int = 160) -> str:
@@ -3044,7 +3050,7 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
         _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
     if _hs.get("ram_pct") is not None and _hs["ram_pct"] >= BROWNOUT_RAM_PCT:
         _status_line += " [BROWNOUT: shedding background work]"
-    _body = ctx + f"\n\n{_status_line}" + _time_header() + _missed_reminders() + (f"\n[context budget: {_total} token window, ~{_used} used, "
+    _body = ctx + f"\n\n{_status_line}" + (f"\n[context budget: {_total} token window, ~{_used} used, "
                    f"~{_remaining} remaining for tool results + answer]")
     # Surface the current session id so the model knows its own identity — useful
     # for provenance, tracing a chunk back to its conversation, and handoffs like
@@ -4551,6 +4557,28 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     pending_embed=1 and no vector, so it is not lost, but it is also not added
     to FAISS until a background job re-embeds it. This replaces the old silent
     zero-vector behavior (a zero vector stored fine but never matched anything).
+
+    instance_origin semantics (write-provenance audit marker):
+      - The value stamped is the proxy's BOUND PORT as a label ("8080"/"7979").
+        It identifies the *process* that bound that port, not a global instance
+        ID — two proxies on different chunk dirs could in principle both report
+        the same port label (e.g. one falls back to the default env port). For
+        an unambiguous instance, correlate with the DB_PATH/chunk dir of the
+        instance that owns the chunk table being audited.
+      - Shared-DB caveat: when two processes write the SAME chunk table, the
+        stamp is the writing PROCESS, not the owning instance — e.g. in a
+        shared DB, "7979" means the 7979 process wrote the row, even if the
+        table belongs to the 8080 instance's chunk dir.
+      - save_chunk is the only INSERT INTO chunks, but not the only writer of
+        chunk columns: curation.ensure_schema() also ALTERs the chunks table
+        (retracted/derived_from/etc.), and curation applies UPDATEs to it.
+        Those paths preserve instance_origin; note them when auditing.
+      - '' means the row predates this feature (legacy row, origin unknown) —
+        it is NOT the same as "written by an unidentified future path".
+      - INSERT OR REPLACE rewrites the row wholesale: any re-save through this
+        function re-stamps the origin of *this* process over the previous one.
+        save_chunk is the only INSERT INTO chunks in the codebase, so origin
+        never silently resets to ''.
     """
     # SANITIZER: detect degenerate (mojibake/word-salad) output BEFORE storing.
     _degenerate, _deg_why = sanitizer.is_degenerate_chunk(messages)
@@ -4574,37 +4602,53 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             INSERT OR REPLACE INTO chunks
             (chunk_id, topic_label, messages, thinking, strategy, vector, grade,
              consensus, outcome, problem_type, source, cycle, created_at, session_id,
-             indexable, superseded_by, pending_embed, embed_model, dim, trust)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             indexable, superseded_by, pending_embed, embed_model, dim, trust, instance_origin)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
               blob, grade, consensus, outcome, problem_type,
               source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
               1 if is_indexable else 0, "",
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
-              trust))
-
-    try:
-        _inserted = _insert_chunk_verified(chunk_id, lambda: _db_write_retry(_insert_chunk))
-    except Exception as _e:
-        _log_error("save_chunk:insert", _e)
-        raise
-    if not _inserted:
-        _log_error("save_chunk:missing-after-insert",
-                   RuntimeError(
-                       f"chunk {chunk_id} NOT in DB after insert retries "
-                       f"(db={os.environ.get('MNEME_DB_PATH','?')})"))
+              trust, str(PORT)))
 
     # SANITIZER: soft-remove via curation path (reversible, logged; row preserved).
     if _degenerate:
         is_indexable = False
-        try:
-            curation.set_removed(db, chunk_id, True, actor="system",
-                                 reason="sanitizer: degenerate output detected - " + _deg_why[:200])
-            print("  [SANITIZER] chunk %s soft-removed: %s" % (chunk_id, _deg_why[:80]), flush=True)
-        except Exception as _e:
-            print("  [SANITIZER] set_removed failed (chunk still stored): %s" % _e, flush=True)
 
-    # Add to FAISS (only if indexable AND actually embedded) (only if indexable AND actually embedded) — multi-writer safe
+    # Insert with retry + post-insert verification. The chunk row MUST be
+    # visible after commit or the insert silently vanished (the Oct-19
+    # "unknown chunk" bug class: [ARCHIVE] logs SUCCESS while no row ever
+    # lands). See _insert_chunk_verified. Fail LOUDLY below and DO NOT add
+    # the id to the FAISS idmap — a retrieval vector with no DB row behind
+    # it corrupts lookups (dangling idmap) instead of merely losing a log.
+    _db_write_retry(_insert_chunk)
+
+    def _verify_insert():
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT 1 FROM chunks WHERE chunk_id=?",
+                               (chunk_id,)).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+    _persisted = False
+    for _attempt in range(3):
+        try:
+            _persisted = _verify_insert()
+            break
+        except sqlite3.OperationalError as _ve:
+            time.sleep(0.2 * (_attempt + 1))  # transient reader lock — retry
+    else:
+        _log_error("save_chunk:verify", _ve)
+    if not _persisted:
+        _log_error("save_chunk:missing-after-insert",
+                   RuntimeError(
+                       f"chunk {chunk_id} not readable from {DB_PATH} after "
+                       f"commit (source={source}, session={session_id}) — "
+                       f"skipping FAISS add"))
+        return
+    
+    # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:
         with faiss_lock():
             _load_index_from_disk()
@@ -7303,12 +7347,31 @@ def _execute_search_tool_calls(search_calls):
         _session = (fn.get("arguments", {}).get("session", "") or "").strip()
         _method = (fn.get("arguments", {}).get("method", "auto") or "auto").strip().lower()
         if _method == "keyword":
-            # Explicit substring search — the model is hunting a specific word,
-            # name, path, or error string that vector similarity would miss.
-            # by_match=True drops the recency bias: old chunks matching the word
-            # are kept and ranked by match count, so a buried fact is not cut off.
-            hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
-            print(f"  [SEARCH-TOOL] keyword '{q[:80]}' -> {len(hits)} hits", flush=True)
+            # PHRASE-FIRST keyword search — the SAME search surface users have on
+            # the memory management page (GET /memory/chunks?keyword=... in
+            # curation.list_chunks): exact substring match of the WHOLE query over
+            # messages AND topic_label, newest first, limited to top_k. A natural
+            # 2-4 word phrase ("my name is") returns only chunks where that exact
+            # phrase appears (~7 chunks), not every chunk containing "name".
+            # Word-split by_match searching is kept ONLY as a fallback for when
+            # the phrase hits nothing (single rare words, partial identifiers).
+            try:
+                _phr = db.execute(
+                    "SELECT chunk_id FROM chunks WHERE (messages LIKE ? OR topic_label LIKE ?) "
+                    "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (f"%{q}%", f"%{q}%", k)).fetchall()
+            except Exception as _e:
+                print(f"  [SEARCH-TOOL] phrase search failed ({_e}) — falling back", flush=True)
+                _phr = []
+            hits = [r[0] for r in _phr]
+            if hits:
+                print(f"  [SEARCH-TOOL] keyword phrase '{q[:80]}' -> {len(hits)} hits", flush=True)
+            else:
+                # by_match=True drops the recency bias: old chunks matching the word
+                # are kept and ranked by match count, so a buried fact is not cut off.
+                hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
+                print(f"  [SEARCH-TOOL] keyword phrase miss — word-split fallback '{q[:80]}' -> {len(hits)} hits", flush=True)
         elif _method == "semantic":
             # Vector/meaning match only — no keyword fallback.
             hits = route_query(q, top_k=k, session=_session)
@@ -7323,6 +7386,15 @@ def _execute_search_tool_calls(search_calls):
                 if kw:
                     hits = [cid for _, cid in kw]
                     print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
+        # REMOVED chunks must never be surfaced to the model: read_chunk follows
+        # via load_chunk(allow_removed=False) and would fail with "No chunk
+        # with id" — search and read must agree on chunk visibility.
+        if hits:
+            _ph = ','.join('?' * len(hits))
+            _keep = {r[0] for r in db.execute(
+                f"SELECT chunk_id FROM chunks WHERE chunk_id IN ({_ph}) "
+                "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'", tuple(hits))}
+            hits = [h for h in hits if h in _keep]
         trace.update(hits)
         if hits:
             _n = len(hits)
@@ -11199,7 +11271,8 @@ if FLASK_OK:
         for score, chunk_id, method in hybrid:
             row = db.execute(
                 "SELECT topic_label, grade, created_at, outcome, source, session_id, cycle, "
-                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
+                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason, "
+                "COALESCE(instance_origin,'') "
                 "FROM chunks WHERE chunk_id=?", (chunk_id,)
             ).fetchone()
             if not row:
@@ -11209,7 +11282,7 @@ if FLASK_OK:
             if session and row[5] != session:
                 continue
             entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "session_id": row[5], "cycle": row[6], "similarity": round(score, 4), "method": method,
-                     "removed": row[7], "removed_reason": row[8] or ""}
+                     "removed": row[7], "removed_reason": row[8] or "", "instance_origin": row[9]}
             chunks.append(entry)
         return _cors_response({"results": chunks[:top_k]})
 

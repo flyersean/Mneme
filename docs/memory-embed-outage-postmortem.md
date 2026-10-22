@@ -1,93 +1,82 @@
-# Postmortem — memory embedder outage (2026-10-10 → 2026-10-14)
+# Postmortem: 5-day Embedder Outage (Oct 10-14)
 
-## TL;DR
+## Summary
 
-For five days the embedder (`qwen/qwen3-embedding-8b` via OpenRouter) was failing on
-every call (HTTP 401 and 400), so new memory chunks were **saved but never embedded**.
-Unembedded chunks are invisible to semantic search, so Mneme was effectively running with
-most of its memory turned off — and it never surfaced this anywhere. The symptom was a
-gradual slide into hallucination (answering from no real recall), followed by a hard crash
-(HTTP 500 on every chat message) caused by a latent FAISS bug that the outage exposed.
+For approximately five days (Oct 10 - Oct 14), the embedding backend
+`qwen3-embedding-8b` via OpenRouter returned 401/400 errors for every
+request. No new or backlogged chunks could be embedded. Semantic search
+silently degraded to keyword-only fallback, and health checks continued
+to report "ok" throughout, so the outage went undetected until manual
+inspection.
 
-## Timeline
+## Impact
 
-| Date | Embedding health |
-|------|------------------|
-| Oct 09 | 489 embedded / 154 pending |
-| Oct 10 | 0 embedded / 278 pending  ← embedder starts failing (401/400) |
-| Oct 11 | 0 embedded / 647 pending |
-| Oct 12 | 0 embedded / 1,248 pending |
-| Oct 13 | 0 embedded / 26 pending |
-| Oct 14 | 0 embedded / 25 pending |
-| Oct 15 | 10 embedded / 109 pending (recovering) |
-| Oct 16 | working — backlog draining |
-
-At the worst point ~2,594 of ~2,987 chunks (~87%) were `pending_embed=1` (unembedded).
+- ~2,594 of 2,987 chunks (~87%) were left unembedded at the peak of
+  the backlog. Semantic queries matched only the embedded minority plus
+  keyword matches, producing noisy, off-topic context injections.
+- Nobody noticed for five days because the health endpoint did not
+  check the embedder at all.
 
 ## Root cause
 
-The embedder calls (OpenRouter `qwen/qwen3-embedding-8b`) started returning 401
-Unauthorized and 400 Bad Request on Oct 10 and stayed broken for five days. Chunks are
-saved transactionally regardless of embed success, so the pipeline kept *storing* memory
-while silently failing to make it *searchable*. The outage was an upstream/provider failure;
-the damage was the **silent accumulation** of a huge unembedded backlog.
+1. **Backend failure:** `qwen3-embedding-8b` via OpenRouter started
+   returning 401/400 responses on Oct 10 and continued through Oct 14.
+2. **Health blind spot:** `/health` returned `ok` without checking the
+   embedder backend, so a total embedding outage was invisible.
+3. **Keyword-search fallback masked the failure:** retrieval fell back
+   to keyword matching, which still returned *some* results - noisy
+   injection instead of an obvious error.
+4. **Crash on empty FAISS results:** `_cosine_search` raised an
+   `IndexError` when the FAISS search returned no results. **Fixed:**
+   `_cosine_search` now returns an empty result set gracefully.
+5. **Backlog never drained:** background re-embedding was capped at
+   200 chunks per startup, so whenever the backlog exceeded 200 (it was
+   in the thousands), each restart re-embedded a small slice and never
+   caught up. **Fixed:** re-embed now performs a full drain of the
+   pending backlog.
 
-## Why it went unnoticed for five days
+## Fixes now in place
 
-- `/health` hard-coded `"ok"` and never reported embed health.
-- `/status` was in-memory only (no pending-embed counter).
-- The embed health probe only ran at startup and printed to the log — never surfaced to a
-  human or to the model.
-- The model had no tool to ask "is my memory healthy?".
+- `/health` reports total / embedded / pending chunk counts and
+  per-backend status (so an embedder outage is visible immediately).
+- The `mneme_health` tool exposes the same figures to the agent
+  (total/embedded/pending, plus embedder/chat/labeler backend status).
+- `/health/ui` page exists for human inspection.
+- `_cosine_search` empty-result crash fixed (graceful empty return).
+- Re-embed backlog drain is no longer capped.
 
-In other words: the system had a heartbeat, but the heartbeat was lying.
+## Deferred
 
-## Symptoms — how it degraded the model
+- Proactive watchdog alerting (actively notifying on backend failures,
+  rather than just reporting via `/health`) is deferred to a future
+  cycle.
 
-Broken memory injection caused hallucination through three distinct modes:
+## Detection & Timeline
 
-1. **Keyword-noise during the outage.** Semantic search returned nothing, so retrieval fell
-   back to keyword matching — noisy, low-precision results injected as if they were recall.
-2. **~87% missing memory after recovery.** Once the embedder came back, only the ~13% of
-   chunks that had ever been embedded were reachable by semantic search. The model was
-   answering from a fraction of its actual memory.
-3. **Total retrieval failure (the crash).** During the re-embed catch-up, a latent bug in
-   `_cosine_search` raised `IndexError` on empty FAISS results, returning HTTP 500 on every
-   chat message — memory injection went from "degraded" to "gone".
+- The outage went unnoticed for its full five-day duration because
+  `/health` returned `ok` regardless of embedder state.
+- Detected Oct 16, via manual inspection of the memory figures after the
+  `mneme_health` tool and health figures landed — not by any automated
+  signal (none existed).
+- Discovered state at detection: ~2,594 of ~2,987 chunks (~87%)
+  unembedded, the backlog having grown across restarts.
 
-## Bugs found and fixed
+## Residual gaps (recorded for honesty)
 
-1. **FAISS empty-result IndexError** (`proxy/mneme_proxy.py`, `_cosine_search`). When the
-   FAISS search returned no rows (which happened constantly during re-embed churn), the code
-   indexed `scores[0]` / `idxs[0]` blindly → `IndexError: list index out of range` → HTTP 500.
-   Fix: return `[]` on empty results, and skip any index row whose id is out of range
-   (covers `_index` / `_id_map` desync).
+- The drain is still *startup-only*: `_reembed_pending` is enqueued once
+  at startup. If the embedder recovers without a restart, the backlog
+  sits until the next restart. The 200 limit is now per-batch, not per
+  startup, but a mid-flight recovery does not self-heal.
+- Over-length text can leave chunks `pending_embed` silently even when
+  the embedder is healthy — an outage-compounding behavior.
+- `embed.at=""` right after startup means "never attempted", which is
+  indistinguishable from healthy on the first request.
+- Deferred: proactive watchdog alerting on backend failures.
 
-2. **Re-embed backlog never drained** (`_reembed_pending(limit=200)`). Only 200 chunks were
-   re-embedded per startup, so a 2,500-chunk backlog could never catch up — every restart
-   re-did the same first 200. Fix: loop until the backlog is zero, so an embedder outage
-   self-heals once the provider recovers.
+## Verification (as of Oct 16)
 
-## Fixes applied
-
-- `53f801d` fix(proxy): guard empty FAISS search results; drain full re-embed backlog
-- `7f5b549` feat(health): surface memory/embedder health on /health + /dashboard/status;
-  add mneme_health model tool
-- `7d193d4` feat(health): add visual health page at /health/ui + nav link
-
-## Prevention — the new health system (so this can't hide again)
-
-- `/health` and `/dashboard/status` now report memory health: total / embedded / pending /
-  % unembedded, plus per-backend (embed/chat/label) ok/error status.
-- A `mneme_health` **model tool** lets the agent ask "is my memory healthy?" and report
-  DEGRADED state instead of silently fabricating.
-- A visual page at `/health/ui` shows the same live.
-
-The re-embed backlog is drained by a full-sweep loop, so the next provider outage degrades
-gracefully and recovers on its own — and now it's visible the moment it starts.
-
-## Still deferred (not done)
-
-- A persistent embed-failure counter + watchdog cron that alerts a human when the embedder
-  has been failing beyond a threshold. This postmortem's "why it went unnoticed" list is the
-  spec for that future work.
+- `mneme.db` (main instance A): total=3126, pending=0 — backlog drained.
+- `chunks/dev/mneme.db` (instance B): total=37, pending=0 — drained.
+- Reproduction recipe for the original blind spot: point `embed_backend`
+  at an invalid key, restart, and confirm `/health` now shows
+  `embed.ok: false` and `pending > 0`.

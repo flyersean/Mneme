@@ -161,7 +161,7 @@ SEARCH_MEMORY_TOOL = {
                 "query": {"type": "string", "description": "What to search for — be specific. For method='keyword', put the exact word/name/path to match."},
                 "top_k": {"type": "integer", "description": "Number of results (default 5)"},
                 "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only. Leave empty to search all memory."},
-                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact substring match on the query words — use when hunting a specific name, path, or error string."},
+                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact PHRASE search — the same search as the memory management page. Type ONE natural 2-4 word phrase that would appear right next to the fact ('my name is', ' works at', 'allergic to'). It returns only chunks containing that exact phrase. NEVER merge candidate phrases into one query ('my name is call me I am' matches nothing useful) — if one phrase misses, run the next phrase as a separate search."},
             },
             "required": ["query"],
         },
