@@ -1612,25 +1612,55 @@ def _exec_restart_proxy(args):
     chunk_dir = os.environ.get("MNEME_CHUNK_DIR", "")
     inst_root = os.path.dirname(chunk_dir) if chunk_dir else "/home/ubuntu/mneme/chunks/instances"
     inst_dir = os.path.join(inst_root, str(port))
-    script = None
-    for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
-        p = os.path.join(inst_dir, cand)
-        if os.path.isfile(p):
-            script = p
-            break
-    if not script:
-        return f"no start script for port {port} (looked in {inst_dir})"
     is_self = (str(port) == os.environ.get("MNEME_PORT", ""))
     import subprocess
+
+    # Preferred: same path the dashboard restart button uses (/overview/restart
+    # -> _systemd_restart). systemd is an independent supervisor, so the restart
+    # cannot be taken down by the death of this (possibly self) proxy process.
+    unit = f"mneme@{port}.service"
+    has_unit = False
+    try:
+        r = subprocess.run(["systemctl", "cat", unit],
+                           capture_output=True, text=True, timeout=5)
+        has_unit = (r.returncode == 0)
+    except Exception:
+        has_unit = False
+
+    def _logf():
+        # keep restart diagnostics observable instead of DEVNULL
+        return open(os.path.join(inst_dir, "restart.log"), "ab")
+
+    import os as _os
+    REPO_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
+
     def _spawn():
-        subprocess.Popen(["bash", script], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if has_unit:
+            with _logf() as lf:
+                subprocess.Popen(["sudo", "-n", "systemctl", "restart", unit],
+                                 start_new_session=True,
+                                 stdout=lf, stderr=subprocess.STDOUT)
+            return
+        script = None
+        for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
+            p = os.path.join(inst_dir, cand)
+            if os.path.isfile(p):
+                script = p
+                break
+        if not script:
+            raise FileNotFoundError(f"no start script for port {port} (looked in {inst_dir})")
+        with _logf() as lf:
+            subprocess.Popen(["bash", script], cwd=REPO_ROOT,
+                             start_new_session=True, stdout=lf,
+                             stderr=subprocess.STDOUT)
+
     if is_self:
         import threading, time
         threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
     else:
         _spawn()
-    return ("Restart requested for proxy on port %d" % port) + (" (this proxy — restarting in a moment)" if is_self else "") + "."
+    how = "systemd unit " + unit if has_unit else "start script"
+    return ("Restart requested for proxy on port %d via %s" % (port, how)) + (" (this proxy — restarting in a moment)" if is_self else "") + "."
 
 
 def _exec_resume_run(args):
