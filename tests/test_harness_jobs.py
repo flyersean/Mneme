@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from mneme.harness import Ledger, RunEngine, StepResult  # noqa: E402
 from mneme.harness.ledger import LedgerError  # noqa: E402
-from mneme.harness.jobs import JobStore, Scheduler  # noqa: E402
+from mneme.harness.jobs import JobStore, Scheduler, MAX_RETRIES  # noqa: E402
 
 
 class TestJobs(unittest.TestCase):
@@ -76,3 +76,24 @@ class TestJobs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_failed_last_run_requeues_then_disables(self):
+        j = self.jobs.create("fragile", "fragile thing", 3600)
+        run = self.led.create_run("fragile thing")
+        rid = run["run_id"] if isinstance(run, dict) else run
+        self.led._write("UPDATE runs SET status=? WHERE run_id=?", ("failed", rid))
+        self.jobs.record_run(j["job_id"], rid)
+        requeued = self.jobs.catchup()
+        self.assertEqual(requeued, [j["job_id"]])
+        j2 = self.jobs.get(j["job_id"])
+        self.assertEqual(j2["retries"], 1)
+        self.assertLessEqual(j2["next_run_at"], time.time())
+        self.assertIn("requeued", [x["action"] for x in self.jobs.log(j["job_id"])])
+        # exhaust the retry budget -> job disables itself, no zombie loop
+        for r in range(1, MAX_RETRIES + 1):
+            self.led._write("UPDATE jobs SET next_run_at=?, retries=? WHERE job_id=?",
+                            (time.time() + 7200, r, j["job_id"]))
+            self.jobs.catchup()
+        j3 = self.jobs.get(j["job_id"])
+        self.assertFalse(j3["enabled"])
+        self.assertIn("disabled_max_retries", [x["action"] for x in self.jobs.log(j["job_id"])])

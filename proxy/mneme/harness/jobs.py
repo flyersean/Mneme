@@ -24,6 +24,7 @@ from typing import Callable, List, Optional
 from mneme.harness.ledger import TERMINAL_STATES, Ledger, LedgerError, new_id, now_iso
 
 MIN_INTERVAL_S = 10
+MAX_RETRIES = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -40,8 +41,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     last_run_id TEXT DEFAULT '',
     runs_count  INTEGER DEFAULT 0,
     skipped     INTEGER DEFAULT 0,
+    retries     INTEGER DEFAULT 0,
     max_runs    INTEGER,              -- NULL = forever; else auto-disable at runs_count >= max_runs
-    notified_at TEXT                   -- set when the proxy has delivered this fired reminder into the user's chat (catch-up-on-login)
+    notified_at TEXT,                  -- set when the proxy has delivered this fired reminder into the user's chat (catch-up-on-login)
     created_by  TEXT DEFAULT 'user',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -100,6 +102,8 @@ class JobStore:
                 ledger._db.execute("ALTER TABLE jobs ADD COLUMN max_runs INTEGER")
             if "notified_at" not in cols:
                 ledger._db.execute("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
+            if "retries" not in cols:
+                ledger._db.execute("ALTER TABLE jobs ADD COLUMN retries INTEGER DEFAULT 0")
             ledger._db.commit()
 
     def _decode(self, row) -> Optional[dict]:
@@ -207,6 +211,33 @@ class JobStore:
         self.ledger._write("UPDATE jobs SET skipped=skipped+1, updated_at=? WHERE job_id=?", (now_iso(), job_id))
         self._log(job_id, "skipped", detail=detail)
 
+    def catchup(self, now: Optional[float] = None) -> List[str]:
+        """Requeue jobs whose last run died (failed/cancelled) instead of letting the
+        tick silently consume it. Pulls next_run_at forward (bounded), capped at
+        MAX_RETRIES quick requeues; past the cap the job disables itself so a broken
+        goal cannot loop forever. Runs once at scheduler start."""
+        now = time.time() if now is None else now
+        requeued = []
+        for j in self.list():
+            if not j["enabled"] or not j["last_run_id"]:
+                continue
+            run = self.ledger.get_run(j["last_run_id"])
+            if run is None or run["status"] not in ("failed", "cancelled"):
+                continue
+            if j["next_run_at"] <= now:
+                continue  # already due: the normal tick will retry it
+            if j["retries"] >= MAX_RETRIES:
+                self.set_enabled(j["job_id"], False)
+                self._log(j["job_id"], "disabled_max_retries",
+                          detail=f"last run {run['run_id']} {run['status']} after {j['retries']} retries")
+                continue
+            self.ledger._write(
+                "UPDATE jobs SET next_run_at=?, retries=retries+1, updated_at=? WHERE job_id=? AND enabled=1",
+                (now - 1, now_iso(), j["job_id"]))
+            self._log(j["job_id"], "requeued", run_id=run["run_id"], detail=f"run {run['status']}")
+            requeued.append(j["job_id"])
+        return requeued
+
 
 class Scheduler:
     def __init__(self, engine, jobs: JobStore, tick_s: float = 15.0,
@@ -240,6 +271,11 @@ class Scheduler:
             return
 
         def loop():
+            # startup catch-up: requeue any job whose last run died mid-flight
+            try:
+                self.jobs.catchup()
+            except Exception as e:
+                self._log(f"catchup failed: {type(e).__name__}: {e}")
             while not self._stop.wait(self.tick_s):
                 try:
                     self.tick()
