@@ -47,8 +47,37 @@ _BASH_LOG_MAX = int(os.environ.get("MNEME_BASH_LOG_MAX", str(10 * 1024 * 1024)))
 # rest of the filesystem is read-only to it. read_file is additionally limited
 # to BROWSER_ROOT (the user's view). mneme_proxy calls set_scope() after config
 # load / hot-reload; the env vars are the fallback defaults.
-MODEL_SCOPE = os.path.realpath(os.path.expanduser(
-    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+def _resolve_model_scope(v):
+    """Resolve filesystem.model_scope, which may be a single path (string —
+    possibly a single FILE, kept for backward compatibility) or a LIST of
+    directory roots. Returns a deduplicated list of realpaths."""
+    if v is None:
+        v = []
+    if isinstance(v, (str, bytes)):
+        v = [v]
+    roots = []
+    for x in v:
+        if x is None:
+            continue
+        x = str(x).strip()
+        if not x:
+            continue
+        r = os.path.realpath(os.path.expanduser(x))
+        if r and r not in roots:
+            roots.append(r)
+    return roots
+
+
+def _scope_dirs():
+    """The model_scope roots that should exist as directories. A root that is
+    an existing FILE (the legacy single-file scope value) is NOT a dir and must
+    not be makedirs'd."""
+    return [r for r in MODEL_SCOPE if not os.path.isfile(r)]
+
+
+MODEL_SCOPE = _resolve_model_scope(
+    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))
+
 BROWSER_ROOT = os.path.realpath(os.path.expanduser(
     os.environ.get("MNEME_BROWSER_ROOT", "~")))
 # Harness run workspaces (runs_root/<run_id>/workspace) are also the model's —
@@ -59,9 +88,11 @@ RUNS_ROOT = os.path.realpath(os.path.expanduser(
 
 
 def set_scope(model_scope=None, browser_root=None):
+    """model_scope may be a single path (string) or a list of roots; both are
+    resolved to the same MODEL_SCOPE list used by every native tool gate."""
     global MODEL_SCOPE, BROWSER_ROOT
     if model_scope:
-        MODEL_SCOPE = os.path.realpath(os.path.expanduser(str(model_scope)))
+        MODEL_SCOPE = _resolve_model_scope(model_scope)
     if browser_root:
         BROWSER_ROOT = os.path.realpath(os.path.expanduser(str(browser_root)))
 
@@ -73,14 +104,16 @@ def _within(path, root):
 
 
 def _writable(path):
-    """True when `path` is inside the model's writable area (tools dir + scope)."""
-    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE))
+    """True when `path` is inside the model's writable area (tools dir + any of
+    the scope roots; a single-file scope value allows exactly that file)."""
+    return (_within(path, TOOLS_DIR)
+            or any(_within(path, r) for r in MODEL_SCOPE))
 
 
 def _writable_roots():
     """Deduplicated list of writable roots (tools dir + scope)."""
     roots = []
-    for r in (TOOLS_DIR, MODEL_SCOPE):
+    for r in (TOOLS_DIR, *MODEL_SCOPE):
         r = os.path.realpath(r)
         if not any(r == x or r.startswith(x + os.sep) for x in roots):
             roots.append(r)
@@ -137,8 +170,8 @@ def reload_config():
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
     TOOLS_DIR = _default_tools_dir()
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
-    MODEL_SCOPE = os.path.realpath(os.path.expanduser(
-        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+    MODEL_SCOPE = _resolve_model_scope(
+        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))
     BROWSER_ROOT = os.path.realpath(os.path.expanduser(
         os.environ.get("MNEME_BROWSER_ROOT", "~")))
     RUNS_ROOT = os.path.realpath(os.path.expanduser(
@@ -971,7 +1004,8 @@ def _exec_bash(command):
     place the model can `cat` after this call returns (see ``_bash_log_path``)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
-        os.makedirs(MODEL_SCOPE, exist_ok=True)
+        for r in _scope_dirs():
+            os.makedirs(r, exist_ok=True)
         os.makedirs(RUNS_ROOT, exist_ok=True)
         # A writable pip target inside the sandbox so `pip install <lib>` can
         # succeed despite the read-only root (the default site-packages is
@@ -1055,9 +1089,11 @@ def _exec_write(file_path, content):
         full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
         if not _writable(full):
             record_blocked_write(full)
-            return (f"[write blocked: {full} is outside the model write scope "
-                    f"({MODEL_SCOPE}, {TOOLS_DIR}). "
-                    f"Write inside that scope instead.]")
+            roots = _writable_roots()
+            alt = os.path.join(roots[0] if roots else TOOLS_DIR, "yourfile.txt")
+            return (f"[write blocked: {full} is outside the model write scope. "
+                    f"Allowed roots: {', '.join(roots)}. "
+                    f"Write inside one of these instead, e.g. {alt}.]")
         os.makedirs(os.path.dirname(full) or TOOLS_DIR, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
