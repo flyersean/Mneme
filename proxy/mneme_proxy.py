@@ -65,6 +65,7 @@ from mneme.overcome import (
     BUILD_MAX_TOOL_CALLS,
     MAX_SERVER_ROUNDS,
     TOOL_ROUND_NUDGE,
+    wrap_up_nudge_due,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -8053,6 +8054,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
+    _new_calls = 0    # first-time (non-repeated) tool calls this turn (bug b)
+    _round_log = []   # per-round {'calls','new','ok'} — wrap-up nudge evidence (bug b)
+    _round_mark = None  # start-of-round snapshots for the round log above
     _search_rounds = 0   # search_memory calls this turn (grind -> clue-seeking signal)
     _search_words = {}   # meaningful query word -> count (keyword repetition signal)
     _clue_nudged = False # one-time "look for clues" nudge sent
@@ -8084,16 +8088,20 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         changed, so re-running bash is legitimate). Any other repeated call counts
         toward the redundancy hard-stop; many distinct bash calls on one resource
         count toward the write-a-script nudge."""
-        nonlocal _redundant
+        nonlocal _redundant, _new_calls
         if nm == "write":
+            # A write invalidates all prior signatures (the script changed, so
+            # re-running bash is legitimate) — and is itself NEW information.
             _seen_sigs.clear()
             _bash_resources.clear()
+            _new_calls += 1
             return
         _sig = f"{nm}:{json.dumps(args, sort_keys=True)}"
         if _sig in _seen_sigs:
             _redundant += 1
         else:
             _seen_sigs.add(_sig)
+            _new_calls += 1
         if nm == "bash":
             _rk = _bash_resource_key(str(args.get("command", "")) if isinstance(args, dict) else "")
             _bash_resources.setdefault(_rk, set()).add(_sig)
@@ -8128,6 +8136,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # User hit "Stop" between rounds — end the turn immediately.
             result["done_reason"] = "cancelled"
             break
+        # (bug b) snapshot round-start state so this round's outcome can be
+        # recorded in _round_log before the wrap-up nudge decision below.
+        _round_mark = (len(_tool_trace), _new_calls, _blocked_count, _tool_rounds)
         # (The old context-size hard-stop that forced synthesis at 50K chars is
         # gone: the followup is now compacted to the token input budget
         # (_context_input_budget) before every re-query below, so it never bloats
@@ -8384,10 +8395,37 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # final answer, nudge the model (once) to synthesize. This catches the
         # grinding pattern — many DIFFERENT small tool calls with no narration —
         # which the identical-call redundancy stop above cannot see.
+        # (bug b fix) Record this round in the round log: how many calls ran,
+        # how many were NEW (first-time), and whether the round was clean
+        # (no errored result, no blocked/out-of-scope result).
+        _ROUND_ERR_RE = re.compile(
+            r"Traceback \(most recent call last\)|\[TOOL:FAILURE|exit code [1-9]"
+            r"|out of scope|permission denied|blocked:", re.IGNORECASE)
+        if _round_mark is not None:
+            _m_tr, _m_new, _m_blk, _m_rnd = _round_mark
+            _r_traces = _tool_trace[_m_tr:]
+            _r_errored = any(t.get("blocked") or _ROUND_ERR_RE.search(t.get("result") or "")
+                             for t in _r_traces)
+            _round_log.append({
+                "calls": _tool_rounds - _m_rnd,
+                "new": _new_calls - _m_new,
+                "ok": not (_r_errored or (_blocked_count - _m_blk) > 0),
+            })
+
+        # (bug b fix) The nudge now uses wrap_up_nudge_due: suppressed while
+        # the last round succeeded AND the last 2 rounds each produced NEW
+        # information (still converging); kept for the no-convergence grind
+        # (repeats with nothing new) and for failing/blocked rounds. NOT a
+        # threshold raise — the same threshold crossing can fire later once
+        # convergence stalls.
         if not _nudged and _tool_rounds >= TOOL_ROUND_NUDGE:
-            _nudged = True
-            followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
-            print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
+            if wrap_up_nudge_due(_round_log, _tool_rounds, TOOL_ROUND_NUDGE):
+                _nudged = True
+                followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
+                print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
+            else:
+                print(f"  [TOOL-NUDGE] suppressed after {_tool_rounds} tool rounds "
+                      f"({_round_log[-1] if _round_log else {}}) — still converging", flush=True)
 
         # Scope-loop nudge: the model keeps hitting files it cannot access (out of
         # scope / permission denied). The redundancy stop can't see this because the
@@ -9324,9 +9362,45 @@ def _browser_root() -> str:
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_BROWSER_ROOT", "~"))))
 
 
-def _model_scope() -> str:
+def _model_scope():
+    """The model's write boundary as a LIST of resolved roots.
+    filesystem.model_scope may be a single path (string — possibly a single
+    FILE for backward compatibility) or a list of directory roots; both end up
+    in the same resolved list used by every gate (_within_any / fs write paths /
+    mntools.set_scope), so all tools agree on the same root set."""
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
-    return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
+    if cfg is None:
+        cfg = os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")
+    mntools_scope = mntools._resolve_model_scope(cfg)
+    if mntools_scope:
+        return mntools_scope
+    return [os.path.realpath(os.path.expanduser(str(os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))]
+
+
+def _within_any(path, roots) -> bool:
+    """_within() generalized to a list of roots."""
+    return any(_within(path, r) for r in roots)
+
+
+def _allowed_roots() -> list:
+    """All roots the model may write to: the browser root + the model scope
+    roots (resolved by _model_scope), which the native bash/write/read_file
+    tools also gate by (mntools shares the same scope via set_scope)."""
+    roots = [_browser_root()]
+    for r in _model_scope():
+        if r not in roots:
+            roots.append(r)
+    return roots
+
+
+def _blocked_msg(action: str, path: str) -> str:
+    """Blocked-path error that names the allowed roots and suggests a concrete
+    alternative inside the first allowed root."""
+    roots = _allowed_roots()
+    alt = os.path.join(roots[0] if roots else "/tmp", "yourfile.txt")
+    return (f"outside allowed roots ({', '.join(roots)}); cannot {action} {path}. "
+            f"Allowed roots: {', '.join(roots)}. "
+            f"Try writing inside one of these instead, e.g. {alt}.")
 
 
 def _detect_terminal() -> str:
@@ -10585,7 +10659,7 @@ if FLASK_OK:
                     "abspath": e.path,
                     "type": "dir" if e.is_dir() else "file",
                     "size": st.st_size,
-                    "in_model_scope": _within(e.path, model_scope),
+                    "in_model_scope": _within_any(e.path, model_scope),
                 })
         except OSError as ex:
             return _cors_response({"error": str(ex), "items": []}, 500)
@@ -10614,7 +10688,7 @@ if FLASK_OK:
             return _cors_response({"error": str(ex)}, 500)
         return _cors_response({
             "path": rel, "size": size,
-            "in_model_scope": _within(target, _model_scope()),
+            "in_model_scope": _within_any(target, _model_scope()),
             "content": content,
         })
 
@@ -10633,13 +10707,14 @@ if FLASK_OK:
         content = data["content"]
         if not isinstance(content, str):
             return _cors_response({"ok": False, "error": "content must be text"}, 400)
-        root = _browser_root()
+        roots = _allowed_roots()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
-            target = os.path.realpath(os.path.join(root, path))
-        if not _within(target, root):
-            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+            target = os.path.realpath(os.path.join(_browser_root(), path))
+        if not _within_any(target, roots):
+            print(f"  [FS-WRITE BLOCKED] {target}", flush=True)
+            return _cors_response({"ok": False, "error": _blocked_msg("write", target)}, 403)
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -10657,13 +10732,13 @@ if FLASK_OK:
         path = (data.get("path") or "").strip()
         if not path:
             return _cors_response({"ok": False, "error": "missing path"}, 400)
-        root = _browser_root()
+        roots = _allowed_roots()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
-            target = os.path.realpath(os.path.join(root, path))
-        if not _within(target, root):
-            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+            target = os.path.realpath(os.path.join(_browser_root(), path))
+        if not _within_any(target, roots):
+            return _cors_response({"ok": False, "error": _blocked_msg("mkdir", target)}, 403)
         try:
             os.makedirs(target, exist_ok=True)
         except OSError as ex:
@@ -10680,12 +10755,13 @@ if FLASK_OK:
         if not path:
             return _cors_response({"ok": False, "error": "missing path"}, 400)
         root = _browser_root()
+        roots = _allowed_roots()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
             target = os.path.realpath(os.path.join(root, path))
-        if not _within(target, root):
-            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        if not _within_any(target, roots):
+            return _cors_response({"ok": False, "error": _blocked_msg("delete", target)}, 403)
         if os.path.realpath(target) == os.path.realpath(root):
             return _cors_response({"ok": False, "error": "cannot delete the browser root"}, 400)
         try:
@@ -10715,7 +10791,7 @@ if FLASK_OK:
         if not _within(target, root):
             return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
         CONFIG_DATA.setdefault("filesystem", {})["model_scope"] = target
-        mntools.set_scope(model_scope=target)
+        mntools.set_scope(model_scope=_model_scope())
         persisted = _persist_model_scope(target)
         print(f"  [FS-SCOPE] model_scope -> {target} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "model_scope": target, "persisted": persisted})

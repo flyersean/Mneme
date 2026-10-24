@@ -36,6 +36,33 @@ BUILD_MAX_TOOL_CALLS = BUILD_MAX_ITERATIONS * 2
 # a final answer, nudge the model to synthesize. Advisory only — the model may keep
 # going as long as it has NEW ideas; the hard stop is redundancy-based, not count-based.
 TOOL_ROUND_NUDGE = int(os.environ.get("MNEME_TOOL_ROUND_NUDGE", "8"))
+
+
+def wrap_up_nudge_due(round_log, tool_rounds, threshold=TOOL_ROUND_NUDGE):
+    """Decide whether the wrap-up nudge should fire this round (bug b fix).
+
+    The old logic fired purely on tool_rounds >= threshold, which interrupted
+    the model AFTER the task was already complete. Now the nudge is suppressed
+    while the model is still converging: skip it when the most recent round
+    succeeded (no errored result, no blocked/out-of-scope result) AND each of
+    the last 2 rounds produced NEW information (first-time, non-repeated tool
+    calls). The nudge is kept for the genuine no-convergence case: rounds of
+    repeated calls with nothing new, or rounds failing/blocked.
+
+    round_log entries (one per tool round, in order):
+        {"calls": N, "new": N, "ok": bool}
+    Suppression is NOT permanent — this is a pure function of the CURRENT log,
+    so a turn that is converging now can still be nudged later once it stalls.
+    """
+    if tool_rounds < threshold or not round_log:
+        return False
+    def _new_info(r):
+        return bool(r) and r.get("calls", 0) > 0 and r.get("new", 0) > 0 and r.get("ok", False)
+    last = round_log[-1] if round_log else None
+    prev = round_log[-2] if len(round_log) > 1 else None
+    if not _new_info(prev):
+        return True   # less than 2 rounds of new info: no evidence of convergence
+    return not (_new_info(last) and last.get("ok", False))
 # Grinding = repeating the SAME tool call (same name + same args), not making many
 # calls. After this many repeats of an already-seen call (with no intervening write
 # to invalidate it), hard-stop and force a final answer.
