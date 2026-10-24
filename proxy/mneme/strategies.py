@@ -99,17 +99,35 @@ def _dump_file(entries) -> str:
     return json.dumps(entries, indent=2, ensure_ascii=False)
 
 
-def promote(db, strategy_id: str, user_path: str) -> bool:
-    """Write one DB strategy into the per-instance user file (create/update by id)."""
-    row = db.execute(
-        "SELECT problem_type, strategy_text, grade, cost, created_by FROM strategies "
-        "WHERE strategy_id=?", (strategy_id,)).fetchone()
+def promote(db, strategy_id: str, user_path: str, allow_untested: bool = False) -> bool:
+    """Write one DB strategy into the per-instance user file (create/update by id).
+
+    Gate: a strategy may only be promoted if its verdict was earned by an
+    observed contrast (verdict != 'untested').  A human promoting by hand is
+    an explicit judgement and may pass allow_untested=True -- that is the
+    substitute for the contrast probe, not a bypass of it.
+    """
+    try:
+        row = db.execute(
+            "SELECT problem_type, strategy_text, grade, cost, created_by, verdict "
+            "FROM strategies WHERE strategy_id=?", (strategy_id,)).fetchone()
+    except Exception:
+        # Older DB without the v3 verdict column: fall back to ungated query.
+        row = db.execute(
+            "SELECT problem_type, strategy_text, grade, cost, created_by, 'untested' "
+            "FROM strategies WHERE strategy_id=?", (strategy_id,)).fetchone()
     if row is None:
         return False
-    problem_type, text, grade, cost, created_by = row
+    problem_type, text, grade, cost, created_by, verdict = row
+    verdict = (verdict or "untested").strip().lower()
+    if verdict == "untested" and not allow_untested:
+        return False
+    if verdict == "hurt":
+        return False
     entries = _parse_file(user_path)
     entry = {"id": str(strategy_id), "problem_type": problem_type, "text": text,
              "grade": grade or "B", "cost": cost or 0,
+             "verdict": verdict,
              "created_by": "user"}
     # replace the matching id, else append
     replaced = False
@@ -133,19 +151,26 @@ def export_json(db, strategy_id=None) -> str:
     """Serialize strategies (or one) to a JSON list for browser download."""
     if strategy_id:
         rows = db.execute(
-            "SELECT strategy_id, problem_type, strategy_text, grade, cost, created_by, retired "
+            "SELECT strategy_id, problem_type, strategy_text, grade, cost, created_by, retired, "
+            "verdict, cue, confidence, confidence_why, contrast_from "
             "FROM strategies WHERE strategy_id=?", (str(strategy_id),)).fetchall()
     else:
         rows = db.execute(
-            "SELECT strategy_id, problem_type, strategy_text, grade, cost, created_by, retired "
+            "SELECT strategy_id, problem_type, strategy_text, grade, cost, created_by, retired, "
+            "verdict, cue, confidence, confidence_why, contrast_from "
             "FROM strategies ORDER BY problem_type, strategy_id").fetchall()
-    cols = ("strategy_id", "problem_type", "strategy_text", "grade", "cost", "created_by", "retired")
+    cols = ("strategy_id", "problem_type", "strategy_text", "grade", "cost", "created_by", "retired",
+            "verdict", "cue", "confidence", "confidence_why", "contrast_from")
     out = []
     for r in rows:
         d = dict(zip(cols, r))
         out.append({"id": d["strategy_id"], "problem_type": d["problem_type"],
                     "text": d["strategy_text"], "grade": d["grade"], "cost": d["cost"],
-                    "created_by": d["created_by"], "retired": d["retired"]})
+                    "created_by": d["created_by"], "retired": d["retired"],
+                    "verdict": d["verdict"] or "untested", "cue": d["cue"] or "",
+                    "confidence": d["confidence"] or "",
+                    "confidence_why": d["confidence_why"] or "",
+                    "contrast_from": d["contrast_from"] or ""})
     return json.dumps(out, indent=2, ensure_ascii=False)
 
 
@@ -168,11 +193,15 @@ def import_json(db, payload) -> int:
         try:
             db.execute(
                 "INSERT OR IGNORE INTO strategies "
-                "(strategy_id, problem_type, strategy_text, grade, cost, created_at, created_by) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(strategy_id, problem_type, strategy_text, grade, cost, created_at, created_by, "
+                "verdict, cue, confidence, confidence_why, contrast_from) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (str(sid), entry.get("problem_type") or "other", str(entry["text"]),
                  entry.get("grade") or "B", int(entry.get("cost") or 0), _now(),
-                 entry.get("created_by") or "imported"))
+                 entry.get("created_by") or "imported",
+                 entry.get("verdict") or "untested", entry.get("cue") or "",
+                 entry.get("confidence") or "", entry.get("confidence_why") or "",
+                 entry.get("contrast_from") or ""))
             added += 1
         except Exception:
             continue
