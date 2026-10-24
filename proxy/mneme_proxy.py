@@ -2288,28 +2288,89 @@ _SCHEMA_MIGRATIONS = [
     (3, "instance_origin column (dev)", [
         "ALTER TABLE chunks ADD COLUMN instance_origin TEXT DEFAULT ''",
     ]),
+    # v4: Harness2-inspired strategy provenance. A strategy's verdict is the
+    # observed CONTRAST (helped/hurt/no_observed_effect/confounded), not a
+    # score. 'untested' is the honest default for everything auto-derived:
+    # a grade was observed, but no matched-condition comparison was made.
+    # contrast_from holds "chunk:<failed_id>,chunk:<succeeded_id>" - the same
+    # problem_type pair that justifies the verdict. cue is the situational
+    # pattern the strategy applies to (the retrieval key, not the topic).
+    # NOTE: originally authored as v3; renumbered to v4 because main already
+    # shipped v3 = chunks.instance_origin. Whichever group loses a version
+    # collision never gets its columns created, so v4 is mandatory.
+    (4, "strategy verdict + contrast provenance + cue", [
+        "ALTER TABLE strategies ADD COLUMN verdict TEXT DEFAULT 'untested'",
+        "ALTER TABLE strategies ADD COLUMN contrast_from TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN cue TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN confidence TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN confidence_why TEXT DEFAULT ''",
+    ]),
 ]
 
 
+def _schema_groups():
+    """Return {version: [statements]} for every schema group, plus the additive
+    ensure_schema groups. Used by _migrate_schema to VERIFY each step landed."""
+    groups = {v: list(stmts) for v, _d, stmts in _SCHEMA_MIGRATIONS}
+    return groups
+
+
+def _stmt_already_satisfied(stmt):
+    """True when an ALTER/CREATE statement's target state already exists.
+
+    Only ALTER TABLE ... ADD COLUMN is introspected (that is what the failed
+    v3 stamp left missing); everything else is treated as not-yet-satisfied so
+    it is re-executed (all CREATEs are IF NOT EXISTS, so that is safe)."""
+    import re as _re
+    m = _re.match(r"\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+['\"]?(\w+)", stmt, _re.I)
+    if not m:
+        return False
+    table, col = m.group(1), m.group(2)
+    try:
+        return any(r[1] == col for r in db.execute(f"PRAGMA table_info({table})"))
+    except Exception:
+        return False
+
+
 def _migrate_schema():
-    """Apply pending schema migrations once, serialized across processes."""
+    """Apply pending schema migrations once, serialized across processes.
+
+    A version is recorded in schema_migrations ONLY when every statement in the
+    group actually reached its intended end state. Historically the loop
+    `continue`d on a duplicate-column error and then stamped the version
+    regardless, which left a DB permanently half-migrated while reporting itself
+    fully migrated (v3 on dev: stamped, zero columns). The repair path below
+    re-attempts any statements that are still missing for an already-stamped
+    version, so a half-applied DB heals on next import.
+    """
     db.execute("CREATE TABLE IF NOT EXISTS schema_migrations "
                "(version INTEGER PRIMARY KEY, applied_at TEXT)")
     db.commit()
     applied = {r[0] for r in db.execute("SELECT version FROM schema_migrations")}
     for version, desc, statements in _SCHEMA_MIGRATIONS:
-        if version in applied:
-            continue
+        already = version in applied
         db.execute("BEGIN IMMEDIATE")  # take SQLite's cross-process write lock
         try:
+            pending = []
             for stmt in statements:
+                if already and _stmt_already_satisfied(stmt):
+                    continue  # verified present — nothing to do
                 try:
                     db.execute(stmt)
                 except sqlite3.OperationalError as e:
                     msg = str(e)
                     if "already exists" in msg or "duplicate column" in msg:
-                        continue  # idempotent — already applied
+                        continue  # idempotent — target state reached
                     raise
+                pending.append(stmt)
+            if already:
+                if pending:
+                    db.commit()
+                    print(f"[MIGRATE] repaired schema v{version} ({len(pending)} "
+                          f"statement(s) re-applied): {desc}", flush=True)
+                else:
+                    db.rollback()
+                continue
             db.execute("INSERT OR REPLACE INTO schema_migrations (version, applied_at) "
                        "VALUES (?, datetime('now'))", (version,))
             db.commit()
@@ -8649,15 +8710,25 @@ def _consume_injected_strategies(grade: str):
             for sid in ids:
                 try:
                     row = db.execute(
-                        "SELECT use_count, success_count FROM strategies WHERE strategy_id=?",
+                        "SELECT use_count, success_count, verdict FROM strategies WHERE strategy_id=?",
                         (sid,)
                     ).fetchone()
                     if not row:
                         continue
+                    verdict = (row[2] or "untested").strip() or "untested"
                     uc = (row[0] or 0) + 1
-                    sc = (row[1] or 0) + (1 if grade in ("A", "B") else 0)
+                    # Credit only what the verdict licenses. 'confounded' and
+                    # 'no_observed_effect' never increment success_count: the
+                    # turn may have gone well for reasons unrelated to this
+                    # strategy, and letting it accrue credit is exactly the
+                    # score-instead-of-contrast bug this field exists to fix.
+                    credit = 1 if (grade in ("A", "B") and
+                                   _VERDICT_WEIGHT.get(verdict, 0.7) >= 1.0) else 0
+                    sc = (row[1] or 0) + credit
                     eg = sc / max(uc, 1)
-                    retired = 1 if (eg < 0.25 and uc >= 5) else 0
+                    # 'hurt' is a recorded negative contrast — retire at once,
+                    # no need to wait for the statistical threshold.
+                    retired = 1 if (verdict == "hurt" or (eg < 0.25 and uc >= 5)) else 0
                     db.execute(
                         "UPDATE strategies SET use_count=?, success_count=?, "
                         "effective_grade=?, retired=? WHERE strategy_id=?",
@@ -8733,8 +8804,17 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
+# Verdict weights applied when crediting an outcome to an injected strategy.
+# A confounded strategy was injected but the difference cannot be attributed to
+# it, so it accrues use_count and NOT success_count — otherwise an unrelated
+# good turn inflates its effective_grade and it survives on borrowed credit.
+_VERDICT_WEIGHT = {"helped": 1.0, "untested": 0.7, "no_observed_effect": 0.5,
+                   "confounded": 0.5, "hurt": 0.0}
+
+
 def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk="",
-                   created_by="model", reason=""):
+                   created_by="model", reason="", verdict="untested", contrast_from="", cue="",
+                   confidence="", confidence_why=""):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example.
     # abstract=False skips the model call for lessons that are already general
@@ -8772,16 +8852,36 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
+
+    def _preserve_verdict():
+        """INSERT OR REPLACE rewrites the whole row.  A routine auto-save
+        arrives with verdict='untested'; it must not erase a verdict that was
+        earned by a contrast probe on an earlier revision of the same id."""
+        if (verdict or "untested").strip().lower() != "untested":
+            return verdict, contrast_from, cue, confidence, confidence_why
+        try:
+            row = db.execute(
+                "SELECT verdict, contrast_from, cue, confidence, confidence_why "
+                "FROM strategies WHERE strategy_id=?", (sid,)).fetchone()
+        except Exception:
+            return verdict, contrast_from, cue, confidence, confidence_why
+        if not row or (row[0] or "untested") == "untested":
+            return verdict, contrast_from, cue, confidence, confidence_why
+        return (row[0], row[1] or contrast_from, row[2] or cue,
+                row[3] or confidence, row[4] or confidence_why)
+
     def _insert_strategy():
         # Keep the version being replaced (INSERT OR REPLACE would erase it).
         _strat_hist.snapshot(db, sid, "superseded", actor=created_by, reason=reason)
+        v_verdict, v_contrast, v_cue, v_conf, v_conf_why = _preserve_verdict()
         db.execute("INSERT OR REPLACE INTO strategies "
                    "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
                    "version, parent_id, effective_grade, use_count, success_count, retired, "
-                   "superseded_by, cost, outcome) "
-                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   "superseded_by, cost, outcome, verdict, contrast_from, cue, confidence, confidence_why) "
+                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
-             new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
+             new_version, parent, 0.0, 0, 0, 0, "", cost, outcome,
+             v_verdict, v_contrast, v_cue, v_conf, v_conf_why))
         _strat_hist.set_provenance(db, sid, created_by=created_by, derived_from=parent or "")
         _strat_hist.snapshot(db, sid, "saved", actor=created_by, reason=reason)
 
