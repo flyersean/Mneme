@@ -751,10 +751,15 @@ def _aux_conn(kind: str) -> dict:
             key = _aux_key(ke)
             return {"base_url": prov.get("base_url", "") or "", "key": key,
                     "kind": "openai", "headers": prov.get("headers") or {}}
-    # No explicit aux provider — follow the chat backend (existing behaviour).
+    # No explicit aux provider — default to OpenRouter (the embed/label models
+    # live there), INDEPENDENT of the chat provider. The chat key carrier
+    # (OPENROUTER_API_KEY) is repointed at the chat vendor's key when the chat
+    # provider differs, so read the OpenRouter key via _aux_key, which returns
+    # the preserved OpenRouter key in that case. This keeps the backend models
+    # unaffected by a mid-conversation chat-model switch.
     if _aux_backend(f"MNEME_{kind.upper()}_BACKEND") in ("openai", "openrouter"):
-        return {"base_url": OR_BASE_URL, "key": OR_API_KEY, "kind": "openai",
-                "headers": _PROVIDER_HEADERS or {}}
+        return {"base_url": OR_BASE_URL, "key": _aux_key("OPENROUTER_API_KEY"),
+                "kind": "openai", "headers": _PROVIDER_HEADERS or {}}
     return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
 
 
