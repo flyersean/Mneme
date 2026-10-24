@@ -7234,21 +7234,41 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         f"{task[:MAX_ABSTRACT_INPUT]}\n\n"
         f"Tools you called:\n{_tool_summary(tool_trace)}\n\n"
         f"Final answer: {answer_clean[:MAX_ABSTRACT_INPUT]}\n\n"
-        "Is there a tool or method you used here that you would want available "
-        "again for a FUTURE similar task — for example a command like pdftotext, "
-        "a library you installed, or an approach you figured out? If yes, output "
-        "ONE imperative rule: 'WHEN doing <specific task>, use <specific tool>' — "
-        "name the exact command/tool/library AND describe the situation precisely "
-        "enough that it would NOT be applied to a different-but-similar task. If "
-        "nothing here is worth reusing, output exactly: NO"
+        "Answer two questions:\n"
+        "1) Reusable method — is there a tool/method you used that you'd want "
+        "available again for a FUTURE similar task (a command like pdftotext, a "
+        "library you installed, an approach you figured out)? If yes, output ONE "
+        "imperative rule: 'WHEN doing <specific task>, use <specific tool>'. "
+        "Otherwise output exactly: NO_RULE\n"
+        "2) Built a script — did you WRITE a script/file this turn that is a "
+        "reusable tool (not a one-off)? If yes, output exactly: "
+        "TOOL_SAVE: <snake_case_name> :: <what it does> :: <path to the file>. "
+        "Otherwise output exactly: NO_TOOL"
     )
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
         # task — thinking-on makes Qwen ramble or time out on it.
         r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
                         no_reasoning=True)
-        rule = (r.get("content") or "").strip()
-        if not rule or rule.upper().split()[0] == "NO":
+        reply = (r.get("content") or "").strip()
+        # 2) Register a built tool first (so it shows up in list_tools), then
+        # fall through to the strategy rule. The TOOL_SAVE marker uses the same
+        # "name :: description :: path" shape as overcome mode.
+        _tm = re.search(r'TOOL_SAVE\s*:\s*([^:]+?)\s*::\s*([^:]+?)\s*::\s*(\S+)',
+                        reply, re.IGNORECASE)
+        if _tm:
+            _tn, _td, _tp = _tm.group(1).strip(), _tm.group(2).strip(), _tm.group(3).strip()
+            if (re.fullmatch(r'[a-z0-9_]+', _tn) and _td and _tp
+                    and os.path.isfile(os.path.expanduser(_tp))):
+                try:
+                    mntools.save_tool(ptype or "other", _tn, _td, _tp)
+                    print(f"  [REUSABLE-TOOL] registered '{_tn}' -> {_tp}", flush=True)
+                except Exception as e:
+                    _log_error("_ask_reusable_strategy:save_tool", e)
+            reply = re.sub(r'TOOL_SAVE\s*:.*', '', reply, flags=re.IGNORECASE).strip()
+        # 1) Reusable method -> strategy
+        rule = reply
+        if not rule or rule.upper().split()[0] in ("NO", "NO_RULE"):
             return
         if len(rule) > 10 and not _is_junk_directive(rule):
             # abstract=False: keep the tool name + the "when" context verbatim —
