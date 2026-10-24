@@ -65,6 +65,9 @@ from mneme.overcome import (
     BUILD_MAX_TOOL_CALLS,
     MAX_SERVER_ROUNDS,
     TOOL_ROUND_NUDGE,
+    STEP_BACK_1,
+    STEP_BACK_2,
+    STEP_BACK_3,
     wrap_up_nudge_due,
 )
 import mneme.capability as capability
@@ -7942,6 +7945,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
+    _step_back_level = 0  # highest step-back rung fired this turn
     _new_calls = 0    # first-time (non-repeated) tool calls this turn (bug b)
     _round_log = []   # per-round {'calls','new','ok'} — wrap-up nudge evidence (bug b)
     _round_mark = None  # start-of-round snapshots for the round log above
@@ -8314,6 +8318,22 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             else:
                 print(f"  [TOOL-NUDGE] suppressed after {_tool_rounds} tool rounds "
                       f"({_round_log[-1] if _round_log else {}}) — still converging", flush=True)
+
+        # Step-back ladder (soft, escalating reflection on non-convergence): rung 1
+        # at STEP_BACK_1 (examine+pivot), rung 2 at STEP_BACK_2 (adapt a known
+        # solution), rung 3 at STEP_BACK_3 (concede honestly). Advisory — fires once
+        # per rung; the redundancy stop + MAX_SERVER_ROUNDS remain the hard backstops.
+        _sb = 0
+        if _tool_rounds >= STEP_BACK_3:
+            _sb = 3
+        elif _tool_rounds >= STEP_BACK_2:
+            _sb = 2
+        elif _tool_rounds >= STEP_BACK_1:
+            _sb = 1
+        if _sb and _sb > _step_back_level:
+            _step_back_level = _sb
+            followup.append({"role": "user", "content": _step_back_directive(_sb, _tool_rounds)})
+            print(f"  [STEP-BACK] rung {_sb} after {_tool_rounds} tool rounds", flush=True)
 
         # Scope-loop nudge: the model keeps hitting files it cannot access (out of
         # scope / permission denied). The redundancy stop can't see this because the
