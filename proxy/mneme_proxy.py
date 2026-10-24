@@ -668,7 +668,7 @@ mntools.reload_config()  # tools.py is imported before load_config(); refresh it
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
-mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
 _apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
@@ -1082,7 +1082,7 @@ def _reload_sampling_if_changed():
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
-        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
     if "debug" in data:
         CONFIG_DATA["debug"] = data.get("debug") or {}
         _apply_thinking_log()
@@ -4694,14 +4694,16 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             conn.close()
         return row is not None
     _persisted = False
+    _last_err = None
     for _attempt in range(3):
         try:
             _persisted = _verify_insert()
             break
         except sqlite3.OperationalError as _ve:
+            _last_err = _ve
             time.sleep(0.2 * (_attempt + 1))  # transient reader lock — retry
     else:
-        _log_error("save_chunk:verify", _ve)
+        _log_error("save_chunk:verify", _last_err)
     if not _persisted:
         _log_error("save_chunk:missing-after-insert",
                    RuntimeError(
@@ -5450,10 +5452,6 @@ def _meta_principles_block() -> str:
 _recent_query_vecs = []      # recent query embeddings, most recent last
 _RECENT_QUERY_MAX = 5        # how many recent turns to remember
 _grace_remaining = 0         # remaining turns of hardened injection
-
-
-def _cosine(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
 def _update_topic_state(q_vec):
@@ -6296,116 +6294,6 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     print(f"  [ARCHIVE] {chunk_id} topic={topic_label[:30]} outcome={outcome} type={ptype} ({len(user_text)} chars)", flush=True)
     return 1
-
-
-    """Split a message list into segments, each starting at a user message.
-
-    Each segment is a list of messages: one user message plus all following
-    assistant/tool messages up to (but not including) the next user message.
-    Leading non-user messages are attached to the first segment.
-    """
-    segments = []
-    current = []
-    for m in msgs:
-        if m["role"] == "user" and current:
-            segments.append(current)
-            current = [m]
-        else:
-            current.append(m)
-    if current:
-        segments.append(current)
-    return segments
-
-
-def compress_tool_output(tool_output: str, tool_name: str = "tool") -> str:
-    """Use the model to extract key information from a large tool output.
-    
-    Returns the original output if compression fails or produces no result.
-    This ensures nothing is silently lost.
-    """
-    if len(tool_output) <= COMPRESS_THRESHOLD:
-        return tool_output
-    
-    prompt = COMPRESS_PROMPT_TEMPLATE.format(
-        tool_name=tool_name,
-        tool_output=tool_output,
-    )
-    
-    print(f"  [COMPRESS] {tool_name} output: {len(tool_output)} chars -> compressing...", flush=True)
-    
-    try:
-        result = query_model(
-            [{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=COMPRESS_MAX_TOK,
-        )
-        compressed = result.get("content", "").strip()
-        
-        if not compressed:
-            print(f"  [COMPRESS][WARN] Empty compression result, keeping original", flush=True)
-            return tool_output
-        
-        print(f"  [COMPRESS] {len(tool_output)} -> {len(compressed)} chars "
-              f"({len(compressed)*100//len(tool_output)}%)", flush=True)
-        
-        # Log compression for debugging
-        try:
-            with open("/tmp/compression_log.txt", "a", encoding="utf-8") as f:
-                f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} ===\n")
-                f.write(f"TOOL: {tool_name}  ORIG: {len(tool_output)}  COMPRESSED: {len(compressed)}\n")
-                f.write(f"--- COMPRESSED ---\n{compressed[:2000]}\n")
-        except Exception as e:
-            print(f"  [COMPRESS][LOG-ERROR] {e}", flush=True)
-        
-        return compressed
-        
-    except Exception as e:
-        print(f"  [COMPRESS][ERROR] {type(e).__name__}: {e} — keeping original", flush=True)
-        return tool_output
-
-
-def classify_tool_output(tool_output: str, tool_name: str = "tool") -> str:
-    """Classify a tool output as TEXT, STRUCTURED, or SHORT.
-
-    Uses a fast model call (temp=0, 256 tokens) with only the first 2000 chars
-    as preview. Returns one of: "TEXT", "STRUCTURED", "SHORT".
-    Falls back to "TEXT" on any error (safe default: compression path).
-    """
-    size = len(tool_output)
-    if size <= COMPRESS_THRESHOLD:
-        return "SHORT"
-
-    preview = tool_output[:2000]
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
-        tool_name=tool_name,
-        size=size,
-        threshold=COMPRESS_THRESHOLD,
-        preview=preview,
-    )
-
-    print(f"  [CLASSIFY] {tool_name} output: {size} chars — classifying...", flush=True)
-
-    try:
-        result = query_model(
-            [{"role": "user", "content": prompt}],
-            temperature=CLASSIFY_TEMP,
-            max_tokens=CLASSIFY_MAX_TOK,
-        )
-        raw = result.get("content", "").strip().upper()
-
-        # Extract just the category word
-        for cat in ("TEXT", "STRUCTURED", "SHORT"):
-            if cat in raw:
-                print(f"  [CLASSIFY] {tool_name} → {cat} (raw: {raw[:80]})", flush=True)
-                return cat
-
-        # Fallback: if model returned something unexpected, default to TEXT
-        print(f"  [CLASSIFY][WARN] Unexpected classification '{raw[:80]}', defaulting to TEXT", flush=True)
-        return "TEXT"
-
-    except Exception as e:
-        print(f"  [CLASSIFY][ERROR] {type(e).__name__}: {e} — defaulting to TEXT", flush=True)
-        return "TEXT"
 
 
 def _paragraph_chunks(text: str, target: int) -> list:
@@ -9354,10 +9242,14 @@ _FS_READ_MAX = 256 * 1024  # cap on /fs/read previews (text files only)
 def _within(path: str, root: str) -> bool:
     p = os.path.realpath(os.path.expanduser(str(path)))
     r = os.path.realpath(root)
+    if r == os.sep:  # root "/" = full filesystem (YOLO)
+        return True
     return p == r or p.startswith(r + os.sep)
 
 
 def _browser_root() -> str:
+    if YOLO:
+        return "/"
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("browser_root")
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_BROWSER_ROOT", "~"))))
 
@@ -9368,6 +9260,8 @@ def _model_scope():
     FILE for backward compatibility) or a list of directory roots; both end up
     in the same resolved list used by every gate (_within_any / fs write paths /
     mntools.set_scope), so all tools agree on the same root set."""
+    if YOLO:
+        return ["/"]
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
     if cfg is None:
         cfg = os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")
@@ -10041,7 +9935,7 @@ if FLASK_OK:
         os.environ["MNEME_YOLO"] = "1" if enabled else "0"
         _fs_ = CONFIG_DATA.get("filesystem") or {}
         mntools.set_scope(model_scope=("/" if enabled else _fs_.get("model_scope")),
-                          browser_root=_fs_.get("browser_root"))
+                          browser_root=("/" if enabled else _fs_.get("browser_root")))
         _persist_yolo(enabled)
         print(f"  [YOLO] {'ON' if enabled else 'OFF'} — auth off, full filesystem, all tools", flush=True)
         return _cors_response({"ok": True, "yolo": enabled})

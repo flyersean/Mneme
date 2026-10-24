@@ -58,7 +58,9 @@ def _read_shipped_md(name: str, fallback: str = "") -> str:
     try:
         with open(os.path.join(_PROXY_DIR, name + ".md"), encoding="utf-8") as f:
             return f.read().strip()
-    except Exception:
+    except Exception as e:
+        print(f"  [INSTRUCTIONS][WARN] shipped prompt '{name}.md' missing/unreadable: "
+              f"{type(e).__name__}: {e} — using fallback", flush=True)
         return fallback
 
 

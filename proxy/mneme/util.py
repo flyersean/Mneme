@@ -181,6 +181,7 @@ def _log_error(where: str, e: Exception):
     Capped to the newest `logging.max_entries` lines (same cap as the main proxy
     log) so errors.log can't grow without bound."""
     try:
+        from mneme.logfile import capped_append
         cd = os.environ.get("MNEME_CHUNK_DIR", "/workspace/mneme_chunks")
         capped_append(os.path.join(cd, "errors.log"),
                       f"{datetime.now(timezone.utc).isoformat()} | {where} | "
