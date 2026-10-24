@@ -4686,8 +4686,6 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     # lands). See _insert_chunk_verified. Fail LOUDLY below and DO NOT add
     # the id to the FAISS idmap — a retrieval vector with no DB row behind
     # it corrupts lookups (dangling idmap) instead of merely losing a log.
-    _db_write_retry(_insert_chunk)
-
     def _verify_insert():
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
         try:
@@ -4696,17 +4694,25 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
         finally:
             conn.close()
         return row is not None
+    # Insert, then VERIFY the row actually landed; on a lost commit (reported
+    # success but the row vanished — WAL/crash) RE-INSERT. Bounded to 3 attempts
+    # so a persistent failure can't loop forever. This closes the insert-loss
+    # durability gap: the old code verified and logged but never retried.
     _persisted = False
     _last_err = None
     for _attempt in range(3):
+        _db_write_retry(_insert_chunk)
         try:
             _persisted = _verify_insert()
-            break
         except sqlite3.OperationalError as _ve:
             _last_err = _ve
             time.sleep(0.2 * (_attempt + 1))  # transient reader lock — retry
-    else:
-        _log_error("save_chunk:verify", _last_err)
+            continue
+        if _persisted:
+            break
+        print(f"  [save_chunk:missing-after-insert] {chunk_id} retrying "
+              f"({_attempt + 1}/3)", flush=True)
+        time.sleep(0.2 * (_attempt + 1))
     if not _persisted:
         _log_error("save_chunk:missing-after-insert",
                    RuntimeError(
