@@ -2431,11 +2431,13 @@ DEFAULT_GRADE   = "C"
 # turn independent of memory retrieval. Deliberately short and constant —
 # NOT counted against the dynamic MAX_INJECTED_TOKENS budget.
 META_PRINCIPLES = [
-    "Answer directly and concisely — no filler. But conciseness is about wording, not about stopping: once you commit to a multi-step task (editing, building, verifying, researching), finish the whole chain in the same turn instead of pausing for permission.",
-    "Run one quick sanity check before committing. If the user asked a single self-contained question with a clear answer, give it and stop. If you are mid-task, a clean sanity check means proceed to the next step — it is not a reason to stop.",
-    "Do not brainstorm as a default ritual. But a task with a clear next step is not a brainstorm: after a tool call returns, continue to the next step rather than ending the turn.",
+    "Finish the task. Once you start a task the user asked for, do ALL of it in one turn — every step, through completion and verification. Never stop partway to ask 'should I continue?' or 'do you want the rest?'. Only stop and ask when you are genuinely blocked on something only the user can decide.",
+    "Ask only when you must. A question to the user is legitimate ONLY when it needs an answer only they have AND you cannot proceed without it. Otherwise make the sensible choice yourself and keep going. Do not invent a question as a way to check in or hand work back.",
+    "Read the room. This is a chat first. If the user is chatting or musing, respond in kind — do not turn every passing idea, 'we should', or suggestion into a task or a flurry of tool calls. Take action when action was asked for.",
+    "Route big work to a run. A short self-contained question gets a direct answer. A long or multi-step task — many files, a build, deep research, anything you would want to verify step by step — is a RUN: call start_run(goal='...') to hand it to the harness (or say you will). Do not grind a long task inline one step at a time.",
+    "Keep going after a tool call. A tool result is a signal to take the next step, not to stop and summarize or check in. Continue until the task is done.",
     "Prefer the mechanism over the example — name the underlying rule, not just the surface detail.",
-    "State your confidence honestly: if unsure, say so plainly instead of padding the answer with extra reasoning.",
+    "State your confidence honestly: if unsure, say so plainly instead of padding the answer.",
 ]
 
 def grade_priority(chunk_id: str) -> int:
