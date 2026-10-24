@@ -469,7 +469,12 @@ def _resolve_provider():
             # key is still needed by embed/label if they run on OpenRouter — so
             # preserve it before repointing the carrier at the chat key.
             if api_key_env != "OPENROUTER_API_KEY":
-                _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+                # Capture the OpenRouter key ONCE (idempotent). On a later reload
+                # the carrier (OPENROUTER_API_KEY) has already been repointed at
+                # the chat key, so re-reading it here would clobber the preserved
+                # OR key with the chat key and 401 every embed/label call.
+                if not _AUX_OR_KEY:
+                    _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
             os.environ["OPENROUTER_API_KEY"] = k
     _PROVIDER_HEADERS = prov.get("headers") or {}
     # OpenRouter-specific reliability (only applied to OpenRouter requests, so
