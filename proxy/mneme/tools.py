@@ -1116,17 +1116,24 @@ def _exec_list_tools(query=None, problem_type=None):
     if not rows:
         return "(tool registry is empty — no tools built yet)"
     if query and embed is not None:
-        qv = embed(query)
+        try:
+            qv = embed(query)
+        except Exception:
+            qv = None
         if qv is not None:
-            scored = []
-            for name, desc, ptype, path, sc, lu, src in rows:
-                tv = _tool_vector(name, desc)
-                if tv is None:
-                    continue
-                sim = float(np.dot(qv, tv) / (np.linalg.norm(tv) + 1e-8))
-                scored.append((sim, name, desc, ptype, path, sc, lu, src))
-            scored.sort(key=lambda x: -x[0])
-            rows = [(n, d, p, path, sc, lu, src) for _, n, d, p, path, sc, lu, src in scored[:TOOL_INJECT_MAX]]
+            try:
+                scored = []
+                for name, desc, ptype, path, sc, lu, src in rows:
+                    tv = _tool_vector(name, desc)
+                    if tv is None:
+                        continue
+                    sim = float(np.dot(qv, tv) / (np.linalg.norm(tv) + 1e-8))
+                    scored.append((sim, name, desc, ptype, path, sc, lu, src))
+                scored.sort(key=lambda x: -x[0])
+                rows = [(n, d, p, path, sc, lu, src) for _, n, d, p, path, sc, lu, src in scored[:TOOL_INJECT_MAX]]
+            except Exception:
+                import traceback as _tb, logging
+                logging.warning("list_tools semantic scoring failed, degrading to unfiltered: %s", _tb.format_exc())
     lines = [f"Tool registry ({len(rows)} tool(s)):"]
     for name, desc, ptype, path, sc, lu, src in rows:
         hostbound = " [host-bound: source not stored]" if not src else ""

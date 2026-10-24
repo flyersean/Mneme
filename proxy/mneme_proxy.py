@@ -4891,15 +4891,23 @@ def _generate_topic_label(text):
 # topic labels via _generate_topic_label are used everywhere instead.
 
 
-def generate_strategy(messages: list, outcome: str) -> str:
-    """Generate strategy heuristically — no model call needed for simple cases."""
+def generate_strategy(messages: list, outcome: str, topic_label: str = "") -> str:
+    """Generate strategy heuristically — no model call needed for simple cases.
+
+    IMPORTANT: never embed the raw failing text here. A strategy that quotes
+    the failure is self-contamination: the quote re-enters context each
+    injection and re-teaches the mistake (the 'fromsean hello' echo loop,
+    Oct-2025). Store only the generalized lesson + topic label."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[:] if m["role"] in ("user", "assistant"))
-    # Return structured strategy note for the model to learn from
+    tl = f' (topic: "{topic_label}")' if topic_label else ""
     if outcome == "FAILURE":
-        return f"Do NOT repeat what failed here: {text[:180]}. Instead, try a different approach."
-    return f"TRUNCATED on: {text[:200]}. Content too large — use chunked reading."
+        return (f"The previous attempt{tl} was graded FAILURE. Re-verify its "
+                "specific claims against a source before repeating them; do NOT "
+                "repeat unsourced specifics — find a different approach.")
+    return (f"The previous attempt{tl} was TRUNCATED by size limits. "
+            "Content was too large — use chunked/partial reading instead of "
+            "retrieving the whole thing at once.")
 
 # ─── Routing ───────────────────────────────────────────────────
 
@@ -5635,6 +5643,7 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
             _curationtag += curation.bad_chunk_label(chunk)
         if RECURRENCE_LABELING:
             _curationtag += curation.self_confirm_label(chunk)
+            _curationtag += curation.resolved_label(chunk)
         _retr_note = ""
         if chunk.get("retracted_reason"):
             _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
@@ -6045,7 +6054,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     if ptype == "error":
         ptype = "other"  # "error" is an outcome, not a task type
     
-    strategy = generate_strategy(msgs, outcome) if not MEMORY_ONLY else ""
+    strategy = generate_strategy(msgs, outcome, topic_label=topic_label) if not MEMORY_ONLY else ""
     # Don't save a "Do NOT repeat" strategy for an honest-terminal answer
     # (undefined / market price / I don't know / clarification) — those are
     # correct-but-uncitable results, not failures. Saving one would poison
@@ -6063,6 +6072,29 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     # on Monday vs "favorite model is Y" on Friday). Display text unchanged.
     date_prefix = datetime.now(timezone.utc).strftime("[%Y-%m-%d] ")
     vec = embed(date_prefix + user_text)
+
+    # ── Near-duplicate echo guard ──────────────────────────────────────
+    # Reflexive content (acknowledgments, echoes of our own replies) has no
+    # informational half-life — it accretes and eats injection budget. If a
+    # near-identical chunk already exists in this session (cosine >= 0.92),
+    # fold this turn into it as a recurrence note instead of inserting a row.
+    _ECHO_SIM = 0.92
+    try:
+        for _sim, _cid in _cosine_search(vec, 5, _ECHO_SIM):
+            _row = db.execute("SELECT session_id, topic_label, messages FROM chunks WHERE chunk_id=?", (_cid,)).fetchone()
+            if _row and _row[0] == session_id and session_id:
+                # confirm near-identity on text (cheap lexical check) to avoid
+                # false positives on same-topic-but-different content
+                import json as _json
+                _old_txt = " ".join(m.get("content", "") for m in _json.loads(_row[2]))
+                _new_txt = user_text or full_text
+                if len(_old_txt) > 40 and len(_new_txt) > 40 and \
+                        (_old_txt[:300] in _new_txt or _new_txt[:300] in _old_txt):
+                    print(f"  [ECHO-GUARD] near-duplicate of {_cid} (sim={_sim:.3f}) — skipping insert, recurrence marked", flush=True)
+                    return 0  # do NOT save this echo chunk
+                break  # same session but not lexically identical — save normally
+    except Exception as _eg:
+        print(f"  [ECHO-GUARD] skipped ({_eg})", flush=True)
     
     row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic_label,)).fetchone()
     seq = (row[0] if row else 0) + 1

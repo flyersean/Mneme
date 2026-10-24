@@ -749,6 +749,22 @@ def self_confirm_label(chunk: dict) -> str:
     return ""
 
 
+def resolved_label(chunk: dict) -> str:
+    """State half-life marker: a chunk whose prose carries a [RESOLVED <date>]
+    line is a settled fact, not an open question — retrieval is content-agnostic
+    about state, so this label lets the next cycle skip re-litigating it."""
+    import re as _re, json as _json
+    _blob = str(chunk.get("thinking") or "")
+    try:
+        _blob += " " + _json.dumps(chunk.get("messages") or [], ensure_ascii=False)
+    except Exception:
+        pass
+    m = _re.search(r"\[RESOLVED (\d{4}-\d{2}-\d{2})\]", _blob)
+    if m:
+        return f"[RESOLVED {m.group(1)} — settled fact; restart from here, don't re-litigate]"
+    return ""
+
+
 def flag_if_cites_poisoned(db, chunk_id, cited_ids):
     """Proactive provenance poisoning: a newly-archived chunk that CITES an
     F-graded (fabricated), retracted, or already-flagged chunk is itself suspect
