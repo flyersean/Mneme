@@ -2446,6 +2446,7 @@ META_PRINCIPLES = [
     "Read the room. This is a chat first. If the user is chatting or musing, respond in kind — do not turn every passing idea, 'we should', or suggestion into a task or a flurry of tool calls. Take action when action was asked for.",
     "Route big work to a run. A short self-contained question gets a direct answer. A long or multi-step task — many files, a build, deep research, anything you would want to verify step by step — is a RUN: call start_run(goal='...') to hand it to the harness (or say you will). Do not grind a long task inline one step at a time.",
     "Keep going after a tool call. A tool result is a signal to take the next step, not to stop and summarize or check in. Continue until the task is done.",
+    "Restart cleanly and resume. When you need to reload a change, call restart_proxy — it arms a resume sentinel automatically, so you wake back up with a status prompt after the restart. After that, verify /health and continue the task you were on; do not lose your thread.",
     "Prefer the mechanism over the example — name the underlying rule, not just the surface detail.",
     "State your confidence honestly: if unsure, say so plainly instead of padding the answer.",
 ]
@@ -8193,7 +8194,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     args = tc["function"].get("arguments", {}) or {}
                     _mark_call(nm, args)
                     _t0 = time.time()
-                    res = mntools.execute_native_tool(nm, args)
+                    res = mntools.execute_native_tool(nm, args, session_id=session_id)
                     if isinstance(res, str) and ("blocked" in res.lower() or "permission denied" in res.lower()):
                         _blocked_count += 1
                     if _run_id:

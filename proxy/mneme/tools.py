@@ -616,7 +616,7 @@ RESTART_PROXY_TOOL = {
     "type": "function",
     "function": {
         "name": "restart_proxy",
-        "description": "Restart a Mneme proxy by port, using that instance's own start script (a clean stop+start that preserves its config). Omit port — or pass your own port — to restart the proxy you are running in; the restart is scheduled after your current response flushes, so this call returns normally first. Pass another port to restart a different proxy. Use this instead of hunting PIDs or killing leftover processes by hand.",
+        "description": "Restart a Mneme proxy by port, using that instance's own start script (a clean stop+start that preserves its config). Omit port — or pass your own port — to restart the proxy you are running in; the restart is scheduled after your current response flushes, so this call returns normally first. Pass another port to restart a different proxy. When you self-restart, a resume sentinel is armed automatically so you get woken with a status prompt after the proxy is back up — you do not need to arm anything yourself. Use this instead of hunting PIDs or killing leftover processes by hand.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1104,7 +1104,7 @@ def _exec_write(file_path, content):
         return f"[write error: {type(e).__name__}: {e}]"
 
 
-def execute_native_tool(name, args):
+def execute_native_tool(name, args, session_id=None):
     """Dispatch a native bash/write/start_run call server-side. Returns a result string."""
     if name == "bash":
         return _exec_bash((args or {}).get("command", ""))
@@ -1131,7 +1131,7 @@ def execute_native_tool(name, args):
     if name == "delete_proxy":
         return _exec_delete_proxy(args)
     if name == "restart_proxy":
-        return _exec_restart_proxy(args)
+        return _exec_restart_proxy(args, session_id)
     return f"[unknown native tool: {name}]"
 
 
@@ -1645,7 +1645,34 @@ def _exec_delete_proxy(args):
     return delete_proxy(port)
 
 
-def _exec_restart_proxy(args):
+def _arm_resume_sentinel(port, session_id):
+    """Arm the restart-resume sentinel (extensions/restart-resume) so the agent
+    wakes up with a status prompt after a SELF-restart. Best-effort: a missing
+    extension or a non-chat session (harness run) is a silent no-op — the restart
+    still proceeds, it just won't auto-resume. The restart itself is triggered
+    separately by the caller, so the sentinel baselines 'up' before it lands.
+    Returns True if the sentinel was armed."""
+    try:
+        import sys
+        _repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        script = os.path.join(_repo, "extensions", "restart-resume", "restart_resume.py")
+        if not os.path.isfile(script):
+            return False
+        cmd = [sys.executable, script, "arm",
+               "--url", "http://127.0.0.1:%d" % port,
+               "--port", str(port),
+               "--handoff",
+               "Proxy self-restart via restart_proxy tool — verify /health then report status."]
+        if session_id and str(session_id).startswith("conv_"):
+            cmd += ["--conversation-id", str(session_id)]
+        subprocess.Popen(cmd, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def _exec_restart_proxy(args, session_id=None):
     """Restart a proxy by port (default: self). Spawns the instance's start script detached."""
     port = (args or {}).get("port")
     if port is None:
@@ -1701,11 +1728,17 @@ def _exec_restart_proxy(args):
 
     if is_self:
         import threading, time
+        _armed = _arm_resume_sentinel(port, session_id)
         threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
     else:
         _spawn()
     how = "systemd unit " + unit if has_unit else "start script"
-    return ("Restart requested for proxy on port %d via %s" % (port, how)) + (" (this proxy — restarting in a moment)" if is_self else "") + "."
+    msg = "Restart requested for proxy on port %d via %s" % (port, how)
+    if is_self:
+        msg += " (this proxy — restarting in a moment)"
+        msg += (", resume sentinel armed — you will be woken with a status prompt after restart"
+                if _armed else ", resume sentinel NOT armed (extension missing — restart only)")
+    return msg + "."
 
 
 def _exec_resume_run(args):
