@@ -71,7 +71,7 @@
       <input type="text" id="pathInput" placeholder="Path (relative or absolute)…" spellcheck="false">
       <button id="upBtn" title="Go up one directory">↑ Up</button>
       <button id="browseBtn">Go</button>
-      <button id="termBtn" title="Open a system terminal in this folder">Terminal</button>
+      <button id="termBtn" title="Open a terminal in this folder (in a viewer tab)">Terminal</button>
     </div>
     <div class="browser-tools">
       <button id="newFolderBtn" title="Create a new folder in the current directory">New folder</button>
@@ -269,6 +269,14 @@
   }
 
   function initEditorForTab(tab) {
+    // Terminal tabs render an embedded ttyd iframe (not the text editor).
+    if (tab.terminal) {
+      cmEditor = null;
+      editorHost.innerHTML = '<iframe id="termFrame" src="' + tab.url + '" ' +
+        'style="width:100%;height:100%;border:0;background:#000;"></iframe>';
+      setStatus('Terminal @ ' + (tab.path && tab.path !== '.' ? tab.path : '~'));
+      return;
+    }
     // Replace the placeholder with a fresh textarea, then wrap it in PlainEditor
     // (a native textarea + line-number gutter — no font-measurement subsystem,
     // so the caret cannot drift the way a hidden-measure editor can).
@@ -440,12 +448,29 @@
   async function openTerminalHere() {
     setStatus('Opening terminal…');
     try {
-      const j = await fetchJSON('/fs/terminal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: currentDir || '' })
-      });
-      setStatus('Terminal opened (' + j.terminal + ') at ' + j.cwd, 'ok');
+      const info = await fetchJSON('/terminal/info');
+      if (!info || !info.token) {
+        setStatus('Terminal not configured (no token)', 'err');
+        alert('Terminal not configured.');
+        return;
+      }
+      const host = location.hostname || '127.0.0.1';
+      const arg = (currentDir && currentDir !== '.') ? '?arg=' + encodeURIComponent(currentDir) : '';
+      const url = 'http://' + info.user + ':' + encodeURIComponent(info.token) + '@' +
+                  host + ':' + info.port + '/' + arg;
+      // Reuse the single terminal tab, or create it.
+      let tt = tabs.find((t) => t.terminal);
+      if (!tt) {
+        tt = { id: 'term', name: 'Terminal', terminal: true, path: currentDir || '.', url: url };
+        tabs.push(tt);
+      } else {
+        tt.path = currentDir || '.';
+        tt.url = url;
+      }
+      activeTabId = tt.id;
+      renderTabbar();
+      initEditorForTab(tt);
+      setStatus('Terminal opened @ ' + (currentDir && currentDir !== '.' ? currentDir : '~'), 'ok');
     } catch (e) {
       setStatus(e.message, 'err');
       alert(e.message);

@@ -10906,6 +10906,18 @@ if FLASK_OK:
         print(f"  [FS-TERMINAL] {term} @ {target}", flush=True)
         return _cors_response({"ok": True, "terminal": term, "cwd": target})
 
+    @app.route("/terminal/info", methods=["GET"])
+    def terminal_info():
+        """Config for the in-browser terminal tab: ttyd sidecar host/port + basic
+        auth (user:token). The frontend embeds ttyd at <host>:<port> with these
+        credentials; the path is passed via ttyd's ?arg= (scoped by the wrapper)."""
+        tcfg = (CONFIG_DATA.get("terminal") or {})
+        return _cors_response({
+            "port": tcfg.get("port", 7681),
+            "user": tcfg.get("user", "mneme"),
+            "token": tcfg.get("token", ""),
+        })
+
     # ── Conversations (persistent chat) ──
     def _conv_db():
         os.makedirs(DB_DIR, exist_ok=True)
