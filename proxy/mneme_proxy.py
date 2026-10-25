@@ -3729,10 +3729,16 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 _budget = min(_budget, int(_mt) // 2)
                 if _budget > 0:
                     _reasoning["max_tokens"] = _budget
-        elif _mandatory and (no_reasoning or not _reasoning_on):
-            # Mandatory-reasoning model asked to skip thinking — can't send
-            # `enabled:false` (the endpoint 400s), so bound it tightly instead.
+        elif _mandatory and no_reasoning:
+            # A call explicitly asking for NO reasoning (terse self-report):
+            # can't send `enabled:false` (the endpoint 400s), so bound it tightly.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
+        elif _mandatory and not _reasoning_on:
+            # Reasoning is disabled globally (reasoning_enabled:0) but the model
+            # mandates it — give it room to think (max_tokens/2, OpenCode's
+            # fitThinkingBudget) instead of the tight 2k floor, so we don't limit
+            # the model's legitimate reasoning on hard turns.
+            _reasoning["max_tokens"] = int(_mt) // 2
     if _transport["param"] == "thinking":
         # Thinking providers (DeepSeek / Z.AI direct). Respect the computed
         # _reasoning budget: a mandatory-reasoning model with reasoning OFF (or a
