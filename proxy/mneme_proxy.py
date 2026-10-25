@@ -4451,7 +4451,10 @@ def query_utility_model(messages: list, timeout: Optional[int] = None,
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message", {}) or {}
         u = data.get("usage") or {}
-        return {"content": msg.get("content") or "",
+        _content = msg.get("content") or ""
+        print(f"  [UTILITY] {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} "
+              f"model={UTILITY_MODEL} content={len(_content)}", flush=True)
+        return {"content": _content,
                 "thinking": msg.get("reasoning_content") or msg.get("reasoning") or "",
                 "tool_calls": msg.get("tool_calls") or [],
                 "eval_count": u.get("completion_tokens", 0),
