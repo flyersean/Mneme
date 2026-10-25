@@ -9918,13 +9918,20 @@ if FLASK_OK:
         return None
 
     def _instances_root():
-        # Instances live at <shared DB dir>/instances/<port>/. The shared dir is
-        # DB_DIR (the directory holding the shared mneme.db).
-        root = os.path.join(DB_DIR, "instances")
-        if os.path.isdir(root):
-            return root
-        alt = os.path.join(os.path.dirname(CHUNK_DIR), "instances") if CHUNK_DIR else None
-        return alt if (alt and os.path.isdir(alt)) else root
+        # Instances live at <shared dir>/instances/<port>/. When the DB is shared
+        # (chunks/mneme.db), DB_DIR names the shared dir and DB_DIR/instances is
+        # the root. A per-instance DB (chunks/instances/<port>/mneme.db) makes
+        # DB_DIR point inside the instance dir, so the instance dir's parent is
+        # the true root instead. Try both; return the first that exists.
+        candidates = [os.path.join(DB_DIR, "instances")]
+        if CHUNK_DIR:
+            parent = os.path.dirname(CHUNK_DIR)
+            if os.path.basename(parent) == "instances":
+                candidates.append(parent)
+        for cand in candidates:
+            if cand and os.path.isdir(cand):
+                return cand
+        return os.path.join(DB_DIR, "instances")
 
     def _instance_meta(port):
         inst_dir = os.path.join(_instances_root(), str(port))
