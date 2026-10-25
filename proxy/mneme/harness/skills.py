@@ -91,11 +91,14 @@ class SkillRegistry:
         self.ledger = ledger
         self.embed = embed
         self._emb_cache = {}  # (name, version) -> normalized vector, reused across selects
+        self._dirs = [os.path.expanduser(d) for d in (dirs or ())]
+        self._dir_sigs = {}
         with ledger._lock:
             ledger._db.executescript(_SCHEMA)
             ledger._db.commit()
-        for d in dirs or ():
+        for d in self._dirs:
             self.load_dir(d)
+            self._dir_sigs[d] = self._dir_sig(d)
 
     # ── storage ──────────────────────────────────────────────────────────
 
@@ -111,9 +114,11 @@ class SkillRegistry:
         return d
 
     def get(self, name: str) -> Optional[dict]:
+        self._maybe_reload()
         return self._decode(self.ledger._one("SELECT * FROM skills WHERE name=?", (name,)))
 
     def list(self, include_inactive: bool = False) -> List[dict]:
+        self._maybe_reload()
         sql = "SELECT * FROM skills" + ("" if include_inactive else " WHERE active=1") + " ORDER BY name"
         return [self._decode(r) for r in self.ledger._all(sql)]
 
@@ -206,7 +211,56 @@ class SkillRegistry:
                 loaded.append(name)
             except LedgerError:
                 continue
+        self._sync_deleted(path)
         return loaded
+
+    def _sync_deleted(self, path: str) -> None:
+        """Delete file-sourced skills under `path` whose SKILL.md no longer exists.
+        The disk-delete counterpart to load_dir's create/edit, so the filesystem is
+        the source of truth in both directions. Skills created via the API
+        (source != file:*) are never touched."""
+        prefix = os.path.join(path, "")  # ensure a trailing separator
+        for row in self.ledger._all("SELECT name, source FROM skills WHERE source LIKE 'file:%'"):
+            src = row["source"] or ""
+            if not src.startswith("file:"):
+                continue
+            fpath = src[len("file:"):]
+            if fpath.startswith(prefix) and not os.path.isfile(fpath):
+                self.delete(row["name"])
+
+    def _dir_sig(self, path: str) -> float:
+        """Max mtime of a skills dir and its <name>/SKILL.md files — changes when
+        a skill is added, removed, or its SKILL.md edited (the reload trigger)."""
+        if not os.path.isdir(path):
+            return 0
+        sig = os.path.getmtime(path)
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            return sig
+        for entry in entries:
+            f = os.path.join(path, entry, "SKILL.md")
+            if os.path.isfile(f):
+                sig = max(sig, os.path.getmtime(f))
+        return sig
+
+    def _maybe_reload(self) -> None:
+        """Re-scan the skills dirs when a SKILL.md (or a new/removed skill dir)
+        changed on disk. File-based skills go live without a restart — the same
+        mtime hot-reload pattern the config uses. ``upsert`` no-ops on unchanged
+        content, so only genuinely changed files bump a version. ``_reloading``
+        guards re-entry (get -> reload -> load_dir -> upsert -> get)."""
+        if getattr(self, "_reloading", False):
+            return
+        self._reloading = True
+        try:
+            for d in self._dirs:
+                sig = self._dir_sig(d)
+                if sig != self._dir_sigs.get(d, 0):
+                    self.load_dir(d)
+                    self._dir_sigs[d] = sig
+        finally:
+            self._reloading = False
 
     # ── retrieval + feedback ─────────────────────────────────────────────
 
