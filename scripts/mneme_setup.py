@@ -998,6 +998,13 @@ label_model: "@@LABEL@@"
 embed_provider: "@@EMBED_PROV@@"
 label_provider: "@@LABEL_PROV@@"
 
+# Utility model — background housekeeping (strategy lifecycle/abstraction/
+# reusable-strategy). Empty = use the chat model (correct for local installs with
+# no spare VRAM). Set to a fast/cheap model (e.g. inception/mercury-3 on
+# OpenRouter) to keep background calls off the flagship reasoning model.
+utility_model: "@@UTILITY@@"
+utility_provider: "@@UTILITY_PROV@@"
+
 # Backend transports — set only when a role's transport DIFFERS from the chat
 # backend (e.g. chat hosted on OpenAI, embedder on local Ollama). "openai" or
 # "ollama"; empty = follow the chat backend.
@@ -1147,7 +1154,7 @@ logging:
 """
 
 
-def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider="", embed_backend="", label_backend=""):
+def write_config(backend, models, port, inject, memory_only, instance_dir, db_path, mcp_servers=None, hot_reload=True, model_template="", provider="openrouter", base_url=OR_BASE, key_env="OPENROUTER_API_KEY", embed_provider="", label_provider="", embed_backend="", label_backend="", utility_provider=""):
     """Write mneme.yaml for the chosen backend into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
     inject_s = "true" if str(inject) == "1" else "false"
@@ -1171,11 +1178,13 @@ def write_config(backend, models, port, inject, memory_only, instance_dir, db_pa
                 .replace("@@PROV_KEY@@", json.dumps(key_env)[1:-1])
                 .replace("@@EMBED_PROV@@", json.dumps(embed_provider)[1:-1])
                 .replace("@@LABEL_PROV@@", json.dumps(label_provider)[1:-1])
+                .replace("@@UTILITY_PROV@@", json.dumps(utility_provider)[1:-1])
                 .replace("@@EMBED_BACKEND@@", json.dumps(embed_backend)[1:-1])
                 .replace("@@LABEL_BACKEND@@", json.dumps(label_backend)[1:-1])
                 .replace("@@MAIN@@", json.dumps(models.get("model", ""))[1:-1])
                 .replace("@@EMBED@@", json.dumps(models.get("embed_model", ""))[1:-1])
-                .replace("@@LABEL@@", json.dumps(models.get("label_model", ""))[1:-1]))
+                .replace("@@LABEL@@", json.dumps(models.get("label_model", ""))[1:-1])
+                .replace("@@UTILITY@@", json.dumps(models.get("utility_model", ""))[1:-1]))
     path = os.path.join(instance_dir, "mneme.yaml")
     # Write atomically (temp + fsync + rename) so a proxy launched right after
     # this can never read a half-written config. A partial config load silently
@@ -1553,6 +1562,7 @@ def save_shared_config(memory_dir, models, backend, port=None, inject=None, memo
         "embed_backend": embed_backend or backend,
         "label_model": models.get("label_model", ""),
         "label_backend": label_backend or backend,
+        "utility_model": models.get("utility_model", ""),
     }
     if embed_provider is not None:
         data["embed_provider"] = embed_provider
