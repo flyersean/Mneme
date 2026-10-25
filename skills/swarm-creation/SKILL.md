@@ -12,6 +12,16 @@ directories, calls one backend, and writes a file. Control flow (`goto` / `if` /
 
 Ground rules. Never break these:
 
+- **READ THE REFERENCE BEFORE YOU WRITE A SINGLE LINE — never guess.** A guessed
+  config is the #1 way a swarm setup goes wrong. The syntax is precise and
+  non-obvious (`if` has two forms, `copy_dir` needs `copy_to`, `write_dir` treats
+  a dotted path as a file, paths are working-dir-relative). Before writing
+  anything, open ALL THREE:
+    - `extensions/swarm/SWARM_REFERENCE.md`    — the complete config reference
+    - `extensions/swarm/swarm_config.yaml`     — the worked example (exercises every function)
+    - `extensions/swarm/swarm_orchestrator.py` — module docstring = field reference
+  Every key you write must be one you just SAW there. If this skill and the code
+  ever disagree, the code wins.
 - The swarm is an **extension**. It talks to Mneme proxies **over HTTP only**:
   `POST http://localhost:<port>/v1/chat/completions`. Never import proxy code or
   touch its database.
@@ -21,8 +31,50 @@ Ground rules. Never break these:
   proxies. On RunPod, never use 8081 (nginx reserves it).
 - Dependencies: `requests` and `pyyaml`.
 
-Source of truth: `extensions/swarm/SWARM_REFERENCE.md` and `swarm_orchestrator.py`.
-If this skill and the code ever disagree, the code wins.
+---
+
+## 0. Setting up a swarm — the folder workflow
+
+The swarm is kept **self-contained in one folder**. The whole setup, end to end:
+
+1. **Make the folder.** Everything lives inside it: the orchestrator, the config,
+   helper scripts, and every folder the config reads/writes.
+2. **Drop in the pieces.** Copy `swarm_orchestrator.py` (and
+   `swarm_p_orchestrator.py` if you need `parallel:`), the example
+   `swarm_config.yaml` (your starting template), and any helper scripts (e.g.
+   `scripts/now.py`) into the folder.
+3. **Create + seed the folders the config needs.** The FIRST `read_dir` must
+   exist and be seeded by hand — a missing/empty `read_dir` returns the literal
+   string `NO_INPUT` (no error, no crash), so the model then writes garbage off
+   that. Create and seed the inbox (e.g. `raw/` with the brief). Every downstream
+   `write_dir` / `append_dir` folder is auto-created, so you don't seed those.
+4. **Set up the proxies** (one model per port). Options: a Mneme proxy per role
+   (`backend: mneme` + `port`), raw Ollama (`backend: ollama` + `model`), a
+   hosted model behind a proxy (OpenRouter etc.), or `decide`/`run` steps that
+   call a classifier model / the harness. Confirm each with
+   `curl localhost:<port>/health` before launching.
+5. **Write `swarm_config.yaml`.** Start from the example and EDIT it — never
+   write from scratch or from memory (see the ground rule above).
+6. **Run it from the folder, in the terminal:**
+   `python3 swarm_orchestrator.py swarm_config.yaml` (or
+   `swarm_p_orchestrator.py`). All relative paths resolve against that folder,
+   which is why the whole swarm stays contained in one directory.
+
+### What a swarm is for
+
+A general control-flow + file-handoff machine, not one purpose. Anything
+expressible as "read a folder → call a model → write a folder → branch":
+
+- **Creative writing** — outline → draft → critic → revise, gated on a verdict.
+- **Coding with verification** — write → run tests (`exec`) → review → fix, with
+  a folder-state `if` (e.g. `count_ge` on passing results) as the gate.
+- **A run-system analogue** — the `harness:` block records the swarm as a durable
+  Mneme run (events, artifacts, `--resume-run`), and `run:` steps fire off
+  background harness runs.
+- **Email / inbox triage** — freeze an inbox, process each item, draft replies,
+  consume, loop on a `delay`.
+- Any multi-step / multi-model pipeline where the hand-off between stages is a
+  file and the branch is a string or a folder count.
 
 ---
 
