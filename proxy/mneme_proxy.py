@@ -173,6 +173,7 @@ def _memory_health():
         "embed": {"model": EMBED_MODEL, **_s("embed")},
         "chat": {"model": MODEL, **_s("chat")},
         "label": {"model": LABEL_MODEL, **_s("label")},
+        "utility": {"model": UTILITY_MODEL or "(chat)"},
         "credits": _credit_status(),
         "host": _host_status(),
         "brownout": _brownout_status(),
@@ -299,6 +300,9 @@ _CONFIG_ENV_MAP = {
     "label_model": "LABEL_MODEL",
     "embed_provider": "EMBED_PROVIDER",
     "label_provider": "LABEL_PROVIDER",
+    "utility_model": "UTILITY_MODEL",
+    "utility_provider": "UTILITY_PROVIDER",
+    "utility_backend": "MNEME_UTILITY_BACKEND",
     # Backend transports — pin a role to "openai" or "ollama" when it differs
     # from the chat backend (e.g. chat hosted, embedder on local Ollama).
     "embed_backend": "MNEME_EMBED_BACKEND",
@@ -741,7 +745,9 @@ def _aux_conn(kind: str) -> dict:
 
     Returns {"base_url", "key", "kind", "headers"} with kind ∈ {"openai","ollama"}.
     Read at call time so it reflects the config loaded by _resolve_provider."""
-    prov_name = os.environ.get("EMBED_PROVIDER" if kind == "embed" else "LABEL_PROVIDER", "") or ""
+    _prov_env = {"embed": "EMBED_PROVIDER", "label": "LABEL_PROVIDER",
+                 "utility": "UTILITY_PROVIDER"}.get(kind, "")
+    prov_name = os.environ.get(_prov_env, "") or ""
     if prov_name:
         cat = PROVIDER_CATALOG.get(prov_name)
         if cat:
@@ -1656,6 +1662,7 @@ def _settings_snapshot() -> Dict:
             "backend": os.environ.get("MNEME_BACKEND", "?"),
             "embed_model": EMBED_MODEL,
             "label_model": LABEL_MODEL,
+            "utility_model": UTILITY_MODEL or "(chat)",
             "config_path": CONFIG_PATH or "(none)",
             "hot_reload": "on" if HOT_RELOAD else "LOCKED",
         },
@@ -4411,6 +4418,51 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     return res
 
 
+def query_utility_model(messages: list, timeout: Optional[int] = None,
+                        no_reasoning: bool = False, max_tokens: int = None) -> dict:
+    """Route a background housekeeping call to the configured utility model
+    (utility_model / UTILITY_MODEL), falling back to the chat model when unset.
+
+    Used for strategy lifecycle/abstraction/reusable-strategy — cheap non-reasoning
+    calls that should NOT burn the flagship reasoning model's think tokens. When
+    UTILITY_MODEL is empty (local installs with no 4th model) this is a passthrough
+    to query_model, preserving the old behaviour exactly. Fail-open: a utility-model
+    error also falls back to query_model so housekeeping never hard-fails."""
+    if not UTILITY_MODEL:
+        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
+                           max_tokens=max_tokens)
+    conn = _aux_conn("utility")
+    _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+    if conn.get("key"):
+        _h["Authorization"] = f"Bearer {conn['key']}"
+    _h.update(conn.get("headers") or {})
+    _payload = {
+        "model": UTILITY_MODEL,
+        "messages": messages,
+        "temperature": 0.0,
+    }
+    if max_tokens and max_tokens > 0:
+        _payload["max_tokens"] = max_tokens
+    try:
+        r = requests.post(f"{conn['base_url']}/chat/completions", headers=_h,
+                          json=_payload, timeout=timeout or 60)
+        r.raise_for_status()
+        data = r.json()
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message", {}) or {}
+        u = data.get("usage") or {}
+        return {"content": msg.get("content") or "",
+                "thinking": msg.get("reasoning_content") or msg.get("reasoning") or "",
+                "tool_calls": msg.get("tool_calls") or [],
+                "eval_count": u.get("completion_tokens", 0),
+                "done_reason": choice.get("finish_reason") or "stop",
+                "provider": "utility"}
+    except Exception as e:
+        print(f"  [UTILITY][ERR] {type(e).__name__}: {e}", flush=True)
+        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
+                           max_tokens=max_tokens)
+
+
 # ─── Belief Evolution ───────────────────────────────────────────
 
 def _check_belief_evolution(new_chunk_id: str, topic_label: str):
@@ -4809,6 +4861,10 @@ def _clean_content(text: str) -> str:
 
 
 LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
+# Utility model for background housekeeping calls (strategy lifecycle/abstraction/
+# reusable-strategy). Empty = fall back to the chat model — the default, so a
+# local setup with no spare VRAM (and no 4th model) behaves exactly as before.
+UTILITY_MODEL = os.environ.get("UTILITY_MODEL", "")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -7262,8 +7318,8 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
         # task — thinking-on makes Qwen ramble or time out on it.
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
-                        no_reasoning=True)
+        r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
+                                no_reasoning=True)
         reply = (r.get("content") or "").strip()
         # 2) Register a built tool first (so it shows up in list_tools), then
         # fall through to the strategy rule. The TOOL_SAVE marker uses the same
@@ -8663,7 +8719,7 @@ def _abstract_strategy_text(text: str) -> str:
               "If already general, return unchanged.\n\nRULE: " + text.strip()[:600])
     for attempt in range(2):
         try:
-            r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+            r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
             out = (r.get("content") or "").strip()
             if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
                 return out
@@ -8988,7 +9044,7 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
                     "- The failure was caused by... (descriptive, not prescriptive)\n\n"
                     "Respond with ONLY the rule, nothing else."
                 )}]
-                r = query_model(q, timeout=CHAT_TIMEOUT)
+                r = query_utility_model(q, timeout=CHAT_TIMEOUT)
                 if r.get("content"):
                     directive = r["content"].strip()[:300]
                     # Strip common prefixes the model might add
@@ -9154,7 +9210,7 @@ def _harness_extras() -> dict:
         "strategies": strategies,
         "search": search,
         "config": lambda _a="": _chatcmd.format_settings(_settings_snapshot()),
-        "models": lambda _a="": f"model={MODEL} backend={MNEME_BACKEND} embed={EMBED_MODEL} label={LABEL_MODEL}",
+        "models": lambda _a="": f"model={MODEL} backend={MNEME_BACKEND} embed={EMBED_MODEL} label={LABEL_MODEL} utility={UTILITY_MODEL or '(chat)'}",
     }
 
 
