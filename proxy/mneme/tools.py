@@ -1647,24 +1647,32 @@ def _exec_delete_proxy(args):
 
 def _arm_resume_sentinel(port, session_id):
     """Arm the restart-resume sentinel (extensions/restart-resume) so the agent
-    wakes up with a status prompt after a SELF-restart. Best-effort: a missing
-    extension or a non-chat session (harness run) is a silent no-op — the restart
-    still proceeds, it just won't auto-resume. The restart itself is triggered
-    separately by the caller, so the sentinel baselines 'up' before it lands.
-    Returns True if the sentinel was armed."""
+    wakes up with a status prompt after a SELF-restart, or a harness run is
+    resumed directly. Best-effort: a missing extension or an unrecognized session
+    is a silent no-op — the restart still proceeds, it just won't auto-resume.
+    The restart itself is triggered separately by the caller, so the sentinel
+    baselines 'up' before it lands. Returns True if the sentinel was armed."""
     try:
         import sys
         _repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         script = os.path.join(_repo, "extensions", "restart-resume", "restart_resume.py")
         if not os.path.isfile(script):
             return False
+        sid = str(session_id or "")
         cmd = [sys.executable, script, "arm",
                "--url", "http://127.0.0.1:%d" % port,
-               "--port", str(port),
-               "--handoff",
-               "Proxy self-restart via restart_proxy tool — verify /health then report status."]
-        if session_id and str(session_id).startswith("conv_"):
-            cmd += ["--conversation-id", str(session_id)]
+               "--port", str(port)]
+        if sid.startswith("run:"):
+            run_id = sid[4:]
+            cmd += ["--run-id", run_id,
+                    "--handoff", "Harness run %s was interrupted by the restart." % run_id]
+        elif sid.startswith("conv_"):
+            cmd += ["--conversation-id", sid,
+                    "--handoff",
+                    "Proxy self-restart via restart_proxy tool — verify /health then report status."]
+        else:
+            cmd += ["--handoff",
+                    "Proxy self-restart via restart_proxy tool — verify /health then report status."]
         subprocess.Popen(cmd, start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True

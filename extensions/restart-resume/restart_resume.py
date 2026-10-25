@@ -174,6 +174,30 @@ def post_wakeup(url, token, handoff, port, conversation_id, timeout, log_file,
                        % (attempts, last_err))
 
 
+def post_resume(url, token, run_id, timeout, log_file,
+                attempts=DEFAULT_FIRE_ATTEMPTS):
+    """Resume a harness run by POSTing /runs/<id>/resume — no chat wake-up needed.
+
+    The proxy's startup recover() has already marked an interrupted run 'paused'
+    (with a run_interrupted event) before the sentinel fires, so this resumes it
+    directly. Returns the run_id on success."""
+    last_err = None
+    for i in range(attempts):
+        endpoint = "%s/runs/%s/resume" % (url.rstrip("/"), run_id)
+        _log("resume attempt %d/%d -> %s" % (i + 1, attempts, endpoint), log_file)
+        try:
+            _post(endpoint, token, {}, timeout)
+            _log("resume accepted for %s" % run_id, log_file)
+            return run_id
+        except Exception as e:
+            last_err = e
+            _log("resume attempt %d/%d failed: %s" % (i + 1, attempts, e), log_file)
+            if i < attempts - 1:
+                time.sleep(5 * (i + 1))
+    raise RuntimeError("all %d resume attempts failed (last: %s)"
+                       % (attempts, last_err))
+
+
 def _poll_until(predicate, url, token, timeout, what, log_file):
     detail = "?"
     deadline = time.time() + timeout
@@ -212,6 +236,8 @@ def cmd_arm(args):
         "--baseline-timeout", str(args.baseline_timeout),
         "--log-file", args.log_file or ("/tmp/restart-resume-%d.log" % args.port),
     ]
+    if args.run_id:
+        cmd += ["--run-id", args.run_id]
     if args.conversation_id:
         cmd += ["--conversation-id", args.conversation_id]
     if args.token:
@@ -290,12 +316,16 @@ def cmd_watch(args):
     if not handoff:
         handoff = "Restart completed -- verify /health and report project status."
     try:
-        post_wakeup(args.url, args.token, handoff, args.port,
-                    args.conversation_id, args.fire_timeout, log_file)
-        _log("sentinel done (exit 0)", log_file)
+        if args.run_id:
+            post_resume(args.url, args.token, args.run_id, args.fire_timeout, log_file)
+            _log("run %s resume requested (exit 0)" % args.run_id, log_file)
+        else:
+            post_wakeup(args.url, args.token, handoff, args.port,
+                        args.conversation_id, args.fire_timeout, log_file)
+            _log("sentinel done (exit 0)", log_file)
         return 0
     except Exception as e:
-        _log("ERROR firing wake-up: %s" % e, log_file)
+        _log("ERROR firing: %s" % e, log_file)
         return 4
 
 
@@ -371,6 +401,9 @@ def main(argv=None):
     p_arm.add_argument("--handoff-file", default=None)
     p_arm.add_argument("--conversation-id", default=None,
                        help="resume this session id instead of a fresh one")
+    p_arm.add_argument("--run-id", default=None,
+                       help="resume this harness run id (POST /runs/<id>/resume) "
+                            "instead of a chat wake-up")
     p_arm.add_argument("--settle", type=int,
                        default=int(_env_or("RESUME_SETTLE", DEFAULT_SETTLE)))
     p_arm.add_argument("--timeout", type=int,
@@ -388,6 +421,7 @@ def main(argv=None):
     p_watch.add_argument("--handoff", default=_env_or("RESUME_HANDOFF", ""))
     p_watch.add_argument("--handoff-file", default=None)
     p_watch.add_argument("--conversation-id", default=None)
+    p_watch.add_argument("--run-id", default=None)
     p_watch.add_argument("--settle", type=int,
                          default=int(_env_or("RESUME_SETTLE", DEFAULT_SETTLE)))
     p_watch.add_argument("--timeout", type=int,
@@ -401,6 +435,7 @@ def main(argv=None):
     p_fire.add_argument("--handoff", default=_env_or("RESUME_HANDOFF", ""))
     p_fire.add_argument("--handoff-file", default=None)
     p_fire.add_argument("--conversation-id", default=None)
+    p_fire.add_argument("--run-id", default=None)
     p_fire.add_argument("--fire-timeout", type=int, default=DEFAULT_FIRE_TIMEOUT)
     p_fire.set_defaults(func=cmd_fire)
 
