@@ -312,7 +312,7 @@ _CONFIG_ENV_MAP = {
     "openrouter_base_url": "OPENROUTER_BASE_URL",
 }
 
-_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem", "debug"}
+_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem", "debug", "terminal"}
 
 # Repo root — used to locate model_templates.yaml (shipped alongside the proxy).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
