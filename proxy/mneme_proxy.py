@@ -398,7 +398,7 @@ PROVIDER_CATALOG = {
     "google":     {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "key_env": "GOOGLE_API_KEY", "kind": "openai"},
     "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai",
                    "reasoning_field": "reasoning_content", "reasoning_param": "thinking",
-                   "effort_map": {"xhigh": "max", "ultra": "max"}},
+                   "effort_map": {"xhigh": "high", "ultra": "high"}},
     "zai":        {"label": "Z.AI (GLM)", "base_url": "https://api.z.ai/api/paas/v4", "key_env": "GLM_API_KEY", "kind": "openai",
                    "reasoning_field": "reasoning_content", "reasoning_param": "thinking", "clear_thinking": False,
                    "effort_map": {"low": "high", "medium": "high", "xhigh": "max", "ultra": "max"}},
