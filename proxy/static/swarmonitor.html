@@ -449,15 +449,9 @@
     setStatus('Opening terminal…');
     try {
       const info = await fetchJSON('/terminal/info');
-      if (!info || !info.token) {
-        setStatus('Terminal not configured (no token)', 'err');
-        alert('Terminal not configured.');
-        return;
-      }
       const host = location.hostname || '127.0.0.1';
       const arg = (currentDir && currentDir !== '.') ? '?arg=' + encodeURIComponent(currentDir) : '';
-      const url = 'http://' + info.user + ':' + encodeURIComponent(info.token) + '@' +
-                  host + ':' + info.port + '/' + arg;
+      const url = 'http://' + host + ':' + (info.port || 7681) + '/' + arg;
       // Reuse the single terminal tab, or create it.
       let tt = tabs.find((t) => t.terminal);
       if (!tt) {
