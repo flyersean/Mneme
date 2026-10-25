@@ -11448,6 +11448,7 @@ if FLASK_OK:
             "embed": _h["embed"],
             "chat": _h["chat"],
             "label": _h["label"],
+            "utility": _h["utility"],
             "credits": _h["credits"],
             "host": _h["host"],
             "brownout": _h["brownout"],
@@ -12065,7 +12066,7 @@ def _dump_config():
     """Print the effective resolved config so a missed/typo'd value is visible."""
     print(f"  [CONFIG] file={CONFIG_PATH or '(none — env/defaults)'}", flush=True)
     print(f"  [CONFIG] backend={MNEME_BACKEND} provider={os.environ.get('MNEME_PROVIDER', 'openrouter')}", flush=True)
-    print(f"  [CONFIG] model={MODEL} embed={EMBED_MODEL} label={LABEL_MODEL}", flush=True)
+    print(f"  [CONFIG] model={MODEL} embed={EMBED_MODEL} label={LABEL_MODEL} utility={UTILITY_MODEL or '(chat)'}", flush=True)
     if _backend_is_openai():
         print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
