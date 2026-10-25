@@ -1,0 +1,35 @@
+# Mneme extension manifest — see extensions/README.md for the spec.
+# The restart-resume sentinel is a ONE-SHOT: arm it before a self-restart, and
+# after the proxy goes down and comes back up ready, it fires a wake-up prompt
+# into the chat so the agent resumes and reports status.
+#
+# `command` + `args` are run from THIS directory. The tokens {port} and {url}
+# are substituted with the managing proxy's port / base URL.
+
+name: restart-resume
+description: Wake the agent back up after a proxy self-restart (arm -> restart -> auto-resume)
+
+command: ["python3", "restart_resume.py"]
+args: ["arm", "--url", "{url}", "--restart"]
+
+config:
+  - key: MNEME_API_TOKEN
+    label: Mneme API token (leave empty if proxy is open)
+    type: secret
+    required: false
+  - key: RESUME_HANDOFF
+    label: Handoff note (what to resume after the restart)
+    type: string
+    required: false
+    default: "Restart completed -- verify /health and report project status."
+    description: Injected verbatim into the wake-up prompt the sentinel fires.
+  - key: RESUME_SETTLE
+    label: Settle seconds after ready before firing the wake-up
+    type: number
+    required: false
+    default: 8
+  - key: RESUME_TIMEOUT
+    label: Max seconds to wait for each down/up transition
+    type: number
+    required: false
+    default: 120

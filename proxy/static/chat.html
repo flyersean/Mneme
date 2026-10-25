@@ -1589,6 +1589,28 @@ async function loadConversation(id) {
   } catch (e) {}
 }
 
+// Adopt server-side turns (e.g. the restart-resume wake-up) that this page never
+// saw. The proxy persists turns server-side on the streaming path, but this page
+// is client-authoritative and only renders from its local `history`. Without
+// this, an injected wake-up is invisible AND gets clobbered the next time the
+// user sends a message (saveConversation PUTs the stale local history over it).
+async function reconcileConversation() {
+  if (busy || !convId) return;   // never interfere with an in-flight turn
+  try {
+    const r = await fetch("/conversations/" + convId);
+    if (!r.ok) return;
+    const d = await r.json();
+    const server = (d.conversation && d.conversation.messages) || [];
+    if (server.length > history.length) {
+      const fresh = server.slice(history.length);
+      history = server.slice();
+      for (const m of fresh) renderMessage(m);
+      scrollDown();
+    }
+  } catch (e) {}
+}
+setInterval(reconcileConversation, 5000);
+
 async function deleteConversation(id) {
   if (!confirm("Delete this conversation?")) return;
   try { await fetch("/conversations/" + id, { method: "DELETE" }); } catch (e) {}
