@@ -3734,12 +3734,19 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
             # `enabled:false` (the endpoint 400s), so bound it tightly instead.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
     if _transport["param"] == "thinking":
-        # Thinking providers (DeepSeek / Z.AI direct): forced thinking + preserved
-        # thinking (clear_thinking:false for Z.AI), exactly what OpenCode/Hermes
-        # send. Never `reasoning:{enabled:false}`. Effort (when requested) is sent
-        # as TOP-LEVEL `reasoning_effort`, mapped per provider (GLM-5.2 clamps to
-        # high/max; DeepSeek maps xhigh/ultra -> max).
-        _th = {"type": "enabled"}
+        # Thinking providers (DeepSeek / Z.AI direct). Respect the computed
+        # _reasoning budget: a mandatory-reasoning model with reasoning OFF (or a
+        # no_reasoning call) gets a BOUNDED thinking budget, and a non-mandatory
+        # model with reasoning OFF gets thinking DISABLED. Sending bare
+        # {"type":"enabled"} with the full max_tokens is what let a mandatory
+        # model runaway-think (37k think tokens on a trivial turn) — the budget
+        # was computed above but dropped on this path.
+        if _reasoning.get("enabled") is False:
+            _th = {"type": "disabled"}
+        else:
+            _th = {"type": "enabled"}
+            if _reasoning.get("max_tokens"):
+                _th["max_tokens"] = _reasoning["max_tokens"]
         if _transport["clear_thinking"] is not None:
             _th["clear_thinking"] = bool(_transport["clear_thinking"])
         payload["thinking"] = _th
