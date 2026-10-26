@@ -714,6 +714,37 @@ def _backend_is_openai() -> bool:
     return MNEME_BACKEND in ("openai", "openrouter")
 
 
+# Models whose custom Ollama chat template cannot render a "tool" role message
+# (e.g. Harmony-format models with a to=self reasoning turn). On the Ollama
+# backend these fall back to user-role tool feedback. Seed as models are measured;
+# empty = always use the standard "tool" role.
+_TOOL_ROLE_UNFRIENDLY_MODELS = set()
+
+
+def _tool_feedback_role() -> str:
+    """'tool' (standard) or 'user' (fallback) for feeding tool results back.
+
+    'tool' works with both the OpenAI-compatible backends AND modern Ollama
+    (which supports role:'tool' + tool_call_id). Fall back to 'user' only for a
+    local model whose template breaks on tool-role messages: set
+    MNEME_TOOL_FEEDBACK=user globally, or add the model to
+    _TOOL_ROLE_UNFRIENDLY_MODELS to auto-switch on the Ollama backend.
+    """
+    if os.environ.get("MNEME_TOOL_FEEDBACK", "").strip().lower() == "user":
+        return "user"
+    if not _backend_is_openai() and MODEL in _TOOL_ROLE_UNFRIENDLY_MODELS:
+        return "user"
+    return "tool"
+
+
+def _tool_feedback_msg(role: str, nm: str, tc, res) -> dict:
+    """Build the followup message for one tool result in the active role."""
+    tid = (tc or {}).get("id", "")
+    if role == "tool":
+        return {"role": "tool", "tool_call_id": tid, "content": _truncate_tool_result(res)}
+    return {"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"}
+
+
 def _aux_backend(override_env: str) -> str:
     """Transport for an auxiliary model (embed/label/judge). An explicit override
     env (e.g. MNEME_EMBED_BACKEND) wins; otherwise follow the main backend
@@ -6854,7 +6885,7 @@ def _execute_search_tool_calls(search_calls):
         else:
             result_texts.append("No matching memories found.")
             print("  [SEARCH-TOOL] no results", flush=True)
-    return "\n\n".join(result_texts), trace
+    return result_texts, trace
 
 
 def _query_retry_timeout(msgs, tools=None, timeout=None, options=None, max_tokens=None, attempts=None):
@@ -7603,28 +7634,33 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     followup.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": _truncate_tool_result(res)})
                 _tool_rounds += len(_exec)
 
-        # search_memory: user-message feedback (Muse-template workaround — the
-        # Ollama path drops a "tool" role message and trips the peg grammar).
+        # search_memory / read_chunk / list_chunks: feed each call's result back in
+        # the active feedback role, preceded by the assistant message carrying the
+        # model's OWN tool_calls (so the model sees it issued these, not the system).
         if search_calls:
             _t0 = time.time()
-            _tool_rounds += 1
-            tool_result, _trace_chunks = _execute_search_tool_calls(search_calls)
+            _results, _trace_chunks = _execute_search_tool_calls(search_calls)
             _trace_search_chunks.update(_trace_chunks)
-            for tc in search_calls:
+            _fb_role = _tool_feedback_role()
+            followup.append({"role": "assistant", "content": None, "tool_calls": search_calls})
+            for _j, tc in enumerate(search_calls):
+                nm = tc["function"]["name"]
                 args = tc["function"].get("arguments", {}) or {}
                 _mark_call("search_memory", args)
-                _tool_trace.append(_trace("search_memory", args, tool_result, _t0))
+                _res = _results[_j] if _j < len(_results) else ""
+                _tool_rounds += 1
+                _tool_trace.append(_trace(nm, args, _res, _t0))
                 # Track search_memory queries for the grind -> clue-seeking signal.
                 # read_chunk / list_chunks ARE the clue-seeking actions, so they
                 # don't count toward the grind.
-                if tc["function"].get("name") == "search_memory":
+                if nm == "search_memory":
                     _search_rounds += 1
                     _q = (args.get("query") or "").strip()
                     for _w in _q.split():
                         _w = _w.strip().strip(".,!?;:\"'()[]").lower()
                         if len(_w) >= 3 and _w not in _KEYWORD_STOPWORDS:
                             _search_words[_w] = _search_words.get(_w, 0) + 1
-            followup.append({"role": "user", "content": "search_memory results:\n" + _truncate_tool_result(tool_result)})
+                followup.append(_tool_feedback_msg(_fb_role, nm, tc, _res))
             # Anti-grind -> clue-seeking nudge. Keyword grinding is legitimate while
             # it works (the fact may be keyword-searchable), so allow several
             # searches. But once the model has run a handful with no answer, or the
@@ -7668,6 +7704,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 list(_pool.map(lambda i: _run_reg(i, registry_calls[i]), _par_idxs))
         elif _par_idxs:
             _run_reg(_par_idxs[0], registry_calls[_par_idxs[0]])
+        # Feed back the model's OWN tool calls (assistant message carrying the
+        # tool_calls), then each result in the active feedback role. Without the
+        # assistant message the model sees only a bare result and can misread it
+        # as the system having run the tool on its behalf.
+        if registry_calls:
+            followup.append({"role": "assistant", "content": None, "tool_calls": registry_calls})
+        _fb_role = _tool_feedback_role()
         for i, tc in enumerate(registry_calls):
             nm = tc["function"]["name"]
             args = tc["function"].get("arguments", {}) or {}
@@ -7701,7 +7744,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _tool_trace.append(_trace(nm, args, res, _t0))
             _label = "WEB-SEARCH" if nm == "web_search" else "TOOL-REGISTRY"
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
-            followup.append({"role": "user", "content": f"{nm} result:\n{_truncate_tool_result(res)}"})
+            followup.append(_tool_feedback_msg(_fb_role, nm, tc, res))
 
         # MCP tools (dynamic servers) — same user-message feedback as registry tools.
         if mcp_calls:
@@ -7768,9 +7811,9 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         _final_search = [tc for tc in (result.get("tool_calls") or [])
                          if tc.get("function", {}).get("name") == "search_memory"]
         if _final_search and not (result.get("content") or "").strip():
-            _tool_result, _trace = _execute_search_tool_calls(_final_search)
-            _trace_search_chunks.update(_trace)
-            result["content"] = _tool_result
+            _tool_results, _tr_chunks = _execute_search_tool_calls(_final_search)
+            _trace_search_chunks.update(_tr_chunks)
+            result["content"] = "\n\n".join(_tool_results)
 
     result["tool_calls"] = passthrough_calls
     result["tool_trace"] = _tool_trace
