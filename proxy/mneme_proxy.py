@@ -294,6 +294,8 @@ _CONFIG_ENV_MAP = {
     "label_model": "LABEL_MODEL",
     "embed_provider": "EMBED_PROVIDER",
     "label_provider": "LABEL_PROVIDER",
+    "utility_model": "UTILITY_MODEL",
+    "utility_provider": "UTILITY_PROVIDER",
     # Backend transports — pin a role to "openai" or "ollama" when it differs
     # from the chat backend (e.g. chat hosted, embedder on local Ollama).
     "embed_backend": "MNEME_EMBED_BACKEND",
