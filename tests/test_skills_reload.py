@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "proxy"))
 
 from mneme.harness import Ledger  # noqa: E402
-from mneme.harness.skills import SkillRegistry  # noqa: E402
+from mneme.harness.skills import SkillRegistry, parse_skill_md  # noqa: E402
 
 
 def _write_skill(skills_dir, name, description, body):
@@ -79,6 +79,56 @@ class TestSkillsHotReload(unittest.TestCase):
         got = {s["name"]: s for s in self.reg.list()}
         self.assertIn("hello", got)
         self.assertEqual(got["hello"]["body"], "v2 body")
+
+    def test_soft_delete_keeps_row_but_inactive(self):
+        _write_skill(self.skills_dir, "hello", "Say hello", "v1 body")
+        self.reg.list()
+        self.assertTrue(self.reg.delete("hello"))  # soft: deactivate
+        inactive = {s["name"]: s for s in self.reg.list(include_inactive=True)}
+        self.assertIn("hello", inactive)
+        self.assertEqual(inactive["hello"]["active"], 0)
+        self.assertNotIn("hello", [s["name"] for s in self.reg.list()])  # gone from active list
+
+    def test_purge_removes_row_entirely(self):
+        _write_skill(self.skills_dir, "hello", "Say hello", "v1 body")
+        self.reg.list()
+        self.assertTrue(self.reg.purge("hello"))
+        self.assertNotIn("hello", [s["name"] for s in self.reg.list(include_inactive=True)])
+
+    def test_edit_preserves_active_flag(self):
+        self.reg.upsert("hello", "Say hello", "v1", actor="test", source="user")
+        self.assertTrue(self.reg.get("hello")["active"])
+        self.reg.set_active("hello", False)
+        self.reg.upsert("hello", "Say hello edited", "v2", actor="test", source="user")
+        s = self.reg.get("hello")
+        self.assertEqual(s["active"], 0)  # edit must NOT re-activate a deactivated skill
+        self.assertEqual(s["description"], "Say hello edited")
+        self.assertEqual(s["version"], 2)
+
+    def test_export_round_trips(self):
+        _write_skill(self.skills_dir, "hello", "Say hello", "do the thing")
+        self.reg.list()
+        md = self.reg.export("hello")
+        self.assertIsNotNone(md)
+        meta = parse_skill_md(md)
+        self.assertEqual(meta["name"], "hello")
+        self.assertEqual(meta["description"], "Say hello")
+        self.assertIn("do the thing", meta["body"])
+
+    def test_file_removed_then_recreated_reactivates(self):
+        _write_skill(self.skills_dir, "hello", "Say hello", "v1 body")
+        self.reg.list()
+        shutil.rmtree(os.path.join(self.skills_dir, "hello"))
+        time.sleep(0.02)
+        self.assertNotIn("hello", [s["name"] for s in self.reg.list()])
+        # still exists (soft), source marked file-removed
+        inactive = {s["name"]: s for s in self.reg.list(include_inactive=True)}
+        self.assertIn("hello", inactive)
+        self.assertTrue(inactive["hello"]["source"].startswith("file-removed:"))
+        _write_skill(self.skills_dir, "hello", "Say hello", "v1 body")
+        time.sleep(0.02)
+        s = self.reg.get("hello")
+        self.assertEqual(s["active"], 1)  # re-created -> available again
 
 
 if __name__ == "__main__":

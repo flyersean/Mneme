@@ -303,28 +303,28 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         reg.set_active(name, active)
         return respond({"skill": reg.get(name)})
 
+    @app.route("/skills/<name>/export", methods=["GET"])
+    def harness_skill_export(name):
+        reg, err = _skills()
+        if err:
+            return err
+        md = reg.export(name)
+        if md is None:
+            return respond({"error": f"no such skill: {name}"}, 404)
+        return respond({"name": name, "skill_md": md})
+
     @app.route("/skills/<name>", methods=["DELETE"])
     def harness_skill_delete(name):
         reg, err = _skills()
         if err:
             return err
-        sk = reg.get(name)
-        if sk is None:
+        if reg.get(name) is None:
             return respond({"error": f"no such skill: {name}"}, 404)
-        src = sk.get("source") or ""
-        if src.startswith("file:"):
-            path = src[5:]
-            parent = _os.path.dirname(path)
-            # Only remove the on-disk skill dir if it is clearly a skill: the dir is
-            # named after the skill and lives under a skills/ or skill-library/ path.
-            if _os.path.basename(parent) == name and ("/skills/" in path or "/skill-library/" in path):
-                try:
-                    import shutil as _shutil
-                    _shutil.rmtree(parent, ignore_errors=True)
-                except Exception:
-                    pass
-        reg.delete(name)
-        return respond({"deleted": name})
+        if request.args.get("purge") == "1":
+            reg.purge(name)
+            return respond({"purged": name})
+        reg.delete(name)  # soft: deactivate (removed from injection, kept on disk)
+        return respond({"deleted": name, "active": False})
 
     # ── evolution (Phase 6) ──
     def _evo():
@@ -497,10 +497,9 @@ def register(app, get_engine: Callable[[], Optional[object]], respond: Callable,
         if err:
             return err
         return _guard(lambda: respond({"job": jobs.trigger(job_id) if action == "trigger"
-                                       else jobs.delete(job_id) if action == "delete"
                                        else jobs.set_enabled(job_id, action == "enable")}))
 
-    for _ja in ("enable", "disable", "trigger", "delete"):
+    for _ja in ("enable", "disable", "trigger"):
         app.add_url_rule(f"/jobs/<job_id>/{_ja}", f"harness_job_{_ja}",
                          (lambda a: lambda job_id: _job_action(job_id, a))(_ja), methods=["POST"])
 

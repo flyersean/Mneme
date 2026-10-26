@@ -155,7 +155,7 @@ class SkillRegistry:
             version = int(cur["version"]) + 1
             self.ledger._write(
                 "UPDATE skills SET description=?, body=?, tools=?, requires=?, strategies=?, verify=?, "
-                "failure_modes=?, tags=?, version=?, source=?, active=1, updated_at=? WHERE name=?",
+                "failure_modes=?, tags=?, version=?, source=?, updated_at=? WHERE name=?",
                 (new["description"], new["body"], *[json.dumps(new[f]) for f in _LIST_FIELDS],
                  version, source or cur.get("source", ""), ts, name))
         else:
@@ -175,21 +175,59 @@ class SkillRegistry:
         snap = next((h["snapshot"] for h in self.history(name) if h["version"] == int(version)), None)
         if snap is None:
             raise LedgerError(f"skill {name} has no version {version}")
-        return self.upsert(name, snap["description"], snap["body"], actor=actor,
-                           reason=f"restore v{version}", **{f: snap.get(f, []) for f in _LIST_FIELDS})
+        out = self.upsert(name, snap["description"], snap["body"], actor=actor,
+                          reason=f"restore v{version}", **{f: snap.get(f, []) for f in _LIST_FIELDS})
+        self.set_active(name, True)  # restoring a version brings the skill back into injection
+        return out
 
     def set_active(self, name: str, active: bool) -> None:
         self.ledger._write("UPDATE skills SET active=?, updated_at=? WHERE name=?",
                            (1 if active else 0, now_iso(), name))
 
     def delete(self, name: str) -> bool:
-        """Hard-delete a skill: remove the row and all of its versions. Returns True if it existed."""
+        """Soft-delete: deactivate a skill (remove it from injection). The row, its
+        versions, and its on-disk file are all kept — matching "delete = remove from
+        injection, not from disk". Returns True if it existed."""
         if self.get(name) is None:
             return False
+        self.set_active(name, False)
+        return True
+
+    def purge(self, name: str, remove_file: bool = True) -> bool:
+        """Hard-delete a skill: remove the row and all versions, and (by default) its
+        on-disk skill dir. The irreversible counterpart to the soft delete."""
+        cur = self.get(name)
+        if cur is None:
+            return False
+        src = cur.get("source") or ""
         self.ledger._write("DELETE FROM skill_versions WHERE name=?", (name,))
         self.ledger._write("DELETE FROM skills WHERE name=?", (name,))
         self._emb_cache.clear()
+        if remove_file and src.startswith("file:"):
+            path = src[len("file:"):]
+            parent = os.path.dirname(path)
+            if os.path.basename(parent) == name and ("/skills/" in path or "/skill-library/" in path):
+                import shutil
+                shutil.rmtree(parent, ignore_errors=True)
         return True
+
+    def export(self, name: str) -> Optional[str]:
+        """Materialize a skill as a SKILL.md string (YAML frontmatter + body) for
+        portability, copying, or git-tracking a DB-only skill."""
+        s = self.get(name)
+        if s is None:
+            return None
+        meta = {"name": s["name"], "description": s["description"]}
+        for f in _LIST_FIELDS:
+            v = s.get(f) or []
+            if v:
+                meta[f] = list(v)
+        try:
+            import yaml
+            front = yaml.safe_dump(meta, sort_keys=False, default_flow_style=False).strip()
+        except Exception:
+            front = f"name: {s['name']}\ndescription: {s['description']}"
+        return f"---\n{front}\n---\n\n{(s.get('body') or '').strip()}\n"
 
     def load_dir(self, path: str) -> List[str]:
         """Load every <dir>/<name>/SKILL.md (a new version only when the file changed)."""
@@ -204,10 +242,16 @@ class SkillRegistry:
             with open(f, encoding="utf-8") as fh:
                 meta = parse_skill_md(fh.read())
             name = str(meta.get("name") or entry).strip().lower()
+            row = self.ledger._one("SELECT source FROM skills WHERE name=?", (name,))
+            was_removed = row is not None and (row["source"] or "").startswith("file-removed:")
             try:
                 self.upsert(name, str(meta.get("description") or ""), meta.get("body", ""),
                             actor="file", reason="loaded from disk", source=f"file:{f}",
                             **{k: meta[k] for k in _LIST_FIELDS if k in meta})
+                if was_removed:
+                    # file re-created -> available again, and source points at the file once more
+                    self.ledger._write("UPDATE skills SET source=?, active=1, updated_at=? WHERE name=?",
+                                       (f"file:{f}", now_iso(), name))
                 loaded.append(name)
             except LedgerError:
                 continue
@@ -215,10 +259,10 @@ class SkillRegistry:
         return loaded
 
     def _sync_deleted(self, path: str) -> None:
-        """Delete file-sourced skills under `path` whose SKILL.md no longer exists.
-        The disk-delete counterpart to load_dir's create/edit, so the filesystem is
-        the source of truth in both directions. Skills created via the API
-        (source != file:*) are never touched."""
+        """Deactivate file-sourced skills under `path` whose SKILL.md no longer exists.
+        Soft (removed from injection; row + versions kept) — matching delete semantics.
+        ``source`` is rewritten to ``file-removed:<path>`` so a re-created file
+        re-activates the skill on the next load."""
         prefix = os.path.join(path, "")  # ensure a trailing separator
         for row in self.ledger._all("SELECT name, source FROM skills WHERE source LIKE 'file:%'"):
             src = row["source"] or ""
@@ -226,7 +270,9 @@ class SkillRegistry:
                 continue
             fpath = src[len("file:"):]
             if fpath.startswith(prefix) and not os.path.isfile(fpath):
-                self.delete(row["name"])
+                self.ledger._write(
+                    "UPDATE skills SET active=0, source=?, updated_at=? WHERE name=?",
+                    (f"file-removed:{fpath}", now_iso(), row["name"]))
 
     def _dir_sig(self, path: str) -> float:
         """Max mtime of a skills dir and its <name>/SKILL.md files — changes when

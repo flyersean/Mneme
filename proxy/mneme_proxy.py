@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil, signal
+import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -65,10 +65,6 @@ from mneme.overcome import (
     BUILD_MAX_TOOL_CALLS,
     MAX_SERVER_ROUNDS,
     TOOL_ROUND_NUDGE,
-    STEP_BACK_1,
-    STEP_BACK_2,
-    STEP_BACK_3,
-    wrap_up_nudge_due,
 )
 import mneme.capability as capability
 from mneme.capability import (
@@ -97,7 +93,6 @@ import mneme.tools as mntools
 import mneme.models_dev as models_dev
 import mneme.secrets_store as secrets_store
 import mneme.curation as curation
-import mneme.sanitizer as sanitizer
 import mneme.templates as _templates
 import mneme.chatcmd as _chatcmd
 import mneme.strategy_history as _strat_hist
@@ -168,15 +163,10 @@ def _memory_health():
             "embedded": embedded,
             "pending": pending,
             "pct_unembedded": round(pending / total * 100, 1) if total else 0.0,
-            "measured_at": datetime.now(timezone.utc).isoformat(),
         },
         "embed": {"model": EMBED_MODEL, **_s("embed")},
         "chat": {"model": MODEL, **_s("chat")},
         "label": {"model": LABEL_MODEL, **_s("label")},
-        "utility": {"model": UTILITY_MODEL or "(chat)"},
-        "credits": _credit_status(),
-        "host": _host_status(),
-        "brownout": _brownout_status(),
     }
 
 
@@ -279,6 +269,10 @@ _CONFIG_ENV_MAP = {
     "tools.start_run": "MNEME_TOOL_START_RUN",
     "tools.delete_proxy": "MNEME_TOOL_DELETE_PROXY",
     "tools.search_skills": "MNEME_TOOL_SEARCH_SKILLS",
+    "tools.create_skill": "MNEME_TOOL_CREATE_SKILL",
+    "tools.edit_skill": "MNEME_TOOL_EDIT_SKILL",
+    "tools.delete_skill": "MNEME_TOOL_DELETE_SKILL",
+    "tools.export_skill": "MNEME_TOOL_EXPORT_SKILL",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     "runtime.local_only": "MNEME_LOCAL_ONLY",
     "runtime.yolo": "MNEME_YOLO",
@@ -300,9 +294,6 @@ _CONFIG_ENV_MAP = {
     "label_model": "LABEL_MODEL",
     "embed_provider": "EMBED_PROVIDER",
     "label_provider": "LABEL_PROVIDER",
-    "utility_model": "UTILITY_MODEL",
-    "utility_provider": "UTILITY_PROVIDER",
-    "utility_backend": "MNEME_UTILITY_BACKEND",
     # Backend transports — pin a role to "openai" or "ollama" when it differs
     # from the chat backend (e.g. chat hosted, embedder on local Ollama).
     "embed_backend": "MNEME_EMBED_BACKEND",
@@ -312,7 +303,7 @@ _CONFIG_ENV_MAP = {
     "openrouter_base_url": "OPENROUTER_BASE_URL",
 }
 
-_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem", "debug", "terminal"}
+_STRUCTURAL_SECTIONS = {"providers", "models", "mcp_servers", "filesystem", "debug"}
 
 # Repo root — used to locate model_templates.yaml (shipped alongside the proxy).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -402,7 +393,7 @@ PROVIDER_CATALOG = {
     "google":     {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "key_env": "GOOGLE_API_KEY", "kind": "openai"},
     "deepseek":   {"label": "DeepSeek", "base_url": "https://api.deepseek.com", "key_env": "DEEPSEEK_API_KEY", "kind": "openai",
                    "reasoning_field": "reasoning_content", "reasoning_param": "thinking",
-                   "effort_map": {"xhigh": "high", "ultra": "high"}},
+                   "effort_map": {"xhigh": "max", "ultra": "max"}},
     "zai":        {"label": "Z.AI (GLM)", "base_url": "https://api.z.ai/api/paas/v4", "key_env": "GLM_API_KEY", "kind": "openai",
                    "reasoning_field": "reasoning_content", "reasoning_param": "thinking", "clear_thinking": False,
                    "effort_map": {"low": "high", "medium": "high", "xhigh": "max", "ultra": "max"}},
@@ -473,12 +464,7 @@ def _resolve_provider():
             # key is still needed by embed/label if they run on OpenRouter — so
             # preserve it before repointing the carrier at the chat key.
             if api_key_env != "OPENROUTER_API_KEY":
-                # Capture the OpenRouter key ONCE (idempotent). On a later reload
-                # the carrier (OPENROUTER_API_KEY) has already been repointed at
-                # the chat key, so re-reading it here would clobber the preserved
-                # OR key with the chat key and 401 every embed/label call.
-                if not _AUX_OR_KEY:
-                    _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+                _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
             os.environ["OPENROUTER_API_KEY"] = k
     _PROVIDER_HEADERS = prov.get("headers") or {}
     # OpenRouter-specific reliability (only applied to OpenRouter requests, so
@@ -680,7 +666,7 @@ mntools.reload_config()  # tools.py is imported before load_config(); refresh it
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
-mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
+mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
 _apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
@@ -745,9 +731,7 @@ def _aux_conn(kind: str) -> dict:
 
     Returns {"base_url", "key", "kind", "headers"} with kind ∈ {"openai","ollama"}.
     Read at call time so it reflects the config loaded by _resolve_provider."""
-    _prov_env = {"embed": "EMBED_PROVIDER", "label": "LABEL_PROVIDER",
-                 "utility": "UTILITY_PROVIDER"}.get(kind, "")
-    prov_name = os.environ.get(_prov_env, "") or ""
+    prov_name = os.environ.get("EMBED_PROVIDER" if kind == "embed" else "LABEL_PROVIDER", "") or ""
     if prov_name:
         cat = PROVIDER_CATALOG.get(prov_name)
         if cat:
@@ -762,15 +746,10 @@ def _aux_conn(kind: str) -> dict:
             key = _aux_key(ke)
             return {"base_url": prov.get("base_url", "") or "", "key": key,
                     "kind": "openai", "headers": prov.get("headers") or {}}
-    # No explicit aux provider — default to OpenRouter (the embed/label models
-    # live there), INDEPENDENT of the chat provider. The chat key carrier
-    # (OPENROUTER_API_KEY) is repointed at the chat vendor's key when the chat
-    # provider differs, so read the OpenRouter key via _aux_key, which returns
-    # the preserved OpenRouter key in that case. This keeps the backend models
-    # unaffected by a mid-conversation chat-model switch.
+    # No explicit aux provider — follow the chat backend (existing behaviour).
     if _aux_backend(f"MNEME_{kind.upper()}_BACKEND") in ("openai", "openrouter"):
-        return {"base_url": OR_BASE_URL, "key": _aux_key("OPENROUTER_API_KEY"),
-                "kind": "openai", "headers": _PROVIDER_HEADERS or {}}
+        return {"base_url": OR_BASE_URL, "key": OR_API_KEY, "kind": "openai",
+                "headers": _PROVIDER_HEADERS or {}}
     return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
 
 
@@ -811,175 +790,6 @@ LOCAL_ONLY = os.environ.get("MNEME_LOCAL_ONLY", "0") == "1"  # "1" = run fully l
 YOLO = os.environ.get("MNEME_YOLO", "0") == "1"  # trust this box: auth off + full filesystem + all tools
 INJECT_ENABLED = os.environ.get("MNEME_INJECT_ENABLED", "1") == "1"  # "0" = save-only mode: skip memory retrieval/injection (build_context returns no context), but turns are still staged/archived so the work is saved and search_memory + /search still work. Master switch MEMORY_ENABLED gates BOTH injection AND saving; this flag only gates injection.
 
-# ── Host + credit monitoring ─────────────────────────────────────────
-# Low-balance guard: OpenRouter credits are a finite bank. When the balance
-# drops below a configurable floor, Mneme stops STARTING new paid work (re-embed
-# drain, background embedding/labeling) so a depleted bank never strands open
-# processes mid-run. This is a LOW-WATER MARK, not a rate limit — useful work
-# still burns credits freely above the floor. Fail-open: if the balance can't be
-# read (no key / network down), nothing is halted.
-CREDIT_FLOOR = float(os.environ.get("MNEME_CREDIT_FLOOR", "5.0"))  # USD
-_CREDIT_CACHE = {"balance": None, "at": 0.0}
-_CREDIT_TTL = 60.0
-
-
-def _fetch_credit_balance():
-    """OpenRouter credit balance (USD) or None. Cached ~60s; no LLM tokens."""
-    now = time.time()
-    if _CREDIT_CACHE["balance"] is not None and now - _CREDIT_CACHE["at"] < _CREDIT_TTL:
-        return _CREDIT_CACHE["balance"]
-    _CREDIT_CACHE["at"] = now
-    key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not key:
-        _CREDIT_CACHE["balance"] = None
-        return None
-    try:
-        r = requests.get("https://openrouter.ai/api/v1/credits",
-                         headers={"Authorization": f"Bearer {key}"}, timeout=5)
-        if r.status_code != 200:
-            _CREDIT_CACHE["balance"] = None
-            return None
-        d = (r.json() or {}).get("data", {})
-        bal = float(d.get("total_credits") or 0) - float(d.get("total_usage") or 0)
-        _CREDIT_CACHE["balance"] = bal
-        return bal
-    except Exception:
-        _CREDIT_CACHE["balance"] = None
-        return None
-
-
-def _credit_status():
-    bal = _fetch_credit_balance()
-    return {"balance": bal, "floor": CREDIT_FLOOR,
-            "low": bal is not None and bal < CREDIT_FLOOR}
-
-
-def _host_status():
-    """Cheap local host snapshot (/proc + statvfs) — no API tokens."""
-    out = {}
-    try:
-        with open("/proc/meminfo") as f:
-            mi = {}
-            for ln in f:
-                if ":" in ln:
-                    k, v = ln.split(":", 1)
-                    mi[k.strip()] = v.strip()
-        total = int(mi.get("MemTotal", "0").split()[0])
-        avail = int(mi.get("MemAvailable", "0").split()[0])
-        out["ram_pct"] = round((total - avail) / total * 100, 1) if total else 0.0
-    except Exception:
-        out["ram_pct"] = None
-    try:
-        st = os.statvfs(CHUNK_DIR or "/")
-        total_b = st.f_blocks * st.f_frsize
-        free_b = st.f_bavail * st.f_frsize
-        out["disk_pct"] = round((total_b - free_b) / total_b * 100, 1) if total_b else 0.0
-    except Exception:
-        out["disk_pct"] = None
-    try:
-        out["load"] = round(os.getloadavg()[0], 2)
-    except Exception:
-        out["load"] = None
-    out["at"] = datetime.now(timezone.utc).isoformat()
-    return out
-
-
-# ── Brownout (auto-shed under memory pressure) + DB ownership marker ──
-# Brownout: when the host is under memory pressure, pause STARTING background
-# paid work (the re-embed drain) so a spike sheds load instead of inviting the
-# OOM killer. Auto-triggered from /proc — no model decision, no API tokens.
-# Folded alongside runtime.local_only: both are "degrade gracefully" switches.
-BROWNOUT_RAM_PCT = float(os.environ.get("MNEME_BROWNOUT_RAM_PCT", "80.0"))
-_LAST_RAM_PCT = {"v": None}
-
-
-def _memory_pressure():
-    """True when host RAM is at/above the brownout threshold (auto-shed signal)."""
-    hs = _host_status()
-    _LAST_RAM_PCT["v"] = hs.get("ram_pct")
-    return _LAST_RAM_PCT["v"] is not None and _LAST_RAM_PCT["v"] >= BROWNOUT_RAM_PCT
-
-
-def _brownout_status():
-    active = _memory_pressure()
-    return {"ram_pct": _LAST_RAM_PCT["v"], "threshold": BROWNOUT_RAM_PCT,
-            "active": active}
-
-
-_DB_ALREADY_OWNED = False  # set True by _check_db_owner() when a live other pid owns the DB
-
-
-def _db_owner_marker():
-    """Write/read a DB ownership marker (<db_path>.owner). Returns (prev, me).
-
-    This is an AUDIT marker, not a lock — shared-memory access is never blocked.
-    It exists to surface the 8083-class footgun (a DIFFERENT checkout/schema
-    opening the same DB) in the log + health, while legitimate multi-proxy
-    shared access keeps working."""
-    marker_path = DB_PATH + ".owner"
-    me = {"pid": os.getpid(), "port": PORT, "checkout": os.getcwd(),
-          "schema": (_SCHEMA_MIGRATIONS[-1][0] if _SCHEMA_MIGRATIONS else 0),
-          "model": MODEL,
-          "at": datetime.now(timezone.utc).isoformat()}
-    prev = None
-    try:
-        if os.path.exists(marker_path):
-            with open(marker_path) as f:
-                prev = json.load(f)
-    except Exception:
-        prev = None
-    # Only claim the marker when no live owner holds it — never clobber a live
-    # owner's marker, or a secondary process would hide the real owner and defeat
-    # the non-owner self-heal guard.
-    prev_live = False
-    if prev and prev.get("pid") and prev.get("pid") != me["pid"]:
-        try:
-            os.kill(prev["pid"], 0)
-            prev_live = True
-        except OSError:
-            prev_live = False
-    if not prev_live:
-        try:
-            with open(marker_path, "w") as f:
-                json.dump(me, f)
-        except Exception:
-            pass
-    return prev, me
-
-
-def _check_db_owner():
-    global _DB_ALREADY_OWNED
-    prev, me = _db_owner_marker()
-    if not prev or prev.get("pid") == me["pid"]:
-        return
-    prev_pid = prev.get("pid")
-    alive = False
-    if prev_pid:
-        try:
-            os.kill(prev_pid, 0)
-            alive = True
-        except OSError:
-            alive = False
-    if not alive:
-        return  # stale marker from a dead process — ignore
-    # A LIVE other process already owns this DB — we are shared/secondary access.
-    # Non-owners must NOT run the destructive startup self-heal (mass re-embed on
-    # embed-config mismatch), or a subprocess with a different embed config could
-    # wipe the owner's vectors.
-    _DB_ALREADY_OWNED = True
-    same_schema = prev.get("schema") == me["schema"]
-    same_checkout = prev.get("checkout") == me["checkout"]
-    if same_schema and same_checkout:
-        print(f"[DB-SHARED] {DB_PATH} also open by pid {prev_pid} "
-              f"(port {prev.get('port')}) — shared-memory mode (allowed)", flush=True)
-    else:
-        print(f"[WARN] {DB_PATH} open by a DIFFERENT checkout/schema: "
-              f"pid {prev_pid} (checkout {prev.get('checkout')}, "
-              f"schema v{prev.get('schema')}) vs self "
-              f"(checkout {me['checkout']}, schema v{me['schema']}) — "
-              f"possible 8083-class misconfiguration", flush=True)
-
-
 # ── Memory curation flags ────────────────────────────────────────────────
 # Retraction lets a specific chunk be marked false (and later restored) instead
 # of wiping the whole DB. Model authority is split deliberately:
@@ -1000,12 +810,6 @@ ALLOW_MODEL_REMOVE = os.environ.get("MNEME_ALLOW_MODEL_REMOVE", "0") == "1"
 # is dangerous: with nothing to contradict it the model may re-hallucinate the
 # same fact. Mirror of the existing [G:F — FAILED ...] treatment.
 INJECT_RETRACTED = os.environ.get("MNEME_INJECT_RETRACTED", "1") == "1"
-# Chunk-header time format A/B experiment:
-#   full      (default) raw timestamp + terse age  "2026-10-18T14:28:46 (2d ago)"
-#   relative  only verbose elapsed words          "2 and a half weeks ago"
-#   absolute  only raw timestamp
-# The created_at is ALWAYS stored on the chunk row; this is presentation only.
-CHUNK_HEADER_TIME = (os.environ.get("MNEME_CHUNK_HEADER_TIME", "full").strip().lower() or "full")
 # Flag self-confirmation loops in the injected header. (Recurrence/support-tier
 # labelling was removed — the assert_count/independent_sources counters were
 # never wired to the archive path, so the "single/repeated/corroborated" tiers
@@ -1101,7 +905,7 @@ def _reload_sampling_if_changed():
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
-        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
+        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
     if "debug" in data:
         CONFIG_DATA["debug"] = data.get("debug") or {}
         _apply_thinking_log()
@@ -1662,7 +1466,6 @@ def _settings_snapshot() -> Dict:
             "backend": os.environ.get("MNEME_BACKEND", "?"),
             "embed_model": EMBED_MODEL,
             "label_model": LABEL_MODEL,
-            "utility_model": UTILITY_MODEL or "(chat)",
             "config_path": CONFIG_PATH or "(none)",
             "hot_reload": "on" if HOT_RELOAD else "LOCKED",
         },
@@ -2211,200 +2014,100 @@ class _LockedConnection(sqlite3.Connection):
 db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60,
                      factory=_LockedConnection)
 db.execute("PRAGMA journal_mode=WAL")
-db.execute("PRAGMA synchronous=FULL")
-
-def _checkpoint_and_close():
-    """Checkpoint the WAL and close the shared connection cleanly.
-
-    Called from the SIGTERM/SIGINT handler so a graceful stop does not leave an
-    uncommitted transaction in the WAL (which, combined with synchronous=NORMAL,
-    could wedge or drop later commits on restart). Idempotent: safe even if the
-    connection is already closed.
-    """
-    try:
-        with _db_lock:
-            try:
-                db.commit()
-            except Exception:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    except Exception:
-        pass
-    try:
-        db.close()
-    except Exception:
-        pass
-
-
-def _shutdown_signal(signum=None, frame=None):
-    _checkpoint_and_close()
-    sys.exit(0)
+db.execute("PRAGMA synchronous=NORMAL")
 capability.db = db  # bind the extracted capability module's db handle
 mntools.db = db      # bind the tool system's db handle
 
-# ─── Versioned, serialized schema migrations ─────────────────────
-# Multiple proxies may share one DB (shared memory) and start concurrently.
-# Each migration is applied exactly once (recorded in schema_migrations), under
-# SQLite's cross-process write lock (BEGIN IMMEDIATE), so concurrent migrators
-# serialize instead of racing. "already exists"/"duplicate column" is treated as
-# an idempotent no-op; any OTHER error is fatal and rolls back, so a buggy
-# migration cannot half-apply to a DB other processes are reading.
-_SCHEMA_MIGRATIONS = [
-    (1, "base tables + indexes", [
-        "CREATE TABLE IF NOT EXISTS chunks (chunk_id TEXT PRIMARY KEY, "
-        "topic_label TEXT NOT NULL, messages TEXT NOT NULL, "
-        "thinking TEXT DEFAULT '', strategy TEXT DEFAULT '', vector BLOB, "
-        "grade TEXT DEFAULT 'C', consensus REAL DEFAULT 0.0, "
-        "outcome TEXT DEFAULT '', problem_type TEXT DEFAULT 'other', "
-        "source TEXT DEFAULT 'unknown', cycle INTEGER DEFAULT 0, "
-        "created_at TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS strategies (strategy_id TEXT PRIMARY KEY, "
-        "problem_type TEXT NOT NULL, strategy_text TEXT NOT NULL, "
-        "source_chunk TEXT, grade TEXT DEFAULT 'B', created_at TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS preferences (pref_key TEXT PRIMARY KEY, "
-        "pref_value TEXT NOT NULL, updated_at TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS capability_edges (problem_type TEXT PRIMARY KEY, "
-        "attempts INTEGER DEFAULT 0, failures INTEGER DEFAULT 0, "
-        "last_grade TEXT DEFAULT '', flagged INTEGER DEFAULT 0, "
-        "updated_at TEXT NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS tools (tool_id TEXT PRIMARY KEY, "
-        "problem_type TEXT NOT NULL, name TEXT NOT NULL, "
-        "description TEXT DEFAULT '', script_path TEXT DEFAULT '', "
-        "tested_at TEXT DEFAULT '', success_count INTEGER DEFAULT 0, "
-        "retired INTEGER DEFAULT 0)",
-        "CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label)",
-        "CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(problem_type)",
-        "CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type)",
-        "CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type)",
-    ]),
-    (2, "chunk/strategy/capability/tools columns", [
-        "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
-        "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
-        "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
-        "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
-        "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
-        "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
-        "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
-        "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
-        "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
-        "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
-        "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
-        "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
-        "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
-        "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
-        "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
-        "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
-        "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
-        "ALTER TABLE tools ADD COLUMN embedding BLOB",
-        "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
-        "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
-    ]),
-    (3, "instance_origin column (dev)", [
-        "ALTER TABLE chunks ADD COLUMN instance_origin TEXT DEFAULT ''",
-    ]),
-    # v4: Harness2-inspired strategy provenance. A strategy's verdict is the
-    # observed CONTRAST (helped/hurt/no_observed_effect/confounded), not a
-    # score. 'untested' is the honest default for everything auto-derived:
-    # a grade was observed, but no matched-condition comparison was made.
-    # contrast_from holds "chunk:<failed_id>,chunk:<succeeded_id>" - the same
-    # problem_type pair that justifies the verdict. cue is the situational
-    # pattern the strategy applies to (the retrieval key, not the topic).
-    # NOTE: originally authored as v3; renumbered to v4 because main already
-    # shipped v3 = chunks.instance_origin. Whichever group loses a version
-    # collision never gets its columns created, so v4 is mandatory.
-    (4, "strategy verdict + contrast provenance + cue", [
-        "ALTER TABLE strategies ADD COLUMN verdict TEXT DEFAULT 'untested'",
-        "ALTER TABLE strategies ADD COLUMN contrast_from TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN cue TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN confidence TEXT DEFAULT ''",
-        "ALTER TABLE strategies ADD COLUMN confidence_why TEXT DEFAULT ''",
-    ]),
-]
+db.executescript("""
+    CREATE TABLE IF NOT EXISTS chunks (
+        chunk_id    TEXT PRIMARY KEY,
+        topic_label TEXT NOT NULL,
+        messages    TEXT NOT NULL,          -- JSON array of {role, content}
+        thinking    TEXT DEFAULT '',
+        strategy    TEXT DEFAULT '',
+        vector      BLOB,                   -- 1024 × float32 = 4096 bytes
+        grade       TEXT DEFAULT 'C',
+        consensus   REAL DEFAULT 0.0,
+        outcome     TEXT DEFAULT '',
+        problem_type TEXT DEFAULT 'other',
+        source      TEXT DEFAULT 'unknown',
+        cycle       INTEGER DEFAULT 0,
+        created_at  TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS strategies (
+        strategy_id   TEXT PRIMARY KEY,
+        problem_type  TEXT NOT NULL,
+        strategy_text TEXT NOT NULL,
+        source_chunk  TEXT,
+        grade         TEXT DEFAULT 'B',
+        created_at    TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS preferences (
+        pref_key   TEXT PRIMARY KEY,
+        pref_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS capability_edges (
+        problem_type TEXT PRIMARY KEY,
+        attempts     INTEGER DEFAULT 0,
+        failures     INTEGER DEFAULT 0,   -- D/F grades
+        last_grade   TEXT DEFAULT '',
+        flagged      INTEGER DEFAULT 0,   -- 1 = known capability edge
+        updated_at   TEXT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS tools (
+        tool_id       TEXT PRIMARY KEY,
+        problem_type  TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        description   TEXT DEFAULT '',
+        script_path   TEXT DEFAULT '',
+        tested_at     TEXT DEFAULT '',
+        success_count INTEGER DEFAULT 0,
+        retired       INTEGER DEFAULT 0
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label);
+    CREATE INDEX IF NOT EXISTS idx_chunks_type  ON chunks(problem_type);
+    CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type);
+    CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type);
+""")
 
-
-def _schema_groups():
-    """Return {version: [statements]} for every schema group, plus the additive
-    ensure_schema groups. Used by _migrate_schema to VERIFY each step landed."""
-    groups = {v: list(stmts) for v, _d, stmts in _SCHEMA_MIGRATIONS}
-    return groups
-
-
-def _stmt_already_satisfied(stmt):
-    """True when an ALTER/CREATE statement's target state already exists.
-
-    Only ALTER TABLE ... ADD COLUMN is introspected (that is what the failed
-    v3 stamp left missing); everything else is treated as not-yet-satisfied so
-    it is re-executed (all CREATEs are IF NOT EXISTS, so that is safe)."""
-    import re as _re
-    m = _re.match(r"\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+['\"]?(\w+)", stmt, _re.I)
-    if not m:
-        return False
-    table, col = m.group(1), m.group(2)
+# ─── Schema migrations for existing DBs ─────────────────────────
+for migration in (
+    "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
+    "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
+    "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
+    "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
+    "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
+    "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
+    "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
+    "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
+    "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
+    "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
+    "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
+    "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
+    "ALTER TABLE tools ADD COLUMN embedding BLOB",
+    "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
+    "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
+    "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
+):
     try:
-        return any(r[1] == col for r in db.execute(f"PRAGMA table_info({table})"))
-    except Exception:
-        return False
-
-
-def _migrate_schema():
-    """Apply pending schema migrations once, serialized across processes.
-
-    A version is recorded in schema_migrations ONLY when every statement in the
-    group actually reached its intended end state. Historically the loop
-    `continue`d on a duplicate-column error and then stamped the version
-    regardless, which left a DB permanently half-migrated while reporting itself
-    fully migrated (v3 on dev: stamped, zero columns). The repair path below
-    re-attempts any statements that are still missing for an already-stamped
-    version, so a half-applied DB heals on next import.
-    """
-    db.execute("CREATE TABLE IF NOT EXISTS schema_migrations "
-               "(version INTEGER PRIMARY KEY, applied_at TEXT)")
-    db.commit()
-    applied = {r[0] for r in db.execute("SELECT version FROM schema_migrations")}
-    for version, desc, statements in _SCHEMA_MIGRATIONS:
-        already = version in applied
-        db.execute("BEGIN IMMEDIATE")  # take SQLite's cross-process write lock
-        try:
-            pending = []
-            for stmt in statements:
-                if already and _stmt_already_satisfied(stmt):
-                    continue  # verified present — nothing to do
-                try:
-                    db.execute(stmt)
-                except sqlite3.OperationalError as e:
-                    msg = str(e)
-                    if "already exists" in msg or "duplicate column" in msg:
-                        continue  # idempotent — target state reached
-                    raise
-                pending.append(stmt)
-            if already:
-                if pending:
-                    db.commit()
-                    print(f"[MIGRATE] repaired schema v{version} ({len(pending)} "
-                          f"statement(s) re-applied): {desc}", flush=True)
-                else:
-                    db.rollback()
-                continue
-            db.execute("INSERT OR REPLACE INTO schema_migrations (version, applied_at) "
-                       "VALUES (?, datetime('now'))", (version,))
-            db.commit()
-            print(f"[MIGRATE] applied schema v{version}: {desc}", flush=True)
-        except Exception:
-            db.rollback()
-            raise
-
-
-_migrate_schema()
-
-_check_db_owner()
-
+        db.execute(migration)
+    except sqlite3.OperationalError:
+        pass  # column already exists
+db.commit()
 # Memory curation schema (retraction / recurrence / provenance / decision log).
 # Additive + idempotent, same style as the migrations above.
 curation.ensure_schema(db)
@@ -2448,15 +2151,11 @@ DEFAULT_GRADE   = "C"
 # turn independent of memory retrieval. Deliberately short and constant —
 # NOT counted against the dynamic MAX_INJECTED_TOKENS budget.
 META_PRINCIPLES = [
-    "Finish the task. Once you start a task the user asked for, see it through to completion and verification. For a short self-contained task, do it yourself. For a long or multi-step task, hand it to a run (start_run) and verify the result. Never stop partway to ask 'should I continue?' or 'do you want the rest?'. Only stop and ask when you are genuinely blocked on something only the user can decide.",
-    "Act, don't announce. Never describe an action and then stop — the moment you decide to do something, do it: make the tool call in the SAME message. Do not write 'I will do X' or 'let me check Y' and then wait; that is a stalled turn, not progress. Use tools for actions and use text only for results, answers, and findings. You do not need to ask permission to use a tool you already have — just use it. Delegating a long task via start_run IS acting — it is not 'announcing'.",
-    "Ask only when you must. A question to the user is legitimate ONLY when it needs an answer only they have AND you cannot proceed without it. Otherwise make the sensible choice yourself and keep going. Do not invent a question as a way to check in or hand work back.",
-    "Read the room. This is a chat first. If the user is chatting or musing, respond in kind — do not turn every passing idea, 'we should', or suggestion into a task or a flurry of tool calls. Take action when action was asked for.",
-    "Route big work to a run. A short self-contained question gets a direct answer. A long or multi-step task — many files, a build, deep research, anything you would want to verify step by step — is a RUN: call start_run(goal='...') to hand it to the harness. Do not grind a long task inline one step at a time.",
-    "Keep going after a tool call. A tool result is a signal to take the next step, not to stop and summarize or check in. Continue until the task is done.",
-    "Restart cleanly and resume. When you need to reload a change, call restart_proxy — it arms a resume sentinel automatically, so you wake back up with a status prompt after the restart. After that, verify /health and continue the task you were on; do not lose your thread.",
+    "Answer directly and concisely — no filler. But conciseness is about wording, not about stopping: once you commit to a multi-step task (editing, building, verifying, researching), finish the whole chain in the same turn instead of pausing for permission.",
+    "Run one quick sanity check before committing. If the user asked a single self-contained question with a clear answer, give it and stop. If you are mid-task, a clean sanity check means proceed to the next step — it is not a reason to stop.",
+    "Do not brainstorm as a default ritual. But a task with a clear next step is not a brainstorm: after a tool call returns, continue to the next step rather than ending the turn.",
     "Prefer the mechanism over the example — name the underlying rule, not just the surface detail.",
-    "State your confidence honestly: if unsure, say so plainly instead of padding the answer.",
+    "State your confidence honestly: if unsure, say so plainly instead of padding the answer with extra reasoning.",
 ]
 
 def grade_priority(chunk_id: str) -> int:
@@ -2703,12 +2402,6 @@ def _curation_retract(chunk_id: str, reason: str = "") -> str:
             return "[flag_bad_memory: not permitted on this proxy (curation disabled)]"
         curation.set_bad_chunk(db, chunk_id, True, actor="model", reason=reason)
         print(f"  [CURATION] model flagged {chunk_id} as bad: {reason[:80]}", flush=True)
-        try:
-            _d = curation.flag_poisoned_descendants(db, chunk_id, reason=reason or "")
-            if _d.get("flagged"):
-                print(f"  [POISON] flagged {_d['flagged']} downstream chunk(s) of {chunk_id}", flush=True)
-        except Exception as _e:
-            _log_error("curation:poison_descendants", _e)
         return (
             f"[flag_bad_memory: MARKED {chunk_id} as a bad chunk. Nothing has changed "
             f"about how this memory is used — it is still in use, unmodified, and not "
@@ -2819,16 +2512,8 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     """
     if not query or not query.strip():
         return []
-    _q = query.strip()
-    words = [w.strip() for w in _q.split()
+    words = [w.strip() for w in query.split()
              if len(w.strip()) >= 2 and w.strip().lower() not in _KEYWORD_STOPWORDS]
-    # Keep the full multi-word phrase as a search term. The memory page matches
-    # "my name is" exactly (LIKE %my name is%); collapsing it to "name" here
-    # throws away the high-signal phrase and returns thousands of broad "name"
-    # chunks instead of the few chunks where the phrase actually appears.
-    # Search the phrase first, then the individual non-stopword terms.
-    if len(_q.split()) >= 2:
-        words = [_q] + [w for w in words if w.lower() != _q.lower()]
     if not words:
         return []
     exclude_ids = exclude_ids if exclude_ids is not None else set()
@@ -2839,7 +2524,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
         for word in words:
             pattern = f"%{word}%"
             rows = db.execute(
-                "SELECT chunk_id FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' ORDER BY created_at DESC LIMIT ?",
+                "SELECT chunk_id FROM chunks WHERE messages LIKE ? ORDER BY created_at DESC LIMIT ?",
                 (pattern, top_k * 2)
             ).fetchall()
             for (cid,) in rows:
@@ -2859,7 +2544,7 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     for word in words:
         pattern = f"%{word}%"
         rows = db.execute(
-            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ? AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'",
+            "SELECT chunk_id, created_at FROM chunks WHERE messages LIKE ?",
             (pattern,)
         ).fetchall()
         for cid, created in rows:
@@ -2870,52 +2555,21 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     ranked = sorted(match_counts.keys(),
                     key=lambda cid: (-match_counts[cid], recency.get(cid, "")),
                     reverse=False)  # match-count desc, then OLDEST first (invert recency bias)
-    # Fallback path only (phrase search handles precise queries now). A small
-    # cap: a word-split result is a lead for read_chunk, not a browsing surface —
-    # don't flood the model with near-miss chunks when one broad word matches.
-    cap = max(top_k, 30)
+    cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
     return [(0.0, cid) for cid in ranked[:cap]]
 
-def _query_snippet(content: str, query: str, radius: int = 160) -> str:
-    """Query-biased snippet: return the window around the first query-term match
-    in `content`, so the matched context (not the chunk head) is what the model
-    sees. A fact buried mid-chunk (e.g. "my dogs name is Luke" inside a chunk
-    about retrieval strategy) is still the visible preview for a "dog" query.
-    Falls back to a head-preview when no term matches."""
-    if not content:
-        return ""
-    if not query:
-        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
-    low = content.lower()
-    best = -1
-    for w in query.split():
-        w = w.strip().lower()
-        if len(w) < 2 or w in _KEYWORD_STOPWORDS:
-            continue
-        i = low.find(w)
-        if i >= 0 and (best == -1 or i < best):
-            best = i
-    if best == -1:
-        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
-    start = max(0, best - radius)
-    end = min(len(content), best + radius)
-    prefix = "..." if start > 0 else ""
-    suffix = "..." if end < len(content) else ""
-    return prefix + content[start:end] + suffix
-
-
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
-    """Merge FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
+    """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
 
-    Keyword runs ALONGSIDE semantic — semantic catches meaning, keyword catches
-    the exact terms/facts that vector similarity misses (names, numbers, quoted
-    phrases). Returns list of (score, chunk_id, method) tuples; keyword matches
-    carry score 0.0 (no semantic signal) so they sort after semantic hits.
+    Returns list of (score, chunk_id, method) tuples. Keyword matches carry a
+    score of 0.0 (no semantic signal), so this is gated behind KEYWORD_FALLBACK
+    (default off) — substring hits pollute context otherwise.
     """
     faiss_ids = {cid for _, cid in faiss_results}
     combined = [(s, cid, "faiss") for s, cid in faiss_results]
-    if KEYWORD_FALLBACK:
-        kw_results = _keyword_search(query, top_k, exclude_ids=faiss_ids)
+    if KEYWORD_FALLBACK and len(combined) < top_k:
+        needed = top_k - len(combined)
+        kw_results = _keyword_search(query, needed, exclude_ids=faiss_ids)
         combined.extend([(s, cid, "keyword") for s, cid in kw_results])
     return combined
 
@@ -2954,166 +2608,6 @@ def _system_prompt_block() -> str:
     return block + "\n\n"
 
 
-def _relative_age(iso: str) -> str:
-    """Human relative age for an ISO timestamp ('45m ago', '3d ago', '2mo ago').
-    Returns '' if the timestamp is missing/unparseable."""
-    try:
-        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
-        s = (datetime.now(timezone.utc) - t).total_seconds()
-        if s < 0: s = 0
-        if s < 60: return f"{int(s)}s ago"
-        if s < 3600: return f"{int(s//60)}m ago"
-        if s < 86400: return f"{int(s//3600)}h ago"
-        if s < 86400*45: return f"{int(s//86400)}d ago"
-        return f"{int(s//(86400*30))}mo ago"
-    except Exception:
-        return ""
-
-
-def _age_words(s: float) -> str:
-    """Verbose, human-shaped elapsed time. Granularity decays with age —
-    seconds when fresh, minutes/hours same-day, days then weeks then months —
-    matching how people naturally talk about time, so the model attends to it
-    as information rather than log metadata. s = elapsed seconds (>= 0)."""
-    if s < 120:
-        return f"{int(s)} seconds ago"
-    m = s / 60.0
-    if m < 2:        return "a couple of minutes ago"
-    if m < 55:       return f"{int(round(m))} minutes ago"
-    if m < 80:       return "about an hour ago"
-    if m < 110:      return "about an hour and a half ago"
-    h = s / 3600.0
-    if h < 36:
-        if h < 2:    return "an hour or two ago"
-        if h < 23:   return f"{int(round(h))} hours ago"
-        if h < 30:   return "about a day ago"
-        return "over a day ago"
-    d = s / 86400.0
-    if d < 2:        return "yesterday-ish, about a day and a half ago" if d > 1.3 else "about a day and a half ago"
-    if d < 7:        return f"{int(round(d))} days ago"
-    w = d / 7.0
-    if w < 9:
-        if w < 1.6:  return "about a week ago"
-        if w < 1.8:  return "about a week and a half ago"
-        # half-week precision: 2½ weeks, 3 weeks, 8½ weeks …
-        whole = int(w)
-        frac = w - whole
-        if frac >= 0.4 and frac <= 0.65:
-            unit = "week" if whole == 1 else "weeks"
-            return f"{whole} and a half {unit} ago"
-        return f"{int(round(w))} weeks ago"
-    mo = d / 30.0
-    if mo < 11.7:    return f"{int(round(mo))} months ago"
-    y = d / 365.0
-    if y < 1.35:     return "over a year ago"
-    if y < 2:        return "a year and a half ago" if y >= 1.5 else "over a year ago"
-    return f"{int(round(y))} years ago"
-
-
-def _elapsed_secs(iso: str) -> float:
-    """Elapsed seconds since an ISO timestamp; -1 if missing/unparseable."""
-    try:
-        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
-        s = (datetime.now(timezone.utc) - t).total_seconds()
-        return max(s, 0.0)
-    except Exception:
-        return -1.0
-
-
-def _user_timezone_name() -> str:
-    """Timezone preference if set, else '' (caller falls back to host tz)."""
-    try:
-        row = db.execute("SELECT pref_value FROM preferences WHERE pref_key='timezone'").fetchone()
-        if row and str(row[0]).strip():
-            return str(row[0]).strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _last_user_activity() -> str:
-    """Time since the user's most recent completed turn, from the conversations
-    DB (MAX(updated_at) over all conversations). At build time this turn's row
-    has NOT been persisted yet (persistence happens after the reply), so this
-    is genuinely 'your previous message', not 'now'."""
-    try:
-        cpath = os.path.join(DB_DIR, "conversations.db")
-        if not os.path.exists(cpath):
-            return ""
-        conn = sqlite3.connect(cpath, timeout=3)
-        try:
-            r = conn.execute("SELECT MAX(updated_at) FROM conversations").fetchone()
-        finally:
-            conn.close()
-        if r and r[0]:
-            return _relative_age(r[0])
-    except Exception:
-        pass
-    return ""
-
-
-def _time_header() -> str:
-    """TIME line: calendar date, UTC time, user's local time (timezone
-    preference, host-tz fallback), and human-time since their last message.
-    Separated from the [HOST:] machine-status line so the model gets natural
-    temporal grounding every turn."""
-    now_u = datetime.now(timezone.utc)
-    tzname = _user_timezone_name()
-    if tzname:
-        try:
-            from zoneinfo import ZoneInfo
-            local = now_u.astimezone(ZoneInfo(tzname))
-            local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local ({tzname})"
-        except Exception:
-            local_s = f"local unknown (bad 'timezone' pref: {tzname})"
-    else:
-        local = now_u.astimezone()  # host timezone
-        local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local (host tz - set 'timezone' preference for the user's real local time)"
-    last = _last_user_activity()
-    last_s = f" | your previous message: {last}" if last else ""
-    return f"\n[TIME: {now_u.strftime('%a %Y-%m-%d %H:%M UTC')} | {local_s}{last_s}]"
-
-
-
-def _missed_reminders() -> str:
-    """Catch-up-on-login for deferred-topic reminders. The scheduler fires a
-    reminder's run whether or not the user is around, and a one-shot then
-    disables itself (record_run in harness/jobs.py) — output goes to the run
-    ledger, never into the user's chat. This delivers it instead: the first
-    context build after the fire injects the (possibly missed) reminder text,
-    then stamps jobs.notified_at so it surfaces exactly once."""
-    try:
-        hpath = os.path.join(DB_DIR, "harness.db")
-        if not os.path.exists(hpath):
-            return ""
-        conn = sqlite3.connect(hpath, timeout=3)
-        try:
-            try:
-                conn.execute("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
-                conn.commit()
-            except Exception:
-                pass  # column already exists
-            rows = conn.execute(
-                "SELECT job_id, goal, updated_at FROM jobs "
-                "WHERE goal LIKE 'Reminder:%' AND runs_count >= 1 "
-                "AND notified_at IS NULL "
-                "AND updated_at >= datetime('now', '-30 days') "
-                "ORDER BY updated_at ASC LIMIT 3").fetchall()
-            now_s = datetime.now(timezone.utc).isoformat()
-            for jid, _g, _u in rows:
-                conn.execute("UPDATE jobs SET notified_at=? WHERE job_id=?", (now_s, jid))
-            conn.commit()
-        finally:
-            conn.close()
-        if not rows:
-            return ""
-        lines = ["- " + g + " [fired " + str(u)[:16].replace("T", " ") + " UTC]" for jid, g, u in rows]
-        return ("\n[MISSED REMINDERS — these fired while you were away. "
-                "Bring the topic up naturally in your reply (e.g. \"we were going to …\"); "
-                "do NOT execute or build anything:]\n" + "\n".join(lines))
-    except Exception:
-        return ""
-
 def _finalize_context(ctx: str, session_id: str = "default") -> str:
     """Append the context-budget line. The system prompt is no longer prepended
     here — it is the fixed system-message prefix added separately by
@@ -3125,18 +2619,7 @@ def _finalize_context(ctx: str, session_id: str = "default") -> str:
     _reserve = int(os.environ.get("MNEME_COMPLETION_RESERVE", "8192"))
     _used = _estimate_tokens(ctx)
     _remaining = max(0, _total - _reserve - _used)
-    _cs = _credit_status()
-    _hs = _host_status()
-    _ram = f"{_hs.get('ram_pct')}%" if _hs.get('ram_pct') is not None else "?"
-    _disk = f"{_hs.get('disk_pct')}%" if _hs.get('disk_pct') is not None else "?"
-    _cred = f"${_cs['balance']:.2f}" if _cs.get('balance') is not None else "?"
-    _ts = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
-    _status_line = f"[HOST: ram {_ram} | disk {_disk} | credits {_cred} @ {_ts}]"
-    if _cs["low"]:
-        _status_line += f" [LOW CREDITS — below floor ${CREDIT_FLOOR:.2f}]"
-    if _hs.get("ram_pct") is not None and _hs["ram_pct"] >= BROWNOUT_RAM_PCT:
-        _status_line += " [BROWNOUT: shedding background work]"
-    _body = ctx + f"\n\n{_status_line}" + (f"\n[context budget: {_total} token window, ~{_used} used, "
+    _body = ctx + (f"\n\n[context budget: {_total} token window, ~{_used} used, "
                    f"~{_remaining} remaining for tool results + answer]")
     # Surface the current session id so the model knows its own identity — useful
     # for provenance, tracing a chunk back to its conversation, and handoffs like
@@ -3729,30 +3212,17 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
                 _budget = min(_budget, int(_mt) // 2)
                 if _budget > 0:
                     _reasoning["max_tokens"] = _budget
-        elif _mandatory and no_reasoning:
-            # A call explicitly asking for NO reasoning (terse self-report):
-            # can't send `enabled:false` (the endpoint 400s), so bound it tightly.
+        elif _mandatory and (no_reasoning or not _reasoning_on):
+            # Mandatory-reasoning model asked to skip thinking — can't send
+            # `enabled:false` (the endpoint 400s), so bound it tightly instead.
             _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
-        elif _mandatory and not _reasoning_on:
-            # Reasoning is disabled globally (reasoning_enabled:0) but the model
-            # mandates it — give it room to think (max_tokens/2, OpenCode's
-            # fitThinkingBudget) instead of the tight 2k floor, so we don't limit
-            # the model's legitimate reasoning on hard turns.
-            _reasoning["max_tokens"] = int(_mt) // 2
     if _transport["param"] == "thinking":
-        # Thinking providers (DeepSeek / Z.AI direct). Respect the computed
-        # _reasoning budget: a mandatory-reasoning model with reasoning OFF (or a
-        # no_reasoning call) gets a BOUNDED thinking budget, and a non-mandatory
-        # model with reasoning OFF gets thinking DISABLED. Sending bare
-        # {"type":"enabled"} with the full max_tokens is what let a mandatory
-        # model runaway-think (37k think tokens on a trivial turn) — the budget
-        # was computed above but dropped on this path.
-        if _reasoning.get("enabled") is False:
-            _th = {"type": "disabled"}
-        else:
-            _th = {"type": "enabled"}
-            if _reasoning.get("max_tokens"):
-                _th["max_tokens"] = _reasoning["max_tokens"]
+        # Thinking providers (DeepSeek / Z.AI direct): forced thinking + preserved
+        # thinking (clear_thinking:false for Z.AI), exactly what OpenCode/Hermes
+        # send. Never `reasoning:{enabled:false}`. Effort (when requested) is sent
+        # as TOP-LEVEL `reasoning_effort`, mapped per provider (GLM-5.2 clamps to
+        # high/max; DeepSeek maps xhigh/ultra -> max).
+        _th = {"type": "enabled"}
         if _transport["clear_thinking"] is not None:
             _th["clear_thinking"] = bool(_transport["clear_thinking"])
         payload["thinking"] = _th
@@ -4431,54 +3901,6 @@ def query_model(messages: list, system: str = None, temperature: float = None,
     return res
 
 
-def query_utility_model(messages: list, timeout: Optional[int] = None,
-                        no_reasoning: bool = False, max_tokens: int = None) -> dict:
-    """Route a background housekeeping call to the configured utility model
-    (utility_model / UTILITY_MODEL), falling back to the chat model when unset.
-
-    Used for strategy lifecycle/abstraction/reusable-strategy — cheap non-reasoning
-    calls that should NOT burn the flagship reasoning model's think tokens. When
-    UTILITY_MODEL is empty (local installs with no 4th model) this is a passthrough
-    to query_model, preserving the old behaviour exactly. Fail-open: a utility-model
-    error also falls back to query_model so housekeeping never hard-fails."""
-    if not UTILITY_MODEL:
-        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
-                           max_tokens=max_tokens)
-    conn = _aux_conn("utility")
-    _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
-    if conn.get("key"):
-        _h["Authorization"] = f"Bearer {conn['key']}"
-    _h.update(conn.get("headers") or {})
-    _payload = {
-        "model": UTILITY_MODEL,
-        "messages": messages,
-        "temperature": 0.0,
-    }
-    if max_tokens and max_tokens > 0:
-        _payload["max_tokens"] = max_tokens
-    try:
-        r = requests.post(f"{conn['base_url']}/chat/completions", headers=_h,
-                          json=_payload, timeout=timeout or 60)
-        r.raise_for_status()
-        data = r.json()
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message", {}) or {}
-        u = data.get("usage") or {}
-        _content = msg.get("content") or ""
-        print(f"  [UTILITY] {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} "
-              f"model={UTILITY_MODEL} content={len(_content)}", flush=True)
-        return {"content": _content,
-                "thinking": msg.get("reasoning_content") or msg.get("reasoning") or "",
-                "tool_calls": msg.get("tool_calls") or [],
-                "eval_count": u.get("completion_tokens", 0),
-                "done_reason": choice.get("finish_reason") or "stop",
-                "provider": "utility"}
-    except Exception as e:
-        print(f"  [UTILITY][ERR] {type(e).__name__}: {e}", flush=True)
-        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
-                           max_tokens=max_tokens)
-
-
 # ─── Belief Evolution ───────────────────────────────────────────
 
 def _check_belief_evolution(new_chunk_id: str, topic_label: str):
@@ -4667,32 +4089,6 @@ def _gc_images(grace_seconds=None) -> int:
     return removed
 
 
-def _insert_chunk_verified(chunk_id: str, insert_fn, retries: int = 3, backoff: float = 0.5) -> bool:
-    """Insert a chunk and verify the row actually landed, retrying on insert-loss.
-
-    ``insert_fn`` performs the write (e.g. ``lambda: _db_write_retry(_insert_chunk)``).
-    After each insert we re-read the row; a "successful" commit that left no row
-    (the insert-loss bug) is retried instead of silently dropped. Returns True once
-    the row is present, False after all retries are exhausted. Exceptions from
-    insert_fn (e.g. a locked/busy error _db_write_retry could not clear) propagate.
-    """
-    for attempt in range(retries + 1):
-        insert_fn()
-        try:
-            row = db.execute(
-                "SELECT chunk_id FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
-        except Exception:
-            row = None
-        if row is not None:
-            print("  [save_chunk:valid] chunk id present", flush=True)
-            return True
-        if attempt < retries:
-            print(f"  [save_chunk:missing-after-insert] {chunk_id} attempt "
-                  f"{attempt + 1}/{retries + 1} - retrying", flush=True)
-            time.sleep(backoff * (attempt + 1))
-    return False
-
-
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
@@ -4704,32 +4100,7 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
     pending_embed=1 and no vector, so it is not lost, but it is also not added
     to FAISS until a background job re-embeds it. This replaces the old silent
     zero-vector behavior (a zero vector stored fine but never matched anything).
-
-    instance_origin semantics (write-provenance audit marker):
-      - The value stamped is the proxy's BOUND PORT as a label ("8080"/"7979").
-        It identifies the *process* that bound that port, not a global instance
-        ID — two proxies on different chunk dirs could in principle both report
-        the same port label (e.g. one falls back to the default env port). For
-        an unambiguous instance, correlate with the DB_PATH/chunk dir of the
-        instance that owns the chunk table being audited.
-      - Shared-DB caveat: when two processes write the SAME chunk table, the
-        stamp is the writing PROCESS, not the owning instance — e.g. in a
-        shared DB, "7979" means the 7979 process wrote the row, even if the
-        table belongs to the 8080 instance's chunk dir.
-      - save_chunk is the only INSERT INTO chunks, but not the only writer of
-        chunk columns: curation.ensure_schema() also ALTERs the chunks table
-        (retracted/derived_from/etc.), and curation applies UPDATEs to it.
-        Those paths preserve instance_origin; note them when auditing.
-      - '' means the row predates this feature (legacy row, origin unknown) —
-        it is NOT the same as "written by an unidentified future path".
-      - INSERT OR REPLACE rewrites the row wholesale: any re-save through this
-        function re-stamps the origin of *this* process over the previous one.
-        save_chunk is the only INSERT INTO chunks in the codebase, so origin
-        never silently resets to ''.
     """
-    # SANITIZER: detect degenerate (mojibake/word-salad) output BEFORE storing.
-    _degenerate, _deg_why = sanitizer.is_degenerate_chunk(messages)
-
     # Source-tiered indexing: only index user/page/tool content, not model hallucinations
     is_indexable = True
     if source and source.startswith("model"):
@@ -4749,59 +4120,16 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             INSERT OR REPLACE INTO chunks
             (chunk_id, topic_label, messages, thinking, strategy, vector, grade,
              consensus, outcome, problem_type, source, cycle, created_at, session_id,
-             indexable, superseded_by, pending_embed, embed_model, dim, trust, instance_origin)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             indexable, superseded_by, pending_embed, embed_model, dim, trust)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
               blob, grade, consensus, outcome, problem_type,
               source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
               1 if is_indexable else 0, "",
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
-              trust, str(PORT)))
+              trust))
 
-    # SANITIZER: soft-remove via curation path (reversible, logged; row preserved).
-    if _degenerate:
-        is_indexable = False
-
-    # Insert with retry + post-insert verification. The chunk row MUST be
-    # visible after commit or the insert silently vanished (the Oct-19
-    # "unknown chunk" bug class: [ARCHIVE] logs SUCCESS while no row ever
-    # lands). See _insert_chunk_verified. Fail LOUDLY below and DO NOT add
-    # the id to the FAISS idmap — a retrieval vector with no DB row behind
-    # it corrupts lookups (dangling idmap) instead of merely losing a log.
-    def _verify_insert():
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
-        try:
-            row = conn.execute("SELECT 1 FROM chunks WHERE chunk_id=?",
-                               (chunk_id,)).fetchone()
-        finally:
-            conn.close()
-        return row is not None
-    # Insert, then VERIFY the row actually landed; on a lost commit (reported
-    # success but the row vanished — WAL/crash) RE-INSERT. Bounded to 3 attempts
-    # so a persistent failure can't loop forever. This closes the insert-loss
-    # durability gap: the old code verified and logged but never retried.
-    _persisted = False
-    _last_err = None
-    for _attempt in range(3):
-        _db_write_retry(_insert_chunk)
-        try:
-            _persisted = _verify_insert()
-        except sqlite3.OperationalError as _ve:
-            _last_err = _ve
-            time.sleep(0.2 * (_attempt + 1))  # transient reader lock — retry
-            continue
-        if _persisted:
-            break
-        print(f"  [save_chunk:missing-after-insert] {chunk_id} retrying "
-              f"({_attempt + 1}/3)", flush=True)
-        time.sleep(0.2 * (_attempt + 1))
-    if not _persisted:
-        _log_error("save_chunk:missing-after-insert",
-                   RuntimeError(
-                       f"chunk {chunk_id} not readable from {DB_PATH} after "
-                       f"commit (source={source}, session={session_id}) — "
-                       f"skipping FAISS add"))
-        return
+    _db_write_retry(_insert_chunk)
     
     # Add to FAISS (only if indexable AND actually embedded) — multi-writer safe
     if is_indexable and vector is not None:
@@ -4877,10 +4205,6 @@ def _clean_content(text: str) -> str:
 
 
 LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
-# Utility model for background housekeeping calls (strategy lifecycle/abstraction/
-# reusable-strategy). Empty = fall back to the chat model — the default, so a
-# local setup with no spare VRAM (and no 4th model) behaves exactly as before.
-UTILITY_MODEL = os.environ.get("UTILITY_MODEL", "")
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -5050,23 +4374,15 @@ def _generate_topic_label(text):
 # topic labels via _generate_topic_label are used everywhere instead.
 
 
-def generate_strategy(messages: list, outcome: str, topic_label: str = "") -> str:
-    """Generate strategy heuristically — no model call needed for simple cases.
-
-    IMPORTANT: never embed the raw failing text here. A strategy that quotes
-    the failure is self-contamination: the quote re-enters context each
-    injection and re-teaches the mistake (the 'fromsean hello' echo loop,
-    Oct-2025). Store only the generalized lesson + topic label."""
+def generate_strategy(messages: list, outcome: str) -> str:
+    """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    tl = f' (topic: "{topic_label}")' if topic_label else ""
+    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[:] if m["role"] in ("user", "assistant"))
+    # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
-        return (f"The previous attempt{tl} was graded FAILURE. Re-verify its "
-                "specific claims against a source before repeating them; do NOT "
-                "repeat unsourced specifics — find a different approach.")
-    return (f"The previous attempt{tl} was TRUNCATED by size limits. "
-            "Content was too large — use chunked/partial reading instead of "
-            "retrieving the whole thing at once.")
+        return f"Do NOT repeat what failed here: {text[:180]}. Instead, try a different approach."
+    return f"TRUNCATED on: {text[:200]}. Content too large — use chunked reading."
 
 # ─── Routing ───────────────────────────────────────────────────
 
@@ -5218,10 +4534,7 @@ def route_query(query: str, top_k: int = 3, with_scores: bool = False, q_vec=Non
     
     scored_combined = [(combined(s, cid), cid) for s, cid, _ in hybrid]
     scored_combined.sort(reverse=True)
-    # With keyword merged alongside semantic, return up to 2*top_k so keyword
-    # hits (score 0.0, sorted last) are not squeezed out by the top_k cap.
-    _cap = top_k * 2 if KEYWORD_FALLBACK else top_k
-    return [cid for _, cid in scored_combined[:_cap]]
+    return [cid for _, cid in scored_combined[:top_k]]
 
 def get_siblings(chunk_id: str) -> List[str]:
     row = db.execute("SELECT topic_label FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -5549,6 +4862,10 @@ _RECENT_QUERY_MAX = 5        # how many recent turns to remember
 _grace_remaining = 0         # remaining turns of hardened injection
 
 
+def _cosine(a, b):
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+
 def _update_topic_state(q_vec):
     """Return True if THIS turn should use hardened (novel-topic) injection.
 
@@ -5798,27 +5115,11 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
             _curationtag += curation.bad_chunk_label(chunk)
         if RECURRENCE_LABELING:
             _curationtag += curation.self_confirm_label(chunk)
-            _curationtag += curation.resolved_label(chunk)
         _retr_note = ""
         if chunk.get("retracted_reason"):
             _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
-        # Chunk time presentation — A/B experiment (MNEME_CHUNK_HEADER_TIME).
-        # full: raw timestamp + terse age; relative: verbose words only
-        # (attention experiment — human phrasing like "2 and a half weeks ago");
-        # absolute: raw timestamp only. created_at always stays in the DB row.
-        _ts = (chunk.get("created_at") or "")[:19]
-        if CHUNK_HEADER_TIME == "relative":
-            _es = _elapsed_secs(chunk.get("created_at") or "")
-            _time_tag = _age_words(_es) if _es >= 0 else ("time unknown" if _ts else "")
-        elif CHUNK_HEADER_TIME == "absolute":
-            _time_tag = _ts
-        else:
-            # default "full" — raw timestamp + terse age
-            _age = _relative_age(chunk.get("created_at") or "")
-            _time_tag = _ts + (f" ({_age})" if _age else "")
-        _time_tag = f"{_time_tag} " if _time_tag else ""
         msg_text = (f"--- [{cid}]{sid_tag} {_gradetag}{_trusttag}{_curationtag}{_retr_note} "
-                    f"[src:{chunk.get('source','?')}] {_time_tag}{topic} ---\n")
+                    f"[src:{chunk.get('source','?')}] {chunk.get('created_at','')[:19]} {topic} ---\n")
         # If next sequential chunk exists, hint it
         _lines = []
         for m in chunk.get("messages", []):
@@ -6209,7 +5510,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     if ptype == "error":
         ptype = "other"  # "error" is an outcome, not a task type
     
-    strategy = generate_strategy(msgs, outcome, topic_label=topic_label) if not MEMORY_ONLY else ""
+    strategy = generate_strategy(msgs, outcome) if not MEMORY_ONLY else ""
     # Don't save a "Do NOT repeat" strategy for an honest-terminal answer
     # (undefined / market price / I don't know / clarification) — those are
     # correct-but-uncitable results, not failures. Saving one would poison
@@ -6227,29 +5528,6 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     # on Monday vs "favorite model is Y" on Friday). Display text unchanged.
     date_prefix = datetime.now(timezone.utc).strftime("[%Y-%m-%d] ")
     vec = embed(date_prefix + user_text)
-
-    # ── Near-duplicate echo guard ──────────────────────────────────────
-    # Reflexive content (acknowledgments, echoes of our own replies) has no
-    # informational half-life — it accretes and eats injection budget. If a
-    # near-identical chunk already exists in this session (cosine >= 0.92),
-    # fold this turn into it as a recurrence note instead of inserting a row.
-    _ECHO_SIM = 0.92
-    try:
-        for _sim, _cid in _cosine_search(vec, 5, _ECHO_SIM):
-            _row = db.execute("SELECT session_id, topic_label, messages FROM chunks WHERE chunk_id=?", (_cid,)).fetchone()
-            if _row and _row[0] == session_id and session_id:
-                # confirm near-identity on text (cheap lexical check) to avoid
-                # false positives on same-topic-but-different content
-                import json as _json
-                _old_txt = " ".join(m.get("content", "") for m in _json.loads(_row[2]))
-                _new_txt = user_text or full_text
-                if len(_old_txt) > 40 and len(_new_txt) > 40 and \
-                        (_old_txt[:300] in _new_txt or _new_txt[:300] in _old_txt):
-                    print(f"  [ECHO-GUARD] near-duplicate of {_cid} (sim={_sim:.3f}) — skipping insert, recurrence marked", flush=True)
-                    return 0  # do NOT save this echo chunk
-                break  # same session but not lexically identical — save normally
-    except Exception as _eg:
-        print(f"  [ECHO-GUARD] skipped ({_eg})", flush=True)
     
     row = db.execute("SELECT COUNT(*) FROM chunks WHERE topic_label=?", (topic_label,)).fetchone()
     seq = (row[0] if row else 0) + 1
@@ -6309,13 +5587,6 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
                     _cited.append(_c)
             if _cited:
                 curation.record_provenance(db, chunk_id, _cited)
-                try:
-                    _poison = curation.flag_if_cites_poisoned(db, chunk_id, _cited)
-                    if _poison:
-                        print(f"  [POISON] {chunk_id} cites flagged/fabricated chunks: "
-                              f"{_poison['poisoned_by']}", flush=True)
-                except Exception as _e:
-                    _log_error("archive:poison", _e)
             # `injected_ids` is threaded from the caller (snapshotted at enqueue
             # time), NOT read from a global — see archive_staging's docstring.
             curation.record_context(db, chunk_id, list(injected_ids or []), MODEL)
@@ -6389,6 +5660,116 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     print(f"  [ARCHIVE] {chunk_id} topic={topic_label[:30]} outcome={outcome} type={ptype} ({len(user_text)} chars)", flush=True)
     return 1
+
+
+    """Split a message list into segments, each starting at a user message.
+
+    Each segment is a list of messages: one user message plus all following
+    assistant/tool messages up to (but not including) the next user message.
+    Leading non-user messages are attached to the first segment.
+    """
+    segments = []
+    current = []
+    for m in msgs:
+        if m["role"] == "user" and current:
+            segments.append(current)
+            current = [m]
+        else:
+            current.append(m)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def compress_tool_output(tool_output: str, tool_name: str = "tool") -> str:
+    """Use the model to extract key information from a large tool output.
+    
+    Returns the original output if compression fails or produces no result.
+    This ensures nothing is silently lost.
+    """
+    if len(tool_output) <= COMPRESS_THRESHOLD:
+        return tool_output
+    
+    prompt = COMPRESS_PROMPT_TEMPLATE.format(
+        tool_name=tool_name,
+        tool_output=tool_output,
+    )
+    
+    print(f"  [COMPRESS] {tool_name} output: {len(tool_output)} chars -> compressing...", flush=True)
+    
+    try:
+        result = query_model(
+            [{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=COMPRESS_MAX_TOK,
+        )
+        compressed = result.get("content", "").strip()
+        
+        if not compressed:
+            print(f"  [COMPRESS][WARN] Empty compression result, keeping original", flush=True)
+            return tool_output
+        
+        print(f"  [COMPRESS] {len(tool_output)} -> {len(compressed)} chars "
+              f"({len(compressed)*100//len(tool_output)}%)", flush=True)
+        
+        # Log compression for debugging
+        try:
+            with open("/tmp/compression_log.txt", "a", encoding="utf-8") as f:
+                f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} ===\n")
+                f.write(f"TOOL: {tool_name}  ORIG: {len(tool_output)}  COMPRESSED: {len(compressed)}\n")
+                f.write(f"--- COMPRESSED ---\n{compressed[:2000]}\n")
+        except Exception as e:
+            print(f"  [COMPRESS][LOG-ERROR] {e}", flush=True)
+        
+        return compressed
+        
+    except Exception as e:
+        print(f"  [COMPRESS][ERROR] {type(e).__name__}: {e} — keeping original", flush=True)
+        return tool_output
+
+
+def classify_tool_output(tool_output: str, tool_name: str = "tool") -> str:
+    """Classify a tool output as TEXT, STRUCTURED, or SHORT.
+
+    Uses a fast model call (temp=0, 256 tokens) with only the first 2000 chars
+    as preview. Returns one of: "TEXT", "STRUCTURED", "SHORT".
+    Falls back to "TEXT" on any error (safe default: compression path).
+    """
+    size = len(tool_output)
+    if size <= COMPRESS_THRESHOLD:
+        return "SHORT"
+
+    preview = tool_output[:2000]
+    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
+        tool_name=tool_name,
+        size=size,
+        threshold=COMPRESS_THRESHOLD,
+        preview=preview,
+    )
+
+    print(f"  [CLASSIFY] {tool_name} output: {size} chars — classifying...", flush=True)
+
+    try:
+        result = query_model(
+            [{"role": "user", "content": prompt}],
+            temperature=CLASSIFY_TEMP,
+            max_tokens=CLASSIFY_MAX_TOK,
+        )
+        raw = result.get("content", "").strip().upper()
+
+        # Extract just the category word
+        for cat in ("TEXT", "STRUCTURED", "SHORT"):
+            if cat in raw:
+                print(f"  [CLASSIFY] {tool_name} → {cat} (raw: {raw[:80]})", flush=True)
+                return cat
+
+        # Fallback: if model returned something unexpected, default to TEXT
+        print(f"  [CLASSIFY][WARN] Unexpected classification '{raw[:80]}', defaulting to TEXT", flush=True)
+        return "TEXT"
+
+    except Exception as e:
+        print(f"  [CLASSIFY][ERROR] {type(e).__name__}: {e} — defaulting to TEXT", flush=True)
+        return "TEXT"
 
 
 def _paragraph_chunks(text: str, target: int) -> list:
@@ -7320,41 +6701,21 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
         f"{task[:MAX_ABSTRACT_INPUT]}\n\n"
         f"Tools you called:\n{_tool_summary(tool_trace)}\n\n"
         f"Final answer: {answer_clean[:MAX_ABSTRACT_INPUT]}\n\n"
-        "Answer two questions:\n"
-        "1) Reusable method — is there a tool/method you used that you'd want "
-        "available again for a FUTURE similar task (a command like pdftotext, a "
-        "library you installed, an approach you figured out)? If yes, output ONE "
-        "imperative rule: 'WHEN doing <specific task>, use <specific tool>'. "
-        "Otherwise output exactly: NO_RULE\n"
-        "2) Built a script — did you WRITE a script/file this turn that is a "
-        "reusable tool (not a one-off)? If yes, output exactly: "
-        "TOOL_SAVE: <snake_case_name> :: <what it does> :: <path to the file>. "
-        "Otherwise output exactly: NO_TOOL"
+        "Is there a tool or method you used here that you would want available "
+        "again for a FUTURE similar task — for example a command like pdftotext, "
+        "a library you installed, or an approach you figured out? If yes, output "
+        "ONE imperative rule: 'WHEN doing <specific task>, use <specific tool>' — "
+        "name the exact command/tool/library AND describe the situation precisely "
+        "enough that it would NOT be applied to a different-but-similar task. If "
+        "nothing here is worth reusing, output exactly: NO"
     )
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
         # task — thinking-on makes Qwen ramble or time out on it.
-        r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
-                                no_reasoning=True)
-        reply = (r.get("content") or "").strip()
-        # 2) Register a built tool first (so it shows up in list_tools), then
-        # fall through to the strategy rule. The TOOL_SAVE marker uses the same
-        # "name :: description :: path" shape as overcome mode.
-        _tm = re.search(r'TOOL_SAVE\s*:\s*([^:]+?)\s*::\s*([^:]+?)\s*::\s*(\S+)',
-                        reply, re.IGNORECASE)
-        if _tm:
-            _tn, _td, _tp = _tm.group(1).strip(), _tm.group(2).strip(), _tm.group(3).strip()
-            if (re.fullmatch(r'[a-z0-9_]+', _tn) and _td and _tp
-                    and os.path.isfile(os.path.expanduser(_tp))):
-                try:
-                    mntools.save_tool(ptype or "other", _tn, _td, _tp)
-                    print(f"  [REUSABLE-TOOL] registered '{_tn}' -> {_tp}", flush=True)
-                except Exception as e:
-                    _log_error("_ask_reusable_strategy:save_tool", e)
-            reply = re.sub(r'TOOL_SAVE\s*:.*', '', reply, flags=re.IGNORECASE).strip()
-        # 1) Reusable method -> strategy
-        rule = reply
-        if not rule or rule.upper().split()[0] in ("NO", "NO_RULE"):
+        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
+                        no_reasoning=True)
+        rule = (r.get("content") or "").strip()
+        if not rule or rule.upper().split()[0] == "NO":
             return
         if len(rule) > 10 and not _is_junk_directive(rule):
             # abstract=False: keep the tool name + the "when" context verbatim —
@@ -7444,31 +6805,12 @@ def _execute_search_tool_calls(search_calls):
         _session = (fn.get("arguments", {}).get("session", "") or "").strip()
         _method = (fn.get("arguments", {}).get("method", "auto") or "auto").strip().lower()
         if _method == "keyword":
-            # PHRASE-FIRST keyword search — the SAME search surface users have on
-            # the memory management page (GET /memory/chunks?keyword=... in
-            # curation.list_chunks): exact substring match of the WHOLE query over
-            # messages AND topic_label, newest first, limited to top_k. A natural
-            # 2-4 word phrase ("my name is") returns only chunks where that exact
-            # phrase appears (~7 chunks), not every chunk containing "name".
-            # Word-split by_match searching is kept ONLY as a fallback for when
-            # the phrase hits nothing (single rare words, partial identifiers).
-            try:
-                _phr = db.execute(
-                    "SELECT chunk_id FROM chunks WHERE (messages LIKE ? OR topic_label LIKE ?) "
-                    "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed' "
-                    "ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                    (f"%{q}%", f"%{q}%", k)).fetchall()
-            except Exception as _e:
-                print(f"  [SEARCH-TOOL] phrase search failed ({_e}) — falling back", flush=True)
-                _phr = []
-            hits = [r[0] for r in _phr]
-            if hits:
-                print(f"  [SEARCH-TOOL] keyword phrase '{q[:80]}' -> {len(hits)} hits", flush=True)
-            else:
-                # by_match=True drops the recency bias: old chunks matching the word
-                # are kept and ranked by match count, so a buried fact is not cut off.
-                hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
-                print(f"  [SEARCH-TOOL] keyword phrase miss — word-split fallback '{q[:80]}' -> {len(hits)} hits", flush=True)
+            # Explicit substring search — the model is hunting a specific word,
+            # name, path, or error string that vector similarity would miss.
+            # by_match=True drops the recency bias: old chunks matching the word
+            # are kept and ranked by match count, so a buried fact is not cut off.
+            hits = [cid for _, cid in _keyword_search(q, k, by_match=True)]
+            print(f"  [SEARCH-TOOL] keyword '{q[:80]}' -> {len(hits)} hits", flush=True)
         elif _method == "semantic":
             # Vector/meaning match only — no keyword fallback.
             hits = route_query(q, top_k=k, session=_session)
@@ -7483,23 +6825,9 @@ def _execute_search_tool_calls(search_calls):
                 if kw:
                     hits = [cid for _, cid in kw]
                     print(f"  [SEARCH-TOOL] FAISS miss — keyword fallback found {len(hits)}", flush=True)
-        # REMOVED chunks must never be surfaced to the model: read_chunk follows
-        # via load_chunk(allow_removed=False) and would fail with "No chunk
-        # with id" — search and read must agree on chunk visibility.
-        if hits:
-            _ph = ','.join('?' * len(hits))
-            _keep = {r[0] for r in db.execute(
-                f"SELECT chunk_id FROM chunks WHERE chunk_id IN ({_ph}) "
-                "AND COALESCE(NULLIF(removed,''),'injectable') != 'removed'", tuple(hits))}
-            hits = [h for h in hits if h in _keep]
         trace.update(hits)
         if hits:
-            _n = len(hits)
-            _hdr = f"Search results from Mneme memory ({_n} matching chunks"
-            if _n >= 30:
-                _hdr += " — that is a lot; refine the query with a more specific term to narrow down"
-            _hdr += " — every returned chunk contains a search term; READ them with read_chunk to find the fact, it is in the content not the label):"
-            lines = [_hdr]
+            lines = ["Search results from Mneme memory:"]
             for h in hits:
                 cid = h  # route_query returns chunk_id strings, not tuples
                 crow = db.execute("SELECT topic_label, grade, messages, source, trust FROM chunks WHERE chunk_id=?", (cid,)).fetchone()
@@ -7512,13 +6840,13 @@ def _execute_search_tool_calls(search_calls):
                     try:
                         msgs = json.loads(msgs_json)
                         for m in msgs[:5]:
-                            c = _query_snippet(m.get("content", ""), q)
+                            c = m.get("content", "")[:MAX_PREVIEW_CHARS]
                             if c:
                                 lines.append(f"  {m['role']}: {c}")
                     except Exception as e:
                         _log_error("search_tool:parse_msgs", e)
                 lines.append("")
-            result_texts.append("\n".join(lines))
+            result_texts.append("\n".join(lines[:30]))  # cap
             print(f"  [SEARCH-TOOL] found {len(hits)} results", flush=True)
         else:
             result_texts.append("No matching memories found.")
@@ -8047,6 +7375,8 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_curation_tools()}
     # save_tool executes server-side too (registry write) — same routing as curation.
     _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_save_tools()}
+    # skill write tools (create/edit/delete/export) — server-side, like curation/save.
+    _readonly_names = _readonly_names | {t["function"]["name"] for t in mntools.enabled_skill_tools()}
     _mcp_names = mntools.mcp_tool_names() - _readonly_names - _native_names  # MCP tools (shadowed on name collision)
     # Harness permission grant: an ungranted tool is not executed server-side even if
     # the model names it anyway (it falls through to passthrough -> step failure).
@@ -8057,10 +7387,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _tool_trace = []  # debug: server-side tool activity surfaced to the client
     _tool_rounds = 0  # server-side tool executions this turn (for the wrap-up nudge)
     _nudged = False   # one-time wrap-up nudge sent
-    _step_back_level = 0  # highest step-back rung fired this turn
-    _new_calls = 0    # first-time (non-repeated) tool calls this turn (bug b)
-    _round_log = []   # per-round {'calls','new','ok'} — wrap-up nudge evidence (bug b)
-    _round_mark = None  # start-of-round snapshots for the round log above
     _search_rounds = 0   # search_memory calls this turn (grind -> clue-seeking signal)
     _search_words = {}   # meaningful query word -> count (keyword repetition signal)
     _clue_nudged = False # one-time "look for clues" nudge sent
@@ -8092,20 +7418,16 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         changed, so re-running bash is legitimate). Any other repeated call counts
         toward the redundancy hard-stop; many distinct bash calls on one resource
         count toward the write-a-script nudge."""
-        nonlocal _redundant, _new_calls
+        nonlocal _redundant
         if nm == "write":
-            # A write invalidates all prior signatures (the script changed, so
-            # re-running bash is legitimate) — and is itself NEW information.
             _seen_sigs.clear()
             _bash_resources.clear()
-            _new_calls += 1
             return
         _sig = f"{nm}:{json.dumps(args, sort_keys=True)}"
         if _sig in _seen_sigs:
             _redundant += 1
         else:
             _seen_sigs.add(_sig)
-            _new_calls += 1
         if nm == "bash":
             _rk = _bash_resource_key(str(args.get("command", "")) if isinstance(args, dict) else "")
             _bash_resources.setdefault(_rk, set()).add(_sig)
@@ -8140,9 +7462,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             # User hit "Stop" between rounds — end the turn immediately.
             result["done_reason"] = "cancelled"
             break
-        # (bug b) snapshot round-start state so this round's outcome can be
-        # recorded in _round_log before the wrap-up nudge decision below.
-        _round_mark = (len(_tool_trace), _new_calls, _blocked_count, _tool_rounds)
         # (The old context-size hard-stop that forced synthesis at 50K chars is
         # gone: the followup is now compacted to the token input budget
         # (_context_input_budget) before every re-query below, so it never bloats
@@ -8267,7 +7586,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                     args = tc["function"].get("arguments", {}) or {}
                     _mark_call(nm, args)
                     _t0 = time.time()
-                    res = mntools.execute_native_tool(nm, args, session_id=session_id)
+                    res = mntools.execute_native_tool(nm, args)
                     if isinstance(res, str) and ("blocked" in res.lower() or "permission denied" in res.lower()):
                         _blocked_count += 1
                     if _run_id:
@@ -8399,53 +7718,10 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # final answer, nudge the model (once) to synthesize. This catches the
         # grinding pattern — many DIFFERENT small tool calls with no narration —
         # which the identical-call redundancy stop above cannot see.
-        # (bug b fix) Record this round in the round log: how many calls ran,
-        # how many were NEW (first-time), and whether the round was clean
-        # (no errored result, no blocked/out-of-scope result).
-        _ROUND_ERR_RE = re.compile(
-            r"Traceback \(most recent call last\)|\[TOOL:FAILURE|exit code [1-9]"
-            r"|out of scope|permission denied|blocked:", re.IGNORECASE)
-        if _round_mark is not None:
-            _m_tr, _m_new, _m_blk, _m_rnd = _round_mark
-            _r_traces = _tool_trace[_m_tr:]
-            _r_errored = any(t.get("blocked") or _ROUND_ERR_RE.search(t.get("result") or "")
-                             for t in _r_traces)
-            _round_log.append({
-                "calls": _tool_rounds - _m_rnd,
-                "new": _new_calls - _m_new,
-                "ok": not (_r_errored or (_blocked_count - _m_blk) > 0),
-            })
-
-        # (bug b fix) The nudge now uses wrap_up_nudge_due: suppressed while
-        # the last round succeeded AND the last 2 rounds each produced NEW
-        # information (still converging); kept for the no-convergence grind
-        # (repeats with nothing new) and for failing/blocked rounds. NOT a
-        # threshold raise — the same threshold crossing can fire later once
-        # convergence stalls.
         if not _nudged and _tool_rounds >= TOOL_ROUND_NUDGE:
-            if wrap_up_nudge_due(_round_log, _tool_rounds, TOOL_ROUND_NUDGE):
-                _nudged = True
-                followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
-                print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
-            else:
-                print(f"  [TOOL-NUDGE] suppressed after {_tool_rounds} tool rounds "
-                      f"({_round_log[-1] if _round_log else {}}) — still converging", flush=True)
-
-        # Step-back ladder (soft, escalating reflection on non-convergence): rung 1
-        # at STEP_BACK_1 (examine+pivot), rung 2 at STEP_BACK_2 (adapt a known
-        # solution), rung 3 at STEP_BACK_3 (concede honestly). Advisory — fires once
-        # per rung; the redundancy stop + MAX_SERVER_ROUNDS remain the hard backstops.
-        _sb = 0
-        if _tool_rounds >= STEP_BACK_3:
-            _sb = 3
-        elif _tool_rounds >= STEP_BACK_2:
-            _sb = 2
-        elif _tool_rounds >= STEP_BACK_1:
-            _sb = 1
-        if _sb and _sb > _step_back_level:
-            _step_back_level = _sb
-            followup.append({"role": "user", "content": _step_back_directive(_sb, _tool_rounds)})
-            print(f"  [STEP-BACK] rung {_sb} after {_tool_rounds} tool rounds", flush=True)
+            _nudged = True
+            followup.append({"role": "user", "content": _synthesize_nudge(_tool_rounds)})
+            print(f"  [TOOL-NUDGE] wrap-up nudge after {_tool_rounds} tool rounds", flush=True)
 
         # Scope-loop nudge: the model keeps hitting files it cannot access (out of
         # scope / permission denied). The redundancy stop can't see this because the
@@ -8590,14 +7866,6 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     _glabel = {"A": "great", "B": "pass", "F": "fail"}.get(grade, grade)
     print(f"  [GRADE] {_glabel}: {grade}", flush=True)
 
-    # Surface a provenance failure to the user. A fabricated citation (F) or an
-    # unverified assertion (D) must be visible in the reply — not just logged —
-    # so the user can act on it. Mechanical: it does not depend on the model
-    # remembering to report its own grade (models do this inconsistently).
-    if grade in ("D", "F") and (result.get("content") or "").strip():
-        _flag = "fabricated or unverifiable citation" if grade == "F" else "unverified claim"
-        result["content"] = (result["content"] or "") + f"\n\n[GRADE: {grade} — {_flag}]"
-
     _answer = result.get("content", "")
     try:
         _trail = _extract_combined_tool_trail(messages, since_last_user=True)
@@ -8735,7 +8003,7 @@ def _abstract_strategy_text(text: str) -> str:
               "If already general, return unchanged.\n\nRULE: " + text.strip()[:600])
     for attempt in range(2):
         try:
-            r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+            r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
             out = (r.get("content") or "").strip()
             if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
                 return out
@@ -8768,25 +8036,15 @@ def _consume_injected_strategies(grade: str):
             for sid in ids:
                 try:
                     row = db.execute(
-                        "SELECT use_count, success_count, verdict FROM strategies WHERE strategy_id=?",
+                        "SELECT use_count, success_count FROM strategies WHERE strategy_id=?",
                         (sid,)
                     ).fetchone()
                     if not row:
                         continue
-                    verdict = (row[2] or "untested").strip() or "untested"
                     uc = (row[0] or 0) + 1
-                    # Credit only what the verdict licenses. 'confounded' and
-                    # 'no_observed_effect' never increment success_count: the
-                    # turn may have gone well for reasons unrelated to this
-                    # strategy, and letting it accrue credit is exactly the
-                    # score-instead-of-contrast bug this field exists to fix.
-                    credit = 1 if (grade in ("A", "B") and
-                                   _VERDICT_WEIGHT.get(verdict, 0.7) >= 1.0) else 0
-                    sc = (row[1] or 0) + credit
+                    sc = (row[1] or 0) + (1 if grade in ("A", "B") else 0)
                     eg = sc / max(uc, 1)
-                    # 'hurt' is a recorded negative contrast — retire at once,
-                    # no need to wait for the statistical threshold.
-                    retired = 1 if (verdict == "hurt" or (eg < 0.25 and uc >= 5)) else 0
+                    retired = 1 if (eg < 0.25 and uc >= 5) else 0
                     db.execute(
                         "UPDATE strategies SET use_count=?, success_count=?, "
                         "effective_grade=?, retired=? WHERE strategy_id=?",
@@ -8862,17 +8120,8 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
-# Verdict weights applied when crediting an outcome to an injected strategy.
-# A confounded strategy was injected but the difference cannot be attributed to
-# it, so it accrues use_count and NOT success_count — otherwise an unrelated
-# good turn inflates its effective_grade and it survives on borrowed credit.
-_VERDICT_WEIGHT = {"helped": 1.0, "untested": 0.7, "no_observed_effect": 0.5,
-                   "confounded": 0.5, "hurt": 0.0}
-
-
 def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk="",
-                   created_by="model", reason="", verdict="untested", contrast_from="", cue="",
-                   confidence="", confidence_why=""):
+                   created_by="model", reason=""):
     import time as _t
     # Phase 4.1: abstract-at-save — store the mechanism, not the example.
     # abstract=False skips the model call for lessons that are already general
@@ -8910,36 +8159,16 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
         ex = db.execute("SELECT strategy_id, version FROM strategies WHERE strategy_id=?", (clean_id,)).fetchone()
         if ex: sid = ex[0]; new_version = ex[1] + 1; parent = sid
     outcome = "FAILURE" if grade in ("D", "F") else "SUCCESS"
-
-    def _preserve_verdict():
-        """INSERT OR REPLACE rewrites the whole row.  A routine auto-save
-        arrives with verdict='untested'; it must not erase a verdict that was
-        earned by a contrast probe on an earlier revision of the same id."""
-        if (verdict or "untested").strip().lower() != "untested":
-            return verdict, contrast_from, cue, confidence, confidence_why
-        try:
-            row = db.execute(
-                "SELECT verdict, contrast_from, cue, confidence, confidence_why "
-                "FROM strategies WHERE strategy_id=?", (sid,)).fetchone()
-        except Exception:
-            return verdict, contrast_from, cue, confidence, confidence_why
-        if not row or (row[0] or "untested") == "untested":
-            return verdict, contrast_from, cue, confidence, confidence_why
-        return (row[0], row[1] or contrast_from, row[2] or cue,
-                row[3] or confidence, row[4] or confidence_why)
-
     def _insert_strategy():
         # Keep the version being replaced (INSERT OR REPLACE would erase it).
         _strat_hist.snapshot(db, sid, "superseded", actor=created_by, reason=reason)
-        v_verdict, v_contrast, v_cue, v_conf, v_conf_why = _preserve_verdict()
         db.execute("INSERT OR REPLACE INTO strategies "
                    "(strategy_id, problem_type, strategy_text, source_chunk, grade, created_at, "
                    "version, parent_id, effective_grade, use_count, success_count, retired, "
-                   "superseded_by, cost, outcome, verdict, contrast_from, cue, confidence, confidence_why) "
-                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   "superseded_by, cost, outcome) "
+                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (sid, problem_type, text.strip(), source_chunk, grade, datetime.now(timezone.utc).isoformat(),
-             new_version, parent, 0.0, 0, 0, 0, "", cost, outcome,
-             v_verdict, v_contrast, v_cue, v_conf, v_conf_why))
+             new_version, parent, 0.0, 0, 0, 0, "", cost, outcome))
         _strat_hist.set_provenance(db, sid, created_by=created_by, derived_from=parent or "")
         _strat_hist.snapshot(db, sid, "saved", actor=created_by, reason=reason)
 
@@ -9060,7 +8289,7 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
                     "- The failure was caused by... (descriptive, not prescriptive)\n\n"
                     "Respond with ONLY the rule, nothing else."
                 )}]
-                r = query_utility_model(q, timeout=CHAT_TIMEOUT)
+                r = query_model(q, timeout=CHAT_TIMEOUT)
                 if r.get("content"):
                     directive = r["content"].strip()[:300]
                     # Strip common prefixes the model might add
@@ -9226,7 +8455,7 @@ def _harness_extras() -> dict:
         "strategies": strategies,
         "search": search,
         "config": lambda _a="": _chatcmd.format_settings(_settings_snapshot()),
-        "models": lambda _a="": f"model={MODEL} backend={MNEME_BACKEND} embed={EMBED_MODEL} label={LABEL_MODEL} utility={UTILITY_MODEL or '(chat)'}",
+        "models": lambda _a="": f"model={MODEL} backend={MNEME_BACKEND} embed={EMBED_MODEL} label={LABEL_MODEL}",
     }
 
 
@@ -9374,59 +8603,17 @@ _FS_READ_MAX = 256 * 1024  # cap on /fs/read previews (text files only)
 def _within(path: str, root: str) -> bool:
     p = os.path.realpath(os.path.expanduser(str(path)))
     r = os.path.realpath(root)
-    if r == os.sep:  # root "/" = full filesystem (YOLO)
-        return True
     return p == r or p.startswith(r + os.sep)
 
 
 def _browser_root() -> str:
-    if YOLO:
-        return "/"
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("browser_root")
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_BROWSER_ROOT", "~"))))
 
 
-def _model_scope():
-    """The model's write boundary as a LIST of resolved roots.
-    filesystem.model_scope may be a single path (string — possibly a single
-    FILE for backward compatibility) or a list of directory roots; both end up
-    in the same resolved list used by every gate (_within_any / fs write paths /
-    mntools.set_scope), so all tools agree on the same root set."""
-    if YOLO:
-        return ["/"]
+def _model_scope() -> str:
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
-    if cfg is None:
-        cfg = os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")
-    mntools_scope = mntools._resolve_model_scope(cfg)
-    if mntools_scope:
-        return mntools_scope
-    return [os.path.realpath(os.path.expanduser(str(os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))]
-
-
-def _within_any(path, roots) -> bool:
-    """_within() generalized to a list of roots."""
-    return any(_within(path, r) for r in roots)
-
-
-def _allowed_roots() -> list:
-    """All roots the model may write to: the browser root + the model scope
-    roots (resolved by _model_scope), which the native bash/write/read_file
-    tools also gate by (mntools shares the same scope via set_scope)."""
-    roots = [_browser_root()]
-    for r in _model_scope():
-        if r not in roots:
-            roots.append(r)
-    return roots
-
-
-def _blocked_msg(action: str, path: str) -> str:
-    """Blocked-path error that names the allowed roots and suggests a concrete
-    alternative inside the first allowed root."""
-    roots = _allowed_roots()
-    alt = os.path.join(roots[0] if roots else "/tmp", "yourfile.txt")
-    return (f"outside allowed roots ({', '.join(roots)}); cannot {action} {path}. "
-            f"Allowed roots: {', '.join(roots)}. "
-            f"Try writing inside one of these instead, e.g. {alt}.")
+    return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
 
 
 def _detect_terminal() -> str:
@@ -9990,20 +9177,13 @@ if FLASK_OK:
         return None
 
     def _instances_root():
-        # Instances live at <shared dir>/instances/<port>/. When the DB is shared
-        # (chunks/mneme.db), DB_DIR names the shared dir and DB_DIR/instances is
-        # the root. A per-instance DB (chunks/instances/<port>/mneme.db) makes
-        # DB_DIR point inside the instance dir, so the instance dir's parent is
-        # the true root instead. Try both; return the first that exists.
-        candidates = [os.path.join(DB_DIR, "instances")]
-        if CHUNK_DIR:
-            parent = os.path.dirname(CHUNK_DIR)
-            if os.path.basename(parent) == "instances":
-                candidates.append(parent)
-        for cand in candidates:
-            if cand and os.path.isdir(cand):
-                return cand
-        return os.path.join(DB_DIR, "instances")
+        # Instances live at <shared DB dir>/instances/<port>/. The shared dir is
+        # DB_DIR (the directory holding the shared mneme.db).
+        root = os.path.join(DB_DIR, "instances")
+        if os.path.isdir(root):
+            return root
+        alt = os.path.join(os.path.dirname(CHUNK_DIR), "instances") if CHUNK_DIR else None
+        return alt if (alt and os.path.isdir(alt)) else root
 
     def _instance_meta(port):
         inst_dir = os.path.join(_instances_root(), str(port))
@@ -10074,7 +9254,7 @@ if FLASK_OK:
         os.environ["MNEME_YOLO"] = "1" if enabled else "0"
         _fs_ = CONFIG_DATA.get("filesystem") or {}
         mntools.set_scope(model_scope=("/" if enabled else _fs_.get("model_scope")),
-                          browser_root=("/" if enabled else _fs_.get("browser_root")))
+                          browser_root=_fs_.get("browser_root"))
         _persist_yolo(enabled)
         print(f"  [YOLO] {'ON' if enabled else 'OFF'} — auth off, full filesystem, all tools", flush=True)
         return _cors_response({"ok": True, "yolo": enabled})
@@ -10158,33 +9338,11 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
-    def _systemd_restart(port):
-        """Restart a proxy under systemd (the canonical supervisor). Returns True
-        if the unit exists and the restart was scheduled; False to fall back to
-        the detached start-script spawn."""
-        unit = f"mneme@{port}.service"
-        try:
-            r = subprocess.run(["systemctl", "cat", unit],
-                               capture_output=True, text=True, timeout=5)
-            if r.returncode != 0:
-                return False
-        except Exception:
-            return False
-        try:
-            subprocess.Popen(["sudo", "-n", "systemctl", "restart", unit],
-                             start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
-        except Exception:
-            return False
-
     @app.route("/overview/start", methods=["POST"])
     def overview_start():
         port = int((request.get_json(force=True) or {}).get("port", 0))
         if not port:
             return _cors_response({"error": "missing port"}, status=400)
-        if _systemd_restart(port):
-            return _cors_response({"ok": True, "port": port, "supervisor": "systemd"})
         inst_dir = os.path.join(_instances_root(), str(port))
         script = None
         for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
@@ -10200,34 +9358,6 @@ if FLASK_OK:
             return _cors_response({"ok": True, "port": port})
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
-
-
-    @app.route("/overview/restart", methods=["POST"])
-    def overview_restart():
-        port = int((request.get_json(force=True) or {}).get("port", 0))
-        if not port:
-            return _cors_response({"error": "missing port"}, status=400)
-        is_self = (port == PORT)
-        def _spawn():
-            if _systemd_restart(port):
-                return
-            inst_dir = os.path.join(_instances_root(), str(port))
-            script = None
-            for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
-                p = os.path.join(inst_dir, cand)
-                if os.path.isfile(p):
-                    script = p
-                    break
-            if not script:
-                return
-            subprocess.Popen(["bash", script], cwd=REPO_ROOT, start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if is_self:
-            # Let this response flush before systemd SIGTERMs this process.
-            threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
-        else:
-            _spawn()
-        return _cors_response({"ok": True, "port": port, "restarting": True})
 
     @app.route("/shutdown", methods=["POST"])
     def shutdown():
@@ -10692,7 +9822,7 @@ if FLASK_OK:
                     "abspath": e.path,
                     "type": "dir" if e.is_dir() else "file",
                     "size": st.st_size,
-                    "in_model_scope": _within_any(e.path, model_scope),
+                    "in_model_scope": _within(e.path, model_scope),
                 })
         except OSError as ex:
             return _cors_response({"error": str(ex), "items": []}, 500)
@@ -10721,7 +9851,7 @@ if FLASK_OK:
             return _cors_response({"error": str(ex)}, 500)
         return _cors_response({
             "path": rel, "size": size,
-            "in_model_scope": _within_any(target, _model_scope()),
+            "in_model_scope": _within(target, _model_scope()),
             "content": content,
         })
 
@@ -10740,14 +9870,13 @@ if FLASK_OK:
         content = data["content"]
         if not isinstance(content, str):
             return _cors_response({"ok": False, "error": "content must be text"}, 400)
-        roots = _allowed_roots()
+        root = _browser_root()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
-            target = os.path.realpath(os.path.join(_browser_root(), path))
-        if not _within_any(target, roots):
-            print(f"  [FS-WRITE BLOCKED] {target}", flush=True)
-            return _cors_response({"ok": False, "error": _blocked_msg("write", target)}, 403)
+            target = os.path.realpath(os.path.join(root, path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -10765,13 +9894,13 @@ if FLASK_OK:
         path = (data.get("path") or "").strip()
         if not path:
             return _cors_response({"ok": False, "error": "missing path"}, 400)
-        roots = _allowed_roots()
+        root = _browser_root()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
-            target = os.path.realpath(os.path.join(_browser_root(), path))
-        if not _within_any(target, roots):
-            return _cors_response({"ok": False, "error": _blocked_msg("mkdir", target)}, 403)
+            target = os.path.realpath(os.path.join(root, path))
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
         try:
             os.makedirs(target, exist_ok=True)
         except OSError as ex:
@@ -10788,13 +9917,12 @@ if FLASK_OK:
         if not path:
             return _cors_response({"ok": False, "error": "missing path"}, 400)
         root = _browser_root()
-        roots = _allowed_roots()
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:
             target = os.path.realpath(os.path.join(root, path))
-        if not _within_any(target, roots):
-            return _cors_response({"ok": False, "error": _blocked_msg("delete", target)}, 403)
+        if not _within(target, root):
+            return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
         if os.path.realpath(target) == os.path.realpath(root):
             return _cors_response({"ok": False, "error": "cannot delete the browser root"}, 400)
         try:
@@ -10824,7 +9952,7 @@ if FLASK_OK:
         if not _within(target, root):
             return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
         CONFIG_DATA.setdefault("filesystem", {})["model_scope"] = target
-        mntools.set_scope(model_scope=_model_scope())
+        mntools.set_scope(model_scope=target)
         persisted = _persist_model_scope(target)
         print(f"  [FS-SCOPE] model_scope -> {target} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "model_scope": target, "persisted": persisted})
@@ -10905,18 +10033,6 @@ if FLASK_OK:
             return _cors_response({"ok": False, "error": f"launch failed: {e}"}, 500)
         print(f"  [FS-TERMINAL] {term} @ {target}", flush=True)
         return _cors_response({"ok": True, "terminal": term, "cwd": target})
-
-    @app.route("/terminal/info", methods=["GET"])
-    def terminal_info():
-        """Config for the in-browser terminal tab: ttyd sidecar host/port + basic
-        auth (user:token). The frontend embeds ttyd at <host>:<port> with these
-        credentials; the path is passed via ttyd's ?arg= (scoped by the wrapper)."""
-        tcfg = (CONFIG_DATA.get("terminal") or {})
-        return _cors_response({
-            "port": tcfg.get("port", 7681),
-            "user": tcfg.get("user", "mneme"),
-            "token": tcfg.get("token", ""),
-        })
 
     # ── Conversations (persistent chat) ──
     def _conv_db():
@@ -11476,11 +10592,6 @@ if FLASK_OK:
             "embed": _h["embed"],
             "chat": _h["chat"],
             "label": _h["label"],
-            "utility": _h["utility"],
-            "credits": _h["credits"],
-            "host": _h["host"],
-            "brownout": _h["brownout"],
-
         })
 
     @app.route("/status", methods=["GET"])
@@ -11525,8 +10636,7 @@ if FLASK_OK:
         for score, chunk_id, method in hybrid:
             row = db.execute(
                 "SELECT topic_label, grade, created_at, outcome, source, session_id, cycle, "
-                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason, "
-                "COALESCE(instance_origin,'') "
+                "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
                 "FROM chunks WHERE chunk_id=?", (chunk_id,)
             ).fetchone()
             if not row:
@@ -11536,7 +10646,7 @@ if FLASK_OK:
             if session and row[5] != session:
                 continue
             entry = {"chunk_id": chunk_id, "topic_label": row[0], "grade": row[1], "created_at": row[2], "outcome": row[3], "source": row[4], "session_id": row[5], "cycle": row[6], "similarity": round(score, 4), "method": method,
-                     "removed": row[7], "removed_reason": row[8] or "", "instance_origin": row[9]}
+                     "removed": row[7], "removed_reason": row[8] or ""}
             chunks.append(entry)
         return _cors_response({"results": chunks[:top_k]})
 
@@ -11641,7 +10751,6 @@ if FLASK_OK:
             "grade": _q("grade"), "trust": _q("trust"), "session": _q("session"),
             "removed": _q("removed"), "since": _q("since"), "until": _q("until"),
             "order": _q("order") or "newest",
-            "chunk_id": _q("chunk_id"),
             "proposed": _flag("proposed"), "self_confirm": _flag("self_confirm"),
             "uncorroborated": _flag("uncorroborated"),
         }
@@ -11943,15 +11052,6 @@ def _reembed_pending(limit: int = 200):
     total number re-embedded."""
     total_fixed = 0
     while True:
-        cs = _credit_status()
-        if cs["low"]:
-            print(f"  [EMBED-RETRY] deferred: credits low "
-                  f"(${cs['balance']:.2f} < floor ${CREDIT_FLOOR:.2f})", flush=True)
-            break
-        if _memory_pressure():
-            print(f"  [EMBED-RETRY] deferred: memory pressure "
-                  f"(ram {_LAST_RAM_PCT['v']}% >= {BROWNOUT_RAM_PCT}%)", flush=True)
-            break
         rows = db.execute(
             "SELECT chunk_id, messages FROM chunks WHERE pending_embed = 1 LIMIT ?",
             (limit,),
@@ -11997,32 +11097,6 @@ def _reembed_pending(limit: int = 200):
     return total_fixed
 
 
-_REEMBED_POLL_SECONDS = int(os.environ.get("MNEME_REEMBED_POLL", "30"))
-_ALLOW_REINDEX = os.environ.get("MNEME_ALLOW_REINDEX", "0") == "1"
-
-
-def _reembed_loop():
-    """Drain the pending-embed backlog immediately, then re-check every
-    MNEME_REEMBED_POLL seconds. Runs in its own daemon thread so chunks that
-    become pending AFTER startup (a non-owner import clearing vectors, or a
-    mid-run embedder outage) still self-heal. Single-threaded by design: this is
-    the ONLY caller of _reembed_pending, so two drains never race (the startup
-    one-shot enqueue was removed after it double-added FAISS vectors)."""
-    while True:
-        try:
-            n = _reembed_pending()
-            if n:
-                print(f"  [EMBED-RETRY] periodic pass re-embedded {n} pending chunk(s)", flush=True)
-        except Exception as e:
-            _log_error("reembed:loop", e)
-        time.sleep(_REEMBED_POLL_SECONDS)
-
-
-def _start_reembed_loop():
-    t = threading.Thread(target=_reembed_loop, name="mneme-reembed", daemon=True)
-    t.start()
-
-
 def _embedding_health_check() -> bool:
     """Startup: verify the embedder returns DIM-dim vectors, and detect any
     stored vector that can't be used with the current embedder — a conflicting
@@ -12042,19 +11116,6 @@ def _embedding_health_check() -> bool:
         ok = False
     else:
         print(f"  [HEALTH] embedder OK: {EMBED_MODEL} dim={probe.shape[0]}", flush=True)
-    if _DB_ALREADY_OWNED:
-        # Non-owner (shared/secondary access to a live DB): skip the destructive
-        # self-heal below. A subprocess importing with a different embed config
-        # must NOT mass-clear the owner's vectors.
-        print("  [HEALTH] shared-memory mode: skipping re-embed self-heal (non-owner)", flush=True)
-        return ok
-    if not _ALLOW_REINDEX:
-        # Owner, but the destructive self-heal is not explicitly enabled. Report
-        # the state but do NOT mass-clear vectors: a config typo or an accidental
-        # embed-model switch would otherwise wipe every embedding and force a
-        # full re-embed. Set MNEME_ALLOW_REINDEX=1 to opt into the self-heal.
-        print("  [HEALTH] re-index self-heal disabled (MNEME_ALLOW_REINDEX not set)", flush=True)
-        return ok
     # 2. Conflicting dim: wrong-length vectors are unusable — mark for re-embed.
     bad = db.execute(
         "UPDATE chunks SET vector=NULL, pending_embed=1 "
@@ -12094,7 +11155,7 @@ def _dump_config():
     """Print the effective resolved config so a missed/typo'd value is visible."""
     print(f"  [CONFIG] file={CONFIG_PATH or '(none — env/defaults)'}", flush=True)
     print(f"  [CONFIG] backend={MNEME_BACKEND} provider={os.environ.get('MNEME_PROVIDER', 'openrouter')}", flush=True)
-    print(f"  [CONFIG] model={MODEL} embed={EMBED_MODEL} label={LABEL_MODEL} utility={UTILITY_MODEL or '(chat)'}", flush=True)
+    print(f"  [CONFIG] model={MODEL} embed={EMBED_MODEL} label={LABEL_MODEL}", flush=True)
     if _backend_is_openai():
         print(f"  [CONFIG] base_url={OR_BASE_URL}", flush=True)
     print(f"  [CONFIG] chunk_dir={CHUNK_DIR} port={PORT} inject_system={INJECT_SYSTEM}", flush=True)
@@ -12117,7 +11178,7 @@ materialize_instructions()
 # not blocked on N sequential embed round-trips (the non-blocking chunk path stores
 # them pending_embed and defers embedding to here). The bg worker queue reuses the
 # check_same_thread=False connection and the faiss file lock, so it is safe.
-_start_reembed_loop()
+_enqueue(_reembed_pending)
 # Calibrate noise baseline AFTER FAISS is loaded, then CLAMP it below the inject
 # floor. _calibrate_noise() embeds random gibberish and measures its similarity
 # to the nearest chunks; that value drifts UP as the corpus grows (more chunks =
@@ -12136,8 +11197,6 @@ print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
       flush=True)
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, _shutdown_signal)
-    signal.signal(signal.SIGINT, _shutdown_signal)
     if FLASK_OK:
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep

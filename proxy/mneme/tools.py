@@ -47,37 +47,8 @@ _BASH_LOG_MAX = int(os.environ.get("MNEME_BASH_LOG_MAX", str(10 * 1024 * 1024)))
 # rest of the filesystem is read-only to it. read_file is additionally limited
 # to BROWSER_ROOT (the user's view). mneme_proxy calls set_scope() after config
 # load / hot-reload; the env vars are the fallback defaults.
-def _resolve_model_scope(v):
-    """Resolve filesystem.model_scope, which may be a single path (string —
-    possibly a single FILE, kept for backward compatibility) or a LIST of
-    directory roots. Returns a deduplicated list of realpaths."""
-    if v is None:
-        v = []
-    if isinstance(v, (str, bytes)):
-        v = [v]
-    roots = []
-    for x in v:
-        if x is None:
-            continue
-        x = str(x).strip()
-        if not x:
-            continue
-        r = os.path.realpath(os.path.expanduser(x))
-        if r and r not in roots:
-            roots.append(r)
-    return roots
-
-
-def _scope_dirs():
-    """The model_scope roots that should exist as directories. A root that is
-    an existing FILE (the legacy single-file scope value) is NOT a dir and must
-    not be makedirs'd."""
-    return [r for r in MODEL_SCOPE if not os.path.isfile(r)]
-
-
-MODEL_SCOPE = _resolve_model_scope(
-    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))
-
+MODEL_SCOPE = os.path.realpath(os.path.expanduser(
+    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
 BROWSER_ROOT = os.path.realpath(os.path.expanduser(
     os.environ.get("MNEME_BROWSER_ROOT", "~")))
 # Harness run workspaces (runs_root/<run_id>/workspace) are also the model's —
@@ -88,11 +59,9 @@ RUNS_ROOT = os.path.realpath(os.path.expanduser(
 
 
 def set_scope(model_scope=None, browser_root=None):
-    """model_scope may be a single path (string) or a list of roots; both are
-    resolved to the same MODEL_SCOPE list used by every native tool gate."""
     global MODEL_SCOPE, BROWSER_ROOT
     if model_scope:
-        MODEL_SCOPE = _resolve_model_scope(model_scope)
+        MODEL_SCOPE = os.path.realpath(os.path.expanduser(str(model_scope)))
     if browser_root:
         BROWSER_ROOT = os.path.realpath(os.path.expanduser(str(browser_root)))
 
@@ -100,22 +69,18 @@ def set_scope(model_scope=None, browser_root=None):
 def _within(path, root):
     p = os.path.realpath(os.path.expanduser(str(path)))
     r = os.path.realpath(str(root))
-    if r == os.sep:  # root "/" = full filesystem (YOLO)
-        return True
     return p == r or p.startswith(r + os.sep)
 
 
 def _writable(path):
-    """True when `path` is inside the model's writable area (tools dir + any of
-    the scope roots; a single-file scope value allows exactly that file)."""
-    return (_within(path, TOOLS_DIR)
-            or any(_within(path, r) for r in MODEL_SCOPE))
+    """True when `path` is inside the model's writable area (tools dir + scope)."""
+    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE))
 
 
 def _writable_roots():
     """Deduplicated list of writable roots (tools dir + scope)."""
     roots = []
-    for r in (TOOLS_DIR, *MODEL_SCOPE):
+    for r in (TOOLS_DIR, MODEL_SCOPE):
         r = os.path.realpath(r)
         if not any(r == x or r.startswith(x + os.sep) for x in roots):
             roots.append(r)
@@ -172,8 +137,8 @@ def reload_config():
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
     TOOLS_DIR = _default_tools_dir()
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
-    MODEL_SCOPE = _resolve_model_scope(
-        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))
+    MODEL_SCOPE = os.path.realpath(os.path.expanduser(
+        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
     BROWSER_ROOT = os.path.realpath(os.path.expanduser(
         os.environ.get("MNEME_BROWSER_ROOT", "~")))
     RUNS_ROOT = os.path.realpath(os.path.expanduser(
@@ -189,14 +154,14 @@ SEARCH_MEMORY_TOOL = {
     "type": "function",
     "function": {
         "name": "search_memory",
-        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. To dig for a fact you don't yet know: search, treat the returned chunks (ids + labels + previews) as clues, then read_chunk() a promising one in full or re-search with an exact term you uncovered. DEEP SEARCH (fallback only, never the first move): when a direct search returns only partial info, read the top 2-3 returned chunks in full, note any mem_... ids they reference ('see also' or 'source' tags), and read_chunk() those referenced chunks — the full fact often lives one hop away. HARD LIMITS: max 3 levels of hops, max 12 chunk reads total per fact; stop the moment the fact is found; if a level yields no new on-topic references, declare the fact absent rather than searching further.",
+        "description": "Search Mneme memory for past conversations, facts, documents, or details. Use when you need more context than the injected memory provides — look up specific topics, API keys, file paths, or conversation details from prior sessions. To dig for a fact you don't yet know: search, treat the returned chunks (ids + labels + previews) as clues, then read_chunk() a promising one in full or re-search with an exact term you uncovered.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What to search for — be specific. For method='keyword', put the exact word/name/path to match."},
                 "top_k": {"type": "integer", "description": "Number of results (default 5)"},
                 "session": {"type": "string", "description": "Optional conversation id — restrict results to chunks from that session only. Leave empty to search all memory."},
-                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact PHRASE search — the same search as the memory management page. Type ONE natural 2-4 word phrase that would appear right next to the fact ('my name is', ' works at', 'allergic to'). It returns only chunks containing that exact phrase. NEVER merge candidate phrases into one query ('my name is call me I am' matches nothing useful) — if one phrase misses, run the next phrase as a separate search."},
+                "method": {"type": "string", "enum": ["auto", "semantic", "keyword"], "description": "auto (default): semantic first, keyword fallback on a miss. semantic: vector/meaning match only. keyword: exact substring match on the query words — use when hunting a specific name, path, or error string."},
             },
             "required": ["query"],
         },
@@ -207,7 +172,7 @@ READ_CHUNK_TOOL = {
     "type": "function",
     "function": {
         "name": "read_chunk",
-        "description": "Read one memory chunk in full by its chunk_id (the id shown in search_memory results). Use to drill into a promising chunk — a label or preview may hint that its full text holds the fact or name you're after. The full text may reference other chunks by id (mem_... in 'see also' or 'source' tags); reading those referenced chunks is how deep search follows the chain.",
+        "description": "Read one memory chunk in full by its chunk_id (the id shown in search_memory results). Use to drill into a promising chunk — a label or preview may hint that its full text holds the fact or name you're after.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -562,7 +527,7 @@ SCHEDULE_JOB_TOOL = {
     "type": "function",
     "function": {
         "name": "schedule_job",
-        "description": "Schedule a job to run later or on a recurring interval (cron-style). Use this when you promise to 'check on this', 'monitor this', 'report back when done', etc. — schedule it instead of leaving a promise in text that won't run after this turn ends. schedule is an interval ('30m', 'every 2h', '45s', '1d') for recurring, or an ISO timestamp ('2026-10-11T18:00:00') for a one-shot. repeat optionally caps the number of runs (default: 1 for one-shot, forever for recurring). REMINDERS: when the user defers a topic ('come back to this later', 'revisit tomorrow', 'pick this up next week'), schedule a REMINDER, not the task — the firing goal must be conversational, e.g. 'Reminder: on <date> the user deferred <topic>. Say: we were discussing <topic> <N days> ago — want to pick it up / refine it now? Do NOT build, execute, or work on it autonomously; await the user. The turns discussing the reminder are saved to memory as chunks carrying timestamps, so the topic stays retriable with temporal context.",
+        "description": "Schedule a job to run later or on a recurring interval (cron-style). Use this when you promise to 'check on this', 'monitor this', 'report back when done', etc. — schedule it instead of leaving a promise in text that won't run after this turn ends. schedule is an interval ('30m', 'every 2h', '45s', '1d') for recurring, or an ISO timestamp ('2026-10-11T18:00:00') for a one-shot. repeat optionally caps the number of runs (default: 1 for one-shot, forever for recurring).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -607,21 +572,6 @@ DELETE_PROXY_TOOL = {
                 "port": {"type": "integer", "description": "The HTTP port of the proxy instance to remove."},
             },
             "required": ["port"],
-        },
-    },
-}
-
-
-RESTART_PROXY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "restart_proxy",
-        "description": "Restart a Mneme proxy by port, using that instance's own start script (a clean stop+start that preserves its config). Omit port — or pass your own port — to restart the proxy you are running in; the restart is scheduled after your current response flushes, so this call returns normally first. Pass another port to restart a different proxy. When you self-restart, a resume sentinel is armed automatically so you get woken with a status prompt after the proxy is back up — you do not need to arm anything yourself. Use this instead of hunting PIDs or killing leftover processes by hand.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "port": {"type": "integer", "description": "HTTP port to restart. Omit to restart the proxy you are running in."},
-            },
         },
     },
 }
@@ -736,6 +686,78 @@ SEARCH_SKILLS_TOOL = {
         },
     },
 }
+
+
+CREATE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_skill",
+        "description": "Create a NEW skill and make it available for auto-injection. Hand-roll one from scratch (name + description + body), or copy an existing external skill in verbatim by passing raw_md (a full SKILL.md document: YAML frontmatter + markdown body). The new skill is immediately available to you and future turns via search/list/inject.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name — lowercase letters, digits, _ . - (e.g. 'summarize-a-meeting'). Required unless raw_md is given."},
+                "description": {"type": "string", "description": "One or two sentences: what the skill does and when to use it. Required unless raw_md is given."},
+                "body": {"type": "string", "description": "The skill's step-by-step instructions (markdown)."},
+                "raw_md": {"type": "string", "description": "A complete SKILL.md document (--- YAML frontmatter --- then markdown body) to import verbatim — use to copy an existing external skill. Overrides name/description/body."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional keywords to help matching."},
+                "requires": {"type": "array", "items": {"type": "string"}, "description": "Optional names of other skills this one depends on."},
+            },
+            "required": [],
+        },
+    },
+}
+
+EDIT_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_skill",
+        "description": "Edit an existing skill — update its description, body, or list fields. Only the fields you pass are changed; everything else is preserved. Bumps the version (history is kept).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill to edit."},
+                "description": {"type": "string", "description": "New description."},
+                "body": {"type": "string", "description": "New body/instructions."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Replace the tags."},
+                "requires": {"type": "array", "items": {"type": "string"}, "description": "Replace the required-skill names."},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+DELETE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_skill",
+        "description": "Delete a skill — remove it from injection (it stops being auto-injected and stops showing in the active list). This is a soft delete: the skill's file and version history are kept, so it can be restored later.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill to delete (deactivate)."},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+EXPORT_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "export_skill",
+        "description": "Export a skill as a complete SKILL.md document (YAML frontmatter + body) so it can be copied, shared, or written to disk/git.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill to export."},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+SKILL_WRITE_TOOLS = (CREATE_SKILL_TOOL, EDIT_SKILL_TOOL, DELETE_SKILL_TOOL, EXPORT_SKILL_TOOL)
 
 
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, MNEME_HEALTH_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL, SEARCH_SKILLS_TOOL)
@@ -868,6 +890,13 @@ def enabled_save_tools():
     return [SAVE_TOOL_TOOL] if _tool_enabled("save_tool") else []
 
 
+def enabled_skill_tools():
+    """The skill write tools (create/edit/delete/export), if the skill registry is bound."""
+    if skills is None:
+        return []  # no skill registry — tools unavailable
+    return [t for t in SKILL_WRITE_TOOLS if _tool_enabled(_tool_name(t))]
+
+
 # ─── Tool assembly ───────────────────────────────────────────────────────
 
 def _tool_name(t):
@@ -887,7 +916,7 @@ def native_exec_names(client_tools):
     out = set()
     if os.environ.get("MNEME_YOLO", "0") == "1":
         out.update({"bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-                    "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy", "restart_proxy"})
+                    "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"})
         return out
     if NATIVE_TOOLS_MODE == "on":
         out.update({"bash", "write"})
@@ -906,8 +935,6 @@ def native_exec_names(client_tools):
         out.add("delete_runs")
     if os.environ.get("MNEME_TOOL_DELETE_PROXY", "1") == "1":
         out.add("delete_proxy")
-    if os.environ.get("MNEME_TOOL_RESTART_PROXY", "1") == "1":
-        out.add("restart_proxy")
     return out
 
 
@@ -931,10 +958,9 @@ def assemble_tools(client_tools):
     _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
-                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL,
-                    "restart_proxy": RESTART_PROXY_TOOL}
+                    "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL}
     for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
-              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy", "restart_proxy"):
+              "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
     for t in (client_tools or []):
@@ -951,6 +977,9 @@ def assemble_tools(client_tools):
     # Registry-write tool (save_tool) — same collision policy. Gated by
     # MNEME_TOOL_SAVE_TOOL (default on); requires a registry db connection.
     for t in enabled_save_tools():
+        add(t)
+    # Skill write tools (create/edit/delete/export) — require the skill registry.
+    for t in enabled_skill_tools():
         add(t)
     return tools
 
@@ -994,20 +1023,16 @@ def _bash_log_tail(limit: int = 4000) -> str:
 
 
 def _exec_bash(command):
-    """Run a shell command, sandboxed with bubblewrap when YOLO is OFF: the
-    filesystem is read-only except for the model's writable roots (TOOLS_DIR +
-    MODEL_SCOPE). With YOLO ON the command runs as a plain subprocess with the
-    proxy's own uid/gid/groups (Hermes-style full access, incl. docker socket
-    group membership). Also falls back to a plain subprocess when bwrap is
-    unavailable.
+    """Run a shell command inside a bubblewrap sandbox: the filesystem is
+    read-only except for the model's writable roots (TOOLS_DIR + MODEL_SCOPE).
+    Falls back to a plain subprocess when bwrap is unavailable.
 
     stdout+stderr are redirected to a persistent log file (not a pipe) so that
     background processes — servers the model starts with `&` — keep writing to a
     place the model can `cat` after this call returns (see ``_bash_log_path``)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
-        for r in _scope_dirs():
-            os.makedirs(r, exist_ok=True)
+        os.makedirs(MODEL_SCOPE, exist_ok=True)
         os.makedirs(RUNS_ROOT, exist_ok=True)
         # A writable pip target inside the sandbox so `pip install <lib>` can
         # succeed despite the read-only root (the default site-packages is
@@ -1015,21 +1040,10 @@ def _exec_bash(command):
         pylibs = os.path.join(TOOLS_DIR, "pylibs")
         os.makedirs(pylibs, exist_ok=True)
         env = dict(os.environ)
-        # Scrub the proxy's own DB/config paths so a subprocess that imports
-        # mneme_proxy can't accidentally open the production DB: the config
-        # loader re-exports storage.db_path as MNEME_DB_PATH (tools.py sees the
-        # runtime os.environ), and a child with a mismatched embed config would
-        # then run the destructive self-heal against the owner's vectors. The
-        # model can re-export any of these explicitly if it genuinely needs a
-        # proxy-aware child process.
-        for _k in ("MNEME_DB_PATH", "MNEME_HARNESS_DB", "MNEME_CONFIG", "MNEME_CHUNK_DIR"):
-            env.pop(_k, None)
         env["PIP_TARGET"] = pylibs
         env["PYTHONPATH"] = pylibs + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         bwrap = shutil.which("bwrap")
-        # YOLO ON = full access: no bwrap sandbox, run as the proxy's own
-        # user with its full group set. YOLO OFF = sandbox (current behavior).
-        if bwrap and os.environ.get("MNEME_YOLO", "0") != "1":
+        if bwrap:
             cmd = [bwrap, "--ro-bind", "/", "/"]
             for r in _writable_roots():
                 cmd += ["--bind", r, r]
@@ -1091,11 +1105,9 @@ def _exec_write(file_path, content):
         full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
         if not _writable(full):
             record_blocked_write(full)
-            roots = _writable_roots()
-            alt = os.path.join(roots[0] if roots else TOOLS_DIR, "yourfile.txt")
-            return (f"[write blocked: {full} is outside the model write scope. "
-                    f"Allowed roots: {', '.join(roots)}. "
-                    f"Write inside one of these instead, e.g. {alt}.]")
+            return (f"[write blocked: {full} is outside the model write scope "
+                    f"({MODEL_SCOPE}, {TOOLS_DIR}). "
+                    f"Write inside that scope instead.]")
         os.makedirs(os.path.dirname(full) or TOOLS_DIR, exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(content)
@@ -1104,7 +1116,7 @@ def _exec_write(file_path, content):
         return f"[write error: {type(e).__name__}: {e}]"
 
 
-def execute_native_tool(name, args, session_id=None):
+def execute_native_tool(name, args):
     """Dispatch a native bash/write/start_run call server-side. Returns a result string."""
     if name == "bash":
         return _exec_bash((args or {}).get("command", ""))
@@ -1130,8 +1142,6 @@ def execute_native_tool(name, args, session_id=None):
         return _exec_delete_runs(args)
     if name == "delete_proxy":
         return _exec_delete_proxy(args)
-    if name == "restart_proxy":
-        return _exec_restart_proxy(args, session_id)
     return f"[unknown native tool: {name}]"
 
 
@@ -1154,24 +1164,17 @@ def _exec_list_tools(query=None, problem_type=None):
     if not rows:
         return "(tool registry is empty — no tools built yet)"
     if query and embed is not None:
-        try:
-            qv = embed(query)
-        except Exception:
-            qv = None
+        qv = embed(query)
         if qv is not None:
-            try:
-                scored = []
-                for name, desc, ptype, path, sc, lu, src in rows:
-                    tv = _tool_vector(name, desc)
-                    if tv is None:
-                        continue
-                    sim = float(np.dot(qv, tv) / (np.linalg.norm(tv) + 1e-8))
-                    scored.append((sim, name, desc, ptype, path, sc, lu, src))
-                scored.sort(key=lambda x: -x[0])
-                rows = [(n, d, p, path, sc, lu, src) for _, n, d, p, path, sc, lu, src in scored[:TOOL_INJECT_MAX]]
-            except Exception:
-                import traceback as _tb, logging
-                logging.warning("list_tools semantic scoring failed, degrading to unfiltered: %s", _tb.format_exc())
+            scored = []
+            for name, desc, ptype, path, sc, lu, src in rows:
+                tv = _tool_vector(name, desc)
+                if tv is None:
+                    continue
+                sim = float(np.dot(qv, tv) / (np.linalg.norm(tv) + 1e-8))
+                scored.append((sim, name, desc, ptype, path, sc, lu, src))
+            scored.sort(key=lambda x: -x[0])
+            rows = [(n, d, p, path, sc, lu, src) for _, n, d, p, path, sc, lu, src in scored[:TOOL_INJECT_MAX]]
     lines = [f"Tool registry ({len(rows)} tool(s)):"]
     for name, desc, ptype, path, sc, lu, src in rows:
         hostbound = " [host-bound: source not stored]" if not src else ""
@@ -1476,6 +1479,78 @@ def _exec_search_skills(args):
     return "\n\n".join(parts)
 
 
+def _exec_create_skill(args):
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    args = args or {}
+    name = (args.get("name") or "").strip().lower()
+    desc = (args.get("description") or "").strip()
+    body = (args.get("body") or "").strip()
+    fields = {k: args[k] for k in ("tools", "requires", "strategies", "verify", "failure_modes", "tags")
+              if args.get(k) is not None}
+    raw = (args.get("raw_md") or "").strip()
+    if raw:
+        try:
+            from mneme.harness.skills import parse_skill_md
+            meta = parse_skill_md(raw) or {}
+        except Exception:
+            meta = {}
+        name = str(meta.get("name") or name or "").strip().lower()
+        desc = str(meta.get("description") or desc or "")
+        body = str(meta.get("body") or body or "")
+        for k in ("tools", "requires", "strategies", "verify", "failure_modes", "tags"):
+            if meta.get(k) is not None and k not in fields:
+                fields[k] = meta[k]
+    if not name or not desc:
+        return ("create_skill needs a name and a description, or a raw_md with both "
+                "(e.g. '---\\nname: x\\ndescription: y\\n---\\n...').")
+    try:
+        sk = skills.upsert(name, desc, body, actor="model", reason="created by model", source="model", **fields)
+        return f"Created skill '{sk['name']}' v{sk['version']}."
+    except Exception as e:
+        return f"[create_skill error: {type(e).__name__}: {e}]"
+
+
+def _exec_edit_skill(args):
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    args = args or {}
+    name = (args.get("name") or "").strip().lower()
+    cur = skills.get(name)
+    if cur is None:
+        return f"No skill named '{name}'. Use search_skills with no query to list existing skills."
+    desc = (args.get("description") or cur.get("description") or "")
+    body = (args.get("body") or cur.get("body") or "")
+    fields = {k: (args[k] if args.get(k) is not None else (cur.get(k) or []))
+              for k in ("tools", "requires", "strategies", "verify", "failure_modes", "tags")}
+    try:
+        sk = skills.upsert(name, desc.strip(), body.strip(), actor="model", reason="edited by model",
+                           source=cur.get("source") or "model", **fields)
+        return f"Edited skill '{sk['name']}' -> v{sk['version']}."
+    except Exception as e:
+        return f"[edit_skill error: {type(e).__name__}: {e}]"
+
+
+def _exec_delete_skill(args):
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    name = ((args or {}).get("name") or "").strip().lower()
+    if skills.get(name) is None:
+        return f"No skill named '{name}'."
+    skills.delete(name)
+    return f"Deleted (deactivated) skill '{name}' — it will no longer be injected or listed as active."
+
+
+def _exec_export_skill(args):
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    name = ((args or {}).get("name") or "").strip().lower()
+    md = skills.export(name)
+    if md is None:
+        return f"No skill named '{name}'."
+    return md
+
+
 def _exec_inspect_run(args):
     """Inspect the harness run ledger (read-only). No run_id -> list recent runs."""
     if ledger is None:
@@ -1645,110 +1720,6 @@ def _exec_delete_proxy(args):
     return delete_proxy(port)
 
 
-def _arm_resume_sentinel(port, session_id):
-    """Arm the restart-resume sentinel (extensions/restart-resume) so the agent
-    wakes up with a status prompt after a SELF-restart, or a harness run is
-    resumed directly. Best-effort: a missing extension or an unrecognized session
-    is a silent no-op — the restart still proceeds, it just won't auto-resume.
-    The restart itself is triggered separately by the caller, so the sentinel
-    baselines 'up' before it lands. Returns True if the sentinel was armed."""
-    try:
-        import sys
-        _repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        script = os.path.join(_repo, "extensions", "restart-resume", "restart_resume.py")
-        if not os.path.isfile(script):
-            return False
-        sid = str(session_id or "")
-        cmd = [sys.executable, script, "arm",
-               "--url", "http://127.0.0.1:%d" % port,
-               "--port", str(port)]
-        if sid.startswith("run:"):
-            run_id = sid[4:]
-            cmd += ["--run-id", run_id,
-                    "--handoff", "Harness run %s was interrupted by the restart." % run_id]
-        elif sid.startswith("conv_"):
-            cmd += ["--conversation-id", sid,
-                    "--handoff",
-                    "Proxy self-restart via restart_proxy tool — verify /health then report status."]
-        else:
-            cmd += ["--handoff",
-                    "Proxy self-restart via restart_proxy tool — verify /health then report status."]
-        subprocess.Popen(cmd, start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
-
-
-def _exec_restart_proxy(args, session_id=None):
-    """Restart a proxy by port (default: self). Spawns the instance's start script detached."""
-    port = (args or {}).get("port")
-    if port is None:
-        port = os.environ.get("MNEME_PORT", "")
-    try:
-        port = int(port)
-    except (TypeError, ValueError):
-        return f"invalid port {port!r} — expected an integer."
-    chunk_dir = os.environ.get("MNEME_CHUNK_DIR", "")
-    inst_root = os.path.dirname(chunk_dir) if chunk_dir else "/home/ubuntu/mneme/chunks/instances"
-    inst_dir = os.path.join(inst_root, str(port))
-    is_self = (str(port) == os.environ.get("MNEME_PORT", ""))
-    import subprocess
-
-    # Preferred: same path the dashboard restart button uses (/overview/restart
-    # -> _systemd_restart). systemd is an independent supervisor, so the restart
-    # cannot be taken down by the death of this (possibly self) proxy process.
-    unit = f"mneme@{port}.service"
-    has_unit = False
-    try:
-        r = subprocess.run(["systemctl", "cat", unit],
-                           capture_output=True, text=True, timeout=5)
-        has_unit = (r.returncode == 0)
-    except Exception:
-        has_unit = False
-
-    def _logf():
-        # keep restart diagnostics observable instead of DEVNULL
-        return open(os.path.join(inst_dir, "restart.log"), "ab")
-
-    import os as _os
-    REPO_ROOT = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
-
-    def _spawn():
-        if has_unit:
-            with _logf() as lf:
-                subprocess.Popen(["sudo", "-n", "systemctl", "restart", unit],
-                                 start_new_session=True,
-                                 stdout=lf, stderr=subprocess.STDOUT)
-            return
-        script = None
-        for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
-            p = os.path.join(inst_dir, cand)
-            if os.path.isfile(p):
-                script = p
-                break
-        if not script:
-            raise FileNotFoundError(f"no start script for port {port} (looked in {inst_dir})")
-        with _logf() as lf:
-            subprocess.Popen(["bash", script], cwd=REPO_ROOT,
-                             start_new_session=True, stdout=lf,
-                             stderr=subprocess.STDOUT)
-
-    if is_self:
-        import threading, time
-        _armed = _arm_resume_sentinel(port, session_id)
-        threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
-    else:
-        _spawn()
-    how = "systemd unit " + unit if has_unit else "start script"
-    msg = "Restart requested for proxy on port %d via %s" % (port, how)
-    if is_self:
-        msg += " (this proxy — restarting in a moment)"
-        msg += (", resume sentinel armed — you will be woken with a status prompt after restart"
-                if _armed else ", resume sentinel NOT armed (extension missing — restart only)")
-    return msg + "."
-
-
 def _exec_resume_run(args):
     """Resume a paused harness run by id."""
     if engine is None:
@@ -1910,6 +1881,14 @@ def execute_readonly_tool(name, args):
         return _exec_remove_memory(args)
     if name == "search_skills":
         return _exec_search_skills(args)
+    if name == "create_skill":
+        return _exec_create_skill(args)
+    if name == "edit_skill":
+        return _exec_edit_skill(args)
+    if name == "delete_skill":
+        return _exec_delete_skill(args)
+    if name == "export_skill":
+        return _exec_export_skill(args)
     if name == "inspect_run":
         return _exec_inspect_run(args)
     if name == "save_tool":
