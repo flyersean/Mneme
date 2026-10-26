@@ -693,18 +693,18 @@ CREATE_SKILL_TOOL = {
     "type": "function",
     "function": {
         "name": "create_skill",
-        "description": "Create a NEW skill and make it available for auto-injection. Hand-roll one from scratch (name + description + body), or copy an existing external skill in verbatim by passing raw_md (a full SKILL.md document: YAML frontmatter + markdown body). The new skill is immediately available to you and future turns via search/list/inject.",
+        "description": "Create a NEW skill and make it available for auto-injection. Hand-roll one from scratch (name + description + body), or copy an existing external skill in verbatim by passing raw_md (a full SKILL.md document: YAML frontmatter + markdown body — its frontmatter supplies name/description if you don't). The new skill is immediately available to you and future turns via search/list/inject.",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Skill name — lowercase letters, digits, _ . - (e.g. 'summarize-a-meeting'). Required unless raw_md is given."},
-                "description": {"type": "string", "description": "One or two sentences: what the skill does and when to use it. Required unless raw_md is given."},
+                "name": {"type": "string", "description": "Skill name — lowercase letters, digits, _ . - (e.g. 'summarize-a-meeting')."},
+                "description": {"type": "string", "description": "One or two sentences: what the skill does and when to use it."},
                 "body": {"type": "string", "description": "The skill's step-by-step instructions (markdown)."},
-                "raw_md": {"type": "string", "description": "A complete SKILL.md document (--- YAML frontmatter --- then markdown body) to import verbatim — use to copy an existing external skill. Overrides name/description/body."},
+                "raw_md": {"type": "string", "description": "Optional: a complete SKILL.md document (--- YAML frontmatter --- then markdown body) to import verbatim — use to copy an existing external skill. Overrides name/description/body."},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional keywords to help matching."},
                 "requires": {"type": "array", "items": {"type": "string"}, "description": "Optional names of other skills this one depends on."},
             },
-            "required": [],
+            "required": ["name", "description"],
         },
     },
 }
