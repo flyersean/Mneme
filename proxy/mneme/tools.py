@@ -682,6 +682,7 @@ SEARCH_SKILLS_TOOL = {
             "properties": {
                 "query": {"type": "string", "description": "What to search for (e.g. 'delegate to another proxy', 'build a swarm'). Omit to list all skills."},
                 "top_k": {"type": "integer", "description": "Number of skills to return (default 5)."},
+                "include_inactive": {"type": "boolean", "description": "Set true to also include soft-deleted (deactivated) skills, so you can find one to restore."},
             },
         },
     },
@@ -757,7 +758,22 @@ EXPORT_SKILL_TOOL = {
     },
 }
 
-SKILL_WRITE_TOOLS = (CREATE_SKILL_TOOL, EDIT_SKILL_TOOL, DELETE_SKILL_TOOL, EXPORT_SKILL_TOOL)
+RESTORE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "restore_skill",
+        "description": "Restore (re-activate) a soft-deleted skill so it is injected and listed again. Its content and version history were kept by delete_skill, so this brings it back as-is.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The soft-deleted skill to re-activate."},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+SKILL_WRITE_TOOLS = (CREATE_SKILL_TOOL, EDIT_SKILL_TOOL, DELETE_SKILL_TOOL, EXPORT_SKILL_TOOL, RESTORE_SKILL_TOOL)
 
 
 READONLY_SERVER_TOOLS = (SEARCH_MEMORY_TOOL, READ_CHUNK_TOOL, LIST_CHUNKS_TOOL, MNEME_HEALTH_TOOL, LIST_TOOLS_TOOL, READ_TOOL_TOOL, READ_IMAGE_TOOL, READ_FILE_TOOL, FETCH_URL_TOOL, WEB_SEARCH_TOOL, INSPECT_RUN_TOOL, SEARCH_SKILLS_TOOL)
@@ -1455,6 +1471,7 @@ def _format_run_detail(d):
 def _exec_search_skills(args):
     """Search the skill library for relevant procedures; return full bodies."""
     q = (args or {}).get("query") or ""
+    include_inactive = bool((args or {}).get("include_inactive"))
     try:
         k = int((args or {}).get("top_k") or 5)
     except (TypeError, ValueError):
@@ -1462,12 +1479,14 @@ def _exec_search_skills(args):
     if skills is None:
         return "Skill library is not available (harness disabled or not initialized)."
     if not q.strip():
-        all_skills = skills.list()
+        all_skills = skills.list(include_inactive=include_inactive)
         if not all_skills:
             return "No skills are loaded."
-        return "\n".join(f"[{s['name']}] {s['description']}" for s in all_skills)
+        return "\n".join(
+            f"[{s['name']}] {s['description']}" + ("" if s.get("active", 1) else "  (INACTIVE/soft-deleted)")
+            for s in all_skills)
     try:
-        picked = skills.select(q, k=k)
+        picked = skills.select(q, k=k, include_inactive=include_inactive)
     except Exception as e:
         return f"[search_skills error: {type(e).__name__}: {e}]"
     if not picked:
@@ -1475,8 +1494,21 @@ def _exec_search_skills(args):
     parts = []
     for s in picked:
         body = (s.get("body") or "").strip()
-        parts.append(f"=== {s['name']} ===\n{s['description']}\n\n{body}")
+        flag = "" if s.get("active", 1) else "  (INACTIVE/soft-deleted)"
+        parts.append(f"=== {s['name']} ==={flag}\n{s['description']}\n\n{body}")
     return "\n\n".join(parts)
+
+
+def _exec_restore_skill(args):
+    if skills is None:
+        return "Skill library is not available (harness disabled or not initialized)."
+    name = ((args or {}).get("name") or "").strip().lower()
+    if skills.get(name) is None:
+        return f"No skill named '{name}' (not even soft-deleted). Use search_skills with include_inactive=true to list soft-deleted skills."
+    if skills.get(name).get("active", 1):
+        return f"Skill '{name}' is already active — nothing to restore."
+    skills.set_active(name, True)
+    return f"Restored skill '{name}' — it is injected and listed again."
 
 
 def _exec_create_skill(args):
@@ -1889,6 +1921,8 @@ def execute_readonly_tool(name, args):
         return _exec_delete_skill(args)
     if name == "export_skill":
         return _exec_export_skill(args)
+    if name == "restore_skill":
+        return _exec_restore_skill(args)
     if name == "inspect_run":
         return _exec_inspect_run(args)
     if name == "save_tool":

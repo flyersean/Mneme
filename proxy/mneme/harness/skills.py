@@ -172,6 +172,14 @@ class SkillRegistry:
         return self.get(name)
 
     def restore_version(self, name: str, version: int, actor: str = "user") -> dict:
+        """Roll the skill's content back to an earlier version and re-activate it.
+
+        NOTE (file-sync precedence): this changes the DB only. For a file-sourced
+        skill (source starts with ``file:``) the on-disk SKILL.md still holds the
+        newer content, so the next reload/restart re-syncs the file over this
+        restore — a restored version is only durable for DB-only skills, or until
+        the file itself is updated. Re-activating (without a version rollback) is
+        the stable restore for file-sourced skills; use set_active(True) for that."""
         snap = next((h["snapshot"] for h in self.history(name) if h["version"] == int(version)), None)
         if snap is None:
             raise LedgerError(f"skill {name} has no version {version}")
@@ -310,9 +318,10 @@ class SkillRegistry:
 
     # ── retrieval + feedback ─────────────────────────────────────────────
 
-    def select(self, query: str, k: int = 2, min_score: float = 0.12) -> List[dict]:
-        """Top-k active skills relevant to `query` (with their `requires` expanded)."""
-        skills = self.list()
+    def select(self, query: str, k: int = 2, min_score: float = 0.12, include_inactive: bool = False) -> List[dict]:
+        """Top-k skills relevant to `query` (with their `requires` expanded).
+        By default only active skills; pass include_inactive=True to search soft-deleted ones too."""
+        skills = self.list(include_inactive=include_inactive)
         if not skills or not (query or "").strip():
             return []
         scored = []
@@ -345,7 +354,7 @@ class SkillRegistry:
         picked, seen = [], set()
         for score, s in scored[:k]:
             for sk in [s] + [self.get(r) for r in s.get("requires", [])]:
-                if sk and sk["name"] not in seen and sk.get("active", 1):
+                if sk and sk["name"] not in seen and (include_inactive or sk.get("active", 1)):
                     seen.add(sk["name"])
                     picked.append({**sk, "score": round(score, 3)})
         return picked

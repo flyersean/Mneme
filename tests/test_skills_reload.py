@@ -131,5 +131,21 @@ class TestSkillsHotReload(unittest.TestCase):
         self.assertEqual(s["active"], 1)  # re-created -> available again
 
 
+    def test_soft_delete_then_restore(self):
+        self.reg.upsert("hello", "Say hello", "v1", actor="test", source="user")
+        self.reg.delete("hello")  # soft
+        self.assertNotIn("hello", [s["name"] for s in self.reg.list()])
+        self.assertIn("hello", [s["name"] for s in self.reg.list(include_inactive=True)])
+        self.reg.set_active("hello", True)  # restore
+        self.assertIn("hello", [s["name"] for s in self.reg.list()])
+
+    def test_select_include_inactive(self):
+        self.reg.upsert("hello", "Say hello", "v1", actor="test", source="user")
+        self.reg.delete("hello")  # soft
+        self.assertEqual(self.reg.select("hello", k=5), [])
+        got = [s["name"] for s in self.reg.select("hello", k=5, include_inactive=True)]
+        self.assertIn("hello", got)
+
+
 if __name__ == "__main__":
     unittest.main()

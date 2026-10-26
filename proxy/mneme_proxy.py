@@ -273,6 +273,7 @@ _CONFIG_ENV_MAP = {
     "tools.edit_skill": "MNEME_TOOL_EDIT_SKILL",
     "tools.delete_skill": "MNEME_TOOL_DELETE_SKILL",
     "tools.export_skill": "MNEME_TOOL_EXPORT_SKILL",
+    "tools.restore_skill": "MNEME_TOOL_RESTORE_SKILL",
     "runtime.hot_reload": "MNEME_HOT_RELOAD",
     "runtime.local_only": "MNEME_LOCAL_ONLY",
     "runtime.yolo": "MNEME_YOLO",
