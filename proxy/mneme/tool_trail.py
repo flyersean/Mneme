@@ -67,6 +67,15 @@ _FAILURE_MARKERS = (
     "no text content found",
 )
 
+# Short, unambiguous success confirmations — so a tool that answers in one line
+# (e.g. the skill CRUD tools: "Created skill 'x' v1.") is classified instead of
+# falling through to "?" in the recent-attempts summary. Checked AFTER failure
+# markers, so "not found" (failure) can never be misread as "found" (success).
+_SUCCESS_MARKERS = (
+    "created skill", "edited skill", "deleted ", "restored skill", "restored ",
+    "saved ", "registered ", "listed ", "exported ",
+)
+
 
 def _classify_tool_outcome(content):
     """Deterministic success/failure heuristic for a tool result string.
@@ -85,6 +94,9 @@ def _classify_tool_outcome(content):
     for m in _FAILURE_MARKERS:
         if m in low:
             return ("FAILURE", m)
+    for m in _SUCCESS_MARKERS:
+        if m in low:
+            return ("SUCCESS", m)
     if len(text) >= 100:
         return ("SUCCESS", "content")
     return None
