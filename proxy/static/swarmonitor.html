@@ -217,6 +217,7 @@
   async function loadDir(path) {
     treeEl.innerHTML = '<div class="empty">Loading…</div>';
     pathInput.value = path || '';
+    pathInput.defaultValue = pathInput.value;
     try {
       const j = await fetchJSON('/fs/list?path=' + encodeURIComponent(path || ''));
       renderTree(j);
@@ -284,6 +285,7 @@
     editorHost.innerHTML = '<textarea id="cmTextarea"></textarea>';
     const ta = document.getElementById('cmTextarea');
     ta.value = tab.content || '';
+    ta.defaultValue = ta.value;
     wrapState = $('wrapChk').checked;
     cmEditor = PlainEditor.create(ta, { tabSize: 2, wrap: wrapState });
     cmEditor.on('change', () => {
@@ -534,6 +536,31 @@
 
   // ── Boot: start at filesystem.browser_root (server default) ────────────
   loadDir('');
+
+  // ── Suppress the browser's "unsaved changes" (dirty-form) dialog ────────
+  // The swarm monitor is a viewer: a refresh must never prompt. Browsers
+  // (notably Safari's "Reload from disk anyway?") warn when a field's current
+  // value differs from its load-time default. We set values programmatically
+  // (path input, editor, checkboxes), so sync each field's default to its
+  // current value — on programmatic writes, on user edits, and on unload —
+  // so the form never reads as "dirty".
+  function _syncDefault(el) {
+    if (!el || !el.tagName) return;
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      el.defaultChecked = el.checked;
+    } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      el.defaultValue = el.value;
+    } else if (el.tagName === 'SELECT') {
+      for (var i = 0; i < el.options.length; i++) el.options[i].defaultSelected = el.options[i].selected;
+    }
+  }
+  function _clearDirty() {
+    document.querySelectorAll('input, textarea, select').forEach(_syncDefault);
+  }
+  document.addEventListener('input', function (e) { _syncDefault(e.target); }, true);
+  document.addEventListener('change', function (e) { _syncDefault(e.target); }, true);
+  window.addEventListener('beforeunload', _clearDirty);
+  window.addEventListener('pagehide', _clearDirty);
 })();
 
 </script>
