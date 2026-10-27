@@ -7351,8 +7351,8 @@ def _ask_reusable_strategy(messages, tool_trace, answer, grade, ptype):
     try:
         # no_reasoning=True: this is a terse yes/no self-report, not a reasoning
         # task — thinking-on makes Qwen ramble or time out on it.
-        r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
-                        no_reasoning=True)
+        r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT,
+                                no_reasoning=True)
         rule = (r.get("content") or "").strip()
         if not rule or rule.upper().split()[0] == "NO":
             return
@@ -8654,7 +8654,7 @@ def _abstract_strategy_text(text: str) -> str:
               "If already general, return unchanged.\n\nRULE: " + text.strip()[:600])
     for attempt in range(2):
         try:
-            r = query_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
+            r = query_utility_model([{"role": "user", "content": prompt}], timeout=CHAT_TIMEOUT)
             out = (r.get("content") or "").strip()
             if out and 8 <= len(out) <= 800 and "cannot" not in out[:20].lower():
                 return out
@@ -8944,7 +8944,7 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
                     "- The failure was caused by... (descriptive, not prescriptive)\n\n"
                     "Respond with ONLY the rule, nothing else."
                 )}]
-                r = query_model(q, timeout=CHAT_TIMEOUT)
+                r = query_utility_model(q, timeout=CHAT_TIMEOUT)
                 if r.get("content"):
                     directive = r["content"].strip()[:300]
                     # Strip common prefixes the model might add
