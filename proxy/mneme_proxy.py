@@ -848,6 +848,8 @@ INJECT_RETRACTED = os.environ.get("MNEME_INJECT_RETRACTED", "1") == "1"
 # labelling was removed — the assert_count/independent_sources counters were
 # never wired to the archive path, so the "single/repeated/corroborated" tiers
 # could not fire; only self-confirmation, which IS populated, remains.)
+CHUNK_HEADER_TIME = (os.environ.get("MNEME_CHUNK_HEADER_TIME", "full").strip().lower() or "full")
+
 RECURRENCE_LABELING = os.environ.get("MNEME_RECURRENCE_LABELING", "1") == "1"
 
 _db_path   = os.environ.get("MNEME_DB_PATH")
@@ -867,6 +869,13 @@ DB_DIR     = os.path.dirname(DB_PATH) or "."
 # catalogue stays in the repo (REPO_ROOT/model_templates.yaml) and is merged
 # beneath user templates (user wins on a name clash).
 USER_TEMPLATES_PATH = os.environ.get("MNEME_TEMPLATES_FILE") or os.path.join(DB_DIR, "templates.yaml")
+
+
+CREDIT_FLOOR = float(os.environ.get("MNEME_CREDIT_FLOOR", "5.0"))  # USD
+
+_CREDIT_CACHE = {"balance": None, "at": 0.0}
+
+_CREDIT_TTL = 60.0
 
 
 def _fetch_credit_balance():
@@ -930,6 +939,11 @@ def _host_status():
     return out
 
 
+BROWNOUT_RAM_PCT = float(os.environ.get("MNEME_BROWNOUT_RAM_PCT", "80.0"))
+
+_LAST_RAM_PCT = {"v": None}
+
+
 def _memory_pressure():
     """True when host RAM is at/above the brownout threshold (auto-shed signal)."""
     hs = _host_status()
@@ -941,6 +955,9 @@ def _brownout_status():
     active = _memory_pressure()
     return {"ram_pct": _LAST_RAM_PCT["v"], "threshold": BROWNOUT_RAM_PCT,
             "active": active}
+
+
+_DB_ALREADY_OWNED = False  # set True by _check_db_owner() when a live other pid owns the DB
 
 
 def _db_owner_marker():
@@ -2366,6 +2383,83 @@ def _checkpoint_and_close():
 def _shutdown_signal(signum=None, frame=None):
     _checkpoint_and_close()
     sys.exit(0)
+
+_SCHEMA_MIGRATIONS = [
+    (1, "base tables + indexes", [
+        "CREATE TABLE IF NOT EXISTS chunks (chunk_id TEXT PRIMARY KEY, "
+        "topic_label TEXT NOT NULL, messages TEXT NOT NULL, "
+        "thinking TEXT DEFAULT '', strategy TEXT DEFAULT '', vector BLOB, "
+        "grade TEXT DEFAULT 'C', consensus REAL DEFAULT 0.0, "
+        "outcome TEXT DEFAULT '', problem_type TEXT DEFAULT 'other', "
+        "source TEXT DEFAULT 'unknown', cycle INTEGER DEFAULT 0, "
+        "created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS strategies (strategy_id TEXT PRIMARY KEY, "
+        "problem_type TEXT NOT NULL, strategy_text TEXT NOT NULL, "
+        "source_chunk TEXT, grade TEXT DEFAULT 'B', created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS preferences (pref_key TEXT PRIMARY KEY, "
+        "pref_value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS capability_edges (problem_type TEXT PRIMARY KEY, "
+        "attempts INTEGER DEFAULT 0, failures INTEGER DEFAULT 0, "
+        "last_grade TEXT DEFAULT '', flagged INTEGER DEFAULT 0, "
+        "updated_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS tools (tool_id TEXT PRIMARY KEY, "
+        "problem_type TEXT NOT NULL, name TEXT NOT NULL, "
+        "description TEXT DEFAULT '', script_path TEXT DEFAULT '', "
+        "tested_at TEXT DEFAULT '', success_count INTEGER DEFAULT 0, "
+        "retired INTEGER DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_topic ON chunks(topic_label)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(problem_type)",
+        "CREATE INDEX IF NOT EXISTS idx_strategies_type ON strategies(problem_type)",
+        "CREATE INDEX IF NOT EXISTS idx_tools_type ON tools(problem_type)",
+    ]),
+    (2, "chunk/strategy/capability/tools columns", [
+        "ALTER TABLE chunks ADD COLUMN source TEXT DEFAULT 'unknown'",
+        "ALTER TABLE chunks ADD COLUMN cycle INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN session_id TEXT DEFAULT 'default'",
+        "ALTER TABLE chunks ADD COLUMN indexable INTEGER DEFAULT 1",
+        "ALTER TABLE strategies ADD COLUMN version INTEGER DEFAULT 1",
+        "ALTER TABLE strategies ADD COLUMN parent_id TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN effective_grade REAL DEFAULT 0.0",
+        "ALTER TABLE strategies ADD COLUMN use_count INTEGER DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN success_count INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN retired INTEGER DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN cost INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN pending_embed INTEGER DEFAULT 0",
+        "ALTER TABLE chunks ADD COLUMN embed_model TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN dim INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN overcome_attempts INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN overcome_success INTEGER DEFAULT 0",
+        "ALTER TABLE capability_edges ADD COLUMN tool_id TEXT DEFAULT ''",
+        "ALTER TABLE tools ADD COLUMN script_source TEXT DEFAULT ''",
+        "ALTER TABLE tools ADD COLUMN embedding BLOB",
+        "ALTER TABLE tools ADD COLUMN last_used_at TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN outcome TEXT DEFAULT 'SUCCESS'",
+        "ALTER TABLE chunks ADD COLUMN trust TEXT DEFAULT ''",
+    ]),
+    (3, "instance_origin column (dev)", [
+        "ALTER TABLE chunks ADD COLUMN instance_origin TEXT DEFAULT ''",
+    ]),
+    # v4: Harness2-inspired strategy provenance. A strategy's verdict is the
+    # observed CONTRAST (helped/hurt/no_observed_effect/confounded), not a
+    # score. 'untested' is the honest default for everything auto-derived:
+    # a grade was observed, but no matched-condition comparison was made.
+    # contrast_from holds "chunk:<failed_id>,chunk:<succeeded_id>" - the same
+    # problem_type pair that justifies the verdict. cue is the situational
+    # pattern the strategy applies to (the retrieval key, not the topic).
+    # NOTE: originally authored as v3; renumbered to v4 because main already
+    # shipped v3 = chunks.instance_origin. Whichever group loses a version
+    # collision never gets its columns created, so v4 is mandatory.
+    (4, "strategy verdict + contrast provenance + cue", [
+        "ALTER TABLE strategies ADD COLUMN verdict TEXT DEFAULT 'untested'",
+        "ALTER TABLE strategies ADD COLUMN contrast_from TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN cue TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN confidence TEXT DEFAULT ''",
+        "ALTER TABLE strategies ADD COLUMN confidence_why TEXT DEFAULT ''",
+    ]),
+]
+
 
 def _schema_groups():
     """Return {version: [statements]} for every schema group, plus the additive
@@ -4748,6 +4842,8 @@ def _clean_content(text: str) -> str:
 
 
 LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
+UTILITY_MODEL = os.environ.get("UTILITY_MODEL", "")
+
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -8675,6 +8771,10 @@ def _check_suspect_grade(grade: str, answer_text: str, messages=None):
             pass
 
 
+_VERDICT_WEIGHT = {"helped": 1.0, "untested": 0.7, "no_observed_effect": 0.5,
+                   "confounded": 0.5, "hurt": 0.0}
+
+
 def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, abstract=True, source_chunk="",
                    created_by="model", reason=""):
     import time as _t
@@ -11735,6 +11835,11 @@ def _reembed_pending(limit: int = 200):
     if total_fixed:
         print(f"  [EMBED-RETRY] re-embedded {total_fixed} pending chunks", flush=True)
     return total_fixed
+
+
+_REEMBED_POLL_SECONDS = int(os.environ.get("MNEME_REEMBED_POLL", "30"))
+
+_ALLOW_REINDEX = os.environ.get("MNEME_ALLOW_REINDEX", "0") == "1"
 
 
 def _reembed_loop():
