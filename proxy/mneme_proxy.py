@@ -166,7 +166,7 @@ def _memory_health():
         },
         "embed": {"model": EMBED_MODEL, **_s("embed")},
         "chat": {"model": MODEL, **_s("chat")},
-        "label": {"model": LABEL_MODEL, **_s("label")},
+        "label": {"model": _label_model(), **_s("label")},
     }
 
 
@@ -4844,6 +4844,15 @@ def _clean_content(text: str) -> str:
 LABEL_MODEL = os.environ.get("LABEL_MODEL", MODEL if LOCAL_ONLY else "meta-llama/llama-3.2-3b-instruct")
 UTILITY_MODEL = os.environ.get("UTILITY_MODEL", "")
 
+
+def _label_model() -> str:
+    """Effective label model name. Empty LABEL_MODEL means "use the chat model"
+    (small-GPU fallback: a chat+embed-only box runs without a separate labeler).
+    The label connection (_aux_conn("label")) already follows the chat backend
+    when label_provider/label_backend are unset, so this just swaps the name."""
+    return LABEL_MODEL or MODEL
+
+
 LABEL_PROMPT = (
     "Output only a 3 to 5 word descriptive label for the following text. "
     "Do not use quotes, punctuation, or conversational filler.\n\n"
@@ -4878,7 +4887,7 @@ def _deferred_intent_label(content: str) -> str:
         if conn["kind"] == "openai":
             r = requests.post(
                 f"{conn['base_url']}/chat/completions", headers=_h,
-                json={"model": LABEL_MODEL, "messages": [{"role": "user", "content": _DEFERRED_INTENT_PROMPT + clean}],
+                json={"model": _label_model(), "messages": [{"role": "user", "content": _DEFERRED_INTENT_PROMPT + clean}],
                       "temperature": 0.0, "max_tokens": 10},
                 timeout=LABEL_TIMEOUT)
             r.raise_for_status()
@@ -4886,7 +4895,7 @@ def _deferred_intent_label(content: str) -> str:
         else:
             r = requests.post(
                 f"{conn['base_url']}/api/generate",
-                json={"model": LABEL_MODEL, "prompt": _DEFERRED_INTENT_PROMPT + clean, "stream": False,
+                json={"model": _label_model(), "prompt": _DEFERRED_INTENT_PROMPT + clean, "stream": False,
                       "options": {"num_predict": 10, "num_ctx": 512, "temperature": 0.0}},
                 timeout=LABEL_TIMEOUT)
             r.raise_for_status()
@@ -4931,7 +4940,7 @@ def _llm_topic_label(text: str) -> str:
                 f"{conn['base_url']}/chat/completions",
                 headers=_h,
                 json={
-                    "model": LABEL_MODEL,
+                    "model": _label_model(),
                     "messages": [{"role": "user", "content": LABEL_PROMPT + clean}],
                     "temperature": 0.0,
                     "max_tokens": 15,
@@ -4944,7 +4953,7 @@ def _llm_topic_label(text: str) -> str:
             r = requests.post(
                 f"{conn['base_url']}/api/generate",
                 json={
-                    "model": LABEL_MODEL,
+                    "model": _label_model(),
                     "prompt": LABEL_PROMPT + clean,
                     "stream": False,
                     "options": {
@@ -11345,7 +11354,7 @@ if FLASK_OK:
             "chat":  {"provider": os.environ.get("MNEME_PROVIDER", "openrouter"),
                       "model": MODEL, **_p("chat")},
             "embed": {"model": EMBED_MODEL, **_p("embed")},
-            "label": {"model": LABEL_MODEL, **_p("label")},
+            "label": {"model": _label_model(), **_p("label")},
         })
 
     # ── Save: force-flush the staging buffer ──
