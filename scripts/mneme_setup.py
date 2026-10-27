@@ -1886,6 +1886,8 @@ def add_instance_noninteractive(params):
         model_template (optional str, default "" — none)
         mcp_servers    (optional list, default [])
         overwrite      (optional bool, default False)
+        db_mode        ("existing" | "new", default "existing" — new = fresh DB)
+        db_path        (optional str — new-DB path; blank = instance-local mneme.db)
     Returns 0 on success, 1 on failure. Prints progress to stdout (streamed to the
     dashboard's terminal pane)."""
     global REPO_ROOT, MEMORY_DIR
@@ -1920,16 +1922,21 @@ def add_instance_noninteractive(params):
     label_model = shared.get("label_model") or OL_DEFAULT_LABEL
     label_backend = shared.get("label_backend") or "ollama"
 
-    print("  Add a proxy instance to the existing DB", flush=True)
-    print(f"  Shared DB:  {db_dir}", flush=True)
+    db_mode = params.get("db_mode", "existing") or "existing"
+    instance_dir = _instance_dir(db_dir, port)
+    if db_mode == "new":
+        _custom = (params.get("db_path") or "").strip()
+        db_path = os.path.abspath(os.path.expanduser(_custom)) if _custom else os.path.join(instance_dir, "mneme.db")
+    else:
+        db_path = os.path.join(db_dir, "mneme.db")
+
+    print("  Add a proxy instance" + (" (fresh DB)" if db_mode == "new" else " to the existing DB"), flush=True)
+    print(f"  Database:   {'NEW ' + db_path if db_mode == 'new' else 'shared ' + db_dir}", flush=True)
     print(f"  Embedder (locked): {embed_model}  ({embed_backend})", flush=True)
     print(f"  Labeler  (locked): {label_model}  ({label_backend})", flush=True)
     print(f"  Chat backend: {chat_backend}", flush=True)
     print(f"  Chat model:   {chat_model}", flush=True)
     print(f"  Port:         {port}", flush=True)
-
-    instance_dir = _instance_dir(db_dir, port)
-    db_path = os.path.join(db_dir, "mneme.db")
 
     if os.path.isfile(os.path.join(instance_dir, "mneme.yaml")) and not params.get("overwrite"):
         print(f"  ✗ an instance already exists on port {port} — not overwriting (pass overwrite:true)", flush=True)

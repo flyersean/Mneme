@@ -145,6 +145,17 @@
       <div class="field">
         <label class="check"><input type="checkbox" id="setupInject" checked /> Inject Mneme's system instructions</label>
       </div>
+      <div class="field">
+        <label>Database</label>
+        <select id="setupDb">
+          <option value="existing">Use existing database (shared)</option>
+          <option value="new">New database</option>
+        </select>
+      </div>
+      <div class="field" id="dbPathField" style="display:none">
+        <label>Database path <span class="opt">(blank = instance-local mneme.db)</span></label>
+        <input type="text" id="setupDbPath" placeholder="/abs/path/mneme.db — or leave blank" />
+      </div>
       <div class="modal-actions">
         <button id="setupCreate">Create proxy</button>
       </div>
@@ -308,8 +319,11 @@ async function createProxy() {
   const api_key = document.getElementById('setupKey').value.trim();
   const inject = document.getElementById('setupInject').checked;
   if (!port || !chat_model) { alert('Port and chat model are required.'); return; }
-  const body = { port, chat_backend, chat_model, inject };
+  const db_mode = document.getElementById('setupDb').value;
+  const db_path = document.getElementById('setupDbPath').value.trim();
+  const body = { port, chat_backend, chat_model, inject, db_mode };
   if (api_key) body.api_key = api_key;
+  if (db_mode === 'new' && db_path) body.db_path = db_path;
   document.getElementById('setupForm').style.display = 'none';
   const term = document.getElementById('setupTerminal');
   term.style.display = '';
@@ -353,6 +367,9 @@ document.getElementById('setupCreate').addEventListener('click', createProxy);
 setupModal.addEventListener('click', (e) => { if (e.target === setupModal) closeSetup(); });
 document.getElementById('setupBackend').addEventListener('change', (e) => {
   document.getElementById('keyField').style.display = (e.target.value === 'openrouter') ? '' : 'none';
+});
+document.getElementById('setupDb').addEventListener('change', (e) => {
+  document.getElementById('dbPathField').style.display = (e.target.value === 'new') ? '' : 'none';
 });
 
 // ── Per-proxy config editor ──
