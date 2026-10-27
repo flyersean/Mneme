@@ -869,6 +869,151 @@ DB_DIR     = os.path.dirname(DB_PATH) or "."
 USER_TEMPLATES_PATH = os.environ.get("MNEME_TEMPLATES_FILE") or os.path.join(DB_DIR, "templates.yaml")
 
 
+def _fetch_credit_balance():
+    """OpenRouter credit balance (USD) or None. Cached ~60s; no LLM tokens."""
+    now = time.time()
+    if _CREDIT_CACHE["balance"] is not None and now - _CREDIT_CACHE["at"] < _CREDIT_TTL:
+        return _CREDIT_CACHE["balance"]
+    _CREDIT_CACHE["at"] = now
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        _CREDIT_CACHE["balance"] = None
+        return None
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/credits",
+                         headers={"Authorization": f"Bearer {key}"}, timeout=5)
+        if r.status_code != 200:
+            _CREDIT_CACHE["balance"] = None
+            return None
+        d = (r.json() or {}).get("data", {})
+        bal = float(d.get("total_credits") or 0) - float(d.get("total_usage") or 0)
+        _CREDIT_CACHE["balance"] = bal
+        return bal
+    except Exception:
+        _CREDIT_CACHE["balance"] = None
+        return None
+
+
+def _credit_status():
+    bal = _fetch_credit_balance()
+    return {"balance": bal, "floor": CREDIT_FLOOR,
+            "low": bal is not None and bal < CREDIT_FLOOR}
+
+
+def _host_status():
+    """Cheap local host snapshot (/proc + statvfs) — no API tokens."""
+    out = {}
+    try:
+        with open("/proc/meminfo") as f:
+            mi = {}
+            for ln in f:
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    mi[k.strip()] = v.strip()
+        total = int(mi.get("MemTotal", "0").split()[0])
+        avail = int(mi.get("MemAvailable", "0").split()[0])
+        out["ram_pct"] = round((total - avail) / total * 100, 1) if total else 0.0
+    except Exception:
+        out["ram_pct"] = None
+    try:
+        st = os.statvfs(CHUNK_DIR or "/")
+        total_b = st.f_blocks * st.f_frsize
+        free_b = st.f_bavail * st.f_frsize
+        out["disk_pct"] = round((total_b - free_b) / total_b * 100, 1) if total_b else 0.0
+    except Exception:
+        out["disk_pct"] = None
+    try:
+        out["load"] = round(os.getloadavg()[0], 2)
+    except Exception:
+        out["load"] = None
+    out["at"] = datetime.now(timezone.utc).isoformat()
+    return out
+
+
+def _memory_pressure():
+    """True when host RAM is at/above the brownout threshold (auto-shed signal)."""
+    hs = _host_status()
+    _LAST_RAM_PCT["v"] = hs.get("ram_pct")
+    return _LAST_RAM_PCT["v"] is not None and _LAST_RAM_PCT["v"] >= BROWNOUT_RAM_PCT
+
+
+def _brownout_status():
+    active = _memory_pressure()
+    return {"ram_pct": _LAST_RAM_PCT["v"], "threshold": BROWNOUT_RAM_PCT,
+            "active": active}
+
+
+def _db_owner_marker():
+    """Write/read a DB ownership marker (<db_path>.owner). Returns (prev, me).
+
+    This is an AUDIT marker, not a lock — shared-memory access is never blocked.
+    It exists to surface the 8083-class footgun (a DIFFERENT checkout/schema
+    opening the same DB) in the log + health, while legitimate multi-proxy
+    shared access keeps working."""
+    marker_path = DB_PATH + ".owner"
+    me = {"pid": os.getpid(), "port": PORT, "checkout": os.getcwd(),
+          "schema": (_SCHEMA_MIGRATIONS[-1][0] if _SCHEMA_MIGRATIONS else 0),
+          "model": MODEL,
+          "at": datetime.now(timezone.utc).isoformat()}
+    prev = None
+    try:
+        if os.path.exists(marker_path):
+            with open(marker_path) as f:
+                prev = json.load(f)
+    except Exception:
+        prev = None
+    # Only claim the marker when no live owner holds it — never clobber a live
+    # owner's marker, or a secondary process would hide the real owner and defeat
+    # the non-owner self-heal guard.
+    prev_live = False
+    if prev and prev.get("pid") and prev.get("pid") != me["pid"]:
+        try:
+            os.kill(prev["pid"], 0)
+            prev_live = True
+        except OSError:
+            prev_live = False
+    if not prev_live:
+        try:
+            with open(marker_path, "w") as f:
+                json.dump(me, f)
+        except Exception:
+            pass
+    return prev, me
+
+
+def _check_db_owner():
+    global _DB_ALREADY_OWNED
+    prev, me = _db_owner_marker()
+    if not prev or prev.get("pid") == me["pid"]:
+        return
+    prev_pid = prev.get("pid")
+    alive = False
+    if prev_pid:
+        try:
+            os.kill(prev_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+    if not alive:
+        return  # stale marker from a dead process — ignore
+    # A LIVE other process already owns this DB — we are shared/secondary access.
+    # Non-owners must NOT run the destructive startup self-heal (mass re-embed on
+    # embed-config mismatch), or a subprocess with a different embed config could
+    # wipe the owner's vectors.
+    _DB_ALREADY_OWNED = True
+    same_schema = prev.get("schema") == me["schema"]
+    same_checkout = prev.get("checkout") == me["checkout"]
+    if same_schema and same_checkout:
+        print(f"[DB-SHARED] {DB_PATH} also open by pid {prev_pid} "
+              f"(port {prev.get('port')}) — shared-memory mode (allowed)", flush=True)
+    else:
+        print(f"[WARN] {DB_PATH} open by a DIFFERENT checkout/schema: "
+              f"pid {prev_pid} (checkout {prev.get('checkout')}, "
+              f"schema v{prev.get('schema')}) vs self "
+              f"(checkout {me['checkout']}, schema v{me['schema']}) — "
+              f"possible 8083-class misconfiguration", flush=True)
+
+
 def _write_user_templates(cat: Dict) -> None:
     """Persist the user template catalogue (overwrites the file)."""
     import yaml
@@ -2192,6 +2337,108 @@ META_PRINCIPLES = [
     "State your confidence honestly: if unsure, say so plainly instead of padding the answer with extra reasoning.",
 ]
 
+def _checkpoint_and_close():
+    """Checkpoint the WAL and close the shared connection cleanly.
+
+    Called from the SIGTERM/SIGINT handler so a graceful stop does not leave an
+    uncommitted transaction in the WAL (which, combined with synchronous=NORMAL,
+    could wedge or drop later commits on restart). Idempotent: safe even if the
+    connection is already closed.
+    """
+    try:
+        with _db_lock:
+            try:
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+    try:
+        db.close()
+    except Exception:
+        pass
+
+
+def _shutdown_signal(signum=None, frame=None):
+    _checkpoint_and_close()
+    sys.exit(0)
+
+def _schema_groups():
+    """Return {version: [statements]} for every schema group, plus the additive
+    ensure_schema groups. Used by _migrate_schema to VERIFY each step landed."""
+    groups = {v: list(stmts) for v, _d, stmts in _SCHEMA_MIGRATIONS}
+    return groups
+
+
+def _stmt_already_satisfied(stmt):
+    """True when an ALTER/CREATE statement's target state already exists.
+
+    Only ALTER TABLE ... ADD COLUMN is introspected (that is what the failed
+    v3 stamp left missing); everything else is treated as not-yet-satisfied so
+    it is re-executed (all CREATEs are IF NOT EXISTS, so that is safe)."""
+    import re as _re
+    m = _re.match(r"\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+['\"]?(\w+)", stmt, _re.I)
+    if not m:
+        return False
+    table, col = m.group(1), m.group(2)
+    try:
+        return any(r[1] == col for r in db.execute(f"PRAGMA table_info({table})"))
+    except Exception:
+        return False
+
+
+def _migrate_schema():
+    """Apply pending schema migrations once, serialized across processes.
+
+    A version is recorded in schema_migrations ONLY when every statement in the
+    group actually reached its intended end state. Historically the loop
+    `continue`d on a duplicate-column error and then stamped the version
+    regardless, which left a DB permanently half-migrated while reporting itself
+    fully migrated (v3 on dev: stamped, zero columns). The repair path below
+    re-attempts any statements that are still missing for an already-stamped
+    version, so a half-applied DB heals on next import.
+    """
+    db.execute("CREATE TABLE IF NOT EXISTS schema_migrations "
+               "(version INTEGER PRIMARY KEY, applied_at TEXT)")
+    db.commit()
+    applied = {r[0] for r in db.execute("SELECT version FROM schema_migrations")}
+    for version, desc, statements in _SCHEMA_MIGRATIONS:
+        already = version in applied
+        db.execute("BEGIN IMMEDIATE")  # take SQLite's cross-process write lock
+        try:
+            pending = []
+            for stmt in statements:
+                if already and _stmt_already_satisfied(stmt):
+                    continue  # verified present — nothing to do
+                try:
+                    db.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    msg = str(e)
+                    if "already exists" in msg or "duplicate column" in msg:
+                        continue  # idempotent — target state reached
+                    raise
+                pending.append(stmt)
+            if already:
+                if pending:
+                    db.commit()
+                    print(f"[MIGRATE] repaired schema v{version} ({len(pending)} "
+                          f"statement(s) re-applied): {desc}", flush=True)
+                else:
+                    db.rollback()
+                continue
+            db.execute("INSERT OR REPLACE INTO schema_migrations (version, applied_at) "
+                       "VALUES (?, datetime('now'))", (version,))
+            db.commit()
+            print(f"[MIGRATE] applied schema v{version}: {desc}", flush=True)
+        except Exception:
+            db.rollback()
+            raise
+
+
 def grade_priority(chunk_id: str) -> int:
     row = db.execute("SELECT grade FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
     return GRADE_PRIORITY.get(row[0], GRADE_PRIORITY[DEFAULT_GRADE]) if row else 1
@@ -2592,6 +2839,34 @@ def _keyword_search(query: str, top_k: int, exclude_ids: set = None, by_match: b
     cap = max(top_k * 4, 100)  # generous cap — the model's read_chunk narrows
     return [(0.0, cid) for cid in ranked[:cap]]
 
+def _query_snippet(content: str, query: str, radius: int = 160) -> str:
+    """Query-biased snippet: return the window around the first query-term match
+    in `content`, so the matched context (not the chunk head) is what the model
+    sees. A fact buried mid-chunk (e.g. "my dogs name is Luke" inside a chunk
+    about retrieval strategy) is still the visible preview for a "dog" query.
+    Falls back to a head-preview when no term matches."""
+    if not content:
+        return ""
+    if not query:
+        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
+    low = content.lower()
+    best = -1
+    for w in query.split():
+        w = w.strip().lower()
+        if len(w) < 2 or w in _KEYWORD_STOPWORDS:
+            continue
+        i = low.find(w)
+        if i >= 0 and (best == -1 or i < best):
+            best = i
+    if best == -1:
+        return content[:radius * 2] + ("..." if len(content) > radius * 2 else "")
+    start = max(0, best - radius)
+    end = min(len(content), best + radius)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(content) else ""
+    return prefix + content[start:end] + suffix
+
+
 def _hybrid_search(query: str, top_k: int, faiss_results: list):
     """Pad FAISS results with keyword matches (only when KEYWORD_FALLBACK is on).
 
@@ -2641,6 +2916,166 @@ def _system_prompt_block() -> str:
         block += "\n\n" + MISSION
     return block + "\n\n"
 
+
+def _relative_age(iso: str) -> str:
+    """Human relative age for an ISO timestamp ('45m ago', '3d ago', '2mo ago').
+    Returns '' if the timestamp is missing/unparseable."""
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - t).total_seconds()
+        if s < 0: s = 0
+        if s < 60: return f"{int(s)}s ago"
+        if s < 3600: return f"{int(s//60)}m ago"
+        if s < 86400: return f"{int(s//3600)}h ago"
+        if s < 86400*45: return f"{int(s//86400)}d ago"
+        return f"{int(s//(86400*30))}mo ago"
+    except Exception:
+        return ""
+
+
+def _age_words(s: float) -> str:
+    """Verbose, human-shaped elapsed time. Granularity decays with age —
+    seconds when fresh, minutes/hours same-day, days then weeks then months —
+    matching how people naturally talk about time, so the model attends to it
+    as information rather than log metadata. s = elapsed seconds (>= 0)."""
+    if s < 120:
+        return f"{int(s)} seconds ago"
+    m = s / 60.0
+    if m < 2:        return "a couple of minutes ago"
+    if m < 55:       return f"{int(round(m))} minutes ago"
+    if m < 80:       return "about an hour ago"
+    if m < 110:      return "about an hour and a half ago"
+    h = s / 3600.0
+    if h < 36:
+        if h < 2:    return "an hour or two ago"
+        if h < 23:   return f"{int(round(h))} hours ago"
+        if h < 30:   return "about a day ago"
+        return "over a day ago"
+    d = s / 86400.0
+    if d < 2:        return "yesterday-ish, about a day and a half ago" if d > 1.3 else "about a day and a half ago"
+    if d < 7:        return f"{int(round(d))} days ago"
+    w = d / 7.0
+    if w < 9:
+        if w < 1.6:  return "about a week ago"
+        if w < 1.8:  return "about a week and a half ago"
+        # half-week precision: 2½ weeks, 3 weeks, 8½ weeks …
+        whole = int(w)
+        frac = w - whole
+        if frac >= 0.4 and frac <= 0.65:
+            unit = "week" if whole == 1 else "weeks"
+            return f"{whole} and a half {unit} ago"
+        return f"{int(round(w))} weeks ago"
+    mo = d / 30.0
+    if mo < 11.7:    return f"{int(round(mo))} months ago"
+    y = d / 365.0
+    if y < 1.35:     return "over a year ago"
+    if y < 2:        return "a year and a half ago" if y >= 1.5 else "over a year ago"
+    return f"{int(round(y))} years ago"
+
+
+def _elapsed_secs(iso: str) -> float:
+    """Elapsed seconds since an ISO timestamp; -1 if missing/unparseable."""
+    try:
+        t = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        s = (datetime.now(timezone.utc) - t).total_seconds()
+        return max(s, 0.0)
+    except Exception:
+        return -1.0
+
+
+def _user_timezone_name() -> str:
+    """Timezone preference if set, else '' (caller falls back to host tz)."""
+    try:
+        row = db.execute("SELECT pref_value FROM preferences WHERE pref_key='timezone'").fetchone()
+        if row and str(row[0]).strip():
+            return str(row[0]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _last_user_activity() -> str:
+    """Time since the user's most recent completed turn, from the conversations
+    DB (MAX(updated_at) over all conversations). At build time this turn's row
+    has NOT been persisted yet (persistence happens after the reply), so this
+    is genuinely 'your previous message', not 'now'."""
+    try:
+        cpath = os.path.join(DB_DIR, "conversations.db")
+        if not os.path.exists(cpath):
+            return ""
+        conn = sqlite3.connect(cpath, timeout=3)
+        try:
+            r = conn.execute("SELECT MAX(updated_at) FROM conversations").fetchone()
+        finally:
+            conn.close()
+        if r and r[0]:
+            return _relative_age(r[0])
+    except Exception:
+        pass
+    return ""
+
+
+def _time_header() -> str:
+    """TIME line: calendar date, UTC time, user's local time (timezone
+    preference, host-tz fallback), and human-time since their last message.
+    Separated from the [HOST:] machine-status line so the model gets natural
+    temporal grounding every turn."""
+    now_u = datetime.now(timezone.utc)
+    tzname = _user_timezone_name()
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            local = now_u.astimezone(ZoneInfo(tzname))
+            local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local ({tzname})"
+        except Exception:
+            local_s = f"local unknown (bad 'timezone' pref: {tzname})"
+    else:
+        local = now_u.astimezone()  # host timezone
+        local_s = f"{local.strftime('%a %Y-%m-%d %H:%M')} local (host tz - set 'timezone' preference for the user's real local time)"
+    last = _last_user_activity()
+    last_s = f" | your previous message: {last}" if last else ""
+    return f"\n[TIME: {now_u.strftime('%a %Y-%m-%d %H:%M UTC')} | {local_s}{last_s}]"
+
+
+
+def _missed_reminders() -> str:
+    """Catch-up-on-login for deferred-topic reminders. The scheduler fires a
+    reminder's run whether or not the user is around, and a one-shot then
+    disables itself (record_run in harness/jobs.py) — output goes to the run
+    ledger, never into the user's chat. This delivers it instead: the first
+    context build after the fire injects the (possibly missed) reminder text,
+    then stamps jobs.notified_at so it surfaces exactly once."""
+    try:
+        hpath = os.path.join(DB_DIR, "harness.db")
+        if not os.path.exists(hpath):
+            return ""
+        conn = sqlite3.connect(hpath, timeout=3)
+        try:
+            try:
+                conn.execute("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
+                conn.commit()
+            except Exception:
+                pass  # column already exists
+            rows = conn.execute(
+                "SELECT job_id, goal, updated_at FROM jobs "
+                "WHERE goal LIKE 'Reminder:%' AND runs_count >= 1 "
+                "AND notified_at IS NULL "
+                "AND updated_at >= datetime('now', '-30 days') "
+                "ORDER BY updated_at ASC LIMIT 3").fetchall()
+            now_s = datetime.now(timezone.utc).isoformat()
+            for jid, _g, _u in rows:
+                conn.execute("UPDATE jobs SET notified_at=? WHERE job_id=?", (now_s, jid))
+            conn.commit()
+        finally:
+            conn.close()
+        if not rows:
+            return ""
+        lines = ["- " + g + " [fired " + str(u)[:16].replace("T", " ") + " UTC]" for jid, g, u in rows]
+        return ("\n[MISSED REMINDERS — these fired while you were away. "
+                "Bring the topic up naturally in your reply (e.g. \"we were going to …\"); "
+                "do NOT execute or build anything:]\n" + "\n".join(lines))
+    except Exception:
+        return ""
 
 def _finalize_context(ctx: str, session_id: str = "default") -> str:
     """Append the context-budget line. The system prompt is no longer prepended
@@ -3937,6 +4372,54 @@ def query_model(messages: list, system: str = None, temperature: float = None,
 
 # ─── Belief Evolution ───────────────────────────────────────────
 
+def query_utility_model(messages: list, timeout: Optional[int] = None,
+                        no_reasoning: bool = False, max_tokens: int = None) -> dict:
+    """Route a background housekeeping call to the configured utility model
+    (utility_model / UTILITY_MODEL), falling back to the chat model when unset.
+
+    Used for strategy lifecycle/abstraction/reusable-strategy — cheap non-reasoning
+    calls that should NOT burn the flagship reasoning model's think tokens. When
+    UTILITY_MODEL is empty (local installs with no 4th model) this is a passthrough
+    to query_model, preserving the old behaviour exactly. Fail-open: a utility-model
+    error also falls back to query_model so housekeeping never hard-fails."""
+    if not UTILITY_MODEL:
+        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
+                           max_tokens=max_tokens)
+    conn = _aux_conn("utility")
+    _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+    if conn.get("key"):
+        _h["Authorization"] = f"Bearer {conn['key']}"
+    _h.update(conn.get("headers") or {})
+    _payload = {
+        "model": UTILITY_MODEL,
+        "messages": messages,
+        "temperature": 0.0,
+    }
+    if max_tokens and max_tokens > 0:
+        _payload["max_tokens"] = max_tokens
+    try:
+        r = requests.post(f"{conn['base_url']}/chat/completions", headers=_h,
+                          json=_payload, timeout=timeout or 60)
+        r.raise_for_status()
+        data = r.json()
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message", {}) or {}
+        u = data.get("usage") or {}
+        _content = msg.get("content") or ""
+        print(f"  [UTILITY] {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} "
+              f"model={UTILITY_MODEL} content={len(_content)}", flush=True)
+        return {"content": _content,
+                "thinking": msg.get("reasoning_content") or msg.get("reasoning") or "",
+                "tool_calls": msg.get("tool_calls") or [],
+                "eval_count": u.get("completion_tokens", 0),
+                "done_reason": choice.get("finish_reason") or "stop",
+                "provider": "utility"}
+    except Exception as e:
+        print(f"  [UTILITY][ERR] {type(e).__name__}: {e}", flush=True)
+        return query_model(messages, timeout=timeout, no_reasoning=no_reasoning,
+                           max_tokens=max_tokens)
+
+
 def _check_belief_evolution(new_chunk_id: str, topic_label: str):
     """Async: ask 35B if new chunk updates/contradicts older chunks on same topic.
     Marks superseded chunks in DB to prevent conflicting context injection."""
@@ -4121,6 +4604,32 @@ def _gc_images(grace_seconds=None) -> int:
     if removed:
         print(f"  [GC-IMAGES] removed {removed} unreferenced image file(s)", flush=True)
     return removed
+
+
+def _insert_chunk_verified(chunk_id: str, insert_fn, retries: int = 3, backoff: float = 0.5) -> bool:
+    """Insert a chunk and verify the row actually landed, retrying on insert-loss.
+
+    ``insert_fn`` performs the write (e.g. ``lambda: _db_write_retry(_insert_chunk)``).
+    After each insert we re-read the row; a "successful" commit that left no row
+    (the insert-loss bug) is retried instead of silently dropped. Returns True once
+    the row is present, False after all retries are exhausted. Exceptions from
+    insert_fn (e.g. a locked/busy error _db_write_retry could not clear) propagate.
+    """
+    for attempt in range(retries + 1):
+        insert_fn()
+        try:
+            row = db.execute(
+                "SELECT chunk_id FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
+        except Exception:
+            row = None
+        if row is not None:
+            print("  [save_chunk:valid] chunk id present", flush=True)
+            return True
+        if attempt < retries:
+            print(f"  [save_chunk:missing-after-insert] {chunk_id} attempt "
+                  f"{attempt + 1}/{retries + 1} - retrying", flush=True)
+            time.sleep(backoff * (attempt + 1))
+    return False
 
 
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
@@ -8662,6 +9171,32 @@ def _model_scope() -> str:
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
 
 
+def _within_any(path, roots) -> bool:
+    """_within() generalized to a list of roots."""
+    return any(_within(path, r) for r in roots)
+
+
+def _allowed_roots() -> list:
+    """All roots the model may write to: the browser root + the model scope
+    roots (resolved by _model_scope), which the native bash/write/read_file
+    tools also gate by (mntools shares the same scope via set_scope)."""
+    roots = [_browser_root()]
+    for r in _model_scope():
+        if r not in roots:
+            roots.append(r)
+    return roots
+
+
+def _blocked_msg(action: str, path: str) -> str:
+    """Blocked-path error that names the allowed roots and suggests a concrete
+    alternative inside the first allowed root."""
+    roots = _allowed_roots()
+    alt = os.path.join(roots[0] if roots else "/tmp", "yourfile.txt")
+    return (f"outside allowed roots ({', '.join(roots)}); cannot {action} {path}. "
+            f"Allowed roots: {', '.join(roots)}. "
+            f"Try writing inside one of these instead, e.g. {alt}.")
+
+
 def _detect_terminal() -> str:
     """Pick a terminal emulator available on this host, honoring a user override
     in `filesystem.terminal`. The shell starts in the terminal's own cwd, so we
@@ -9384,6 +9919,26 @@ if FLASK_OK:
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
 
+    def _systemd_restart(port):
+        """Restart a proxy under systemd (the canonical supervisor). Returns True
+        if the unit exists and the restart was scheduled; False to fall back to
+        the detached start-script spawn."""
+        unit = f"mneme@{port}.service"
+        try:
+            r = subprocess.run(["systemctl", "cat", unit],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                return False
+        except Exception:
+            return False
+        try:
+            subprocess.Popen(["sudo", "-n", "systemctl", "restart", unit],
+                             start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
     @app.route("/overview/start", methods=["POST"])
     def overview_start():
         port = int((request.get_json(force=True) or {}).get("port", 0))
@@ -9404,6 +9959,33 @@ if FLASK_OK:
             return _cors_response({"ok": True, "port": port})
         except Exception as e:
             return _cors_response({"ok": False, "error": str(e)}, status=500)
+
+    @app.route("/overview/restart", methods=["POST"])
+    def overview_restart():
+        port = int((request.get_json(force=True) or {}).get("port", 0))
+        if not port:
+            return _cors_response({"error": "missing port"}, status=400)
+        is_self = (port == PORT)
+        def _spawn():
+            if _systemd_restart(port):
+                return
+            inst_dir = os.path.join(_instances_root(), str(port))
+            script = None
+            for cand in ("start_proxy.sh", f"start_proxy_{port}.sh"):
+                p = os.path.join(inst_dir, cand)
+                if os.path.isfile(p):
+                    script = p
+                    break
+            if not script:
+                return
+            subprocess.Popen(["bash", script], cwd=REPO_ROOT, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if is_self:
+            # Let this response flush before systemd SIGTERMs this process.
+            threading.Thread(target=lambda: (time.sleep(0.6), _spawn()), daemon=True).start()
+        else:
+            _spawn()
+        return _cors_response({"ok": True, "port": port, "restarting": True})
 
     @app.route("/shutdown", methods=["POST"])
     def shutdown():
@@ -10081,6 +10663,18 @@ if FLASK_OK:
         return _cors_response({"ok": True, "terminal": term, "cwd": target})
 
     # ── Conversations (persistent chat) ──
+    @app.route("/terminal/info", methods=["GET"])
+    def terminal_info():
+        """Config for the in-browser terminal tab: ttyd sidecar host/port + basic
+        auth (user:token). The frontend embeds ttyd at <host>:<port> with these
+        credentials; the path is passed via ttyd's ?arg= (scoped by the wrapper)."""
+        tcfg = (CONFIG_DATA.get("terminal") or {})
+        return _cors_response({
+            "port": tcfg.get("port", 7681),
+            "user": tcfg.get("user", "mneme"),
+            "token": tcfg.get("token", ""),
+        })
+
     def _conv_db():
         os.makedirs(DB_DIR, exist_ok=True)
         conn = sqlite3.connect(os.path.join(DB_DIR, "conversations.db"))
@@ -11141,6 +11735,28 @@ def _reembed_pending(limit: int = 200):
     if total_fixed:
         print(f"  [EMBED-RETRY] re-embedded {total_fixed} pending chunks", flush=True)
     return total_fixed
+
+
+def _reembed_loop():
+    """Drain the pending-embed backlog immediately, then re-check every
+    MNEME_REEMBED_POLL seconds. Runs in its own daemon thread so chunks that
+    become pending AFTER startup (a non-owner import clearing vectors, or a
+    mid-run embedder outage) still self-heal. Single-threaded by design: this is
+    the ONLY caller of _reembed_pending, so two drains never race (the startup
+    one-shot enqueue was removed after it double-added FAISS vectors)."""
+    while True:
+        try:
+            n = _reembed_pending()
+            if n:
+                print(f"  [EMBED-RETRY] periodic pass re-embedded {n} pending chunk(s)", flush=True)
+        except Exception as e:
+            _log_error("reembed:loop", e)
+        time.sleep(_REEMBED_POLL_SECONDS)
+
+
+def _start_reembed_loop():
+    t = threading.Thread(target=_reembed_loop, name="mneme-reembed", daemon=True)
+    t.start()
 
 
 def _embedding_health_check() -> bool:
