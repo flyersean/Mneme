@@ -321,6 +321,25 @@ mcp_servers:
   # - name: my-tool
   #   url: http://localhost:9001/mcp
 
+# Decision layer — typed yes/no judging (harness verification, plan approval, step
+# confirmation, goal-alignment, tool-safety). Two engines:
+#   * jev — a dedicated classifier model on OpenRouter's Decisions API. Does NOT
+#           generate text; returns calibrated probabilities (~150ms, output free).
+#           Default model typesafe/jev-1.13; other decision models become available
+#           by just changing `model:` (same API — no code change).
+#   * llm — prompt a *generative* model (chat / label / utility / explicit) for a
+#           yes/no + confidence, mapped to the same probability. Use when you want a
+#           judge without the Decisions API, or want a DIFFERENT model judging (set
+#           llm: utility or an explicit name for an independent second opinion).
+# Fallback when the engine is unavailable: `fallback: chat` degrades to the chat
+# model as judge; `fallback: skip` fails open (accept). Both fail open if even the
+# fallback is unavailable. local_only disables the jev engine (skips to fallback).
+decision:
+  engine: jev            # jev | llm
+  model: typesafe/jev-1.13   # engine=jev: the decision model (any OpenRouter decision model)
+  llm: ""                # engine=llm: "" = chat, "label" | "utility" | explicit model name
+  fallback: chat         # when primary is unavailable: chat | skip
+
 # Agent harness — durable runs (goal → tasks → steps) that survive restarts.
 # Each step is one normal Mneme turn (memory + tools + grading); the harness keeps
 # the state, checkpoints after every step, and enforces per-run budgets.

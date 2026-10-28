@@ -299,6 +299,10 @@ _CONFIG_ENV_MAP = {
     "label_provider": "LABEL_PROVIDER",
     "utility_model": "UTILITY_MODEL",
     "utility_provider": "UTILITY_PROVIDER",
+    "decision.engine": "MNEME_DECISION_ENGINE",
+    "decision.model": "MNEME_DECISION_MODEL",
+    "decision.llm": "MNEME_DECISION_LLM",
+    "decision.fallback": "MNEME_DECISION_FALLBACK",
     # Backend transports — pin a role to "openai" or "ollama" when it differs
     # from the chat backend (e.g. chat hosted, embedder on local Ollama).
     "embed_backend": "MNEME_EMBED_BACKEND",
@@ -9084,26 +9088,89 @@ HARNESS = None
 SKILLS = None  # skills registry, surfaced to the chat path (set in _init_harness)
 
 
-from mneme.decisions import decide, noul, noul_prob, ACCEPT_AT, REJECT_AT
+from mneme.decisions import (decide, noul, noul_prob, ACCEPT_AT, REJECT_AT,
+                             DECISION_ENGINE, DECISION_LLM, DECISION_FALLBACK, llm_decide)
+
+
+def _decision_llm_call(spec: str):
+    """callable(messages)->str for the LLM judge. spec: ''/'chat' -> chat model,
+    'utility' -> utility model, 'label' -> label model, else explicit model name."""
+    spec = (spec or "").strip().lower()
+    if spec in ("", "chat"):
+        def _f(messages):
+            r = query_model(messages, no_reasoning=True, max_tokens=64)
+            return (r or {}).get("content", "")
+        return _f
+    if spec == "utility":
+        def _f(messages):
+            r = query_utility_model(messages, no_reasoning=True, max_tokens=64)
+            return (r or {}).get("content", "")
+        return _f
+    model = _label_model() if spec == "label" else spec
+    def _f(messages):
+        return _query_named_llm(model, messages)
+    return _f
+
+
+def _query_named_llm(model: str, messages: list, timeout: int = 60) -> str:
+    """One-off chat-completions call to a named model (LLM judge for label/explicit)."""
+    conn = _aux_conn("label")
+    _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+    if conn.get("key"):
+        _h["Authorization"] = f"Bearer {conn['key']}"
+    _h.update(conn.get("headers") or {})
+    payload = {"model": model, "messages": messages, "temperature": 0.0, "max_tokens": 64}
+    r = requests.post(f"{conn['base_url']}/chat/completions", headers=_h,
+                      json=payload, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    msg = ((data.get("choices") or [{}])[0].get("message") or {})
+    return msg.get("content") or ""
+
+
+def _llm_judge(state, name, question, llm_spec):
+    try:
+        call = _decision_llm_call(llm_spec)
+        r = llm_decide(state, {name: question}, call)
+        return noul_prob(r, name)
+    except Exception:
+        return None
+
+
+def _decision_prob(state, name, question, timeout=10):
+    """Return (label, probability) from the configured engine, applying the fallback
+    chain: primary engine -> chat model -> (None, None) to fail open."""
+    if DECISION_ENGINE == "llm":
+        p = _llm_judge(state, name, question, DECISION_LLM)
+        if p is not None:
+            return ("llm", p)
+    else:
+        if not LOCAL_ONLY:
+            try:
+                r = decide(state, {name: question}, timeout=timeout)
+                return ("jev", noul_prob(r, name))
+            except Exception:
+                pass
+    if DECISION_FALLBACK == "chat":
+        p = _llm_judge(state, name, question, "")
+        if p is not None:
+            return ("chat-fallback", p)
+    return (None, None)
 
 
 def _jev_noul_verdict(state: dict, name: str, question: dict, timeout: int = 10):
-    """Ask Jev a single noul question and turn the calibrated probability into a
-    (bool, why) verdict. Rejects only when Jev is CONFIDENT the answer is no
-    (below REJECT_AT); borderline answers are accepted (fail-open) with the
-    confidence recorded so the ledger stays visible."""
-    if LOCAL_ONLY:
-        return True, "local-only — accepting (classifier disabled)"
-    try:
-        r = decide(state, {name: question}, timeout=timeout)
-        p = noul_prob(r, name)
-    except Exception as e:
-        return True, f"jev unavailable ({type(e).__name__}) — accepting"
+    """Ask the configured decision engine (jev classifier or llm judge) for a noul
+    verdict and turn the calibrated probability into a (bool, why) verdict. Rejects
+    only when the judge is CONFIDENT no (below REJECT_AT); borderline answers are
+    accepted (fail-open). On engine failure, falls back per decision.fallback."""
+    label, p = _decision_prob(state, name, question, timeout)
+    if label is None:
+        return True, "decision unavailable — accepting (fail-open)"
     if p < REJECT_AT:
-        return False, f"jev {name}={p:.2f} — rejected (confident no)"
+        return False, f"decision[{label}] {name}={p:.2f} — rejected (confident no)"
     if p < ACCEPT_AT:
-        return True, f"jev {name}={p:.2f} — borderline, accepted"
-    return True, f"jev {name}={p:.2f} — accepted"
+        return True, f"decision[{label}] {name}={p:.2f} — borderline, accepted"
+    return True, f"decision[{label}] {name}={p:.2f} — accepted"
 
 
 def _harness_judge(criteria: str, output: str, evidence: str = "", failed: str = ""):
@@ -9155,16 +9222,12 @@ def _harness_goal_aligned(state: dict):
              "The step's work and tool calls directly serve the stated goal.",
              "The model has drifted into a sub-task or loop that does not serve the goal "
              "(e.g. endlessly searching for a deleted file it should just recreate).")
-    if LOCAL_ONLY:
-        return True, "local-only — assuming aligned (classifier disabled)"
-    try:
-        r = decide(state, {"goal_aligned": q}, timeout=10)
-        p = noul_prob(r, "goal_aligned")
-    except Exception as e:
-        return True, f"jev unavailable ({type(e).__name__}) — assuming aligned"
+    label, p = _decision_prob(state, "goal_aligned", q, timeout=10)
+    if label is None:
+        return True, "decision unavailable — assuming aligned (fail-open)"
     if p < ACCEPT_AT:
-        return False, f"jev goal_aligned={p:.2f} — possible drift"
-    return True, f"jev goal_aligned={p:.2f} — aligned"
+        return False, f"decision[{label}] goal_aligned={p:.2f} — possible drift"
+    return True, f"decision[{label}] goal_aligned={p:.2f} — aligned"
 
 
 def _harness_extras() -> dict:
