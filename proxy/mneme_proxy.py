@@ -210,6 +210,7 @@ _CONFIG_ENV_MAP = {
     "storage.chunk_dir": "MNEME_CHUNK_DIR",
     "storage.port": "MNEME_PORT",
     "storage.db_path": "MNEME_DB_PATH",
+    "storage.proxy_index": "MNEME_PROXY_INDEX",
     "storage.inject_system": "MNEME_INJECT_SYSTEM",
     "storage.memory_only": "MNEME_MEMORY_ONLY",
     "storage.staging_turns": "MNEME_STAGING_TURNS",
