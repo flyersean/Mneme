@@ -1,6 +1,6 @@
 # Harness work — handoff / resume point
 
-Branch: `agent-harness`. Last updated 2026-09-28.
+Branch: `main`. Last updated 2026-09-28.
 The overall spec and per-requirement status is in **`SPEC.md`**. Decisions are in
 `adr/0001`–`0004`, and the starting audit is `00-architecture-audit.md`.
 

@@ -23,12 +23,12 @@ disagree, trust the linked spec — it is the source of truth.
 
 ## 0. Git workflow — WHICH BRANCH ARE YOU ON? (read this first)
 
-This repo has **two active branches** and **two primary proxy instances**:
+This repo has **one branch** (`main`) and **two primary proxy instances**:
 
 | branch | instance | port | checkout          | role                          |
 |--------|----------|------|-------------------|-------------------------------|
 | main   | A        | 8080 | ~/mneme/repo      | STABLE — your own runtime     |
-| dev    | B        | 7979 | ~/mneme/test-repo | DEVELOPMENT — code under test |
+| main   | B        | 7979 | ~/mneme/test-repo | DEVELOPMENT — code under test |
 
 Before you edit anything, check `git branch --show-current` AND check what's
 actually running. The two checkouts are separate clones that both push/pull to
@@ -37,26 +37,25 @@ GitHub (origin) as the shared remote.
 ### You are instance A — the coder (port 8080, branch main)
 
 - **You RUN from `main` in `~/mneme/repo`. That code is stable. NEVER edit it.**
-- All development happens on **`dev`** in **`~/mneme/test-repo`** — that is the only
-  code you edit. Commit and push **only** to `dev`:
+- All development happens in **`~/mneme/test-repo`** (the staging checkout, on
+  `main`) — that is the only code you edit. Commit there:
 
       cd ~/mneme/test-repo
-      git pull --rebase origin dev                 # sync first
+      git pull --rebase origin main                # sync first
       # ... edit ...
       git add -A && git commit -m "feat: what and why"   # conventional commits
-      git push origin dev
 
 - **Test on B (port 7979)**: restart it after committing, then verify:
 
       cd ~/mneme/chunks/instances/7979 && nohup setsid bash start_proxy.sh > boot.log 2>&1 < /dev/null &
 
 - **NEVER** touch `main` (never check it out to edit, never push to it) and NEVER
-  restart or kill port 8080 — that is your own process. Promotion (`dev` -> `main`)
+  restart or kill port 8080 — that is your own process. Promotion (staging -> `main`)
   is Sean's action; do it only when he explicitly asks.
 - If B breaks, that's the design working: A is still alive. Fix `dev`, restart B,
   carry on.
 
-### You are instance B — the test (port 7979, branch dev)
+### You are instance B — the test (port 7979)
 
 - You run the **development** code. Report what breaks; do not touch main or 8080.
 - B runs `runtime.local_only: true` — no classifier, chat model does the labeling.
@@ -203,11 +202,11 @@ experiments/            scratch / support
   `strategies.user.yaml`) holds learned directives, each linked to the source chunk that
   produced it (no hand taxonomy). Retrieval is two-floor; a D/F turn distills one
   imperative; **capability-edge tracking** routes a flagged `compute`/`live_data` task into
-  **overcome mode** (build/reuse a tool or answer honestly). On by default on `agent-harness`,
-  off on `memory-only` — the switch is `storage.memory_only`. Detail:
+  **overcome mode** (build/reuse a tool or answer honestly). On by default — the switch
+  is `storage.memory_only`. Detail:
   `docs/strategy-retrieval-spec.md`.
 
-- **Harness (agent-harness).** Durable planned runs: goal → plan → worker steps → verify,
+- **Harness.** Durable planned runs: goal → plan → worker steps → verify,
   recorded to a ledger (`harness.db`) with `runs_dir` artifacts, plus resume/leases/reflect/
   auto-apply and a scheduler. Core code in `proxy/mneme/harness/`, driven over the `/runs`
   HTTP API, UI at `/runs/ui`. Detail: `docs/harness/SPEC.md` + `docs/harness/USER_GUIDE.md`.

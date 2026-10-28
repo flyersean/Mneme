@@ -1,6 +1,6 @@
-# Phase 0 — Architecture audit (agent-harness transformation)
+# Phase 0 — Architecture audit (agent harness)
 
-Audited from the code on branch `agent-harness` (commit `c4574fa`), not from the docs.
+Audited from the code (commit `c4574fa`), not from the docs.
 Line numbers refer to `proxy/mneme_proxy.py` at that commit unless stated otherwise.
 
 ---

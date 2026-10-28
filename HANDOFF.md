@@ -70,15 +70,14 @@ PATH note: if your shell says "command not found", run them by full path
 
 ## Branch policy (keep it boring)
 
-- There is **one main branch** — currently `main` (the earlier `self-code`
-  branch was merged into it; treat `main` as the one true line of code).
+- There is **one branch** — `main`. It is the one true line of code.
 - If a separate change is ever needed, make a **short-lived branch**, test it,
   and **merge it back quickly** — then delete it.
 - Never leave experiment branches hanging around; they cause exactly the
   "which version is real?" confusion this setup avoids.
-- (Two older branches, `agent-harness` and `memory-only`, are kept only for
-  possible future reference — do not build on them without a deliberate
-  decision.)
+- (All older experiment branches — `agent-harness`, `memory-only`, `self-code`,
+  `dev`, `unified_mneme`, `classification-models` — have been deleted. Only
+  `main` remains.)
 
 ---
 

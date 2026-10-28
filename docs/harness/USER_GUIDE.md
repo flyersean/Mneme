@@ -1,6 +1,6 @@
 # Mneme Agent Harness — User Guide
 
-This guide covers the `agent-harness` branch: how to install it, turn it on, run
+This guide covers Mneme (the `main` branch): how to install it, turn it on, run
 durable agent work, and control and extend it. For the design, see
 [`SPEC.md`](SPEC.md) and the ADRs in [`adr/`](adr/). For work in progress, see
 [`HANDOFF.md`](HANDOFF.md).
@@ -65,7 +65,7 @@ a job, or type a `/command`.
 Install Mneme as usual (see the main [README](../../README.md)):
 
 ```bash
-git clone -b agent-harness https://github.com/flyersean/Mneme.git && cd Mneme
+git clone https://github.com/flyersean/Mneme.git && cd Mneme
 ./scripts/install.sh            # or: python3 scripts/mneme_setup.py   (interactive wizard)
 ```
 

@@ -1,6 +1,6 @@
 # Strategy Retrieval & Categorization — Source-Chunk Linkage
 
-Branch: `agent-harness`
+Branch: `main`
 Status: SPEC. Supersedes the `problem_type` taxonomy as the retrieval mechanism
 for strategies.
 
