@@ -25,8 +25,8 @@
 #    curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/install.sh && bash /tmp/install.sh
 #    curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/<branch>/scripts/mneme_setup.py && python3 /tmp/setup.py
 #
-#  Pass the branch explicitly when it's not agent-harness:
-#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
+#  Pass the branch explicitly when it's not main:
+#    curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main MNEME_YES=1 bash
 #
 #  Safe to re-run — every step checks first and only fills in what's missing.
 # ============================================================================
@@ -100,10 +100,10 @@ chromium_install() {
   echo "  ✓ browser chromium ready (patchright + playwright)"
 }
 
-# Which repo branch to install (agent-harness = full build, the default on
-# GitHub; memory-only = the release build). It drives the self-update URL, the
-# clone, and the tarball fallback. The README passes MNEME_BRANCH explicitly.
-BRANCH="${MNEME_BRANCH:-agent-harness}"
+# Which repo branch to install (main is the only branch). Drives the
+# self-update URL, the clone, and the tarball fallback. The README passes
+# MNEME_BRANCH explicitly.
+BRANCH="${MNEME_BRANCH:-main}"
 
 # Self-update: always run the latest version from the repo (cache-busted).
 if [ -z "${MNEME_INSTALL_UPDATED:-}" ]; then

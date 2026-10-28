@@ -60,31 +60,31 @@ Three scripts take you from a fresh machine to a running proxy. Run the first tw
 Interactive — asks `y/N` for each big download (Ollama, Chromium, Hound):
 
 ```bash
-curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh && MNEME_BRANCH=agent-harness bash /tmp/install.sh
+curl -sSL -o /tmp/install.sh https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh && MNEME_BRANCH=main bash /tmp/install.sh
 ```
 
 Non-interactive — install everything without prompting (the old one-liner):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install.sh | MNEME_BRANCH=agent-harness MNEME_YES=1 bash
+curl -sSL https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install.sh | MNEME_BRANCH=main MNEME_YES=1 bash
 ```
 
 **macOS** (⚠ untested — no Mac was available to verify):
 
 ```bash
-curl -sSL -o /tmp/install_mac.sh https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/install_mac.sh && MNEME_BRANCH=agent-harness bash /tmp/install_mac.sh
+curl -sSL -o /tmp/install_mac.sh https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/install_mac.sh && MNEME_BRANCH=main bash /tmp/install_mac.sh
 ```
 
 **2. Configure** (on the host):
 
 ```bash
-curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_setup.py && MNEME_BRANCH=agent-harness python3 /tmp/setup.py
+curl -sSL -o /tmp/setup.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_setup.py && MNEME_BRANCH=main python3 /tmp/setup.py
 ```
 
 **3. Connect** (your laptop — remote pod only):
 
 ```bash
-curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/agent-harness/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
+curl -sSL -o /tmp/mneme_connect.py https://raw.githubusercontent.com/flyersean/Mneme/main/scripts/mneme_connect.py && python3 /tmp/mneme_connect.py
 ```
 
 The installer always installs Python deps and the repo; the big downloads — Ollama, two
@@ -269,7 +269,7 @@ line at startup showing the final value of every setting.
 | `retrieval.strategy_min_similarity` | `0.40` | second, lower floor for the strategy layer |
 | `storage.memory_enabled` | `true` | master switch — `false` disables all memory |
 | `storage.inject_enabled` | `true` | `false` = save-only (no auto-injection, but saving + search keep working) |
-| `storage.memory_only` | `false` | `true` = turn off the experimental strategy layer (the `memory-only`-branch default) |
+| `storage.memory_only` | `false` | `true` = turn off the experimental strategy layer |
 | `harness.enabled` | `true` | the agent harness (runs) — `false` to disable it |
 | `runtime.hot_reload` | `true` | `false` = lock config/prompts until restart |
 | `mcp_servers` | `[]` | MCP servers to connect |
@@ -410,21 +410,12 @@ for t in tests/test_*.py; do python3 "$t"; done   # full suite (~590 tests)
 | `model_templates.yaml` | Shipped model templates |
 | `models-dev.api.json` | models.dev registry cache (base URLs, context windows, reasoning support) — refresh with `scripts/fetch_models_dev.sh` |
 
-## Branches
+## Branch
 
-- `agent-harness` — **the full build (this branch, and the default on GitHub)**. Memory
-  retrieval, provenance grading, and the full toolset are always on. Two things
-  additionally default **on** here: the **strategy/self-improving layer**
-  (`storage.memory_only: false`) and the **agent harness** (`harness.enabled: true` —
-  durable multi-step runs, the runs dashboard, profiles, approvals, skills).
-- `memory-only` — **the release branch**. Memory, provenance grading, and the full
-  toolset, with the experimental strategy layer off by default (`storage.memory_only:
-  true`). It has no agent harness — that subsystem lives only on `agent-harness`. Start
-  here for a conservative, memory-only setup.
-- `unified_mneme` — **legacy** full-build branch, superseded by `agent-harness`. Still
-  around for history only; new installs should use `agent-harness`.
-- `classification-models` — **the decision-layer build** — everything in `agent-harness`
-  plus the decision / classifier model layer (see [Decision models](#decision-models-classifier-layer)):
-  harness judge, tool-safety gate, `POST /decide`, and swarm `decide`/`run` steps.
-- `self-code` — the running agent's self-editing sandbox (it pushes only here); reviewed
-  and merged into the build branches.
+One branch: `main`. The full build — memory, provenance grading, the full toolset, the
+agent harness, and the experimental strategy layer — all live here. The subsystems that
+used to be gated behind separate branches are now plain config toggles in `mneme.yaml`:
+
+- `storage.memory_only: true` — turn off the experimental strategy layer (the old
+  `memory-only`-branch behavior).
+- `harness.enabled: false` — disable the agent harness (the old no-harness build).
