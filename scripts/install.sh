@@ -359,6 +359,17 @@ fi
 echo; echo "[3/3] Proxy code ($BRANCH)"
 
 REPO_DIR="${MNEME_REPO_DIR:-$HOME/mneme/repo}"
+# Offer to install into the current directory instead (so "cd newfolder && run
+# install" makes an isolated checkout). Default stays ~/mneme/repo. Deliberately
+# NOT gated by MNEME_YES — this is a location choice, not an optional component.
+if [ -z "${MNEME_REPO_DIR:-}" ] && [ -t 0 ]; then
+  _cwd="$(pwd)"
+  if [ "$_cwd" != "$REPO_DIR" ] && [ "$_cwd" != "$HOME" ] && [ "$_cwd" != "/" ]; then
+    printf "Install into the current directory (%s) instead of %s? [y/N] " "$_cwd" "$REPO_DIR"
+    read -r _a
+    case "$_a" in [Yy]*) REPO_DIR="$_cwd";; esac
+  fi
+fi
 if [ -f "$REPO_DIR/proxy/mneme_proxy.py" ]; then
   echo "  repo already at $REPO_DIR — leaving it (run setup to reconfigure)"
 else

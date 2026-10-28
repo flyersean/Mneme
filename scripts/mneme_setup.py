@@ -178,8 +178,8 @@ def find_repo():
     """Locate the repo (needs proxy/mneme_proxy.py). Tries known paths, then clones."""
     candidates = [
         _REPO_DERIVED,
-        os.path.expanduser("~/mneme/repo"),
         os.getcwd(),
+        os.path.expanduser("~/mneme/repo"),
     ]
     for c in candidates:
         if c and os.path.exists(os.path.join(c, "proxy", "mneme_proxy.py")):

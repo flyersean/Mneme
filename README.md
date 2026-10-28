@@ -97,6 +97,12 @@ install/update them all without prompting with `MNEME_YES=1` (or the per-compone
 `/usr/local/bin` helper) are skipped automatically when you're not root — the proxy itself
 needs none of them. Prefer to read first? `git clone` and run `./scripts/install.sh`.
 
+**Install location.** The code installs into `~/mneme/repo` by default. To make an
+isolated checkout in a different folder, `cd` into an empty folder and answer **y** to
+the installer's "Install into the current directory instead?" prompt (or set
+`MNEME_REPO_DIR=<path>`). Then run setup from inside that folder so it uses the code
+there: `cd <folder> && python3 scripts/mneme_setup.py`.
+
 Once running, the proxy is at `http://localhost:8080/` — dashboard at `/`, chat UI at
 `/chat`, OpenAI-compatible API at `/v1`. A fresh install starts with **no chat model set**
 — open the chat page and pick one from the model picker (it's saved to `mneme.yaml`).
