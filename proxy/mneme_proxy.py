@@ -20,6 +20,7 @@ Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
 import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil
+import atexit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -863,6 +864,77 @@ else:
     print(f"  [CONFIG] ⚠ storage.db_path not set — DB defaulting to {DB_PATH}. "
           f"Set storage.db_path for a shared/external DB.", flush=True)
 DB_DIR     = os.path.dirname(DB_PATH) or "."
+
+# ── Proxy index (machine-wide registry for cross-code-path discovery) ─────────
+# Every proxy upserts its own entry into a FIXED, home-based JSON file so any
+# dashboard can list ALL proxies on the box — including ones running from a
+# different code checkout / DB dir. The path is independent of code path and DB
+# dir (like ~/mneme/env and ~/mneme/repo); override with MNEME_PROXY_INDEX.
+PROXY_INDEX = os.environ.get("MNEME_PROXY_INDEX") or os.path.expanduser("~/mneme/proxies.json")
+_INDEX_HEARTBEAT = 30  # seconds between last_seen refreshes
+
+def _read_proxy_index():
+    try:
+        with open(PROXY_INDEX, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _write_proxy_index(idx):
+    try:
+        d = os.path.dirname(PROXY_INDEX)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = PROXY_INDEX + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(idx, f, indent=2)
+        os.replace(tmp, PROXY_INDEX)
+    except Exception as e:
+        print(f"  [PROXY-INDEX] write failed: {e}", flush=True)
+
+def _register_self():
+    try:
+        idx = _read_proxy_index()
+        idx[str(PORT)] = {
+            "port": PORT, "code_path": REPO_ROOT, "db_path": DB_PATH,
+            "chunk_dir": CHUNK_DIR, "model": MODEL or "",
+            "backend": MNEME_BACKEND, "pid": os.getpid(),
+            "started_at": time.time(), "last_seen": time.time(),
+        }
+        _write_proxy_index(idx)
+        print(f"  [PROXY-INDEX] registered {PORT} @ {REPO_ROOT}", flush=True)
+    except Exception as e:
+        print(f"  [PROXY-INDEX] register failed: {e}", flush=True)
+
+def _index_heartbeat():
+    idx = _read_proxy_index()
+    e = idx.get(str(PORT))
+    if e:
+        e["last_seen"] = time.time()
+        e["pid"] = os.getpid()
+        e["model"] = MODEL or ""
+        _write_proxy_index(idx)
+
+def _deregister_self():
+    try:
+        idx = _read_proxy_index()
+        if str(PORT) in idx:
+            idx.pop(str(PORT), None)
+            _write_proxy_index(idx)
+            print(f"  [PROXY-INDEX] deregistered {PORT}", flush=True)
+    except Exception:
+        pass
+
+def _start_proxy_index_loop():
+    def _loop():
+        while True:
+            time.sleep(_INDEX_HEARTBEAT)
+            try:
+                _index_heartbeat()
+            except Exception:
+                pass
+    threading.Thread(target=_loop, name="mneme-index", daemon=True).start()
 
 # User-authored model templates live OUT of the repo (survive git pull), next to
 # the shared DB so every instance sees the same saved templates. The shipped
@@ -9905,11 +9977,28 @@ if FLASK_OK:
         # Keep /overview serving it so old bookmarks still land on the dashboard.
         return _serve_html(_DASHBOARD_HTML_PATH, "DASHBOARD-UI")
 
-    @app.route("/overview/instances", methods=["GET"])
-    def overview_instances():
+    def _discover_instances():
+        """Merged proxy list: the machine-wide proxy index (has code_path, so
+        cross-code-path installs show up) + same-DB-dir instances missing from
+        the index (legacy) + self. Each entry carries code_path and
+        same_code_path so the dashboard can flag which proxies share the running
+        dashboard's code checkout vs a separate install."""
         out = []
-        root = _instances_root()
         seen = set()
+        for pstr, e in _read_proxy_index().items():
+            try:
+                port = int(pstr)
+            except Exception:
+                continue
+            if port in seen:
+                continue
+            seen.add(port)
+            code_path = e.get("code_path") or ""
+            out.append({"port": port, "model": e.get("model") or "(unknown)",
+                        "backend": e.get("backend") or "ollama", "running": _proxy_up(port),
+                        "self": port == PORT, "code_path": code_path,
+                        "same_code_path": bool(code_path and code_path == REPO_ROOT)})
+        root = _instances_root()
         try:
             names = [n for n in os.listdir(root) if n.isdigit()] if os.path.isdir(root) else []
         except Exception:
@@ -9922,13 +10011,21 @@ if FLASK_OK:
             model, backend = _instance_meta(port)
             out.append({"port": port, "model": model or "(unknown)",
                         "backend": backend or "ollama", "running": _proxy_up(port),
-                        "self": port == PORT})
+                        "self": port == PORT, "code_path": "",
+                        "same_code_path": False})
         if PORT not in seen:
             out.append({"port": PORT, "model": MODEL,
                         "backend": os.environ.get("MNEME_BACKEND", "ollama"),
-                        "running": True, "self": True})
+                        "running": True, "self": True, "code_path": REPO_ROOT,
+                        "same_code_path": True})
         out.sort(key=lambda d: d["port"])
-        return _cors_response({"instances": out, "self_port": PORT, "yolo": YOLO})
+        return out
+
+    @app.route("/overview/instances", methods=["GET"])
+    def overview_instances():
+        return _cors_response({"instances": _discover_instances(),
+                               "self_port": PORT, "self_code_path": REPO_ROOT,
+                               "yolo": YOLO})
 
     @app.route("/overview/instances/<int:port>/delete", methods=["POST"])
     def overview_instance_delete(port):
@@ -9981,31 +10078,17 @@ if FLASK_OK:
     @app.route("/system/status", methods=["GET"])
     def system_status():
         """Public machine-readable system status for the model: every instance
-        (with host-resolved owner PIDs) + live proxy processes. Runs server-side so
-        `ss -p` / `ps` see the host — the model's own bash runs under bwrap, where
-        `ss -p`'s pid= column is empty."""
+        (with host-resolved owner PIDs, code_path, and cross-code-path entries from
+        the proxy index) + live proxy processes. Runs server-side so `ss -p` / `ps`
+        see the host — the model's own bash runs under bwrap, where `ss -p`'s pid=
+        column is empty."""
         out = []
-        root = _instances_root()
-        seen = set()
-        try:
-            names = [n for n in os.listdir(root) if n.isdigit()] if os.path.isdir(root) else []
-        except Exception:
-            names = []
-        for n in names:
-            port = int(n)
-            if port in seen:
-                continue
-            seen.add(port)
-            model, backend = _instance_meta(port)
-            out.append({"port": port, "model": model or "(unknown)",
-                        "backend": backend or "ollama", "running": _proxy_up(port),
-                        "self": port == PORT, "owner_pid": _port_owner(port)})
-        if PORT not in seen:
-            out.append({"port": PORT, "model": MODEL,
-                        "backend": os.environ.get("MNEME_BACKEND", "ollama"),
-                        "running": True, "self": True, "owner_pid": _port_owner(PORT)})
-        out.sort(key=lambda d: d["port"])
+        for it in _discover_instances():
+            it = dict(it)
+            it["owner_pid"] = _port_owner(it["port"])
+            out.append(it)
         return _cors_response({"instances": out, "self_port": PORT,
+                               "self_code_path": REPO_ROOT,
                                "processes": _proxy_processes()})
 
     @app.route("/overview/stop", methods=["POST"])
@@ -10104,6 +10187,7 @@ if FLASK_OK:
         # process (no signal handler / atexit interference).
         def _die():
             time.sleep(0.5)
+            _deregister_self()
             os._exit(0)
         threading.Thread(target=_die, daemon=True).start()
         return _cors_response({"ok": True, "message": "shutting down"})
@@ -11974,6 +12058,9 @@ print(f"[mokv] Mneme ready. model={MODEL} chunks={len(_id_map)} db={DB_PATH}",
 
 if __name__ == "__main__":
     if FLASK_OK:
+        _register_self()
+        _start_proxy_index_loop()
+        atexit.register(_deregister_self)
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep
         # Bind to localhost by default. Mneme's proxy has no auth unless a user

@@ -105,7 +105,7 @@
     <p class="hint">Every proxy instance on this pod. Each proxy binds 127.0.0.1 — reach it through its own SSH tunnel (or a stacked <code>-L</code> forward).</p>
     <table>
       <thead>
-        <tr><th>Port</th><th>Model</th><th>Backend</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>Port</th><th>Model</th><th>Backend</th><th>Code</th><th>Status</th><th>Actions</th></tr>
       </thead>
       <tbody id="rows"><tr><td colspan="5">Loading…</td></tr></tbody>
     </table>
@@ -196,11 +196,15 @@ async function loadInstances() {
     const j = await r.json();
     setYolo(!!j.yolo);
     const list = j.instances || [];
-    if (!list.length) { rows.innerHTML = '<tr><td colspan="5">No instances found.</td></tr>'; return; }
+    if (!list.length) { rows.innerHTML = '<tr><td colspan="6">No instances found.</td></tr>'; return; }
     rows.innerHTML = '';
     for (const it of list) {
       const badge = it.running ? '<span class="badge up">running</span>' : '<span class="badge down">stopped</span>';
       const selfTag = it.self ? '<span class="self-tag">(this proxy)</span>' : '';
+      const codeName = it.code_path ? it.code_path.split('/').filter(Boolean).pop() : '(n/a)';
+      const codeTag = (it.code_path && !it.same_code_path)
+        ? ' <span style="color:var(--amber, #d97706);font-size:11px" title="different code checkout">&#8597; other</span>'
+        : '';
       const dash = `<button class="dash" onclick="window.open('http://localhost:${it.port}/','_blank')">Dashboard</button>`;
       const cfg = `<button class="config" onclick="openConfig(${it.port})">Config</button>`;
       const lifecycle = it.self
@@ -212,10 +216,10 @@ async function loadInstances() {
       const remove = it.self ? '' : `<button class="x" title="Remove proxy" onclick="removeProxy(${it.port})">×</button>`;
       const actions = dash + cfg + lifecycle + remove;
       rows.insertAdjacentHTML('beforeend',
-        `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td>${badge}</td><td>${actions}</td></tr>`);
+        `<tr><td>${it.port}</td><td class="model">${it.model}${selfTag}</td><td>${it.backend}</td><td class="code" title="${it.code_path || ''}">${codeName}${codeTag}</td><td>${badge}</td><td>${actions}</td></tr>`);
     }
   } catch (e) {
-    rows.innerHTML = `<tr><td colspan="5">Error: ${e.message}</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="6">Error: ${e.message}</td></tr>`;
   }
 }
 
