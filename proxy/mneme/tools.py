@@ -69,6 +69,10 @@ def set_scope(model_scope=None, browser_root=None):
 def _within(path, root):
     p = os.path.realpath(os.path.expanduser(str(path)))
     r = os.path.realpath(str(root))
+    if r == os.sep:
+        # Root "/" (yolo full-fs scope) contains every path — the generic
+        # `startswith(r + os.sep)` check would compute "//" and match nothing.
+        return True
     return p == r or p.startswith(r + os.sep)
 
 
