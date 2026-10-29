@@ -9,10 +9,11 @@
 <style>
   * { box-sizing:border-box; }
   html, body { height:100%; overflow:hidden; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
-  header { padding:16px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); display:flex; flex-direction:column; height:100dvh; }
+  header { padding:16px 28px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; flex:0 0 auto; }
+  nav.mneme-nav { flex:0 0 auto; }
   h1 { margin:0; font-size:20px; font-weight:650; }
-  main.swarm-main { display:flex; gap:16px; padding:18px 28px; max-width:1500px; margin:0 auto; align-items:stretch; }
+  main.swarm-main { display:flex; gap:16px; padding:18px 28px; max-width:1500px; width:100%; margin:0 auto; align-items:stretch; flex:1 1 auto; min-height:0; overflow:hidden; }
   button { font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button.primary { color:var(--accent); }
@@ -22,7 +23,7 @@
   input[type="text"]:focus { outline:none; border-color:var(--accent); }
 
   /* ── Left: file browser panel ── */
-  .browser-panel { flex:0 0 320px; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:calc(100vh - 150px); max-height:calc(100vh - 150px); }
+  .browser-panel { flex:0 0 320px; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:0; }
   .browser-head { display:flex; gap:6px; padding:10px; border-bottom:1px solid var(--line); }
   .browser-head input { flex:1; min-width:0; }
   .browser-tools { display:flex; gap:6px; padding:7px 10px; border-bottom:1px solid var(--line); }
@@ -31,7 +32,7 @@
   .tree-item:hover .del { opacity:1; }
   .tree-item .del:hover { color:var(--red); }
   .browser-crumb { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; word-break:break-all; }
-  .tree { flex:1; overflow-y:auto; padding:6px; font-size:13px; }
+  .tree { flex:1; min-height:0; overflow-y:auto; padding:6px; font-size:13px; }
   .tree .empty { color:var(--muted); padding:10px 8px; font-size:13px; }
   .tree-item { display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:6px; cursor:pointer; white-space:nowrap; }
   .tree-item:hover { background:var(--accent-soft); }
@@ -43,7 +44,7 @@
   .tree-item .scope { color:var(--green); font-size:11px; margin-left:6px; flex:0 0 auto; }
 
   /* ── Right: viewer/editor panel ── */
-  .viewer-panel { flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:calc(100vh - 150px); max-height:calc(100vh - 150px); }
+  .viewer-panel { flex:1; min-width:0; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; min-height:0; }
   .editor-toolbar { display:flex; align-items:center; gap:8px; padding:10px; border-bottom:1px solid var(--line); }
   .editor-toolbar label.check { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer; }
   .editor-toolbar label.check input { width:auto; }
@@ -56,9 +57,9 @@
   .tab .tabname { overflow:hidden; text-overflow:ellipsis; max-width:220px; }
   .tab .close { color:var(--muted); font-size:15px; line-height:1; cursor:pointer; }
   .tab .close:hover { color:var(--red); }
-  .editor-host { flex:1; overflow:hidden; padding:8px; display:flex; flex-direction:column; }
-  .editor-host .plain-editor { flex:1; }
-  .editor-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); font-size:14px; border:1px dashed var(--line); border-radius:7px; }
+  .editor-host { flex:1; min-height:0; overflow:hidden; padding:8px; display:flex; flex-direction:column; }
+  .editor-host .plain-editor { flex:1; min-height:0; }
+  .editor-empty { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:14px; border:1px dashed var(--line); border-radius:7px; }
 </style>
 </head>
 <body>
@@ -275,7 +276,7 @@
     if (tab.terminal) {
       cmEditor = null;
       editorHost.innerHTML = '<iframe id="termFrame" src="' + tab.url + '" ' +
-        'style="width:100%;height:100%;border:0;background:#000;"></iframe>';
+        'style="width:100%;flex:1;min-height:0;border:0;background:#000;"></iframe>';
       setStatus('Terminal @ ' + (tab.path && tab.path !== '.' ? tab.path : '~'));
       return;
     }
