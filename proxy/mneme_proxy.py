@@ -10937,6 +10937,11 @@ if FLASK_OK:
         path = (data.get("path") or "").strip()
         if not path:
             return _cors_response({"ok": False, "error": "missing path"}, 400)
+        # yolo = full filesystem: the scope is always "/" and must never be
+        # narrowed, nor persisted to a narrowed value that would silently apply
+        # the moment yolo is turned off. yolo stays set until the user flips it.
+        if os.environ.get("MNEME_YOLO", "0") == "1":
+            return _cors_response({"ok": True, "model_scope": "/", "persisted": False})
         root = _browser_root()
         target = os.path.realpath(os.path.expanduser(path))
         if not _within(target, root):
