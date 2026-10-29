@@ -9517,6 +9517,10 @@ _FS_READ_MAX = 256 * 1024  # cap on /fs/read previews (text files only)
 def _within(path: str, root: str) -> bool:
     p = os.path.realpath(os.path.expanduser(str(path)))
     r = os.path.realpath(root)
+    if r == os.sep:
+        # Root "/" (yolo full-fs scope) contains every path — the generic
+        # `startswith(r + os.sep)` check would compute "//" and match nothing.
+        return True
     return p == r or p.startswith(r + os.sep)
 
 
