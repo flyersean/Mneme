@@ -10941,6 +10941,11 @@ if FLASK_OK:
         target = os.path.realpath(os.path.expanduser(path))
         if not _within(target, root):
             return _cors_response({"ok": False, "error": "outside browser scope"}, 403)
+        # The write scope is a DIRECTORY. A file path would make every write land
+        # "outside scope" (nothing is within a file), so grant the file's parent
+        # folder instead — writing a file means you need its directory writable.
+        if os.path.isfile(target):
+            target = os.path.dirname(target)
         CONFIG_DATA.setdefault("filesystem", {})["model_scope"] = target
         mntools.set_scope(model_scope=target)
         persisted = _persist_model_scope(target)
