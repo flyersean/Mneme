@@ -118,6 +118,9 @@ _OR_STREAM: bool = True          # OpenRouter stream toggle (non-streaming enabl
 # OpenRouter key, so we stash it here before the repoint and _aux_key() reads it.
 # Defined BEFORE load_config() so _resolve_provider's assignment isn't clobbered.
 _AUX_OR_KEY: str = ""
+# The raw OpenRouter base URL, preserved alongside _AUX_OR_KEY so embed/label
+# (OpenRouter-hosted models) stay on OpenRouter when chat is a different vendor.
+_AUX_OR_BASE: str = "https://openrouter.ai/api/v1"
 
 # Reasoning wire contract for the ACTIVE provider (resolved by _resolve_provider).
 # PROVIDER property, NOT model property: the same model on two providers can
@@ -421,7 +424,7 @@ PROVIDER_CATALOG = {
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _AUX_OR_BASE, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         # Ollama: the model is authoritative under the top-level `model:` key
@@ -456,6 +459,9 @@ def _resolve_provider():
         if os.environ.get(env) is None and prov.get(pkey):
             os.environ[env] = _config_scalar(prov[pkey])
 
+    # Preserve the original OpenRouter base URL before repointing the carrier at
+    # the chat vendor's base_url (embed/label stay on OpenRouter).
+    _AUX_OR_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     _set("OPENROUTER_BASE_URL", "base_url")
     # Chat model is authoritative from the ACTIVE provider's block (OpenCode-style
     # provider/model nesting). Top-level `model:` is a legacy fallback when the
@@ -786,11 +792,15 @@ def _aux_conn(kind: str) -> dict:
             key = _aux_key(ke)
             return {"base_url": prov.get("base_url", "") or "", "key": key,
                     "kind": "openai", "headers": prov.get("headers") or {}}
-    # No explicit aux provider — follow the chat backend (existing behaviour).
-    if _aux_backend(f"MNEME_{kind.upper()}_BACKEND") in ("openai", "openrouter"):
-        return {"base_url": OR_BASE_URL, "key": OR_API_KEY, "kind": "openai",
-                "headers": _PROVIDER_HEADERS or {}}
-    return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
+    # No explicit aux provider — default to OpenRouter. The embed/label models
+    # (qwen3-embedding, llama-3.2-3b, …) are OpenRouter IDs and stay on OpenRouter
+    # INDEPENDENT of the chat vendor. Use the PRESERVED OpenRouter key + base URL
+    # (_AUX_OR_KEY / _AUX_OR_BASE), never the repointed chat carrier. Only an
+    # explicit ollama backend routes them local.
+    if _aux_backend(f"MNEME_{kind.upper()}_BACKEND") == "ollama":
+        return {"base_url": OLLAMA_URL, "key": "", "kind": "ollama", "headers": {}}
+    return {"base_url": _AUX_OR_BASE or "https://openrouter.ai/api/v1",
+            "key": _aux_key("OPENROUTER_API_KEY"), "kind": "openai", "headers": {}}
 
 
 def _or_headers() -> dict:
