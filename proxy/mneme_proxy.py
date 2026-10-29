@@ -960,39 +960,111 @@ USER_TEMPLATES_PATH = os.environ.get("MNEME_TEMPLATES_FILE") or os.path.join(DB_
 
 CREDIT_FLOOR = float(os.environ.get("MNEME_CREDIT_FLOOR", "5.0"))  # USD
 
-_CREDIT_CACHE = {"balance": None, "at": 0.0}
-
 _CREDIT_TTL = 60.0
 
+# Per-provider balance cache: provider -> {"res": {balance,currency,error}|None, "at": ts}
+_BALANCE_CACHE = {}
 
-def _fetch_credit_balance():
-    """OpenRouter credit balance (USD) or None. Cached ~60s; no LLM tokens."""
-    now = time.time()
-    if _CREDIT_CACHE["balance"] is not None and now - _CREDIT_CACHE["at"] < _CREDIT_TTL:
-        return _CREDIT_CACHE["balance"]
-    _CREDIT_CACHE["at"] = now
+
+def _fetch_openrouter_balance():
+    """OpenRouter credit balance (USD). Uses the OpenRouter API key."""
     key = os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
-        _CREDIT_CACHE["balance"] = None
-        return None
+        return None  # not in use
     try:
         r = requests.get("https://openrouter.ai/api/v1/credits",
                          headers={"Authorization": f"Bearer {key}"}, timeout=5)
         if r.status_code != 200:
-            _CREDIT_CACHE["balance"] = None
-            return None
+            return {"balance": None, "currency": "USD", "error": f"HTTP {r.status_code}"}
         d = (r.json() or {}).get("data", {})
         bal = float(d.get("total_credits") or 0) - float(d.get("total_usage") or 0)
-        _CREDIT_CACHE["balance"] = bal
-        return bal
-    except Exception:
-        _CREDIT_CACHE["balance"] = None
-        return None
+        return {"balance": bal, "currency": "USD", "error": ""}
+    except Exception as e:
+        return {"balance": None, "currency": "USD", "error": type(e).__name__}
+
+
+def _fetch_routeway_balance():
+    """Routeway account balance (USD) via the account-management key in secrets."""
+    ak = secrets_store.load_secrets().get("routeway_account_key", "")
+    if not ak:
+        if not os.environ.get("ROUTEWAY_API_KEY", ""):
+            return None  # routeway not in use at all
+        return {"balance": None, "currency": "USD", "error": "no routeway_account_key in secrets"}
+    try:
+        r = requests.get("https://api.routeway.ai/v1/account/balance",
+                         headers={"Authorization": f"Bearer {ak}"}, timeout=5)
+        if r.status_code != 200:
+            return {"balance": None, "currency": "USD", "error": f"HTTP {r.status_code}"}
+        bal = float((r.json() or {}).get("balance") or 0)
+        return {"balance": bal, "currency": "USD", "error": ""}
+    except Exception as e:
+        return {"balance": None, "currency": "USD", "error": type(e).__name__}
+
+
+def _fetch_deepseek_balance():
+    """DeepSeek account balance via /user/balance (currency from the API)."""
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        return None  # not in use
+    try:
+        r = requests.get("https://api.deepseek.com/user/balance",
+                         headers={"Authorization": f"Bearer {key}"}, timeout=5)
+        if r.status_code != 200:
+            return {"balance": None, "currency": "USD", "error": f"HTTP {r.status_code}"}
+        infos = (r.json() or {}).get("balance_infos") or []
+        if not infos:
+            return {"balance": None, "currency": "USD", "error": "no balance_infos"}
+        info = infos[0]
+        return {"balance": float(info.get("total_balance") or 0),
+                "currency": info.get("currency", "USD"), "error": ""}
+    except Exception as e:
+        return {"balance": None, "currency": "USD", "error": type(e).__name__}
+
+
+# Ordered provider table. Every in-use key (present in env or secrets) reports its
+# balance; providers with no key are silently omitted. Add a provider by appending
+# a (provider, label, fetcher) tuple here — the fetcher returns None when not in use.
+_BALANCE_PROVIDERS = [
+    ("openrouter", "OpenRouter", _fetch_openrouter_balance),
+    ("routeway", "Routeway", _fetch_routeway_balance),
+    ("deepseek", "DeepSeek", _fetch_deepseek_balance),
+]
+
+
+def _fetch_balances():
+    """Balance for every in-use provider key: [{provider, label, balance, currency,
+    error}]. Absent providers are omitted. Cached ~60s; no LLM tokens."""
+    now = time.time()
+    out = []
+    for provider, label, fetcher in _BALANCE_PROVIDERS:
+        c = _BALANCE_CACHE.get(provider)
+        if c and now - c.get("at", 0) < _CREDIT_TTL:
+            res = c["res"]
+        else:
+            res = fetcher()
+            _BALANCE_CACHE[provider] = {"res": res, "at": now}
+        if res is None:
+            continue
+        out.append({"provider": provider, "label": label, **res})
+    return out
+
+
+def _fetch_credit_balance():
+    """Backward-compat: OpenRouter credit balance (USD) or None."""
+    for b in _fetch_balances():
+        if b["provider"] == "openrouter":
+            return b["balance"]
+    return None
 
 
 def _credit_status():
-    bal = _fetch_credit_balance()
-    return {"balance": bal, "floor": CREDIT_FLOOR,
+    balances = _fetch_balances()
+    bal = None
+    for b in balances:
+        if b["provider"] == "openrouter":
+            bal = b["balance"]
+            break
+    return {"balances": balances, "balance": bal, "floor": CREDIT_FLOOR,
             "low": bal is not None and bal < CREDIT_FLOOR}
 
 
@@ -10163,6 +10235,7 @@ if FLASK_OK:
             out.append(it)
         return _cors_response({"instances": out, "self_port": PORT,
                                "self_code_path": REPO_ROOT,
+                               "credit": _credit_status(),
                                "processes": _proxy_processes()})
 
     @app.route("/overview/stop", methods=["POST"])
