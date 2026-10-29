@@ -967,10 +967,12 @@ _BALANCE_CACHE = {}
 
 
 def _fetch_openrouter_balance():
-    """OpenRouter credit balance (USD). Uses the OpenRouter API key."""
-    key = os.environ.get("OPENROUTER_API_KEY", "")
+    """OpenRouter credit balance (USD). Uses the PRESERVED OpenRouter key so a
+    routeway/deepseek chat provider (which repoints OPENROUTER_API_KEY) doesn't
+    leak its key into the OpenRouter balance call."""
+    key = _aux_key("OPENROUTER_API_KEY")
     if not key:
-        return None  # not in use
+        return {"balance": None, "currency": "USD", "error": "no key"}
     try:
         r = requests.get("https://openrouter.ai/api/v1/credits",
                          headers={"Authorization": f"Bearer {key}"}, timeout=5)
@@ -987,8 +989,6 @@ def _fetch_routeway_balance():
     """Routeway account balance (USD) via the account-management key in secrets."""
     ak = secrets_store.load_secrets().get("routeway_account_key", "")
     if not ak:
-        if not os.environ.get("ROUTEWAY_API_KEY", ""):
-            return None  # routeway not in use at all
         return {"balance": None, "currency": "USD", "error": "no routeway_account_key in secrets"}
     try:
         r = requests.get("https://api.routeway.ai/v1/account/balance",
@@ -1005,7 +1005,7 @@ def _fetch_deepseek_balance():
     """DeepSeek account balance via /user/balance (currency from the API)."""
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        return None  # not in use
+        return {"balance": None, "currency": "USD", "error": "no key"}
     try:
         r = requests.get("https://api.deepseek.com/user/balance",
                          headers={"Authorization": f"Bearer {key}"}, timeout=5)
@@ -1031,12 +1031,34 @@ _BALANCE_PROVIDERS = [
 ]
 
 
+def _active_provider_names():
+    """Providers actually in use by this proxy: the active chat provider, any
+    explicitly-pinned aux provider, and OpenRouter (the default aux target). Only
+    these report a balance — a key sitting in the shared env but not used by this
+    proxy (e.g. DEEPSEEK_API_KEY on a routeway/openrouter instance) is skipped."""
+    names = set()
+    chat = (os.environ.get("MNEME_PROVIDER") or "openrouter").strip().lower()
+    if chat:
+        names.add(chat)
+    for role in ("embed", "label", "utility"):
+        p = (os.environ.get(f"{role.upper()}_PROVIDER") or "").strip().lower()
+        if p:
+            names.add(p)
+    if _aux_key("OPENROUTER_API_KEY"):
+        names.add("openrouter")
+    return names
+
+
 def _fetch_balances():
     """Balance for every in-use provider key: [{provider, label, balance, currency,
-    error}]. Absent providers are omitted. Cached ~60s; no LLM tokens."""
+    error}]. Only ACTIVE providers (see _active_provider_names) are reported; a key
+    merely present in the shared env is not enough. Cached ~60s; no LLM tokens."""
+    active = _active_provider_names()
     now = time.time()
     out = []
     for provider, label, fetcher in _BALANCE_PROVIDERS:
+        if provider not in active:
+            continue
         c = _BALANCE_CACHE.get(provider)
         if c and now - c.get("at", 0) < _CREDIT_TTL:
             res = c["res"]
