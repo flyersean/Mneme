@@ -122,6 +122,22 @@ def output_cap(pid, mid):
     return (m.get("limit") or {}).get("output")
 
 
+def mandates_reasoning(pid, mid):
+    """True if the model MANDATES reasoning (can't be disabled) per models.dev:
+    reasoning:true AND reasoning_options is effort-type (not toggle). Returns None
+    when the model isn't found (caller falls back to slug matching for relays)."""
+    m = model(pid, mid)
+    if m is None and isinstance(mid, str) and "/" in mid:
+        vendor, _, rest = mid.partition("/")
+        m = model(vendor, rest)
+    if m is None:
+        return None
+    if not m.get("reasoning"):
+        return False
+    opts = m.get("reasoning_options") or []
+    return any(o.get("type") == "effort" for o in opts)
+
+
 def models_list(pid):
     """Model list for the picker: [{id, name, context, output, reasoning}]."""
     out = []

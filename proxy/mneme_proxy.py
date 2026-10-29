@@ -2099,10 +2099,11 @@ _REASONING_STALE_FLOORS = (
     ("grok-4-fast-reasoning", 300), ("grok-4.20-reasoning", 300), ("grok-4.5", 300), ("grok-4-fast-non-reasoning", 180),
 )
 
-# Models whose endpoints MANDATE reasoning — sending `reasoning.enabled:false`
-# makes the provider 400 with "Reasoning is mandatory for this endpoint". For
-# these, a no_reasoning call can't disable thinking; it is bounded with a small
-# budget instead. Slug-anchored, longest-first (same convention as the floors).
+# Fallback for models whose endpoints MANDATE reasoning but aren't indexed by
+# models.dev (relays like Routeway/Featherless). _model_mandates_reasoning tries
+# models.dev FIRST; this list only catches the relay case. Sending
+# `reasoning.enabled:false` to these makes the provider 400 ("Reasoning is
+# mandatory") — instead a no_reasoning call is bounded with a small budget.
 _MANDATORY_REASONING_MODELS = ("glm-5.3", "glm-5", "glm-4.7", "glm-4.6",
                                "deepseek-v4-pro", "deepseek-pro",
                                "muse",  # meta/muse-spark-* mandates reasoning (OpenRouter 400s on disabled)
@@ -3738,10 +3739,15 @@ def _reasoning_stale_floor(model) -> Optional[int]:
 def _model_mandates_reasoning(model) -> bool:
     """True if the model's endpoint MANDATES reasoning (cannot be disabled).
 
-    Same slug-anchored match as _reasoning_stale_floor. Used to avoid sending
-    `reasoning.enabled:false` to models whose provider 400s on it (GLM)."""
+    Derived from models.dev (reasoning:true + effort-type reasoning_options) —
+    the same registry OpenCode reads. Falls back to a small slug list for relay
+    providers (Routeway/Featherless) that models.dev does not index."""
     if not model or not isinstance(model, str):
         return False
+    provider = os.environ.get("MNEME_PROVIDER", "openrouter")
+    md = models_dev.mandates_reasoning(provider, model)
+    if md is not None:
+        return md
     name = model.strip().lower()
     if not name:
         return False
@@ -3903,29 +3909,25 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
         "frequency_penalty": opts.get("frequency_penalty"),
         "presence_penalty": opts.get("presence_penalty"),
     }
-    # Reasoning is OFF by default — a reasoning model (e.g. Qwen3.6) can
-    # runaway-think on a trivial ask. Opt back in with either:
-    #   MNEME_REASONING_ENABLED=1/true/on   -> binary on/off thinking (Qwen3.6-style)
-    #   MNEME_REASONING_EFFORT=low|high|max -> effort models (deepseek, Ox Alpha)
-    # When reasoning is ON, send a bounded thinking budget (reasoning.max_tokens,
-    # default max_tokens/2 — OpenCode's fitThinkingBudget rule: thinking counts
-    # against the output limit, so a budget near it leaves the answer/tool call
-    # no room). The old code sent NO reasoning key when enabled, handing
-    # mandatory-reasoning models (GLM-5.3) an unbounded thinking budget —
-    # measured 28,771 reasoning tokens / 75s per trivial ask. A Qwen-specific
-    # "budget is a goal not a cap" quirk was previously generalized to every
-    # reasoning model here; the budget is opt-out via MNEME_REASONING_BUDGET=0.
+    # Reasoning is NOT overridden by default. Providers serve reasoning models at
+    # a working default (GLM-5.x forced thinking, DeepSeek effort "high", Qwen3.8
+    # effort "xhigh"); Mneme must not send `enabled:false` (or any reasoning key)
+    # unless the user/caller explicitly asked. This is the OpenCode/Hermes model:
+    # switching models keeps the model's own default; only an explicit setting
+    # changes reasoning.
+    #   reasoning_enabled: 0                        -> disable thinking (bound if mandatory)
+    #   reasoning_effort: low|high|max|xhigh        -> effort-level control
+    #   reasoning_budget: N (per-model) / MNEME_REASONING_BUDGET=N -> bound thinking
     _transport = _reasoning_transport(_model)
-    _reasoning = {}
     _mandatory = _transport["forced"]
-    _reffort = os.environ.get("MNEME_REASONING_EFFORT", "")
-    _reasoning_on = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower() in ("1", "true", "on", "yes", "enabled")
-    if _reffort and not no_reasoning:
-        _reasoning["effort"] = _reffort
-        _reasoning_on = True
-    if (no_reasoning or not _reasoning_on) and not _mandatory:
-        # A non-mandatory model can be told to skip thinking entirely.
-        _reasoning["enabled"] = False
+    _reffort = os.environ.get("MNEME_REASONING_EFFORT", "").strip()
+    _renabled_raw = os.environ.get("MNEME_REASONING_ENABLED", "").strip().lower()
+    if _renabled_raw in ("1", "true", "on", "yes", "enabled"):
+        _renabled = True
+    elif _renabled_raw in ("0", "false", "off", "no", "disabled"):
+        _renabled = False
+    else:
+        _renabled = None  # unset — no override (provider default)
     _mc = (CONFIG_DATA.get("models") or {}).get(_model) or {}
     _mt = max_tokens if (max_tokens and max_tokens > 0) else None
     if _mt is None:
@@ -3935,31 +3937,39 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     # sends max_tokens (DEFAULT_MAX_TOKENS = 32k); adopt the same default.
     if not _mt or int(_mt) <= 0:
         _mt = OR_DEFAULT_MAX_TOKENS
-    if int(_mt) > 0:
-        payload["max_tokens"] = int(_mt)
-        # Bounded thinking budget for reasoning models (see comment above).
-        # Precedence: per-model config `models.<model>.reasoning_budget` > env
-        # MNEME_REASONING_BUDGET > "auto" = max_tokens/2. "0"/"off" disables
-        # (legacy behaviour). Always capped at max_tokens/2. Read from CONFIG_DATA
-        # at request time, so it hot-reloads with the rest of the `models:` block.
-        # effort and max_tokens are mutually exclusive in the OpenAI/OpenRouter
-        # schema — sending both is a 400. Effort-based control (reasoning.effort)
-        # wins over the budget; max_tokens is only for budget-based control.
-        if _reasoning_on and not no_reasoning and "effort" not in _reasoning:
-            _rb = _mc.get("reasoning_budget")
-            _bud = str(OR_REASONING_BUDGET if _rb is None else _rb).strip().lower()
-            if _bud not in ("0", "off", "no", "none", "disabled"):
-                try:
-                    _budget = int(_bud) if _bud not in ("auto", "") else int(_mt) // 2
-                except ValueError:
-                    _budget = int(_mt) // 2
-                _budget = min(_budget, int(_mt) // 2)
+    # Build the reasoning override ONLY when explicitly requested. Empty {} => no
+    # reasoning key on the wire => provider serves the model at its default.
+    _reasoning = {}
+    _explicit_off = bool(no_reasoning or _renabled is False)
+    if _reffort and not no_reasoning:
+        _reasoning["effort"] = _reffort
+        _explicit_off = False  # effort-based control wins over "off"
+    if _explicit_off and _mandatory:
+        # Mandatory-reasoning model asked to skip thinking — can't send
+        # `enabled:false` (the endpoint 400s), so bound it tightly instead.
+        _reasoning["max_tokens"] = (_MANDATORY_REASONING_MIN_BUDGET if int(_mt) <= 0
+                                    else min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2))
+    elif _explicit_off:
+        _reasoning["enabled"] = False
+    elif "effort" not in _reasoning and not no_reasoning:
+        # Explicit bounded thinking (opt-in only): per-model reasoning_budget or
+        # MNEME_REASONING_BUDGET as a number. "auto"/unset = leave unbounded.
+        # effort and max_tokens are mutually exclusive in the OpenAI schema (400 if
+        # both sent) — effort wins, so skip the budget when effort is set.
+        _rb = _mc.get("reasoning_budget")
+        _bud = str(OR_REASONING_BUDGET if _rb is None else _rb).strip().lower()
+        if _bud not in ("", "auto", "0", "off", "no", "none", "disabled"):
+            try:
+                _budget = int(_bud)
+            except ValueError:
+                _budget = None
+            if _budget is not None:
+                if int(_mt) > 0:
+                    _budget = min(_budget, int(_mt) // 2)
                 if _budget > 0:
                     _reasoning["max_tokens"] = _budget
-        elif _mandatory and (no_reasoning or not _reasoning_on):
-            # Mandatory-reasoning model asked to skip thinking — can't send
-            # `enabled:false` (the endpoint 400s), so bound it tightly instead.
-            _reasoning["max_tokens"] = min(_MANDATORY_REASONING_MIN_BUDGET, int(_mt) // 2)
+    if int(_mt) > 0:
+        payload["max_tokens"] = int(_mt)
     if _transport["param"] == "thinking":
         # Thinking providers (DeepSeek / Z.AI direct): forced thinking + preserved
         # thinking (clear_thinking:false for Z.AI), exactly what OpenCode/Hermes
