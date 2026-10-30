@@ -40,7 +40,8 @@
   .tree-item.dir { color:var(--accent); }
   .tree-item.file { color:var(--fg); }
   .tree-item .name { overflow:hidden; text-overflow:ellipsis; }
-  .tree-item .size { margin-left:auto; color:var(--muted); font-size:11px; flex:0 0 auto; }
+  .tree-item .size { color:var(--muted); font-size:11px; flex:0 0 auto; }
+  .tree-item .age { margin-left:auto; color:var(--muted); font-size:11px; flex:0 0 auto; }
   .tree-item .scope { color:var(--green); font-size:11px; margin-left:6px; flex:0 0 auto; }
 
   /* ── Right: viewer/editor panel ── */
@@ -147,6 +148,24 @@
     return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
   }
 
+  function fmtAge(mtime) {
+    if (mtime == null || !isFinite(mtime)) return '';
+    let diff = Math.floor(Date.now() / 1000) - mtime;
+    if (diff < 0) diff = 0;
+    if (diff < 60) return 'just now';
+    const m = Math.floor(diff / 60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ago';
+    const d = Math.floor(h / 24);
+    if (d < 7) return d + 'd ago';
+    const w = Math.floor(d / 7);
+    if (w < 5) return w + 'w ago';
+    const mo = Math.floor(d / 30);
+    if (mo < 12) return mo + 'mo ago';
+    return Math.floor(d / 365) + 'y ago';
+  }
+
   function modeFor(path) {
     const ext = ((path || '').split('.').pop() || '').toLowerCase();
     const map = {
@@ -192,9 +211,10 @@
       const cls = it.type === 'dir' ? 'dir' : 'file';
       const scope = it.in_model_scope ? '<span class="scope">●</span>' : '';
       const size = it.type === 'file' ? '<span class="size">' + esc(fmtSize(it.size)) + '</span>' : '';
+      const age = (it.mtime != null) ? '<span class="age" title="' + esc(new Date(it.mtime * 1000).toLocaleString()) + '">' + esc(fmtAge(it.mtime)) + '</span>' : '';
       return '<div class="tree-item ' + cls + '" data-path="' + esc(it.path) + '" data-type="' + it.type + '">' +
         '<span class="icon">' + icon + '</span>' +
-        '<span class="name">' + esc(it.name) + '</span>' + scope + size +
+        '<span class="name">' + esc(it.name) + '</span>' + scope + age + size +
         '<span class="del" title="Delete" data-del="' + esc(it.path) + '">×</span>' +
         '</div>';
     }).join('');

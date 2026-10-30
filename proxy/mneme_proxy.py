@@ -10841,6 +10841,7 @@ if FLASK_OK:
                     "abspath": e.path,
                     "type": "dir" if e.is_dir() else "file",
                     "size": st.st_size,
+                    "mtime": st.st_mtime,
                     "in_model_scope": _within(e.path, model_scope),
                 })
         except OSError as ex:
