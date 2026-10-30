@@ -334,7 +334,10 @@ WEB_SEARCH_TOOL = {
             "what the snippets said — that is an incomplete answer. Pick the most authoritative "
             "URL (the official site or primary source beats an aggregator or a forum summary) "
             "and fetch it. If the first fetch doesn't contain the answer, fetch a second URL "
-            "from the results before giving up."
+            "from the results before giving up.\n"
+            "\n"
+            "Backend is chosen automatically: DeepSeek's native search API when the chat "
+            "provider is DeepSeek, otherwise DuckDuckGo/Brave."
         ),
         "parameters": {
             "type": "object",
@@ -1277,9 +1280,57 @@ def _brave_search(query):
 
 _SEARCH_CACHE = {}
 
+_DS_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
+
+
+def _deepseek_search(query):
+    """DeepSeek native web search (POST /v1/tools/search).
+
+    Primary web_search backend when the chat provider is DeepSeek. Returns
+    DeepSeek's own ranked results — title/url/snippet plus an authority tier —
+    instead of the free DDG/Brave scrapers, so results are higher-quality and
+    not bot-blocked. Billed to the DeepSeek account via DEEPSEEK_API_KEY.
+
+    Returns a formatted results string, or None on any failure (no key, non-200,
+    network error, no results) so the caller falls back to the free backends."""
+    from urllib.parse import urlparse
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        return None
+    try:
+        r = requests.post(
+            _DS_SEARCH_URL,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"query": query, "count": 8, "need_content": False},
+            timeout=20,
+        )
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json()
+    except Exception:
+        return None
+    results = (data or {}).get("results") or []
+    if not results:
+        return None
+    lines = [f"web results for '{query}':"]
+    for i, res in enumerate(results, 1):
+        title = str(res.get("title") or "").strip()
+        url = str(res.get("url") or "").strip()
+        snip = str(res.get("snippet") or res.get("summary") or "").strip()
+        authority = res.get("authority")
+        if isinstance(authority, int) and authority >= 3:
+            dom = (urlparse(url).netloc or "").strip() or "authoritative"
+            snip = f"[{dom} · authority {authority}/4] {snip}" if snip else f"[{dom} · authority {authority}/4]"
+        lines.append(f"{i}. {title}\n   {url}\n   {snip[:300]}")
+    return "\n".join(lines)
+
 
 def _exec_web_search(query):
-    """Web search across free backends (DuckDuckGo primary, Brave fallback).
+    """Web search: DeepSeek native search when provider is DeepSeek, otherwise
+    the free backends (DuckDuckGo primary, Brave fallback).
 
     Free search engines rate-limit bot IPs, so results are best-effort: a failed
     search degrades to a clear message (the model can fall back to bash+curl).
@@ -1289,6 +1340,17 @@ def _exec_web_search(query):
         return "[web_search: empty query]"
     if query in _SEARCH_CACHE:
         return _SEARCH_CACHE[query]
+    # DeepSeek chat provider -> use DeepSeek's native search API first (ranked,
+    # authoritative, not bot-blocked); fall through to the free scrapers on any
+    # failure (missing key, non-200, network error, empty results).
+    if os.environ.get("MNEME_PROVIDER", "") == "deepseek":
+        try:
+            out = _deepseek_search(query)
+            if out:
+                _SEARCH_CACHE[query] = out
+                return out
+        except Exception:
+            pass
     for backend in (_ddg_search, _brave_search):
         try:
             out = backend(query)
