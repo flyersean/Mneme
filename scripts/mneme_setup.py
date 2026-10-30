@@ -994,7 +994,8 @@ embed_model: "@@EMBED@@"
 label_model: "@@LABEL@@"
 
 # Backend models (embedder/labeler) — pin to a DIFFERENT provider than the chat
-# model (set once; the embedder defines your memory index). Empty = follow chat.
+# model (set once; the embedder defines your memory index). Empty = OpenRouter
+# (the aux models' default provider, independent of the chat provider).
 embed_provider: "@@EMBED_PROV@@"
 label_provider: "@@LABEL_PROV@@"
 
@@ -1552,11 +1553,11 @@ def save_shared_config(memory_dir, models, backend, port=None, inject=None, memo
     so a later 'add instance' locks them to this DB's original choice, and
     'reconfigure' can recover the original port + injection settings.
 
-    embed_provider/label_provider are stored EXPLICITLY (resolved to the chat
-    provider when the wizard left them empty) so a sibling proxy re-pins the same
-    backend provider even if its own chat provider differs — the shared-DB match
-    rule depends on this. embed_backend/label_backend likewise record the
-    resolved transport ("openai" | "ollama")."""
+    embed_provider/label_provider are stored EXPLICITLY (the role's actual provider,
+    defaulting to OpenRouter) so a sibling proxy re-pins the same backend provider
+    even if its own chat provider differs — the shared-DB match rule depends on
+    this. embed_backend/label_backend likewise record the resolved transport
+    ("openai" | "ollama")."""
     data = {
         "db_dir": memory_dir,
         "backend": backend,
@@ -2152,11 +2153,14 @@ def main():
         "label_model": labeler["model"],
         "ctx_size": pick_context_window(),
     }
-    # Backend-model providers: only pin when they DIFFER from the chat provider —
-    # empty means "follow the chat provider", which is the common case and keeps
-    # the config clean (backward-compatible with pre-decoupling installs).
-    embed_provider = "" if embedder["provider"] == provider else embedder["provider"]
-    label_provider = "" if labeler["provider"] == provider else labeler["provider"]
+    # Backend-model providers: empty means "OpenRouter" (the aux models' real
+    # default provider — the runtime resolves an unset embed/label provider to
+    # OpenRouter via the preserved OpenRouter key/base, INDEPENDENT of the chat
+    # provider). Pin explicitly only when the role lives on a non-OpenRouter
+    # provider, so a sibling proxy re-pins the same embedder without inheriting
+    # the chat provider.
+    embed_provider = "" if embedder["provider"] == "openrouter" else embedder["provider"]
+    label_provider = "" if labeler["provider"] == "openrouter" else labeler["provider"]
     # Backend TRANSPORTS ("openai" | "ollama"), derived from each role's provider.
     # The proxy's _aux_backend() expects a transport, not a provider id — e.g. an
     # embedder on Groq still uses the "openai" transport. Empty = follow the chat
