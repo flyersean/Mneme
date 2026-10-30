@@ -121,6 +121,11 @@ _AUX_OR_KEY: str = ""
 # The raw OpenRouter base URL, preserved alongside _AUX_OR_KEY so embed/label
 # (OpenRouter-hosted models) stay on OpenRouter when chat is a different vendor.
 _AUX_OR_BASE: str = "https://openrouter.ai/api/v1"
+# Captured exactly once (before the first repoint) so embed/label keep their
+# ORIGINAL OpenRouter credentials across chat-provider changes. Re-capturing on
+# a later resolve would read the already-repointed carrier (the previous chat
+# vendor's key/base) and break the OpenRouter backend.
+_AUX_OR_CAPTURED: bool = False
 
 # Reasoning wire contract for the ACTIVE provider (resolved by _resolve_provider).
 # PROVIDER property, NOT model property: the same model on two providers can
@@ -424,7 +429,7 @@ PROVIDER_CATALOG = {
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
-    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _AUX_OR_BASE, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
+    global _PROVIDER_HEADERS, _OR_FALLBACK_MODELS, _OR_PROVIDER_PREF, _OR_STREAM, _AUX_OR_KEY, _AUX_OR_BASE, _AUX_OR_CAPTURED, _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
     backend_type = os.environ.get("MNEME_BACKEND", "ollama")
     if backend_type not in ("openai", "openrouter"):
         # Ollama: the model is authoritative under the top-level `model:` key
@@ -459,9 +464,17 @@ def _resolve_provider():
         if os.environ.get(env) is None and prov.get(pkey):
             os.environ[env] = _config_scalar(prov[pkey])
 
-    # Preserve the original OpenRouter base URL before repointing the carrier at
-    # the chat vendor's base_url (embed/label stay on OpenRouter).
-    _AUX_OR_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    # Preserve the ORIGINAL OpenRouter carrier (key + base URL) ONCE, before the
+    # first repoint. embed/label stay on OpenRouter regardless of the chat vendor
+    # and read these preserved values via _aux_key()/_aux_conn(). On a SUBSEQUENT
+    # resolve (a chat-provider change) OPENROUTER_API_KEY / OPENROUTER_BASE_URL
+    # have already been repointed at the PREVIOUS chat vendor, so re-capturing
+    # here would hand the embed/label OpenRouter connection the chat vendor's
+    # credentials — the exact "changing chat provider breaks the backend" bug.
+    if not _AUX_OR_CAPTURED:
+        _AUX_OR_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+        _AUX_OR_CAPTURED = True
     _set("OPENROUTER_BASE_URL", "base_url")
     # Chat model is authoritative from the ACTIVE provider's block (OpenCode-style
     # provider/model nesting). Top-level `model:` is a legacy fallback when the
@@ -474,12 +487,10 @@ def _resolve_provider():
     if api_key_env:
         k = os.environ.get(api_key_env)
         if k:
-            # OPENROUTER_API_KEY is the generic "chat key" carrier. When the chat
-            # provider is a DIFFERENT vendor (routeway/deepseek/…), the OpenRouter
-            # key is still needed by embed/label if they run on OpenRouter — so
-            # preserve it before repointing the carrier at the chat key.
-            if api_key_env != "OPENROUTER_API_KEY":
-                _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+            # OPENROUTER_API_KEY is the generic "chat key" carrier; repoint it at
+            # the chat vendor's key. The OpenRouter key was already preserved in
+            # _AUX_OR_KEY above (captured once), so embed/label keep working on
+            # OpenRouter no matter how many times the chat provider changes.
             os.environ["OPENROUTER_API_KEY"] = k
     _PROVIDER_HEADERS = prov.get("headers") or {}
     # OpenRouter-specific reliability (only applied to OpenRouter requests, so
@@ -9930,11 +9941,15 @@ if FLASK_OK:
         # Refresh the cached chat key when this provider is the ACTIVE one (or the
         # OpenRouter carrier). Saving a key AFTER activation otherwise leaves
         # OR_API_KEY stale and every chat request 401s with the old key.
-        global OR_API_KEY
+        global OR_API_KEY, _AUX_OR_KEY
         _active = os.environ.get("MNEME_PROVIDER", "")
         _act_key_env = (PROVIDER_CATALOG.get(_active) or {}).get("key_env") or ""
         if api_key_env == "OPENROUTER_API_KEY" or api_key_env == _act_key_env:
             OR_API_KEY = key
+            # Rotating the OpenRouter key must also refresh the preserved aux key
+            # (embed/label read _AUX_OR_KEY, not the repointed carrier).
+            if api_key_env == "OPENROUTER_API_KEY":
+                _AUX_OR_KEY = key
         persisted = _persist_env_key(_env_file_path(), api_key_env, key)
         print(f"  [PROVIDER-KEY] set {api_key_env} for {provider} (persisted={persisted})", flush=True)
         return _cors_response({"ok": True, "provider": provider, "persisted": persisted})
