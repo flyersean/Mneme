@@ -1475,7 +1475,9 @@ def start_proxy(backend, models, port, instance_dir):
     # inherited model env vars so a stale shell (or an earlier proxy's export)
     # can't lock this proxy onto an old model — the config's top-level model:/
     # embed_model:/label_model: keys supply them instead.
-    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM",
+                "MNEME_PROVIDER", "EMBED_PROVIDER", "LABEL_PROVIDER", "UTILITY_PROVIDER",
+                "OPENROUTER_BASE_URL"):
         env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
@@ -1659,7 +1661,7 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         "# Models are read from this instance's mneme.yaml (top-level model:) —",
         "# clearing inherited values keeps the config authoritative, so a stale env",
         "# var from another instance/shell can't lock an old model or provider in.",
-        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM MNEME_PROVIDER EMBED_PROVIDER LABEL_PROVIDER MNEME_EMBED_BACKEND MNEME_LABEL_BACKEND",
+        "unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM MNEME_PROVIDER EMBED_PROVIDER LABEL_PROVIDER MNEME_EMBED_BACKEND MNEME_LABEL_BACKEND OPENROUTER_BASE_URL",
     ]
     # Aux backends: only set when they differ from this instance's chat backend,
     # so the embedder/labeler keep running where the DB originally set them up.
@@ -1697,7 +1699,9 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
     # Same as start_proxy: the instance's mneme.yaml is authoritative for model
     # identity — clear inherited model env vars so a stale value can't lock this
     # instance onto an old model.
-    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
+    for _mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM",
+                "MNEME_PROVIDER", "EMBED_PROVIDER", "LABEL_PROVIDER", "UTILITY_PROVIDER",
+                "OPENROUTER_BASE_URL"):
         env.pop(_mv, None)
     env["MNEME_CHUNK_DIR"] = instance_dir
     env["MNEME_PORT"] = str(port)
