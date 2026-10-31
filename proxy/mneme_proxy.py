@@ -9557,6 +9557,12 @@ def _model_scope() -> list:
     """Model read/write scope roots. `filesystem.model_scope` may be a single
     path (string) or a list of paths (multiple roots); normalize to a resolved
     list. A bare "/" (yolo) contains everything."""
+    if os.environ.get("MNEME_YOLO", "0") == "1":
+        # yolo = trust-this-box: full filesystem. Must mirror what set_scope does
+        # for the native tools, otherwise /fs/* reports a narrowed scope while the
+        # bash/write tools already allow everything (the inconsistent "still ro
+        # under yolo" symptom).
+        return ["/"]
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
     if cfg is None:
         cfg = os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")
