@@ -47,8 +47,8 @@ _BASH_LOG_MAX = int(os.environ.get("MNEME_BASH_LOG_MAX", str(10 * 1024 * 1024)))
 # rest of the filesystem is read-only to it. read_file is additionally limited
 # to BROWSER_ROOT (the user's view). mneme_proxy calls set_scope() after config
 # load / hot-reload; the env vars are the fallback defaults.
-MODEL_SCOPE = os.path.realpath(os.path.expanduser(
-    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+MODEL_SCOPE = [os.path.realpath(os.path.expanduser(
+    os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))]  # list of writable roots
 BROWSER_ROOT = os.path.realpath(os.path.expanduser(
     os.environ.get("MNEME_BROWSER_ROOT", "~")))
 # Harness run workspaces (runs_root/<run_id>/workspace) are also the model's —
@@ -61,7 +61,12 @@ RUNS_ROOT = os.path.realpath(os.path.expanduser(
 def set_scope(model_scope=None, browser_root=None):
     global MODEL_SCOPE, BROWSER_ROOT
     if model_scope:
-        MODEL_SCOPE = os.path.realpath(os.path.expanduser(str(model_scope)))
+        items = model_scope if isinstance(model_scope, (list, tuple)) else [model_scope]
+        MODEL_SCOPE = []
+        for it in items:
+            p = os.path.realpath(os.path.expanduser(str(it)))
+            if p and p not in MODEL_SCOPE:
+                MODEL_SCOPE.append(p)
     if browser_root:
         BROWSER_ROOT = os.path.realpath(os.path.expanduser(str(browser_root)))
 
@@ -77,14 +82,14 @@ def _within(path, root):
 
 
 def _writable(path):
-    """True when `path` is inside the model's writable area (tools dir + scope)."""
-    return (_within(path, TOOLS_DIR) or _within(path, MODEL_SCOPE))
+    """True when `path` is inside the model's writable area (tools dir + scopes)."""
+    return _within(path, TOOLS_DIR) or any(_within(path, sc) for sc in MODEL_SCOPE)
 
 
 def _writable_roots():
-    """Deduplicated list of writable roots (tools dir + scope)."""
+    """Deduplicated list of writable roots (tools dir + model scopes)."""
     roots = []
-    for r in (TOOLS_DIR, MODEL_SCOPE):
+    for r in [TOOLS_DIR] + list(MODEL_SCOPE):
         r = os.path.realpath(r)
         if not any(r == x or r.startswith(x + os.sep) for x in roots):
             roots.append(r)
@@ -141,8 +146,8 @@ def reload_config():
     NATIVE_TOOLS_MODE = os.environ.get("MNEME_NATIVE_TOOLS", "auto")
     TOOLS_DIR = _default_tools_dir()
     BASH_TIMEOUT = int(os.environ.get("MNEME_TOOLS_BASH_TIMEOUT", "30"))
-    MODEL_SCOPE = os.path.realpath(os.path.expanduser(
-        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))
+    MODEL_SCOPE = [os.path.realpath(os.path.expanduser(
+        os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")))]
     BROWSER_ROOT = os.path.realpath(os.path.expanduser(
         os.environ.get("MNEME_BROWSER_ROOT", "~")))
     RUNS_ROOT = os.path.realpath(os.path.expanduser(
@@ -1055,7 +1060,8 @@ def _exec_bash(command):
     place the model can `cat` after this call returns (see ``_bash_log_path``)."""
     try:
         os.makedirs(TOOLS_DIR, exist_ok=True)
-        os.makedirs(MODEL_SCOPE, exist_ok=True)
+        for _sc in MODEL_SCOPE:
+            os.makedirs(_sc, exist_ok=True)
         os.makedirs(RUNS_ROOT, exist_ok=True)
         # A writable pip target inside the sandbox so `pip install <lib>` can
         # succeed despite the read-only root (the default site-packages is

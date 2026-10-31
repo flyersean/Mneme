@@ -426,6 +426,20 @@ PROVIDER_CATALOG = {
 }
 
 
+def _apply_reasoning_contract(name: str, prov: dict):
+    """Set the reasoning wire-contract globals for a provider. Provider-level
+    (not model-level): response/replay field + request param + clear flag + effort
+    map, catalog default overridden by the config `providers.<name>` block. Called
+    by _resolve_provider AND /providers/activate so a live provider change
+    re-resolves the contract instead of leaving the previous provider's."""
+    global _REASONING_FIELD, _REASONING_PARAM, _REASONING_CLEAR, _EFFORT_MAP
+    _cat = PROVIDER_CATALOG.get(name) or {}
+    _REASONING_FIELD = prov.get("reasoning_field") or _cat.get("reasoning_field") or "reasoning"
+    _REASONING_PARAM = prov.get("reasoning_param") or _cat.get("reasoning_param") or "reasoning"
+    _REASONING_CLEAR = prov.get("clear_thinking") if "clear_thinking" in prov else _cat.get("clear_thinking")
+    _EFFORT_MAP = prov.get("effort_map") or _cat.get("effort_map") or {}
+
+
 def _resolve_provider():
     """Resolve the active OpenAI-compatible provider's connection details into
     the flat env vars the code reads (base URL, API key, model names)."""
@@ -505,11 +519,7 @@ def _resolve_provider():
     _OR_STREAM = bool(prov.get("stream", True))
     # Wire contract (provider property): response/replay field + request param.
     # Catalog default, overridden by the config `providers.<name>` block.
-    _cat = PROVIDER_CATALOG.get(name) or {}
-    _REASONING_FIELD = prov.get("reasoning_field") or _cat.get("reasoning_field") or "reasoning"
-    _REASONING_PARAM = prov.get("reasoning_param") or _cat.get("reasoning_param") or "reasoning"
-    _REASONING_CLEAR = prov.get("clear_thinking") if "clear_thinking" in prov else _cat.get("clear_thinking")
-    _EFFORT_MAP = prov.get("effort_map") or _cat.get("effort_map") or {}
+    _apply_reasoning_contract(name, prov)
 
 
 CONFIG_LOAD_ATTEMPTS = 6
@@ -1575,7 +1585,10 @@ def _persist_model_scope(path: str) -> bool:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             text = f.read()
-        new_text, n = re.subn(r'(?m)^  model_scope:\s*.*$', f'  model_scope: "{path}"', text, count=1)
+        # Match either a single-line string OR a block list (`model_scope:` followed
+        # by indented `- path` items) so replacing a scope over a list-backed config
+        # doesn't leave dangling `- path` lines behind (which would corrupt the YAML).
+        new_text, n = re.subn(r'(?m)^  model_scope:.*(?:\n    - .*)*', f'  model_scope: "{path}"', text, count=1)
         if n == 0:
             # No `  model_scope:` line yet — insert one instead of bailing. If the
             # config already has a `filesystem:` block, add the line right under it;
@@ -9540,9 +9553,20 @@ def _browser_root() -> str:
     return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_BROWSER_ROOT", "~"))))
 
 
-def _model_scope() -> str:
+def _model_scope() -> list:
+    """Model read/write scope roots. `filesystem.model_scope` may be a single
+    path (string) or a list of paths (multiple roots); normalize to a resolved
+    list. A bare "/" (yolo) contains everything."""
     cfg = (CONFIG_DATA.get("filesystem") or {}).get("model_scope")
-    return os.path.realpath(os.path.expanduser(str(cfg or os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output"))))
+    if cfg is None:
+        cfg = os.environ.get("MNEME_MODEL_SCOPE", "~/mneme/output")
+    items = cfg if isinstance(cfg, (list, tuple)) else [cfg]
+    out = []
+    for it in items:
+        p = os.path.realpath(os.path.expanduser(str(it or "").strip()))
+        if p and p not in out:
+            out.append(p)
+    return out
 
 
 def _within_any(path, roots) -> bool:
@@ -10064,6 +10088,15 @@ if FLASK_OK:
         MODEL = model
         os.environ["MNEME_MODEL"] = model
         os.environ["MNEME_PROVIDER"] = name
+        # Re-resolve the provider-level reasoning wire contract for the NEW provider.
+        # _resolve_provider runs only at startup/reload, so its globals are otherwise
+        # stale after a live provider switch (deepseek vs openrouter carry reasoning
+        # differently). Resolve the block the same way _resolve_provider does.
+        _rp = (CONFIG_DATA.get("providers") or {}).get(name) or {}
+        if not _rp and name in PROVIDER_CATALOG:
+            _rc = PROVIDER_CATALOG[name]
+            _rp = {"base_url": _rc.get("base_url", ""), "api_key_env": _rc.get("key_env", "")}
+        _apply_reasoning_contract(name, _rp)
         _apply_models_dev_context(name, model)
         _persist_model(model, name)
         _persist_backend_provider(name)
@@ -10827,7 +10860,7 @@ if FLASK_OK:
             target = root  # path-traversal guard
         if not os.path.isdir(target):
             return _cors_response({"error": "not a directory", "items": []}, 404)
-        model_scope = _model_scope()
+        model_scopes = _model_scope()
         items = []
         try:
             for e in sorted(os.scandir(target), key=lambda x: (not x.is_dir(), x.name.lower())):
@@ -10842,12 +10875,12 @@ if FLASK_OK:
                     "type": "dir" if e.is_dir() else "file",
                     "size": st.st_size,
                     "mtime": st.st_mtime,
-                    "in_model_scope": _within(e.path, model_scope),
+                    "in_model_scope": _within_any(e.path, model_scopes),
                 })
         except OSError as ex:
             return _cors_response({"error": str(ex), "items": []}, 500)
         return _cors_response({"root": root, "current": os.path.relpath(target, root),
-                               "model_scope": model_scope, "items": items})
+                               "model_scope": ", ".join(model_scopes), "items": items})
 
     @app.route("/fs/read", methods=["GET"])
     def fs_read():
@@ -10871,7 +10904,7 @@ if FLASK_OK:
             return _cors_response({"error": str(ex)}, 500)
         return _cors_response({
             "path": rel, "size": size,
-            "in_model_scope": _within(target, _model_scope()),
+            "in_model_scope": _within_any(target, _model_scope()),
             "content": content,
         })
 
