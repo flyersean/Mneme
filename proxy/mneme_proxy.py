@@ -12155,11 +12155,33 @@ if FLASK_OK:
 
 # ─── Embedding health + recovery ──────────────────────────────
 
+def _drop_pending_chunk(cid: str, reason: str):
+    """Remove a pending_embed chunk that can never be embedded (empty/corrupt
+    content, or repeated embed failure with a healthy embedder). Soft-removes it
+    and clears pending_embed so it is never re-selected."""
+    try:
+        db.execute(
+            "UPDATE chunks SET pending_embed=0, removed='removed', removed_by='reembed', "
+            "removed_reason=?, removed_at=? WHERE chunk_id=?",
+            (reason, datetime.now(timezone.utc).isoformat(), cid),
+        )
+        db.commit()
+        print(f"  [EMBED-RETRY] dropped unembeddable chunk {cid} ({reason})", flush=True)
+    except Exception as e:
+        _log_error("reembed:drop", e)
+
+
+_REEMBED_MAX_FAILURES = int(os.environ.get("MNEME_REEMBED_MAX_FAIL", "10"))
+_reembed_failures = {}  # chunk_id -> consecutive embed failures (healthy embedder)
+
+
 def _reembed_pending(limit: int = 200):
     """Re-embed chunks stored unembedded (pending_embed=1) due to an embed
     failure. Runs in the background at startup and drains the ENTIRE backlog
-    (not just one batch) so a large embedder outage self-heals. Returns the
-    total number re-embedded."""
+    (not just one batch) so a large embedder outage self-heals. Chunks that can
+    never be embedded (empty/corrupt content, or content the embedder keeps
+    rejecting while otherwise healthy) are soft-removed instead of hanging
+    around pending_embed forever. Returns the total number re-embedded."""
     total_fixed = 0
     while True:
         rows = db.execute(
@@ -12169,20 +12191,24 @@ def _reembed_pending(limit: int = 200):
         if not rows:
             break
         fixed = 0
+        failed = []
         for cid, msgs_json in rows:
             try:
                 msgs = json.loads(msgs_json)
             except Exception:
+                _drop_pending_chunk(cid, "corrupt messages JSON")
                 continue
             text = " ".join(
                 _extract_text(m.get("content", ""))
                 for m in msgs if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool")
             )
             if not text.strip():
+                _drop_pending_chunk(cid, "empty text")
                 continue
             vec = embed(text)
             if vec is None:
-                continue  # embedder still down — leave pending, retry next pass
+                failed.append(cid)
+                continue  # embedder down or content rejected — retry next pass
             db.execute(
                 "UPDATE chunks SET vector=?, pending_embed=0, embed_model=?, dim=? WHERE chunk_id=?",
                 (_vec_to_blob(vec), EMBED_MODEL, DIM, cid),
@@ -12196,12 +12222,22 @@ def _reembed_pending(limit: int = 200):
                     _id_map.append(cid)
                 _save_index()
             fixed += 1
+            _reembed_failures.pop(cid, None)
             print(f"  [EMBED-RETRY] {cid} re-embedded ({len(text)} chars)", flush=True)
         total_fixed += fixed
         if fixed == 0:
-            # Nothing in this batch could be embedded (embedder down, or the
-            # remaining chunks have empty text) — stop to avoid spinning.
+            # Nothing in this batch could be embedded — embedder is likely down.
+            # Do NOT burn the failure budget; stop and retry next poll.
             break
+        # The embedder was working (fixed > 0), so any chunk that still failed is
+        # a content issue rather than an outage. Count it toward the give-up
+        # threshold so a permanently-unembeddable chunk can't hang around forever.
+        for cid in failed:
+            n = _reembed_failures.get(cid, 0) + 1
+            if n >= _REEMBED_MAX_FAILURES:
+                _drop_pending_chunk(cid, f"embed failed {n} consecutive times")
+            else:
+                _reembed_failures[cid] = n
     if total_fixed:
         print(f"  [EMBED-RETRY] re-embedded {total_fixed} pending chunks", flush=True)
     return total_fixed
@@ -12340,6 +12376,7 @@ if __name__ == "__main__":
         atexit.register(_deregister_self)
         _enqueue(_gc_images)   # startup sweep (grace period still applies)
         _start_gc_loop()       # periodic sweep
+        _start_reembed_loop()  # drain pending_embed backlog + self-heal
         # Bind to localhost by default. Mneme's proxy has no auth unless a user
         # is configured (mneme.auth — a users file in the gateway config dir);
         # it exposes `bash`, `write`, filesystem reads and arbitrary MCP tools —
