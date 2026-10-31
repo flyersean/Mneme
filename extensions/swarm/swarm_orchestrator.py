@@ -534,6 +534,22 @@ class Orchestrator:
             out = os.path.join(dir_path, "output.txt")
         return out
 
+    # Provider-error placeholders the proxy substitutes when the upstream call
+    # fails (mneme_proxy.py EMPTY-ANSWER fallback). Writing one of these over a
+    # real entry (e.g. journal/last.md) destroys the previous genuine content.
+    _ERROR_MARKERS = ("[The model provider returned an error",
+                      "[The reply stalled",
+                      "[The model returned an empty response",
+                      "[Stopped by user.]")
+
+    def _ok_output(self, output):
+        """False when `output` is an infrastructure-error placeholder rather than
+        the model's real answer — such output must never be written to disk."""
+        if output is None:
+            return False
+        s = str(output).strip()
+        return not any(s.startswith(m) for m in self._ERROR_MARKERS)
+
     def write_output(self, dir_path, content):
         if not dir_path:
             return
@@ -546,9 +562,49 @@ class Orchestrator:
         if not dir_path:
             return
         out = self._resolve_output_path(dir_path)
-        with open(out, "a", encoding="utf-8") as f:
-            f.write(content)
+        text = content if content.endswith("\n") else content + "\n"
+        try:
+            size = os.path.getsize(out)
+        except OSError:
+            size = 0
+        with open(out, "a+", encoding="utf-8") as f:
+            if size:
+                f.seek(size - 1)
+                if f.read(1) != "\n":
+                    f.write("\n")
+                f.write("\n")
+            f.write(text)
+        self._trim_log(out)
         print(f"  [append] {out}")
+
+    def _trim_log(self, path, max_bytes=None, keep_bytes=None):
+        """Drop whole '# Cycle' blocks from the front once the log exceeds max_bytes.
+
+        Thresholds come from config so they can be tuned via hot-reload.
+        Never leaves a partial entry at the top of the file.
+        """
+        try:
+            max_bytes = int(max_bytes if max_bytes is not None else self.config.get("log_max_bytes", 10000000))
+            keep_bytes = int(keep_bytes if keep_bytes is not None else self.config.get("log_keep_bytes", 8000000))
+        except (TypeError, ValueError):
+            return
+        try:
+            if os.path.getsize(path) <= max_bytes:
+                return
+        except OSError:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return
+        target = max(0, len(text) - keep_bytes)
+        cut = text.find("# Cycle ", target)
+        if cut <= 0:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text[cut:])
+        print(f"  [trim] {path} -> {os.path.getsize(path)} bytes")
 
     def _parse_patch(self, patch_text):
         """Parse a model's SEARCH/REPLACE patch into a list of (find, replace) pairs.
@@ -1071,6 +1127,10 @@ class Orchestrator:
                     output = self.call_mneme(step, context, retries)
 
             # 3. Apply folder actions in a fixed, predictable order.
+            # Never write a provider-error placeholder over a real entry.
+            if output is not None and not self._ok_output(output):
+                print("  [skip-write] provider error marker in output — not writing (previous file preserved)", flush=True)
+                output = None
             if step.get("write_dir") and output is not None:
                 self.write_output(step["write_dir"], output)
             if step.get("append_dir") and output is not None:

@@ -3924,7 +3924,7 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     payload = {
         "model": _model,
         "stream": _OR_STREAM,
-        "messages": msgs,
+        "messages": _sanitize_tool_messages(msgs),
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
         # Anti-repetition (OpenAI-style). Previously only the Ollama path mapped
@@ -4467,7 +4467,7 @@ def _query_model_impl(messages: list, system: str = None, temperature: float = N
     opts.pop("max_tokens", None)
 
     payload = {
-        "model": _model, "stream": True, "messages": msgs,
+        "model": _model, "stream": True, "messages": _sanitize_tool_messages(msgs),
         "options": opts
     }
     # Thinking control. Global default is OFF (think:false) so a reasoning model
@@ -7715,6 +7715,35 @@ def _execute_search_tool_calls(search_calls):
             result_texts.append("No matching memories found.")
             print("  [SEARCH-TOOL] no results", flush=True)
     return result_texts, trace
+
+
+def _sanitize_tool_messages(msgs):
+    """Drop orphaned 'tool' messages: a tool result whose tool_call_id is not
+    present in any preceding assistant message's tool_calls. History trimming
+    (MAX_HISTORY_MESSAGES) can cut the assistant tool_call message while keeping
+    its tool result, and OpenRouter rejects that with HTTP 400 ("tool message
+    references a tool_call_id that is not present in the preceding
+    assistant.tool_calls message")."""
+    seen = set()
+    out = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                if isinstance(tc, dict) and tc.get("id"):
+                    seen.add(tc["id"])
+            out.append(m)
+        elif role == "tool":
+            tid = m.get("tool_call_id")
+            if tid and tid in seen:
+                out.append(m)
+            else:
+                print(f"  [SANITIZE] dropping orphaned tool message (tool_call_id={tid!r})", flush=True)
+        else:
+            out.append(m)
+    return out
 
 
 def _query_retry_timeout(msgs, tools=None, timeout=None, options=None, max_tokens=None, attempts=None):
