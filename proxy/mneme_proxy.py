@@ -12243,6 +12243,43 @@ def _reembed_pending(limit: int = 200):
     return total_fixed
 
 
+def _reembed_strategies(limit: int = 500):
+    """Re-embed strategy vectors after startup. Strategy vectors live ONLY in the
+    FAISS index (the strategies table stores text, not vectors), and _load_index()
+    rebuilds the index from chunks only — so every restart drops all strategy
+    vectors. This re-adds them from strategy_text so strategy retrieval survives a
+    restart. Runs in the bg worker (enqueued after _load_index)."""
+    rows = db.execute(
+        "SELECT strategy_id, strategy_text FROM strategies WHERE retired=0 OR retired IS NULL"
+    ).fetchall()
+    added = 0
+    with faiss_lock():
+        _load_index_from_disk()
+        existing = set(_id_map)
+        for sid, st in rows:
+            if not st or not st.strip():
+                continue
+            fid = "strat_" + sid
+            if fid in existing:
+                continue
+            try:
+                vec = embed(st.strip())
+            except Exception:
+                vec = None
+            if vec is None:
+                continue
+            if FAISS_OK and _index is not None:
+                _index.add(vec.reshape(1, -1))
+            _id_map.append(fid)
+            existing.add(fid)
+            added += 1
+        if added:
+            _save_index()
+    if added:
+        print(f"  [STRAT-REEMBED] re-embedded {added} strategy vectors", flush=True)
+    return added
+
+
 _REEMBED_POLL_SECONDS = int(os.environ.get("MNEME_REEMBED_POLL", "30"))
 
 _ALLOW_REINDEX = os.environ.get("MNEME_ALLOW_REINDEX", "0") == "1"
@@ -12352,6 +12389,7 @@ materialize_instructions()
 # them pending_embed and defers embedding to here). The bg worker queue reuses the
 # check_same_thread=False connection and the faiss file lock, so it is safe.
 _enqueue(_reembed_pending)
+_enqueue(_reembed_strategies)  # re-embed strategy vectors lost by _load_index()'s chunk-only rebuild
 # Calibrate noise baseline AFTER FAISS is loaded, then CLAMP it below the inject
 # floor. _calibrate_noise() embeds random gibberish and measures its similarity
 # to the nearest chunks; that value drifts UP as the corpus grows (more chunks =
