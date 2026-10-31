@@ -1065,15 +1065,23 @@ def _exec_bash(command):
         env = dict(os.environ)
         env["PIP_TARGET"] = pylibs
         env["PYTHONPATH"] = pylibs + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        bwrap = shutil.which("bwrap")
-        if bwrap:
-            cmd = [bwrap, "--ro-bind", "/", "/"]
-            for r in _writable_roots():
-                cmd += ["--bind", r, r]
-            cmd += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-                    "--chdir", TOOLS_DIR, "bash", "-c", command]
-        else:
+        # Yolo ("trust this box") runs bash WITHOUT the bubblewrap sandbox. The
+        # sandbox mounts a fresh /proc, so `ss -ltnp` shows LISTEN lines with an
+        # empty pid= column — the model can't map a port back to a process. That
+        # is exactly the "bubblewrapped, can't figure out what pid is what" failure
+        # mode. In yolo the model is trusted, so run on the real host (pids visible).
+        if os.environ.get("MNEME_YOLO", "0") == "1":
             cmd = ["bash", "-c", command]
+        else:
+            bwrap = shutil.which("bwrap")
+            if bwrap:
+                cmd = [bwrap, "--ro-bind", "/", "/"]
+                for r in _writable_roots():
+                    cmd += ["--bind", r, r]
+                cmd += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+                        "--chdir", TOOLS_DIR, "bash", "-c", command]
+            else:
+                cmd = ["bash", "-c", command]
 
         log_path = _bash_log_path()
         # Bound the log: a runaway command or a leaked background process (a server
