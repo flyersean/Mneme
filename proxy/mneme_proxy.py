@@ -2779,19 +2779,46 @@ FAISS_LOCK_FILE   = os.path.join(DB_DIR, "faiss.lock")
 
 import fcntl
 
+_faiss_lock_fd = None
+_faiss_lock_guard = threading.Lock()    # protects the lazy open
+_faiss_thread_lock = threading.Lock()   # serializes threads within this process
+
+
+def _faiss_lock_open():
+    global _faiss_lock_fd
+    with _faiss_lock_guard:
+        if _faiss_lock_fd is None:
+            _faiss_lock_fd = open(FAISS_LOCK_FILE, "w")
+        return _faiss_lock_fd
+
+
 class faiss_lock:
-    """Context manager for fcntl file lock around FAISS operations.
-    Kernel-enforced — released on process death, no stale locks."""
+    """Exclusive lock around FAISS index operations (memory + disk).
+
+    In-process threads are serialized by a mutex; other processes are
+    serialized by a kernel-enforced flock on a single shared fd. Opening a
+    fresh fd per acquire made flock() treat two open()s of the same file as
+    independent/conflicting locks even within one process, so two overlapping
+    acquisitions (a bg worker vs the main thread, or two proxies sharing the
+    DB) could each hold one fd's lock and block on the other — an ABBA
+    deadlock that hung startup after "chunk_seq seeded"."""
     def __init__(self):
         self._fd = None
     def __enter__(self):
-        self._fd = open(FAISS_LOCK_FILE, "w")
-        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        _faiss_thread_lock.acquire()
+        try:
+            self._fd = _faiss_lock_open()
+            fcntl.flock(self._fd, fcntl.LOCK_EX)
+        except BaseException:
+            _faiss_thread_lock.release()
+            raise
         return self
     def __exit__(self, *args):
         if self._fd:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
-            self._fd.close()
+            self._fd = None
+        # NOTE: do NOT close() the shared fd — it is opened once per process.
+        _faiss_thread_lock.release()
 
 def _save_index():
     """Save FAISS index + id_map to disk. Caller must hold faiss_lock."""
