@@ -12270,30 +12270,72 @@ def _reembed_pending(limit: int = 200):
     return total_fixed
 
 
+def _embed_batch(texts, chunk: int = 64):
+    """Embed a list of texts in batched requests (OpenRouter accepts multiple
+    inputs). Returns a list of vectors (None for any entry that fails). Re-embeds
+    many strategies in a handful of calls instead of N sequential ones."""
+    conn = _aux_conn("embed")
+    out = [None] * len(texts)
+    if conn["kind"] != "openai":
+        for i, t in enumerate(texts):  # Ollama / other: no reliable batch
+            try:
+                out[i] = embed(t)
+            except Exception:
+                out[i] = None
+        return out
+    _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
+    if conn["key"]:
+        _h["Authorization"] = f"Bearer {conn['key']}"
+    _h.update(conn["headers"])
+    for i in range(0, len(texts), chunk):
+        group = texts[i:i + chunk]
+        try:
+            r = requests.post(
+                f"{conn['base_url']}/embeddings",
+                headers=_h,
+                json={"model": EMBED_MODEL, "input": group, "dimensions": DIM},
+                timeout=EMBED_TIMEOUT * 4,
+            )
+            r.raise_for_status()
+            data = r.json()["data"]
+            for j, item in enumerate(data):
+                v = np.array(item["embedding"], dtype=np.float32)
+                if v.shape[0] != DIM:
+                    v = v[:DIM] if v.shape[0] > DIM else np.pad(v, (0, DIM - v.shape[0]))
+                out[i + j] = v / (np.linalg.norm(v) + 1e-8)
+        except Exception:
+            for j, t in enumerate(group):  # batch failed -> per-text fallback
+                try:
+                    out[i + j] = embed(t)
+                except Exception:
+                    out[i + j] = None
+    return out
+
+
 def _reembed_strategies(limit: int = 500):
     """Re-embed strategy vectors after startup. Strategy vectors live ONLY in the
     FAISS index (the strategies table stores text, not vectors), and _load_index()
     rebuilds the index from chunks only — so every restart drops all strategy
     vectors. This re-adds them from strategy_text so strategy retrieval survives a
-    restart. Runs in the bg worker (enqueued after _load_index)."""
+    restart. Embedding happens OUTSIDE faiss_lock (HTTP must never hold the global
+    lock — doing so for N sequential embeds stalled startup); the lock is taken
+    only to add vectors + save."""
     rows = db.execute(
         "SELECT strategy_id, strategy_text FROM strategies WHERE retired=0 OR retired IS NULL"
     ).fetchall()
+    pairs = [(sid, st.strip()) for sid, st in rows if st and st.strip()]
+    if not pairs:
+        return 0
+    vecs = _embed_batch([st for _, st in pairs])
     added = 0
     with faiss_lock():
         _load_index_from_disk()
         existing = set(_id_map)
-        for sid, st in rows:
-            if not st or not st.strip():
+        for (sid, _st), vec in zip(pairs, vecs):
+            if vec is None:
                 continue
             fid = "strat_" + sid
             if fid in existing:
-                continue
-            try:
-                vec = embed(st.strip())
-            except Exception:
-                vec = None
-            if vec is None:
                 continue
             if FAISS_OK and _index is not None:
                 _index.add(vec.reshape(1, -1))
