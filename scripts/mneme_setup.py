@@ -1786,10 +1786,10 @@ def _add_instance(memory_dir, shared, memory_only):
     """
     print("\n\033[1mAdd a proxy instance to the existing DB\033[0m")
     print(f"  Shared DB:  {memory_dir}")
-    embed_model = shared.get("embed_model") or OL_DEFAULT_EMBED
-    embed_backend = shared.get("embed_backend") or "ollama"
-    label_model = shared.get("label_model") or OL_DEFAULT_LABEL
-    label_backend = shared.get("label_backend") or "ollama"
+    embed_model = shared.get("embed_model") or OR_DEFAULT_EMBED
+    embed_backend = shared.get("embed_backend") or "openai"
+    label_model = shared.get("label_model") or OR_DEFAULT_LABEL
+    label_backend = shared.get("label_backend") or "openai"
     print(f"  Embedder (locked): {embed_model}  ({embed_backend})")
     print(f"  Labeler  (locked): {label_model}  ({label_backend})")
     print("  These are fixed by the DB — a proxy sharing this DB MUST use the same")
@@ -1922,10 +1922,10 @@ def add_instance_noninteractive(params):
     mcp_servers = params.get("mcp_servers") or []
     ctx_size = int(params.get("ctx_size") or 64000)
 
-    embed_model = shared.get("embed_model") or OL_DEFAULT_EMBED
-    embed_backend = shared.get("embed_backend") or "ollama"
-    label_model = shared.get("label_model") or OL_DEFAULT_LABEL
-    label_backend = shared.get("label_backend") or "ollama"
+    embed_model = shared.get("embed_model") or OR_DEFAULT_EMBED
+    embed_backend = shared.get("embed_backend") or "openai"
+    label_model = shared.get("label_model") or OR_DEFAULT_LABEL
+    label_backend = shared.get("label_backend") or "openai"
 
     db_mode = params.get("db_mode", "existing") or "existing"
     instance_dir = _instance_dir(db_dir, port)
