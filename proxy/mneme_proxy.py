@@ -11358,6 +11358,54 @@ if FLASK_OK:
 
         print("  [DEBUG] stream={} model={}".format(stream, data.get("model", "?")), flush=True)
         messages = data.get("messages", [])
+        # ── MIND ROUTE (experiment) ──────────────────────────────────────
+        # When MNEME_MIND_ROUTE=1, a DIRECT user message does not get an immediate
+        # reply. It is written to the mind's stream/ dir (read by the mind loop on
+        # its next tick) and the chat shows a "…" placeholder. The bridge
+        # (mind/bridge.py) later POSTs the mind-informed message with
+        # _bridge_reply=true to generate the real reply.
+        if os.environ.get("MNEME_MIND_ROUTE", "0") == "1" and not data.get("_bridge_reply"):
+            _mr_text = ""
+            for _mr_m in reversed(messages):
+                if _mr_m.get("role") == "user":
+                    _mr_text = _extract_text(_mr_m.get("content", ""))
+                    break
+            if _mr_text and _mr_text.strip():
+                _mr_dir = os.environ.get("MNEME_MIND_STREAM_DIR") or "/home/ubuntu/nfolder/mind/stream"
+                try:
+                    os.makedirs(_mr_dir, exist_ok=True)
+                    _mr_fn = f"from_chat_{int(time.time()*1000)}_{os.getpid()}.md"
+                    with open(os.path.join(_mr_dir, _mr_fn), "w") as _mr_fh:
+                        _mr_fh.write(_mr_text)
+                except Exception as _mr_e:
+                    _log_error("mind_route:stream", _mr_e)
+                _mr_conv = data.get("conversation_id")
+                if _mr_conv:
+                    try:
+                        _persist_conversation(_mr_conv,
+                                              list(messages) + [{"role": "assistant", "content": "…"}])
+                    except Exception as _mr_e:
+                        _log_error("mind_route:persist", _mr_e)
+                _mr_cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                if not stream:
+                    return _cors_response({
+                        "id": _mr_cid, "object": "chat.completion", "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "…"},
+                                     "finish_reason": "mind_route"}],
+                        "done_reason": "mind_route"})
+                def _mr_gen():
+                    yield "data: " + json.dumps({"id": _mr_cid, "object": "chat.completion.chunk",
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}) + "\n\n"
+                    yield "data: " + json.dumps({"id": _mr_cid, "object": "chat.completion.chunk",
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {"content": "…"}, "finish_reason": None}]}) + "\n\n"
+                    yield "data: " + json.dumps({"id": _mr_cid, "object": "chat.completion.chunk",
+                        "model": FAKE_MODEL_ID,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}) + "\n\n"
+                    yield "data: [DONE]\n\n"
+                return Response(stream_with_context(_mr_gen()), mimetype="text/event-stream",
+                                headers={"Cache-Control": "no-cache", "Access-Control-Allow-Origin": "*"})
         
         # Auto-generate a STABLE session ID. When the client supplies a
         # conversation_id (persistent chat), use it directly so every chunk in
