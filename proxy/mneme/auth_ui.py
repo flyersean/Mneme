@@ -163,6 +163,10 @@ def register(app, get_auth, cors_response):
                                             request.cookies.get("mneme_token")):
             return None
         if _wants_html():
+            # Token-only users (no password_hash) can't sign in via the login
+            # form, so send the browser to account creation instead of login.
+            if not get_auth().has_password_user():
+                return redirect("/create-account")
             return redirect("/login?next=" + quote(request.path))
         return Response("unauthorized", status=401,
                         headers={"WWW-Authenticate": 'Basic realm="mneme"'})
@@ -172,11 +176,13 @@ def register(app, get_auth, cors_response):
         return (f'<form method="post"><input type="hidden" name="next" value="{esc(nxt)}">'
                 f'<label>Username</label><input name="username" autofocus>'
                 f'<label>Password</label><input type="password" name="password">'
-                f'<button type="submit">Sign in</button></form>')
+                f'<button type="submit">Sign in</button></form>'
+                f'<div style="margin-top:14px;text-align:center;font-size:13px">'
+                f'<a href="/create-account">Create an account</a></div>')
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
-        if not get_auth():
+        if not get_auth() or not get_auth().has_password_user():
             return redirect("/create-account")
         nxt = request.form.get("next") or request.args.get("next") or "/"
         if request.method == "POST":
@@ -214,9 +220,11 @@ def register(app, get_auth, cors_response):
 
     @app.route("/create-account", methods=["GET", "POST"])
     def create_account():
-        if get_auth():
-            return redirect("/login")
         if not _is_loopback(request.remote_addr):
+            # Remote access: a loginable user should sign in instead; otherwise
+            # account creation stays locked to the machine running Mneme.
+            if get_auth() and get_auth().has_password_user():
+                return redirect("/login")
             return Response("account creation is only available from the machine "
                             "running Mneme", status=403)
         if request.method == "POST":

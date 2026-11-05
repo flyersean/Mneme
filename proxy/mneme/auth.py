@@ -244,6 +244,16 @@ class AuthStore:
         self._ensure_loaded()
         return bool(self.users)
 
+    def has_password_user(self):
+        """True if at least one user has a password_hash (loginable in browser)."""
+        self._ensure_loaded()
+        return any(u.get("password_hash") for u in self.users)
+
+    def has_password_user(self):
+        """True if at least one user has a password_hash (loginable in browser)."""
+        self._ensure_loaded()
+        return any(u.get("password_hash") for u in self.users)
+
 
 def check_request(auth_store, headers, query_token="", cookie_token="", legacy_token=""):
     """Return True if the request carries a valid credential.
