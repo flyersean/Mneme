@@ -1506,7 +1506,7 @@ def _persist_model_template(name: str) -> bool:
 def _env_file_path() -> str:
     """Path to the env file the start script sources (provider keys live there,
     never in the config). Shared across instances at <mneme-root>/env."""
-    return os.path.join(os.path.dirname(DB_DIR), "env")
+    return os.environ.get("MNEME_ENV_FILE") or os.path.expanduser("~/mneme/env")
 
 
 def _persist_env_key(env_file: str, key_name: str, key_value: str) -> bool:
