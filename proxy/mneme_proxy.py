@@ -420,6 +420,7 @@ PROVIDER_CATALOG = {
     "together":   {"label": "Together AI", "base_url": "https://api.together.xyz/v1", "key_env": "TOGETHER_API_KEY", "kind": "openai"},
     "routeway":   {"label": "Routeway", "base_url": "https://api.routeway.ai/v1", "key_env": "ROUTEWAY_API_KEY", "kind": "openai"},
     "featherless": {"label": "Featherless", "base_url": "https://api.featherless.ai/v1", "key_env": "FEATHERLESS_API_KEY", "kind": "openai"},
+    "venice":     {"label": "Venice AI", "base_url": "https://api.venice.ai/api/v1", "key_env": "VENICE_API_KEY", "kind": "openai"},
     "ollama":     {"label": "Ollama (local)", "base_url": "http://localhost:11434", "key_env": "", "kind": "ollama"},
     "vllm":       {"label": "vLLM (local)", "base_url": "http://localhost:8000/v1", "key_env": "", "kind": "openai"},
     "llamacpp":   {"label": "llama.cpp (local)", "base_url": "http://localhost:8080/v1", "key_env": "", "kind": "openai"},
