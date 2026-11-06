@@ -1,0 +1,39 @@
+# ── Mind module: CREATIVE ──────────────────────────────────────────────────
+# One tick of the "swarm": read recent memory -> run this module through a
+# cheap one-off model -> inject the output into the target model's thought flow.
+#
+# To scaffold a NEW module, copy _TEMPLATE.yaml, change `module` + `prompt`
+# (and the model/interval if you want), and run it. No code changes.
+
+module: creative                     # module name (used in logs only)
+
+# ── Target proxy: whose memory we read, whose flow we inject into ──────────
+proxy: http://127.0.0.1:8090
+
+# ── The one-off model (cheap + uncensored; DIRECT API call, no DB save) ─────
+model: deepseek-v4-1-flash-uncensored
+base_url: https://api.venice.ai/api/v1/chat/completions
+key_env: VENICE_API_KEY              # the key is read from this name in env_file
+env_file: /home/ubuntu/mneme/env     # where the provider keys live
+max_tokens: 1000
+reasoning_enabled: false             # false = cheap+fast+direct output (recommended)
+timeout_seconds: 120
+
+# ── Memory context ──────────────────────────────────────────────────────────
+recent_chunks: 6                     # how many recent chunks to hand the module
+
+# ── Schedule (used only with --daemon) ──────────────────────────────────────
+interval_minutes: 10                 # how often to tick; change this to retune
+
+# ── The module's prompt (the "mind function") ───────────────────────────────
+prompt: |
+  You are the drive to connect and make. Look at this tick's input
+  through the lens of art, analogy, and possibility.
+
+  What does this resemble that it does not resemble on the surface? Name the
+  analogy, then say what breaks in it. A metaphor that survives one hard push
+  is worth more than three that do not. Offer a new idea, a connection, an
+  image — make something. If you made an artifact worth keeping (a poem, a
+  line, a picture in words), write it out in full in your note.
+
+  No preamble.

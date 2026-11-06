@@ -1,0 +1,36 @@
+# ── SCAFFOLD TEMPLATE for a new mind module ────────────────────────────────
+# Copy this file to modules/<your_module>.yaml, fill in `module` + `prompt`,
+# and (optionally) tweak the model / interval. Then run:
+#
+#   python3 mind_inject.py modules/<your_module>.yaml            # one tick
+#   python3 mind_inject.py modules/<your_module>.yaml --daemon   # scheduled
+#
+# Every field is optional except `module`, `proxy`, `model`, `base_url`,
+# `key_env`, and `prompt`.
+
+module: template                    # CHANGE ME — module name (logs only)
+
+# ── Target proxy (whose memory we read, whose flow we inject into) ──────────
+proxy: http://127.0.0.1:8090        # the port of the model you're steering
+
+# ── The one-off model (cheap + uncensored; DIRECT API call, no DB save) ─────
+model: deepseek-v4-1-flash-uncensored
+base_url: https://api.venice.ai/api/v1/chat/completions
+key_env: VENICE_API_KEY             # name of the key in env_file
+env_file: /home/ubuntu/mneme/env    # provider env file (shared across proxies)
+max_tokens: 1000                    # output budget
+reasoning_enabled: false            # false = cheap+fast+direct (recommended)
+timeout_seconds: 120                # per-call timeout
+
+# ── Memory context ──────────────────────────────────────────────────────────
+recent_chunks: 6                    # how many recent chunks to hand the module
+
+# ── Schedule (used only with --daemon) ──────────────────────────────────────
+interval_minutes: 10                # tick cadence; change to retune
+
+# ── The module's prompt (the "mind function") ───────────────────────────────
+# This is the whole identity of the module — what it looks for and what it
+# produces. Other mind modules: guardian (watch for risk), curiosity (ask what's
+# unexplained), motivation (keep momentum), jane (the coordinating self).
+prompt: |
+  CHANGE ME — write the module's role here, then end with "No preamble."
