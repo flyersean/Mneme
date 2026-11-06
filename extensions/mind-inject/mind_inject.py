@@ -266,15 +266,12 @@ def _inject(cfg: dict, note: str) -> bool:
 
     FORCE path (same as the /steer page's Force button): abort the in-flight
     turn (POST /cancel) and resubmit the note as a [LIVE INTERRUPT] user turn.
-    Opt-in via `force: true` in the module YAML.
-
-    DEFAULT (the right fit for the thinking-stream experiment): passive /steer —
-    write the note to steer.txt, which the proxy consumes at the NEXT TOOL
-    BOUNDARY inside the ongoing stream. The model over-thinks continuously and
-    never finishes turns, so the tool boundary is the natural injection point.
+    The system then picks back up where it left off, now holding this note.
+    This is the DEFAULT while we test how disruptive it is. Set `force: false`
+    in the module YAML to use the passive /steer (tool-boundary) path instead.
     """
     target = _target(cfg)
-    if cfg.get("force", False):
+    if cfg.get("force", True):
         # 1) abort the in-flight turn (harmless if the model is idle)
         try:
             requests.post(f"{target}/cancel", timeout=5)
