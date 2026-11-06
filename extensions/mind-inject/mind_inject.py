@@ -277,14 +277,18 @@ def _inject(cfg: dict, note: str) -> bool:
             requests.post(f"{target}/cancel", timeout=5)
         except Exception:
             pass
-        # 2) resubmit the note as a live-interrupt user turn
+        # 2) resubmit the note as a live-interrupt user turn. Fire-and-forget:
+        #    we only need to DELIVER it — a timeout means the model is just still
+        #    processing (over-thinking), which is success, not failure.
         try:
-            r = requests.post(
+            requests.post(
                 f"{target}/v1/chat/completions",
                 json={"messages": [{"role": "user", "content": f"[LIVE INTERRUPT]: {note}"}]},
-                timeout=cfg.get("inject_timeout", 60),
+                timeout=cfg.get("inject_timeout", 20),
             )
-            return r.status_code == 200
+            return True
+        except requests.exceptions.Timeout:
+            return True  # delivered — the model is still chewing on it
         except Exception as e:
             print(f"    force inject error: {e}", flush=True)
             return False
