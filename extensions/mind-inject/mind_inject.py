@@ -1,43 +1,46 @@
 #!/usr/bin/env python3
-"""mind_inject — a generic "swarm tick" for Mneme.
+"""mind_inject — a mind-module worker that runs THROUGH its own Mneme proxy.
 
-WHAT IT DOES
-  Reads recent context from a Mneme proxy's memory DB, runs ONE mind module
-  (creative, guardian, curiosity, ...) through a cheap one-off model (a DIRECT
-  API call — it never touches the proxy, so nothing is written to the DB), then
-  injects the output into the target model's thought flow via the force-flow
-  steer file. The injection is consumed ONCE, at the target model's NEXT tool
-  boundary (the proxy wraps it as a `[CHUNK #LIVE-USER-STEERING | PRIORITY:
-  CRITICAL]` note and prepends it to that tool's result).
+DESIGN (v2 — proxy-through)
+  One mind module (creative, guardian, curiosity, ...) = one proxy instance:
+  its own port, its own config, its own ISOLATED DB, running the SAME
+  proxy code as the main instance. The module model generates inside the proxy
+  (so it gets the novelty mode + all the config levers); the extension is just
+  the control plane + retrieval + injection glue.
 
-ONE MODULE = ONE YAML FILE
-  modules/<name>.yaml holds everything: prompt, model, target proxy, memory
-  window, and schedule. To scaffold a NEW module, copy modules/_TEMPLATE.yaml,
-  change `module` + `prompt` (and the model if you want), and you're done — no
-  code changes.
+  - setup    create + launch the module's proxy at instances/<port>/
+  - run      cadence loop: retrieve memory -> generate (novelty mode) -> inject
+  - teardown kill + remove the instance dir
 
-USAGE
-  python3 mind_inject.py modules/creative.yaml              # run ONE tick (test)
-  python3 mind_inject.py modules/creative.yaml --daemon     # loop every interval_minutes
+  Path rule (deliberate, to kill multi-proxy confusion):
+    the port number IS the directory name -> chunks/instances/<port>/
+    the module's DB is isolated -> chunks/instances/<port>/mneme.db
+    the MAIN proxy is read via HTTP (/list + /search), never written to.
 
-  The runner is a standalone program: it talks to proxies only over HTTP
-  (localhost:<port>), imports nothing from the proxy, and cannot break it.
+COMMANDS
+  python3 mind_inject.py setup modules/creative.yaml
+  python3 mind_inject.py run   modules/creative.yaml
+  python3 mind_inject.py teardown modules/creative.yaml
 """
 
 import argparse
 import os
+import shutil
 import sys
 import time
 
 import requests
 import yaml
 
+DEFAULT_CHUNK_ROOT = "/home/ubuntu/glm-exp/chunks"
+DEFAULT_REPO = "/home/ubuntu/glm-exp"
+DEFAULT_ENV = "/home/ubuntu/mneme/env"
+DEFAULT_TARGET = "http://127.0.0.1:8090"
 
-# ── Helpers ────────────────────────────────────────────────────────────────
 
-def _load_env_file(path: str) -> dict:
-    """Parse a KEY=VALUE env file (the proxy's shared provider-env file) into a
-    dict. Non-secret values only; keys are consumed by name in _run_model."""
+# ── small helpers ──────────────────────────────────────────────────────────
+
+def _load_env(path: str = DEFAULT_ENV) -> dict:
     env = {}
     try:
         with open(path, encoding="utf-8") as f:
@@ -51,141 +54,292 @@ def _load_env_file(path: str) -> dict:
     return env
 
 
-def _read_memory(proxy: str, recent: int) -> str:
-    """Pull the N most recent chunks from the proxy's memory DB (read-only).
+def _instance_dir(cfg: dict) -> str:
+    return f"{cfg.get('chunk_root', DEFAULT_CHUNK_ROOT)}/instances/{cfg['port']}"
 
-    GET /list  -> recent chunk ids + topic labels (newest first)
-    GET /detail/<id> -> a chunk's messages
 
-    Returns the chunks joined into one context string, each headed by its topic
-    label. This is what the module "looks at" for this tick.
-    """
-    r = requests.get(f"{proxy}/list", timeout=15)
-    r.raise_for_status()
-    chunks = r.json().get("chunks", [])[:recent]
-    parts = []
-    for c in chunks:
-        topic = (c.get("topic_label") or "").strip()
-        body = ""
+def _module_proxy(cfg: dict) -> str:
+    return f"http://127.0.0.1:{cfg['port']}"
+
+
+def _target(cfg: dict) -> str:
+    return cfg.get("target", DEFAULT_TARGET)
+
+
+# ── setup: materialise the module YAML into a proxy instance ───────────────
+
+def _write_proxy_config(cfg: dict) -> str:
+    """Write instances/<port>/mneme.yaml for the module's proxy."""
+    inst = _instance_dir(cfg)
+    os.makedirs(inst, exist_ok=True)
+    conf = {
+        "backend": {"type": "openai", "provider": cfg["provider"]},
+        "model": cfg["model"],
+        "embed_model": "qwen/qwen3-embedding-8b",
+        "label_model": "meta-llama/llama-3.2-3b-instruct",
+        "embed_provider": "openrouter",
+        "label_provider": "openrouter",
+        "providers": {
+            cfg["provider"]: {
+                "base_url": cfg["base_url"],
+                "api_key_env": cfg["key_env"],
+                "model": cfg["model"],
+            }
+        },
+        "sampling": {"temperature": cfg.get("temperature", 1.2)},
+        "storage": {
+            "chunk_dir": inst,
+            "db_path": os.path.join(inst, "mneme.db"),  # isolated — never the main DB
+            "port": cfg["port"],
+            "memory_enabled": True,     # needed for the novelty-mode embedding distance
+            "inject_enabled": False,    # no auto-inject — the extension does retrieval
+            "memory_only": False,       # full build — enables the novelty/thinking mode
+        },
+        "runtime": {"yolo": True, "hot_reload": True},
+    }
+    path = os.path.join(inst, "mneme.yaml")
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(conf, f, sort_keys=False)
+    return path
+
+
+def _write_start_script(cfg: dict) -> str:
+    inst = _instance_dir(cfg)
+    port = cfg["port"]
+    script = f"""#!/bin/bash
+# Mneme mind-module proxy — {cfg['module']} (port {port}). Auto-generated by mind_inject.
+if [ -f "{DEFAULT_ENV}" ]; then export $(grep -v "^#" "{DEFAULT_ENV}" | xargs) 2>/dev/null; fi
+export MNEME_BACKEND="openai"
+unset MNEME_MODEL EMBED_MODEL LABEL_MODEL MNEME_INJECT_SYSTEM MNEME_PROVIDER EMBED_PROVIDER LABEL_PROVIDER MNEME_EMBED_BACKEND MNEME_LABEL_BACKEND OPENROUTER_BASE_URL MNEME_DB_PATH MNEME_TOOLS_DIR
+export EMBED_PROVIDER="openrouter"
+export LABEL_PROVIDER="openrouter"
+export MNEME_EMBED_BACKEND="openai"
+export MNEME_LABEL_BACKEND="openai"
+export MNEME_CHUNK_DIR="{inst}"
+export MNEME_DB_PATH="{inst}/mneme.db"
+export MNEME_TOOLS_DIR="{inst}/tools"
+export MNEME_PORT="{port}"
+export MNEME_BIND="0.0.0.0"
+export MNEME_CONFIG="{inst}/mneme.yaml"
+export PYTHONDONTWRITEBYTECODE=1
+
+_PID="$(ss -ltnp 2>/dev/null | grep -E ":${{MNEME_PORT}}[[:space:]]" | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p' | head -1)"
+if [ -n "${{_PID}}" ]; then
+  if grep -q "mneme_proxy.py" "/proc/${{_PID}}/cmdline" 2>/dev/null; then
+    echo "Stopping existing proxy on ${{MNEME_PORT}} (pid ${{_PID}})..."
+    kill "${{_PID}}" 2>/dev/null
+    sleep 1
+  fi
+fi
+
+cd "{DEFAULT_REPO}"
+exec python3 -uB proxy/mneme_proxy.py
+"""
+    path = os.path.join(inst, f"start_proxy_{port}.sh")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(script)
+    os.chmod(path, 0o700)
+    return path
+
+
+def _write_launch_script(cfg: dict) -> str:
+    inst = _instance_dir(cfg)
+    port = cfg["port"]
+    script = f"""#!/bin/bash
+cd "{inst}" || exit 1
+nohup setsid bash start_proxy_{port}.sh > proxy-{port}.log 2>&1 < /dev/null &
+sleep 1
+echo "launched {port} (pid $!)"
+"""
+    path = os.path.join(inst, f"launch_{port}.sh")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(script)
+    os.chmod(path, 0o700)
+    return path
+
+
+def setup(cfg: dict) -> int:
+    inst = _instance_dir(cfg)
+    if os.path.exists(os.path.join(inst, "mneme.yaml")):
+        print(f"[{cfg['module']}] instance already exists at {inst} — teardown first, or reuse", flush=True)
+        return 1
+    _write_proxy_config(cfg)
+    _write_start_script(cfg)
+    _write_launch_script(cfg)
+    print(f"[{cfg['module']}] wrote instance at {inst}", flush=True)
+    # launch
+    os.system(f"bash {inst}/launch_{cfg['port']}.sh")
+    # wait for /health
+    ok = False
+    for _ in range(40):
+        time.sleep(1)
         try:
-            d = requests.get(f"{proxy}/detail/{c['chunk_id']}", timeout=15).json()
-            # Flatten the chunk's messages to plain text (first 160 chars each
-            # so the context stays compact).
-            body = " ".join(
-                m["content"][:160] for m in d.get("messages", []) if m.get("content")
-            )
+            r = requests.get(f"{_module_proxy(cfg)}/health", timeout=3)
+            if r.status_code == 200:
+                ok = True
+                break
         except Exception:
-            pass  # a chunk we can't read is skipped, not fatal
-        line = f"[{topic}] {body}".strip() if topic else body.strip()
-        if line:
-            parts.append(line)
+            pass
+    if ok:
+        print(f"[{cfg['module']}] proxy up on port {cfg['port']}", flush=True)
+        return 0
+    print(f"[{cfg['module']}] proxy did not come up on port {cfg['port']} — check proxy-{cfg['port']}.log", flush=True)
+    return 1
+
+
+# ── run: cadence loop (retrieve -> generate -> inject) ─────────────────────
+
+def _retrieve_context(cfg: dict) -> str:
+    """Read the MAIN proxy's memory: recent chunks + similar older chunks."""
+    target = _target(cfg)
+    recent = cfg.get("recent_chunks", 6)
+    top_k = cfg.get("search_top_k", 6)
+    parts = []
+    # recent chunks (current state)
+    try:
+        r = requests.get(f"{target}/list", timeout=15).json()
+        for c in r.get("chunks", [])[:recent]:
+            topic = (c.get("topic_label") or "").strip()
+            body = ""
+            try:
+                d = requests.get(f"{target}/detail/{c['chunk_id']}", timeout=15).json()
+                body = " ".join(m["content"][:160] for m in d.get("messages", []) if m.get("content"))
+            except Exception:
+                pass
+            line = f"[{topic}] {body}".strip() if topic else body.strip()
+            if line:
+                parts.append(line)
+    except Exception:
+        pass
+    # similar older chunks (past experience) via the main proxy's semantic search
+    query = " ".join(parts)[:800]
+    if query:
+        try:
+            r = requests.post(f"{target}/search", json={"query": query, "top_k": top_k}, timeout=30).json()
+            for hit in (r.get("results") or r.get("chunks") or []):
+                text = hit.get("text") or hit.get("content") or hit.get("topic_label") or ""
+                if text:
+                    parts.append(f"[past] {text[:200]}")
+        except Exception:
+            pass
     return "\n\n".join(parts)
 
 
-def _run_model(cfg: dict, context: str, env: dict) -> str:
-    """One-off call to the module's model. Direct API — no proxy, no DB save.
-
-    The reasoning pass is DISABLED by default (reasoning_enabled: false): a
-    cheap one-off model that reasons will burn its whole token budget on
-    thinking and return an empty body (finish_reason=length). Disabling it makes
-    the model emit content directly — faster, cheaper, and it actually answers.
-    Set reasoning_enabled: true if you'd rather it think first (costs more).
-    """
-    key = env.get(cfg["key_env"], "")
-    if not key:
-        raise SystemExit(f"[{cfg['module']}] {cfg['key_env']} not found in env file")
-
-    payload = {
-        "model": cfg["model"],
-        "messages": [
-            {"role": "system", "content": cfg["prompt"]},
-            {"role": "user", "content": "Recent context from memory:\n\n" + context},
-        ],
-        "max_tokens": cfg.get("max_tokens", 1000),
-        "stream": False,
-    }
-    if cfg.get("temperature") is not None:
-        # Sampling temperature for THIS module (higher = more varied/creative).
-        payload["temperature"] = float(cfg["temperature"])
-    if not cfg.get("reasoning_enabled", False):
-        payload["reasoning"] = {"enabled": False}
-
+def _generate(cfg: dict, context: str) -> str:
+    """Generate the module's note. Novelty mode first, plain chat fallback."""
+    proxy = _module_proxy(cfg)
+    problem = f"{cfg['prompt']}\n\nContext (current + past):\n{context}"
+    if cfg.get("novelty", True):
+        try:
+            r = requests.post(
+                f"{proxy}/mode/think",
+                json={"problem": problem, "iterations": cfg.get("iterations", 4)},
+                timeout=cfg.get("timeout_seconds", 300),
+            ).json()
+            # /mode/think returns the judged best candidate under a few shapes
+            cand = r.get("best") or r.get("content") or r.get("result")
+            if isinstance(cand, dict):
+                cand = cand.get("content") or cand.get("text") or ""
+            if cand:
+                return str(cand).strip()
+        except Exception as e:
+            print(f"[{cfg['module']}] novelty mode failed ({e}) — falling back to chat", flush=True)
+    # fallback: plain chat on the module's proxy
     r = requests.post(
-        cfg["base_url"],
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json=payload,
+        f"{proxy}/v1/chat/completions",
+        json={
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": cfg["prompt"]},
+                {"role": "user", "content": context},
+            ],
+            "max_tokens": cfg.get("max_tokens", 1000),
+            "temperature": cfg.get("temperature", 1.2),
+        },
         timeout=cfg.get("timeout_seconds", 120),
-    )
-    r.raise_for_status()
-    content = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
-    return (content or "").strip()
+    ).json()
+    return (((r.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
 
-def _inject(proxy: str, content: str) -> None:
-    """Write the generated text to the target proxy's force-flow steer file.
-
-    POST /steer writes steer.txt; the proxy consumes it ONCE at the next tool
-    boundary. Last-write-wins: a fresh tick overwrites any un-consumed note.
-    """
-    r = requests.post(f"{proxy}/steer", json={"message": content}, timeout=10)
-    r.raise_for_status()
+def _inject(cfg: dict, note: str) -> bool:
+    """Inject the note into the MAIN proxy's thought flow via /steer."""
+    r = requests.post(f"{_target(cfg)}/steer", json={"message": note}, timeout=10)
+    return bool(r.json().get("ok"))
 
 
-# ── One tick ───────────────────────────────────────────────────────────────
+def run(cfg: dict) -> int:
+    inst = _instance_dir(cfg)
+    if not os.path.exists(os.path.join(inst, "mneme.yaml")):
+        print(f"[{cfg['module']}] no instance yet — running setup first", flush=True)
+        if setup(cfg) != 0:
+            return 1
+    interval = int(cfg.get("interval_minutes", 10)) * 60
+    print(f"[{cfg['module']}] cadence every {interval // 60} min (Ctrl-C to stop)", flush=True)
+    while True:
+        try:
+            context = _retrieve_context(cfg)
+            if not context.strip():
+                print(f"[{cfg['module']}] no memory context — skip", flush=True)
+            else:
+                note = _generate(cfg, context)
+                if note:
+                    if _inject(cfg, note):
+                        print(f"[{cfg['module']}] injected {len(note)} chars", flush=True)
+                    else:
+                        print(f"[{cfg['module']}] inject failed", flush=True)
+                else:
+                    print(f"[{cfg['module']}] empty output — skip", flush=True)
+        except Exception as e:
+            print(f"[{cfg['module']}] tick error: {e}", flush=True)
+        time.sleep(interval)
 
-def run_tick(cfg: dict, env: dict) -> bool:
-    """Run one full tick: read memory -> run module -> inject. Returns True if a
-    note was actually injected (False = nothing to say / empty output)."""
-    name = cfg["module"]
-    context = _read_memory(cfg["proxy"], cfg.get("recent_chunks", 6))
-    if not context.strip():
-        print(f"[{name}] no memory context — skipping", flush=True)
-        return False
-    out = _run_model(cfg, context, env)
-    if not out:
-        print(f"[{name}] model returned empty — skipping", flush=True)
-        return False
-    _inject(cfg["proxy"], out)
-    print(f"[{name}] injected {len(out)} chars", flush=True)
-    return True
+
+# ── teardown ───────────────────────────────────────────────────────────────
+
+def teardown(cfg: dict) -> int:
+    inst = _instance_dir(cfg)
+    port = cfg["port"]
+    # stop the proxy (port owner)
+    try:
+        out = os.popen(f"ss -ltnp 2>/dev/null | grep ':{port} '").read()
+        pid = None
+        for tok in out.split():
+            if "pid=" in tok:
+                pid = tok.split("pid=")[-1].split(",")[0]
+                break
+        if pid:
+            os.system(f"kill {pid}")
+            print(f"[{cfg['module']}] stopped proxy on {port} (pid {pid})", flush=True)
+    except Exception:
+        pass
+    # remove the instance dir
+    if os.path.isdir(inst):
+        shutil.rmtree(inst)
+        print(f"[{cfg['module']}] removed {inst}", flush=True)
+    return 0
 
 
-# ── Entry point ────────────────────────────────────────────────────────────
+# ── entry point ────────────────────────────────────────────────────────────
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Mind-module injector (swarm tick)")
-    ap.add_argument("config", help="path to a module YAML, e.g. modules/creative.yaml")
-    ap.add_argument("--daemon", action="store_true",
-                    help="loop forever, ticking every interval_minutes")
-    ap.add_argument("--once", action="store_true",
-                    help="run a single tick and exit (default)")
+    ap = argparse.ArgumentParser(description="mind-inject (proxy-through mind module)")
+    ap.add_argument("command", choices=["setup", "run", "teardown"])
+    ap.add_argument("config", help="module YAML, e.g. modules/creative.yaml")
     args = ap.parse_args(argv)
 
-    # /extensions page config-form overrides (the manifest injects these as env
-    # vars when the extension is run from the UI). Purely optional.
+    # /extensions page config-form override: pick the module YAML by name.
     _mod = os.environ.get("MIND_INJECT_MODULE", "").strip()
     if _mod:
         args.config = os.path.join(os.path.dirname(args.config) or ".", f"{_mod}.yaml")
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    env = _load_env_file(cfg.get("env_file", "/home/ubuntu/mneme/env"))
+    cfg["chunk_root"] = cfg.get("chunk_root", DEFAULT_CHUNK_ROOT)
 
-    if args.daemon:
-        interval = int(cfg.get("interval_minutes", 10)) * 60
-        print(f"[{cfg['module']}] daemon — every {interval // 60} min (Ctrl-C to stop)", flush=True)
-        while True:
-            try:
-                run_tick(cfg, env)
-            except Exception as e:
-                print(f"[{cfg['module']}] tick error: {e}", flush=True)
-            time.sleep(interval)
-    else:
-        try:
-            run_tick(cfg, env)
-        except Exception as e:
-            print(f"[{cfg['module']}] error: {e}", flush=True)
-            return 1
-    return 0
+    if args.command == "setup":
+        return setup(cfg)
+    if args.command == "run":
+        return run(cfg)
+    return teardown(cfg)
 
 
 if __name__ == "__main__":

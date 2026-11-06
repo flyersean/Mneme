@@ -1,68 +1,52 @@
-# mind-inject — scheduled mind-module injection for Mneme
+# mind-inject — a mind module runs through its own Mneme proxy
 
-A generic "swarm tick": read recent memory from a Mneme proxy, run ONE mind
-module (creative, guardian, curiosity, …) through a cheap one-off model, then
-inject the output into the target model's thought flow via the **force flow**
-(the `steer.txt` tool-boundary piggyback).
+One mind module (creative, guardian, curiosity, ...) becomes ONE proxy instance
+— its own port, config, and isolated DB — running the same proxy code as the
+main instance. The extension is just the control plane: it creates the proxy,
+drives the cadence, and injects the module's output into the main model's
+thought flow.
 
-## What it does, step by step
+## Design (why proxy-through)
 
-1. **Read** the N most recent chunks from the target proxy's memory DB
-   (`GET /list` + `GET /detail/<id>`).
-2. **Run** the module's prompt against a cheap uncensored model in a **one-off
-   direct API call** — it never touches the proxy, so **nothing is saved to the
-   DB**.
-3. **Inject** the output via `POST /steer`, which writes the proxy's steer file.
-   The proxy consumes it **once, at the next tool boundary**, wrapping it as a
-   high-priority `[CHUNK #LIVE-USER-STEERING]` note the model already scans.
+Running the module through a proxy instead of a direct API call gives it, for
+free: the built-in **novelty mode** (`/mode/think` — diverge -> forbid ->
+measure -> judge), the full config surface (temperature, sampling, etc.), and a
+clean system-prompt boundary. The module's model is often tool-free (e.g.
+`gemma-4-31b-cognitive-unshackled` has `function_call: false`), so the extension
+does the memory retrieval against the MAIN proxy over HTTP and hands the model a
+plain context. The module's own DB is isolated, so its output never pollutes the
+main memory.
 
-The injection is **last-write-wins**: a fresh tick overwrites any un-consumed
-note. So if the target model is idle (not tool-calling), new ticks replace the
-old note rather than queueing up.
-
-## Usage
+## Commands
 
 ```bash
-# one tick (test)
-python3 mind_inject.py modules/creative.yaml
-
-# scheduled: loop every `interval_minutes` from the config
-python3 mind_inject.py modules/creative.yaml --daemon
+python3 mind_inject.py setup modules/creative.yaml     # create + launch the proxy
+python3 mind_inject.py run   modules/creative.yaml     # cadence loop (auto-setups if needed)
+python3 mind_inject.py teardown modules/creative.yaml  # kill + remove the instance
 ```
 
-To run the daemon detached (survives logout):
+## Path rule (deliberate — no multi-proxy confusion)
 
-```bash
-setsid python3 -u mind_inject.py modules/creative.yaml --daemon \
-  >> /home/ubuntu/mind_inject.log 2>&1 &
-```
+- The port number IS the directory name: `chunks/instances/<port>/`.
+- The module's DB is isolated: `chunks/instances/<port>/mneme.db`.
+- The main proxy is read over HTTP (`/list`, `/detail`, `/search`) and injected
+  via `/steer` — never written to.
+
+Each module YAML pins a fixed, unique `port`. Free-port auto-allocation is
+deliberately avoided — a fixed port in the config means a fixed dir name, so
+"which dir is which worker" never drifts.
 
 ## Scaffolding a new module
 
-One module = one YAML file. Copy `modules/_TEMPLATE.yaml` to a new name, change
-`module` + `prompt` (and the model/interval if you want), and run it. No code
-changes. Example modules to scaffold: `guardian` (watch for risk), `curiosity`
-(ask what's unexplained), `motivation` (keep momentum), `jane` (the
-coordinating self).
+Copy `modules/_TEMPLATE.yaml`, change `module` + `port` + `prompt`, run
+`setup`. The other mind modules: guardian (watch for risk), curiosity (ask
+what's unexplained), motivation (keep momentum), jane (the coordinating self).
 
-## Schedule
+## The creative module (reference)
 
-The interval lives in the config (`interval_minutes`, default 10) — change the
-number and restart the daemon. The only knob that matters: tick roughly as
-often as (or slower than) the target model's tool activity, since a tick only
-lands when the model next calls a tool and an idle note just gets overwritten.
-
-## Model note (why reasoning is off by default)
-
-A cheap uncensored model left to "think" (reasoning pass) will burn its whole
-token budget on thinking and return an empty body (`finish_reason=length`).
-`reasoning_enabled: false` makes it emit content directly — faster, cheaper,
-and it actually answers. Flip it to `true` if you want deeper (slower, pricier)
-creative output.
-
-## Design (why it's shaped this way)
-
-Like `extensions/swarm`, this is a **standalone program that talks to the proxy
-over HTTP only**. It imports nothing from the proxy and the proxy imports
-nothing from it — so it can be changed or removed without touching the proxy,
-and vice versa. One extension, many modules, zero coupling.
+creative.yaml uses `gemma-4-31b-cognitive-unshackled` on Routeway (~$0.28/M,
+good at creative work) at temperature 1.2 with novelty mode on. Its prompt is
+the "current + past -> speculate future" frame: look at where things are now,
+find a similar past situation and its outcome, judge whether the current
+trajectory will succeed, and if not, invent a genuinely new idea (technical or
+artistic).

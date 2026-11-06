@@ -1,37 +1,40 @@
 # ── SCAFFOLD TEMPLATE for a new mind module ────────────────────────────────
-# Copy this file to modules/<your_module>.yaml, fill in `module` + `prompt`,
-# and (optionally) tweak the model / interval. Then run:
+# Copy to modules/<your_module>.yaml, fill in `module` + `port` + `prompt`,
+# then:
+#   python3 mind_inject.py setup modules/<your_module>.yaml
+#   python3 mind_inject.py run   modules/<your_module>.yaml
+#   python3 mind_inject.py teardown modules/<your_module>.yaml
 #
-#   python3 mind_inject.py modules/<your_module>.yaml            # one tick
-#   python3 mind_inject.py modules/<your_module>.yaml --daemon   # scheduled
-#
-# Every field is optional except `module`, `proxy`, `model`, `base_url`,
-# `key_env`, and `prompt`.
+# Required: module, port, target, provider, base_url, key_env, model, prompt.
+# Everything else has a sensible default.
 
-module: template                    # CHANGE ME — module name (logs only)
+module: template            # CHANGE ME — module name (logs only)
 
-# ── Target proxy (whose memory we read, whose flow we inject into) ──────────
-proxy: http://127.0.0.1:8090        # the port of the model you're steering
+port: 8093                  # CHANGE ME — unique + fixed; this is the instance dir name
+target: http://127.0.0.1:8090   # the MAIN proxy (memory source + injection target)
 
-# ── The one-off model (cheap + uncensored; DIRECT API call, no DB save) ─────
-model: deepseek-v4-1-flash-uncensored
-base_url: https://api.venice.ai/api/v1/chat/completions
-key_env: VENICE_API_KEY             # name of the key in env_file
-env_file: /home/ubuntu/mneme/env    # provider env file (shared across proxies)
-max_tokens: 1000                    # output budget
-temperature: 0.8                    # sampling temp — higher = more varied/creative
-reasoning_enabled: false            # false = cheap+fast+direct (recommended)
-timeout_seconds: 120                # per-call timeout
+# ── The module's generator model ────────────────────────────────────────────
+provider: routeway
+base_url: https://api.routeway.ai/v1
+key_env: ROUTEWAY_API_KEY
+model: gemma-4-31b-cognitive-unshackled
+temperature: 1.2            # high for novelty; lower (0.7) for a calmer module
+max_tokens: 1000
 
-# ── Memory context ──────────────────────────────────────────────────────────
-recent_chunks: 6                    # how many recent chunks to hand the module
+# ── Novelty mode (built-in divergence engine) ──────────────────────────────
+novelty: true
+iterations: 4
 
-# ── Schedule (used only with --daemon) ──────────────────────────────────────
-interval_minutes: 10                # tick cadence; change to retune
+# ── Cadence ─────────────────────────────────────────────────────────────────
+interval_minutes: 10
 
-# ── The module's prompt (the "mind function") ───────────────────────────────
-# This is the whole identity of the module — what it looks for and what it
-# produces. Other mind modules: guardian (watch for risk), curiosity (ask what's
+# ── Retrieval from the MAIN proxy's memory ──────────────────────────────────
+recent_chunks: 6
+search_top_k: 6
+
+# ── The module's prompt ─────────────────────────────────────────────────────
+# Other mind modules: guardian (watch for risk), curiosity (ask what's
 # unexplained), motivation (keep momentum), jane (the coordinating self).
 prompt: |
-  CHANGE ME — write the module's role here, then end with "No preamble."
+  CHANGE ME — the module's role: what it looks for and what it produces.
+  End with "No preamble."

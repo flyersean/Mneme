@@ -1,15 +1,16 @@
 # Mind-inject extension manifest — makes this extension manageable from the
 # Mneme /extensions page (run / kill / log / config form).
 #
-# One module = one YAML under modules/. The runner reads memory from the target
-# proxy, runs the module through a cheap one-off model (direct API, no DB save),
-# and injects the result into the model's thought flow via the force flow.
+# The extension is a CONTROL PLANE: each mind module (creative, guardian, ...)
+# becomes its own proxy instance at chunks/instances/<port>/, driven through
+# Mneme's novelty mode, and its output is injected into the main model's
+# thought flow. One module = one YAML under modules/.
 
 name: mind-inject
-description: "Scheduled mind-module injection — read memory, run a module (creative, guardian...) through a cheap one-off model, then inject it into the model's thought flow"
+description: "Mind-module worker — one proxy per module (creative, guardian...), run through Mneme's novelty mode, and inject the output into the main model's thought flow"
 
 command: ["python3", "mind_inject.py"]
-args: ["modules/creative.yaml", "--daemon"]
+args: ["run", "modules/creative.yaml"]
 
 config:
   - key: MIND_INJECT_MODULE
@@ -17,4 +18,4 @@ config:
     type: string
     required: false
     default: "creative"
-    description: "Which module to run (matches a file under modules/, e.g. creative). All other settings (model, temperature, interval, prompt) live in that module's YAML."
+    description: "Which module to run (matches a file under modules/, e.g. creative). The module's port, model, prompt, and cadence all live in that YAML."

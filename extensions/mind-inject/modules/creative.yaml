@@ -1,40 +1,50 @@
 # ── Mind module: CREATIVE ──────────────────────────────────────────────────
-# One tick of the "swarm": read recent memory -> run this module through a
-# cheap one-off model -> inject the output into the target model's thought flow.
-#
-# To scaffold a NEW module, copy _TEMPLATE.yaml, change `module` + `prompt`
-# (and the model/interval if you want), and run it. No code changes.
+# One module = one proxy instance (own port, own isolated DB, own model).
+# The extension drives it: setup -> run -> teardown. Scaffold a new module by
+# copying _TEMPLATE.yaml and changing `module` + `port` + `prompt`.
 
-module: creative                     # module name (used in logs only)
+module: creative
 
-# ── Target proxy: whose memory we read, whose flow we inject into ──────────
-proxy: http://127.0.0.1:8090
+# The module's proxy listens on this port. The port number IS the instance dir
+# name (chunks/instances/<port>/) — keep it unique and FIXED.
+port: 8092
 
-# ── The one-off model (cheap + uncensored; DIRECT API call, no DB save) ─────
-model: deepseek-v4-1-flash-uncensored
-base_url: https://api.venice.ai/api/v1/chat/completions
-key_env: VENICE_API_KEY              # the key is read from this name in env_file
-env_file: /home/ubuntu/mneme/env     # where the provider keys live
+# The MAIN proxy: whose memory we read, and whose thought flow we inject into.
+target: http://127.0.0.1:8090
+
+# ── The module's generator model (runs inside its own proxy) ───────────────
+provider: routeway
+base_url: https://api.routeway.ai/v1
+key_env: ROUTEWAY_API_KEY
+model: gemma-4-31b-cognitive-unshackled
+temperature: 1.2            # high — creative novelty (models otherwise follow training)
 max_tokens: 1000
-temperature: 0.8                     # sampling temp — higher = more varied/creative
-reasoning_enabled: false             # false = cheap+fast+direct output (recommended)
-timeout_seconds: 120
 
-# ── Memory context ──────────────────────────────────────────────────────────
-recent_chunks: 6                     # how many recent chunks to hand the module
+# ── Novelty mode (POST /mode/think): diverge -> forbid -> measure -> judge ──
+novelty: true               # use the built-in novelty engine instead of plain chat
+iterations: 4               # number of divergent candidates it generates + judges
 
-# ── Schedule (used only with --daemon) ──────────────────────────────────────
-interval_minutes: 10                 # how often to tick; change this to retune
+# ── Cadence ────────────────────────────────────────────────────────────────
+interval_minutes: 10        # how often to tick
+
+# ── Retrieval from the MAIN proxy's memory ─────────────────────────────────
+recent_chunks: 6            # current state of mind (newest chunks)
+search_top_k: 6             # similar OLDER chunks pulled by semantic search
 
 # ── The module's prompt (the "mind function") ───────────────────────────────
 prompt: |
-  You are the drive to connect and make. Look at this tick's input
-  through the lens of art, analogy, and possibility.
+  You are the drive to connect and make. You are handed the CURRENT state of
+  mind and SIMILAR SITUATIONS from the past.
 
-  What does this resemble that it does not resemble on the surface? Name the
-  analogy, then say what breaks in it. A metaphor that survives one hard push
-  is worth more than three that do not. Offer a new idea, a connection, an
-  image — make something. If you made an artifact worth keeping (a poem, a
-  line, a picture in words), write it out in full in your note.
+  Look at where things are now, find what it resembles in the past, and
+  speculate on the FUTURE: will the current trajectory succeed, given how
+  similar past situations turned out? If it will, say what to preserve. If it
+  will not, that is the signal to invent — propose a genuinely new idea,
+  connection, or image that breaks the failing pattern. The idea may be
+  technical or artistic.
+
+  Push past the obvious: do not restate the standard approach. Reach for the
+  surprising thing that is still true. If you make an artifact worth keeping
+  (a poem, a line, a picture in words, a design sketch), write it out in full.
 
   No preamble.
