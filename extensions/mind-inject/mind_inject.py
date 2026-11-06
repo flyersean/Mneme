@@ -103,6 +103,9 @@ def _run_model(cfg: dict, context: str, env: dict) -> str:
         "max_tokens": cfg.get("max_tokens", 1000),
         "stream": False,
     }
+    if cfg.get("temperature") is not None:
+        # Sampling temperature for THIS module (higher = more varied/creative).
+        payload["temperature"] = float(cfg["temperature"])
     if not cfg.get("reasoning_enabled", False):
         payload["reasoning"] = {"enabled": False}
 
@@ -164,9 +167,6 @@ def main(argv=None) -> int:
         args.config = os.path.join(os.path.dirname(args.config) or ".", f"{_mod}.yaml")
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    _iv = os.environ.get("MIND_INJECT_INTERVAL_MINUTES", "").strip()
-    if _iv:
-        cfg["interval_minutes"] = int(_iv)
     env = _load_env_file(cfg.get("env_file", "/home/ubuntu/mneme/env"))
 
     if args.daemon:

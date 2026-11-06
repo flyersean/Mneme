@@ -16,6 +16,7 @@ base_url: https://api.venice.ai/api/v1/chat/completions
 key_env: VENICE_API_KEY              # the key is read from this name in env_file
 env_file: /home/ubuntu/mneme/env     # where the provider keys live
 max_tokens: 1000
+temperature: 0.8                     # sampling temp — higher = more varied/creative
 reasoning_enabled: false             # false = cheap+fast+direct output (recommended)
 timeout_seconds: 120
 

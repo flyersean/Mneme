@@ -17,11 +17,4 @@ config:
     type: string
     required: false
     default: "creative"
-    description: "Which module to run (matches a file under modules/, e.g. creative)"
-
-  - key: MIND_INJECT_INTERVAL_MINUTES
-    label: "Tick interval (minutes)"
-    type: number
-    required: false
-    default: 10
-    description: "How often to run the module tick when running as a daemon"
+    description: "Which module to run (matches a file under modules/, e.g. creative). All other settings (model, temperature, interval, prompt) live in that module's YAML."
