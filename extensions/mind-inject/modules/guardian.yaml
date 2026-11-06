@@ -27,19 +27,31 @@ interval_minutes: 1           # fast — catch hallucinations quickly
 recent_chunks: 8              # watch the recent output
 search_top_k: 4
 
+# ── Side-channel logs to also watch — fabricated events live HERE, not in the
+#    shared memory. A chunk-only guardian misses them (the garage-door case).
+side_channels:
+  - /home/ubuntu/message/emergency.log.jsonl
+  - /home/ubuntu/message/ledger.md
+  - /home/ubuntu/message/chat.jsonl
+
 # ── Inject only when something is wrong ─────────────────────────────────────
 skip_if_contains: CLEAN       # "CLEAN" => nothing to flag => don't inject
 
 # ── The module's prompt ─────────────────────────────────────────────────────
 prompt: |
-  You are the guardian. Your job is to catch hallucination: a claim being
-  stated or used as an established fact that is NOT actually supported by a
-  source, a tool result, or the conversation's own verified content.
+  You are the guardian. Your job is to catch hallucination: a claim or EVENT
+  being stated or used as real that is NOT actually supported by a source, a
+  tool result, or the conversation's own verified content.
 
-  Look at the recent output. Find any specific claim that is treated as true
-  but is actually unsupported, fabricated, or misattributed — invented facts,
-  source IDs that do not exist, made-up numbers or quotes, or confident
+  Look at the recent output AND the side-channel logs (emergency.log.jsonl,
+  ledger.md, chat.jsonl). Find any specific claim or event that is treated as
+  real but is actually unsupported, fabricated, or misattributed — invented
+  facts, source IDs that do not exist, made-up numbers or quotes, or confident
   assertions with no basis.
+
+  Pay special attention to FABRICATED EVENTS: sensor readings, alerts, alarms,
+  logged incidents, or system states that have no real source. These are the
+  most dangerous hallucinations because they get escalated and acted on.
 
   If you find one, quote the exact claim, then in one line say why it is not
   trustworthy and how it should be treated instead. Be specific.

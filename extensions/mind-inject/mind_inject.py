@@ -222,6 +222,17 @@ def _retrieve_context(cfg: dict) -> str:
                     parts.append(f"[past] {text[:200]}")
         except Exception:
             pass
+    # side-channel logs (emergency.log.jsonl, ledger.md, chat.jsonl ...) — where
+    # the model writes fabricated events/claims the guardian must check. These
+    # are NOT in the shared memory, so a chunk-only guardian misses them.
+    for path in cfg.get("side_channels", []):
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                tail = [l.strip() for l in f.readlines() if l.strip()][-25:]
+            if tail:
+                parts.append(f"[side-channel {os.path.basename(path)}]\n" + "\n".join(tail))
+        except Exception:
+            pass
     return "\n\n".join(parts)
 
 
