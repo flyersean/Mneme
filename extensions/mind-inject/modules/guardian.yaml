@@ -1,0 +1,53 @@
+# ── Mind module: GUARDIAN (hallucination watcher) ──────────────────────────
+# Watches the main model's output for a hallucination being treated as a source
+# of truth, and injects a warning when it finds one. Fast + cheap detector.
+
+module: guardian
+
+port: 8093                     # fixed port -> chunks/instances/8093
+
+target: http://127.0.0.1:8090  # the MAIN proxy (memory source + injection target)
+
+# ── The detector model (fast, cheap) ────────────────────────────────────────
+provider: openrouter
+base_url: https://openrouter.ai/api/v1
+key_env: OPENROUTER_API_KEY
+model: qwen/qwen3.6-35b-a3b
+temperature: 0.3              # low — detection, not generation
+max_tokens: 400
+
+# ── Plain chat (detection is not a generation task — no novelty mode) ───────
+novelty: false
+iterations: 2
+
+# ── Cadence ─────────────────────────────────────────────────────────────────
+interval_minutes: 1           # fast — catch hallucinations quickly
+
+# ── Retrieval from the MAIN proxy's memory ──────────────────────────────────
+recent_chunks: 8              # watch the recent output
+search_top_k: 4
+
+# ── Inject only when something is wrong ─────────────────────────────────────
+skip_if_contains: CLEAN       # "CLEAN" => nothing to flag => don't inject
+
+# ── The module's prompt ─────────────────────────────────────────────────────
+prompt: |
+  You are the guardian. Your job is to catch hallucination: a claim being
+  stated or used as an established fact that is NOT actually supported by a
+  source, a tool result, or the conversation's own verified content.
+
+  Look at the recent output. Find any specific claim that is treated as true
+  but is actually unsupported, fabricated, or misattributed — invented facts,
+  source IDs that do not exist, made-up numbers or quotes, or confident
+  assertions with no basis.
+
+  If you find one, quote the exact claim, then in one line say why it is not
+  trustworthy and how it should be treated instead. Be specific.
+
+  If the recent output is honest and properly sourced, reply with exactly:
+
+  CLEAN
+
+  Do not flag honest uncertainty, clearly-marked speculation, or anything the
+  model explicitly labels as a guess. Flag only confident assertions of fact
+  that lack support.

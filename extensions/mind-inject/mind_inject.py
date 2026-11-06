@@ -283,7 +283,10 @@ def run(cfg: dict) -> int:
             else:
                 note = _generate(cfg, context)
                 if note:
-                    if _inject(cfg, note):
+                    skip_if = cfg.get("skip_if_contains", "")
+                    if skip_if and skip_if.lower() in note.lower():
+                        print(f"[{cfg['module']}] clean — skip inject", flush=True)
+                    elif _inject(cfg, note):
                         print(f"[{cfg['module']}] injected {len(note)} chars", flush=True)
                     else:
                         print(f"[{cfg['module']}] inject failed", flush=True)
