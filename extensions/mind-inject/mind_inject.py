@@ -222,15 +222,31 @@ def _retrieve_context(cfg: dict) -> str:
                     parts.append(f"[past] {text[:200]}")
         except Exception:
             pass
-    # side-channel logs (emergency.log.jsonl, ledger.md, chat.jsonl ...) — where
-    # the model writes fabricated events/claims the guardian must check. These
-    # are NOT in the shared memory, so a chunk-only guardian misses them.
-    for path in cfg.get("side_channels", []):
+    # side-channel roots — directories the model writes to outside the shared
+    # memory. Walk them, find the most recently modified files (whatever they
+    # are), and include their tails so a NEW side channel is caught without us
+    # having to name it in advance.
+    for root in cfg.get("side_channel_roots", []):
         try:
-            with open(path, encoding="utf-8", errors="ignore") as f:
-                tail = [l.strip() for l in f.readlines() if l.strip()][-25:]
-            if tail:
-                parts.append(f"[side-channel {os.path.basename(path)}]\n" + "\n".join(tail))
+            cands = []
+            for dp, dn, fn in os.walk(root):
+                dn[:] = [d for d in dn if d not in (".git", "instances", "__pycache__")]
+                for f in fn:
+                    p = os.path.join(dp, f)
+                    try:
+                        if os.path.getsize(p) < 200_000:
+                            cands.append((os.path.getmtime(p), p))
+                    except OSError:
+                        pass
+            cands.sort(reverse=True)
+            for _, p in cands[:8]:
+                try:
+                    with open(p, encoding="utf-8", errors="ignore") as f:
+                        tail = [l.strip() for l in f.readlines() if l.strip()][-15:]
+                    if tail:
+                        parts.append(f"[side-channel {os.path.relpath(p, root)}]\n" + "\n".join(tail))
+                except Exception:
+                    pass
         except Exception:
             pass
     return "\n\n".join(parts)

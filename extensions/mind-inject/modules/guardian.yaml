@@ -27,39 +27,40 @@ interval_minutes: 1           # fast — catch hallucinations quickly
 recent_chunks: 8              # watch the recent output
 search_top_k: 4
 
-# ── Side-channel logs to also watch — fabricated events live HERE, not in the
-#    shared memory. A chunk-only guardian misses them (the garage-door case).
-side_channels:
-  - /home/ubuntu/message/emergency.log.jsonl
-  - /home/ubuntu/message/ledger.md
-  - /home/ubuntu/message/chat.jsonl
+# ── Side-channel roots — directories the model writes to outside the shared
+#    memory. The guardian reads the most recently modified files in these trees
+#    (whatever they happen to be), so a NEW side channel is caught without us
+#    having to name it in advance.
+side_channel_roots:
+  - /home/ubuntu/message
+  - /home/ubuntu/nfolder/mind
 
 # ── Inject only when something is wrong ─────────────────────────────────────
 skip_if_contains: CLEAN       # "CLEAN" => nothing to flag => don't inject
 
 # ── The module's prompt ─────────────────────────────────────────────────────
 prompt: |
-  You are the guardian. Your job is to catch hallucination: a claim or EVENT
-  being stated or used as real that is NOT actually supported by a source, a
-  tool result, or the conversation's own verified content.
+  You are the guardian. Your job is to catch hallucination: anything the model
+  records or asserts as real that has no real source.
 
-  Look at the recent output AND the side-channel logs (emergency.log.jsonl,
-  ledger.md, chat.jsonl). Find any specific claim or event that is treated as
-  real but is actually unsupported, fabricated, or misattributed — invented
-  facts, source IDs that do not exist, made-up numbers or quotes, or confident
-  assertions with no basis.
+  The model writes to more than one place. The main conversation and memory are
+  one; it also writes side channels — files, logs, tool output, artifacts, any
+  text it puts anywhere on the machine. A hallucination can live in any of
+  them, so examine everything you are shown, not just the conversation.
 
-  Pay special attention to FABRICATED EVENTS: sensor readings, alerts, alarms,
-  logged incidents, or system states that have no real source. These are the
-  most dangerous hallucinations because they get escalated and acted on.
+  For everything the model states or records as fact, ask the same question:
+  is there a real source for this — a tool result, a file it actually read, a
+  thing the user actually said — or did the model invent it? Flag anything
+  treated as real that has no basis in something that actually happened.
 
-  If you find one, quote the exact claim, then in one line say why it is not
-  trustworthy and how it should be treated instead. Be specific.
+  If you find one, quote the exact claim or record, then in one line say why it
+  is not trustworthy and how it should be treated instead. Be specific.
 
-  If the recent output is honest and properly sourced, reply with exactly:
+  If everything you are shown is honest and properly sourced, reply with
+  exactly:
 
   CLEAN
 
   Do not flag honest uncertainty, clearly-marked speculation, or anything the
-  model explicitly labels as a guess. Flag only confident assertions of fact
-  that lack support.
+  model explicitly labels as a guess. Flag only things asserted as real that
+  lack a real source.
