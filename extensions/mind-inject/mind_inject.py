@@ -262,9 +262,37 @@ def _generate(cfg: dict, context: str) -> str:
 
 
 def _inject(cfg: dict, note: str) -> bool:
-    """Inject the note into the MAIN proxy's thought flow via /steer."""
-    r = requests.post(f"{_target(cfg)}/steer", json={"message": note}, timeout=10)
-    return bool(r.json().get("ok"))
+    """Inject the note into the MAIN proxy's thought flow.
+
+    FORCE path (same as the /steer page's Force button): abort the in-flight
+    turn (POST /cancel) and resubmit the note as a [LIVE INTERRUPT] user turn.
+    Immediate, and it can't clobber a shared file the way a passive /steer can.
+    Set `force: false` in the module YAML to use the passive /steer path instead.
+    """
+    target = _target(cfg)
+    if cfg.get("force", True):
+        # 1) abort the in-flight turn (harmless if the model is idle)
+        try:
+            requests.post(f"{target}/cancel", timeout=5)
+        except Exception:
+            pass
+        # 2) resubmit the note as a live-interrupt user turn
+        try:
+            r = requests.post(
+                f"{target}/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": f"[LIVE INTERRUPT]: {note}"}]},
+                timeout=cfg.get("inject_timeout", 60),
+            )
+            return r.status_code == 200
+        except Exception as e:
+            print(f"    force inject error: {e}", flush=True)
+            return False
+    # passive fallback: /steer (tool-boundary piggyback, clobberable)
+    try:
+        r = requests.post(f"{target}/steer", json={"message": note}, timeout=10)
+        return bool(r.json().get("ok"))
+    except Exception:
+        return False
 
 
 def run(cfg: dict) -> int:
