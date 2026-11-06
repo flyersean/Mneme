@@ -22,7 +22,8 @@ max_tokens: 1000
 
 # ── Novelty mode (POST /mode/think): diverge -> forbid -> measure -> judge ──
 novelty: true               # use the built-in novelty engine instead of plain chat
-iterations: 2               # number of divergent candidates it generates + judges
+iterations: 1               # number of divergent candidates (fewer = faster tick)
+timeout_seconds: 600        # let the slow novelty engine finish (each call ~45-110s)
 
 # ── Cadence ────────────────────────────────────────────────────────────────
 interval_minutes: 10        # how often to tick
