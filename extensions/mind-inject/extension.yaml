@@ -1,0 +1,27 @@
+# Mind-inject extension manifest — makes this extension manageable from the
+# Mneme /extensions page (run / kill / log / config form).
+#
+# One module = one YAML under modules/. The runner reads memory from the target
+# proxy, runs the module through a cheap one-off model (direct API, no DB save),
+# and injects the result into the model's thought flow via the force flow.
+
+name: mind-inject
+description: "Scheduled mind-module injection — read memory, run a module (creative, guardian...) through a cheap one-off model, then inject it into the model's thought flow"
+
+command: ["python3", "mind_inject.py"]
+args: ["modules/creative.yaml", "--daemon"]
+
+config:
+  - key: MIND_INJECT_MODULE
+    label: "Module"
+    type: string
+    required: false
+    default: "creative"
+    description: "Which module to run (matches a file under modules/, e.g. creative)"
+
+  - key: MIND_INJECT_INTERVAL_MINUTES
+    label: "Tick interval (minutes)"
+    type: number
+    required: false
+    default: 10
+    description: "How often to run the module tick when running as a daemon"

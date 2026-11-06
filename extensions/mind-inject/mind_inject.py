@@ -157,7 +157,16 @@ def main(argv=None) -> int:
                     help="run a single tick and exit (default)")
     args = ap.parse_args(argv)
 
+    # /extensions page config-form overrides (the manifest injects these as env
+    # vars when the extension is run from the UI). Purely optional.
+    _mod = os.environ.get("MIND_INJECT_MODULE", "").strip()
+    if _mod:
+        args.config = os.path.join(os.path.dirname(args.config) or ".", f"{_mod}.yaml")
+
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
+    _iv = os.environ.get("MIND_INJECT_INTERVAL_MINUTES", "").strip()
+    if _iv:
+        cfg["interval_minutes"] = int(_iv)
     env = _load_env_file(cfg.get("env_file", "/home/ubuntu/mneme/env"))
 
     if args.daemon:
