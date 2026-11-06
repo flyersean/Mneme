@@ -13,10 +13,10 @@ port: 8092
 target: http://127.0.0.1:8090
 
 # ── The module's generator model (runs inside its own proxy) ───────────────
-provider: routeway
-base_url: https://api.routeway.ai/v1
-key_env: ROUTEWAY_API_KEY
-model: gemma-4-31b-novelist
+provider: openrouter
+base_url: https://openrouter.ai/api/v1
+key_env: OPENROUTER_API_KEY
+model: inception/mercury-3
 temperature: 1.2            # high — creative novelty (models otherwise follow training)
 max_tokens: 1000
 
