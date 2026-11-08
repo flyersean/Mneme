@@ -486,6 +486,15 @@ NATIVE_WRITE_TOOL = {
     },
 }
 
+GET_TIME_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_time",
+        "description": "Get the current live time (UTC and local). This is the authoritative clock - the single source of truth for what 'now' is. now.md is only a snapshot from when the turn started, so it lags a few minutes; file timestamps are written live and can be slightly ahead of now.md. Neither is a bug. Call this whenever you need the actual current time instead of trusting now.md.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 INSPECT_RUN_TOOL = {
     "type": "function",
     "function": {
@@ -942,6 +951,7 @@ def native_exec_names(client_tools):
     its own flag (MNEME_TOOL_START_RUN) and is independent of NATIVE_TOOLS_MODE.
     """
     out = set()
+    out.add("get_time")  # authoritative live clock - always native
     if os.environ.get("MNEME_YOLO", "0") == "1":
         out.update({"bash", "write", "start_run", "resume_run", "replan_run", "note_run",
                     "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"})
@@ -983,11 +993,11 @@ def assemble_tools(client_tools):
 
     for t in enabled_readonly_tools():
         add(t)
-    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "start_run": START_RUN_TOOL,
+    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "get_time": GET_TIME_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
                     "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL}
-    for n in ("bash", "write", "start_run", "resume_run", "replan_run", "note_run",
+    for n in ("bash", "write", "get_time", "start_run", "resume_run", "replan_run", "note_run",
               "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
@@ -1155,10 +1165,28 @@ def _exec_write(file_path, content):
 
 def execute_native_tool(name, args):
     """Dispatch a native bash/write/start_run call server-side. Returns a result string."""
+    if name == "get_time":
+        import time as _t
+        _now = _t.time()
+        _utc = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(_now))
+        _loc = _t.strftime("%Y-%m-%dT%H:%M:%S %Z", _t.localtime(_now))
+        return ("Live time (the authoritative clock):\n"
+                f"- UTC: {_utc}\n"
+                f"- Local: {_loc}\n"
+                f"- Unix: {int(_now)}\n"
+                "\n"
+                "now.md is only a snapshot from the start of this turn, so it lags a few minutes; "
+                "file timestamps are written live. Neither is a bug - this is the current time.")
     if name == "bash":
-        return _exec_bash((args or {}).get("command", ""))
+        _cmd = args.get("command")
+        if not _cmd:
+            return "[malformed call: bash needs a command argument - you sent %r. Re-read the tool schema and retry.]" % (args,)
+        return _exec_bash(_cmd)
     if name == "write":
-        return _exec_write((args or {}).get("file_path", ""), (args or {}).get("content", ""))
+        _fp = args.get("file_path")
+        if not _fp:
+            return "[malformed call: write needs a file_path argument - you sent %r. Re-read the tool schema and retry.]" % (args,)
+        return _exec_write(_fp, args.get("content", ""))
     if name == "start_run":
         return _exec_start_run(args)
     if name == "resume_run":
@@ -1179,7 +1207,7 @@ def execute_native_tool(name, args):
         return _exec_delete_runs(args)
     if name == "delete_proxy":
         return _exec_delete_proxy(args)
-    return f"[unknown native tool: {name}]"
+    return f"[unknown native tool: {name} - no such tool exists. Re-read the tool list and call a valid tool.]"
 
 
 # ─── Tool registry (list / read / save) ─────────────────────────────────
