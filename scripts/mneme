@@ -194,9 +194,13 @@ def main():
     # Default DISPLAY so the swarm-monitor /fs/terminal button can pop a system
     # terminal window (the proxy spawns the terminal as its own child).
     env["DISPLAY"] = _detect_display()
-    # The instance's mneme.yaml is authoritative for model identity — clear any
-    # inherited model env vars.
-    for mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
+    # The instance's mneme.yaml is authoritative for model AND provider identity —
+    # clear any inherited model/provider env vars (a stale OPENROUTER_BASE_URL or
+    # MNEME_PROVIDER from an earlier provider leaves the chat pointing at the wrong
+    # vendor and 401s). Mirrors the `unset` block in the generated start scripts.
+    for mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM",
+               "MNEME_PROVIDER", "EMBED_PROVIDER", "LABEL_PROVIDER", "UTILITY_PROVIDER",
+               "OPENROUTER_BASE_URL", "MNEME_EMBED_BACKEND", "MNEME_LABEL_BACKEND"):
         env.pop(mv, None)
 
     print("mneme: starting proxy on port %s (backend=%s) ..." % (port, backend),

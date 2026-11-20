@@ -491,7 +491,14 @@ def _resolve_provider():
         _AUX_OR_BASE = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         _AUX_OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
         _AUX_OR_CAPTURED = True
-    _set("OPENROUTER_BASE_URL", "base_url")
+    # Chat carrier base URL: ALWAYS repoint to the active provider. The `_set`
+    # set-if-absent guard is right for the model-name keys (env pins them), but the
+    # base URL is DERIVED from the active provider — a set-if-absent guard leaves
+    # the previous vendor's URL in place after a provider switch (or a self-restart
+    # that inherited a stale OPENROUTER_BASE_URL) and the chat 401s. The original
+    # OpenRouter carrier is preserved separately in _AUX_OR_BASE for embed/label.
+    if prov.get("base_url"):
+        os.environ["OPENROUTER_BASE_URL"] = _config_scalar(prov["base_url"])
     # Chat model is authoritative from the ACTIVE provider's block (OpenCode-style
     # provider/model nesting). Top-level `model:` is a legacy fallback when the
     # provider block declares no model (e.g. Ollama / pre-nesting configs).
@@ -10149,6 +10156,11 @@ if FLASK_OK:
             else:
                 OR_API_KEY = ""  # keyless local provider (vLLM / llama.cpp) — no key
             _persist_backend_type(MNEME_BACKEND)
+            # Keep the flat env in sync with the globals so a self-restart (which
+            # inherits os.environ) re-resolves to THIS provider instead of a stale
+            # OPENROUTER_BASE_URL leaked from the previous provider.
+            os.environ["OPENROUTER_BASE_URL"] = OR_BASE_URL
+            os.environ["OPENROUTER_API_KEY"] = OR_API_KEY
         MODEL = model
         os.environ["MNEME_MODEL"] = model
         os.environ["MNEME_PROVIDER"] = name
