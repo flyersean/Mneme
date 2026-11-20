@@ -113,6 +113,27 @@ def _stop_existing(port):
     time.sleep(1)
 
 
+def _detect_display():
+    """DISPLAY for the /fs/terminal system-terminal button. The proxy spawns the
+    terminal as its own child process (inheriting DISPLAY), so a headless launch
+    needs a default or the window has nowhere to appear. Order: $MNEME_DISPLAY
+    override, else inherited $DISPLAY, else the lowest-numbered active local X
+    display (from /tmp/.X11-unix), else ':0'."""
+    ovr = os.environ.get("MNEME_DISPLAY")
+    if ovr:
+        return ovr
+    if os.environ.get("DISPLAY"):
+        return os.environ["DISPLAY"]
+    try:
+        nums = sorted(int(d[1:]) for d in os.listdir("/tmp/.X11-unix")
+                      if d.startswith("X") and d[1:].isdigit())
+        if nums:
+            return ":%d" % nums[0]
+    except Exception:
+        pass
+    return ":0"
+
+
 def main():
     cfg_path = _find_up(os.getcwd(), "mneme.yaml", "mneme.json")
     if not cfg_path:
@@ -170,6 +191,9 @@ def main():
     env["MNEME_CONFIG"] = cfg_path
     env["MNEME_BACKEND"] = backend
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Default DISPLAY so the swarm-monitor /fs/terminal button can pop a system
+    # terminal window (the proxy spawns the terminal as its own child).
+    env["DISPLAY"] = _detect_display()
     # The instance's mneme.yaml is authoritative for model identity — clear any
     # inherited model env vars.
     for mv in ("MNEME_MODEL", "EMBED_MODEL", "LABEL_MODEL", "MNEME_INJECT_SYSTEM"):
@@ -180,7 +204,13 @@ def main():
     _stop_existing(port)
 
     os.chdir(repo)
-    os.execvpe(sys.executable, [sys.executable, "-uB", "proxy/mneme_proxy.py"], env)
+    # Force IPv4 before the proxy starts (see proxy/_ipv4.py — the laptop's IPv6
+    # path stalls on some providers). runpy preserves the normal __main__ semantics.
+    _boot = ("import sys, runpy; "
+             "sys.path.insert(0, 'proxy'); "
+             "runpy.run_path('proxy/_ipv4.py'); "
+             "runpy.run_path('proxy/mneme_proxy.py', run_name='__main__')")
+    os.execvpe(sys.executable, [sys.executable, "-uB", "-c", _boot], env)
 
 
 if __name__ == "__main__":

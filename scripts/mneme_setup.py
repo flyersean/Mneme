@@ -1337,6 +1337,46 @@ def _port_free_lines():
     ]
 
 
+def _detect_display():
+    """DISPLAY for the /fs/terminal system-terminal button. The proxy spawns the
+    terminal as its own child process, which inherits the proxy's DISPLAY — so a
+    headless launch needs a sensible default or the window has nowhere to appear.
+    Order: $MNEME_DISPLAY override, else inherited $DISPLAY, else the
+    lowest-numbered active local X display (from /tmp/.X11-unix), else ':0'."""
+    ovr = os.environ.get("MNEME_DISPLAY")
+    if ovr:
+        return ovr
+    if os.environ.get("DISPLAY"):
+        return os.environ["DISPLAY"]
+    try:
+        nums = sorted(int(d[1:]) for d in os.listdir("/tmp/.X11-unix")
+                      if d.startswith("X") and d[1:].isdigit())
+        if nums:
+            return ":%d" % nums[0]
+    except Exception:
+        pass
+    return ":0"
+
+
+def _display_export_lines():
+    """Bash lines that default DISPLAY for the /fs/terminal system-terminal
+    button. Mirrors _detect_display(): $MNEME_DISPLAY override > inherited
+    $DISPLAY > lowest-numbered active local X display (fallback :0)."""
+    return [
+        "# Default DISPLAY so the swarm-monitor /fs/terminal button can open a",
+        "# system terminal window (the proxy launches it as its own child, which",
+        "# inherits DISPLAY). $MNEME_DISPLAY forces a value; otherwise inherit,",
+        "# else detect the lowest-numbered active local X display (fallback :0).",
+        'if [ -n "${MNEME_DISPLAY:-}" ]; then',
+        '  export DISPLAY="$MNEME_DISPLAY"',
+        'elif [ -z "${DISPLAY:-}" ]; then',
+        '  _XDISP="$(ls /tmp/.X11-unix/ 2>/dev/null | sed -n \'s/^X\\([0-9][0-9]*\\)$/\\1/p\' | sort -n | head -1)"',
+        '  export DISPLAY=":${_XDISP:-0}"',
+        'fi',
+        '',
+    ]
+
+
 def write_start_script(backend, models, port, instance_dir, provider="openrouter", key_env="OPENROUTER_API_KEY", embed_provider="", label_provider=""):
     """Write a start script into this instance's config dir."""
     os.makedirs(instance_dir, exist_ok=True)
@@ -1369,6 +1409,7 @@ def write_start_script(backend, models, port, instance_dir, provider="openrouter
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
     ]
+    lines += _display_export_lines()
     lines += _port_free_lines()
     lines += [
         f'cd "{REPO_ROOT}"',
@@ -1484,6 +1525,7 @@ def start_proxy(backend, models, port, instance_dir):
     env["MNEME_PORT"] = str(port)
     env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["DISPLAY"] = _detect_display()
     if backend == "openrouter":
         # Propagate EVERY saved provider key into the child process. The chat
         # model may run on a non-OpenRouter provider (routeway/deepseek/…), and
@@ -1677,6 +1719,7 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
         "export PYTHONDONTWRITEBYTECODE=1",
         "",
     ]
+    lines += _display_export_lines()
     lines += _port_free_lines()
     lines += [
         f'cd "{REPO_ROOT}"',
@@ -1708,6 +1751,7 @@ def start_instance(instance_dir, port, chat_backend, chat_model,
     env["MNEME_PORT"] = str(port)
     env["MNEME_CONFIG"] = os.path.join(instance_dir, "mneme.yaml")
     env["MNEME_BACKEND"] = chat_backend
+    env["DISPLAY"] = _detect_display()
     if embed_backend and embed_backend != chat_backend:
         env["MNEME_EMBED_BACKEND"] = embed_backend
     if label_backend and label_backend != chat_backend:
