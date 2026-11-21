@@ -3266,9 +3266,15 @@ def _system_prompt_block() -> str:
         prompt = _load_instruction("system_prompt_memory")
     else:
         prompt = _load_instruction("system_prompt")
-    block = "=== MNEME INSTRUCTIONS ===\n" + prompt
+    # The MISSION (role + autonomy) leads, BEFORE the memory manual. The manual is
+    # long and QA-oriented ("answer, cite, tag [source], grade your honesty") — when
+    # it came first the model framed itself as a Q&A assistant and stopped to report
+    # + ask mid-task. Leading with the mission makes it frame itself as an agent that
+    # finishes work; the manual becomes a reference for the memory tools.
+    block = "=== MNEME INSTRUCTIONS ===\n"
     if MISSION:
-        block += "\n\n" + MISSION
+        block += MISSION + "\n\n"
+    block += prompt
     return block + "\n\n"
 
 
