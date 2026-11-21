@@ -19,7 +19,7 @@ Key patterns from raw-k-cache preserved:
 Dependencies: ollama, requests, numpy, faiss-cpu
 """
 
-import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil
+import json, os, re, collections, sqlite3, sys, threading, time, uuid, struct, queue, ast, shlex, shutil, logging
 import atexit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -2933,29 +2933,48 @@ def pool_embeddings(vectors: List[np.ndarray]) -> np.ndarray:
 def _embed_single(text: str) -> np.ndarray:
     """Embed one chunk. Uses the embedder's own connection (embed_provider, or the
     chat backend as a fallback) — so the embed model can live on a different
-    provider than the chat model. Raises on failure."""
+    provider than the chat model. Raises on failure.
+
+    Retries transient failures (401/429/5xx, connection errors). A 401 from
+    OpenRouter is usually a transient DOWNSTREAM-provider failure — the embed
+    model is multi-hosted and dynamically routed, so a flaky route returns 401
+    even though the key is valid. A retry lands on a different provider and
+    succeeds; `allow_fallbacks: true` also asks OpenRouter to re-route inline.
+    """
     conn = _aux_conn("embed")
     if conn["kind"] == "openai":
         _h = {"Content-Type": "application/json", "Accept-Encoding": "identity"}
         if conn["key"]:
             _h["Authorization"] = f"Bearer {conn['key']}"
         _h.update(conn["headers"])
-        r = requests.post(
-            f"{conn['base_url']}/embeddings",
-            headers=_h,
-            json={"model": EMBED_MODEL, "input": text, "dimensions": DIM},
-            timeout=EMBED_TIMEOUT,
-        )
-        r.raise_for_status()
-        v = np.array(r.json()["data"][0]["embedding"], dtype=np.float32)
+        _url = f"{conn['base_url']}/embeddings"
+        _payload = {"model": EMBED_MODEL, "input": text, "dimensions": DIM,
+                    "provider": {"allow_fallbacks": True}}
+        _is_openai = True
     else:
-        r = requests.post(
-            f"{conn['base_url']}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text, "dimensions": DIM},
-            timeout=EMBED_TIMEOUT,
-        )
-        r.raise_for_status()
-        v = np.array(r.json()["embedding"], dtype=np.float32)
+        _url = f"{conn['base_url']}/api/embeddings"
+        _payload = {"model": EMBED_MODEL, "prompt": text, "dimensions": DIM}
+        _h = {}
+        _is_openai = False
+    v = None
+    last_err = None
+    for _attempt in range(3):
+        try:
+            r = requests.post(_url, headers=_h, json=_payload, timeout=EMBED_TIMEOUT)
+            r.raise_for_status()
+            v = np.array(r.json()["data"][0]["embedding"] if _is_openai else r.json()["embedding"],
+                         dtype=np.float32)
+            break
+        except requests.exceptions.HTTPError as e:
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code not in (401, 429, 500, 502, 503, 504):
+                raise
+            last_err = e
+        except requests.exceptions.RequestException as e:
+            last_err = e
+        time.sleep(0.5 * (_attempt + 1))
+    if v is None:
+        raise last_err
     # MRL truncation safety net: if the provider ignores `dimensions` and returns
     # the native-dim vector, keep the first DIM (pad if it somehow returns fewer).
     if v.shape[0] != DIM:
@@ -12566,6 +12585,13 @@ if __name__ == "__main__":
             print("  [AUTH] OFF (open) — add a user: python3 proxy/mneme/auth.py adduser", flush=True)
         if YOLO:
             print("  [YOLO] auth off, full filesystem, all tools — do not expose this port", flush=True)
+        # Drop the werkzeug request trail (the dashboard polls /status, /health,
+        # /conversations, /runs every few seconds). Without this the per-request
+        # lines flood the log and rotate out the proxy's own [QMODEL]/[EMBED]/
+        # [TOOLS] lines. MNEME_ACCESS_LOG=0 sets the werkzeug logger to WARNING
+        # (drops only the INFO request lines); default keeps the trail.
+        if os.environ.get("MNEME_ACCESS_LOG", "1") == "0":
+            logging.getLogger("werkzeug").setLevel(logging.WARNING)
         app.run(host=_bind, port=PORT, threaded=True)
     else:
         print("[mokv] Flask not installed. Import as module for programmatic use.",
