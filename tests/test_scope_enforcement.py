@@ -67,6 +67,21 @@ class TestScopeEnforcement(unittest.TestCase):
         res = mntools.execute_readonly_tool("read_file", {"path": f})
         self.assertIn("shared content", res)
 
+    def test_read_file_not_blocked_under_yolo(self):
+        # Regression: MNEME_YOLO=1 widened only the WRITE scope ("/"), not the
+        # read scope — so read_file was still confined to BROWSER_ROOT. The fix
+        # makes mneme_proxy.py set_scope browser_root="/" under yolo; mirror that
+        # here and assert read_file can now reach any path.
+        outside = os.path.join(self.tmp, "outside.txt")
+        with open(outside, "w") as fh:
+            fh.write("yolo-readable")
+        mntools.set_scope(browser_root="/")
+        try:
+            res = mntools.execute_readonly_tool("read_file", {"path": outside})
+            self.assertIn("yolo-readable", res)
+        finally:
+            mntools.set_scope(browser_root=self.home)
+
     def test_writable_roots_include_all_three(self):
         roots = mntools._writable_roots()
         for r in (self.tools, self.scope, self.runs):

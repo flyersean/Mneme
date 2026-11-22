@@ -369,8 +369,15 @@ def make_chat_freeform_executor(process_chat: Callable, *, lock: Optional[thread
         else:
             messages = build_freeform_messages(engine, run, transcript, turn_num,
                                                budget_remaining, note, plan_text, _load_instruction)
+        grant = run_grant(run)
+        if plan:
+            # Planning is read-only: intersect the run's grant with read + network
+            # so the planner physically cannot write files or run commands (the
+            # "no editing yet" promise is enforced, not just prompt text).
+            read_grant = {"read-only", "network"}
+            grant = read_grant if grant is None else (read_grant & grant)
         with lock:
             return process_chat(messages, session_id=f"run:{run['run_id']}", tools=None,
                                 cancel_event=cancel_event or threading.Event(),
-                                tool_grant=run_grant(run)) or {}
+                                tool_grant=grant) or {}
     return turn

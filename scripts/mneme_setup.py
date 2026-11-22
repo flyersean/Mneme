@@ -1413,7 +1413,7 @@ def write_start_script(backend, models, port, instance_dir, provider="openrouter
     lines += _port_free_lines()
     lines += [
         f'cd "{REPO_ROOT}"',
-        "exec python3 -uB proxy/mneme_proxy.py",
+        f"exec {sys.executable} -uB proxy/mneme_proxy.py",
         "",
     ]
     with open(path, "w") as f:
@@ -1723,7 +1723,7 @@ def write_instance_start_script(instance_dir, db_dir, port, chat_backend, chat_m
     lines += _port_free_lines()
     lines += [
         f'cd "{REPO_ROOT}"',
-        "exec python3 -uB proxy/mneme_proxy.py",
+        f"exec {sys.executable} -uB proxy/mneme_proxy.py",
         "",
     ]
     with open(path, "w") as f:

@@ -535,14 +535,21 @@ class RunEngine:
         return plan_text
 
     def _freeform_done(self, content: str) -> bool:
-        """The model declares completion by ending its reply with a lone DONE line."""
+        """The model declares completion with a lone DONE marker (the free-form
+        prompt asks for it). Accept a standalone DONE/COMPLETE/FINISHED marker on
+        its own line ANYWHERE in the tail — not just the literal last line — so a
+        trailing summary or code block after the marker doesn't waste a turn."""
         if not content:
             return False
         lines = [l.strip() for l in content.splitlines() if l.strip()]
         if not lines:
             return False
-        last = lines[-1].lower().rstrip(".! ")
-        return last in ("done", "complete", "finished", "goal complete", "goal achieved")
+        for line in reversed(lines[-6:]):
+            norm = line.lower().strip(".!;: \t")
+            if norm in ("done", "complete", "finished", "all done",
+                        "goal complete", "goal achieved"):
+                return True
+        return False
 
     def _tool_summary(self, tool_trace: List[dict], max_chars: int = 700) -> str:
         """Compact record of what a turn actually DID (tools + commands), so the next

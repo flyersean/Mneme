@@ -22,7 +22,7 @@ they do not. The current user's message always takes priority.
 
 ## Memory Chunk Format
 
-  [MEMORY BUDGET: 423/6000 tokens]
+  [memory context: 423/6000 tokens]
   --- [mem_178607...] [session:conv_abc] sim:0.87 [G:A] [src:user]
       2026-08-07T02:40:00 Topic label ---
   user: what was asked

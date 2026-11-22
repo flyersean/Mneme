@@ -103,10 +103,10 @@ DEFAULT_INSTRUCTIONS = {
         "If it works, answer directly. If it fails, say so and reconsider (build a new tool)."
     ),
     "synthesize_nudge": (
-        "\n=== WRAP UP ===\n"
-        "You have made {{count}} tool calls without a final answer. You almost certainly have enough "
-        "information now. Synthesize your final answer to the user — do NOT make another tool call "
-        "unless something critical is genuinely missing."
+        "\n=== CHECK-IN (advisory only) ===\n"
+        "You have made {{count}} tool calls. If the task is genuinely complete, synthesize your final "
+        "answer now. If it is not complete, keep working — there is no call limit and nothing is "
+        "forcing you to stop. Treat this as a reminder to finish if done, not an order to stop."
     ),
     "hard_wrapup": (
         "\n=== STOP AND ANSWER ===\n"

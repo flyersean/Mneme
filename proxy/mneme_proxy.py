@@ -711,7 +711,7 @@ mntools.reload_config()  # tools.py is imported before load_config(); refresh it
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
-mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
 _apply_thinking_log()
 
 # Connect to configured MCP servers (non-blocking; they finish connecting in the
@@ -1312,7 +1312,7 @@ def _reload_sampling_if_changed():
     if "filesystem" in data:
         CONFIG_DATA["filesystem"] = data.get("filesystem") or {}
         _fs = CONFIG_DATA.get("filesystem") or {}
-        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=_fs.get("browser_root"))
+        mntools.set_scope(model_scope=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("model_scope")), browser_root=("/" if os.environ.get("MNEME_YOLO", "0") == "1" else _fs.get("browser_root")))
     if "debug" in data:
         CONFIG_DATA["debug"] = data.get("debug") or {}
         _apply_thinking_log()
@@ -2315,6 +2315,100 @@ def _emit_token(kind: str, text: str) -> None:
             cb(kind, text)
         except Exception:
             pass
+
+
+# ── Tool-call visibility (Hermes-style activity lines) ─────────────
+# A single backend taxonomy maps tool name -> (glyph, verb); the frontend renders
+# whatever it's handed, so the mapping is tuned here without touching JS.
+_TOOL_GLYPHS = {
+    "bash": ("💻", "$"),
+    "exec": ("💻", "$"),
+    "read_file": ("📖", "Read"),
+    "write": ("✍️", "Write"),
+    "web_search": ("🔎", "Search"),
+    "fetch_url": ("🌐", "Fetch"),
+    "search_memory": ("🧠", "Memory"),
+    "read_chunk": ("🧠", "Memory"),
+    "list_chunks": ("🧠", "Memory"),
+    "search_skills": ("📚", "Skill"),
+    "list_tools": ("🧰", "Tools"),
+    "read_tool": ("🧰", "Tools"),
+    "read_image": ("🖼️", "Image"),
+    "start_run": ("⚙️", "Run"),
+    "schedule_job": ("⏰", "Sched"),
+    "browser_navigate": ("🧭", "Browse"),
+    "browser_console": ("🖥️", "Console"),
+}
+
+
+def _tool_glyph(name):
+    return _TOOL_GLYPHS.get(name, ("🔧", (name or "tool").replace("_", " ").title()))
+
+
+_SECRET_KEY_RE = re.compile(
+    r"(token|secret|password|passwd|credential|authorization|bearer|"
+    r"api[_-]?key|private[_-]?key|access[_-]?key|session[_-]?key)",
+    re.I,
+)
+
+
+def _redact_inline_secrets(s):
+    """Redact secret-looking material inside a string: `Bearer <token>` and
+    `KEY=<value>` / `export KEY=...` for secret-named keys."""
+    if not isinstance(s, str):
+        return s
+    s = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-+/=]{8,}", r"\1***", s)
+    s = re.sub(
+        r"(?i)((?:api[_-]?key|token|secret|password|passwd|authorization|credential)"
+        r"\s*=\s*)[^\s\"'&;|`]+",
+        r"\1***",
+        s,
+    )
+    return s
+
+
+def _sanitize_args(args):
+    """Redact secrets from tool args before they reach the client (trace + live
+    events). Whole values of secret-named keys become '***'; string values are
+    swept for inline secrets."""
+    if isinstance(args, dict):
+        out = {}
+        for k, v in args.items():
+            if isinstance(k, str) and _SECRET_KEY_RE.search(k):
+                out[k] = "***"
+            elif isinstance(v, dict):
+                out[k] = _sanitize_args(v)
+            elif isinstance(v, str):
+                out[k] = _redact_inline_secrets(v)
+            else:
+                out[k] = v
+        return out
+    if isinstance(args, str):
+        return _redact_inline_secrets(args)
+    return args
+
+
+def _emit_tool_event(event_type: str, payload: dict) -> None:
+    """Emit a tool lifecycle event ('start'/'end') to the streaming sink. Only
+    the chat SSE endpoint installs a tool sink; harness/background threads have
+    none, so this no-ops there (the harness has its own _run_live tool_call
+    stream)."""
+    cb = getattr(_stream_local, "tool_sink", None)
+    if cb:
+        try:
+            cb(event_type, payload)
+        except Exception:
+            pass
+
+
+def _emit_tool_start(name, args):
+    """Emit a tool_start event for a tool about to run (called at the commit
+    boundary, before execution)."""
+    glyph, verb = _tool_glyph(name)
+    _emit_tool_event("start", {
+        "name": name, "glyph": glyph, "verb": verb,
+        "args": _sanitize_args(args), "ts": int(time.time() * 1000),
+    })
 
 
 def _scoped_process_chat(messages, cancel_event=None, tool_grant=None, **kw):
@@ -4825,29 +4919,45 @@ def _check_belief_evolution(new_chunk_id: str, topic_label: str):
                 _log_error("_check_belief_evolution:parse_old", e)
                 continue
             
-            # Ask 35B to compare
+            # Ask the reconciler to compare and give a one-line "what changed"
             q = [{"role": "user", "content": (
                 "Compare these two pieces of information about the same topic:\n\n"
                 f"OLDER: {old_text[:MAX_MSG_TEXT_CHARS]}\n\n"
                 f"NEWER: {new_text[:MAX_MSG_TEXT_CHARS]}\n\n"
-                "Does the newer information UPDATE or CONTRADICT the older one? "
-                "Answer with one word: UPDATE, CONTRADICT, or NO.\n"
-                "UPDATE means the newer info supersedes or refines the older.\n"
+                "Does the newer information UPDATE or CONTRADICT the older one?\n"
+                "Reply on one line: the verdict (UPDATE, CONTRADICT, or NO), then a "
+                "short reason after a colon.\n"
+                "UPDATE means the newer info supersedes or refines the older (a fact "
+                "changed).\n"
                 "CONTRADICT means they cannot both be true.\n"
-                "NO means they are compatible or about different aspects."
+                "NO means they are compatible or about different aspects.\n"
+                "Return UPDATE/CONTRADICT only if the newer replaces or invalidates the "
+                "older — NOT if it is a temporary test, a different environment, or an "
+                "extra detail.\n"
+                "Example: UPDATE: port moved from 8000 to 8081"
             )}]
             r = query_model(q)
-            answer = (r.get("content", "") or "").strip().upper()
+            raw = (r.get("content", "") or "").strip()
+            if ":" in raw:
+                answer = raw.split(":")[0].strip().upper()
+                reason = raw.split(":", 1)[1].strip()[:160]
+            else:
+                answer = raw.upper()
+                reason = ""
             
             if "UPDATE" in answer or "CONTRADICT" in answer:
+                _now = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _reason = reason or ("updated by newer information" if "UPDATE" in answer
+                                     else "contradicted by newer information")
                 with _db_lock:
                     db.execute(
-                        "UPDATE chunks SET superseded_by = ? WHERE chunk_id = ?",
-                        (new_chunk_id, old_id)
+                        "UPDATE chunks SET superseded_by = ?, superseded_at = ?, "
+                        "superseded_reason = ? WHERE chunk_id = ?",
+                        (new_chunk_id, _now, _reason, old_id)
                     )
                     db.commit()
                 print(f"  [BELIEF] {old_id[:20]}... superseded by {new_chunk_id[:20]}... "
-                      f"({answer[:20]})", flush=True)
+                      f"({answer[:20]}: {_reason[:40]})", flush=True)
     except Exception as e:
         print(f"  [BELIEF][ERR] {e}", flush=True)
 
@@ -5002,11 +5112,44 @@ def _insert_chunk_verified(chunk_id: str, insert_fn, retries: int = 3, backoff: 
     return False
 
 
+def _supersede_by_resource_key(new_chunk_id: str, resource_key: str, reason: str = ""):
+    """Tier-1 deterministic supersession — zero LLM cost.
+
+    A new chunk with the same resource_key (file:/path, url:..., pref:name, cmd:...)
+    as an older ACTIVE chunk means the underlying resource changed (the file/URL/
+    setting was re-read). Mark the older chunk(s) superseded by the new one.
+    This is the deterministic half of changing-facts handling; the semantic
+    (conversational) half is _check_belief_evolution."""
+    rk = (resource_key or "").strip()
+    if not rk:
+        return
+    older = db.execute(
+        "SELECT chunk_id FROM chunks WHERE resource_key=? AND chunk_id != ? "
+        "AND (superseded_by = '' OR superseded_by IS NULL) "
+        "AND (removed IS NULL OR removed IN ('', 'injectable'))",
+        (rk, new_chunk_id)
+    ).fetchall()
+    if not older:
+        return
+    _now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _reason = reason or "resource changed"
+    with _db_lock:
+        for (old_id,) in older:
+            db.execute(
+                "UPDATE chunks SET superseded_by = ?, superseded_at = ?, "
+                "superseded_reason = ? WHERE chunk_id = ?",
+                (new_chunk_id, _now, _reason, old_id)
+            )
+        db.commit()
+    print(f"  [SUPERSEDE] {len(older)} chunk(s) on '{rk}' superseded by {new_chunk_id[:20]}", flush=True)
+
+
 def save_chunk(chunk_id: str, topic_label: str, messages: list,
                vector, thinking: str = "", strategy: str = "",
                grade: str = "C", consensus: float = 0.0,
                outcome: str = "", problem_type: str = "other",
-               source: str = "unknown", session_id: str = "default"):
+               source: str = "unknown", session_id: str = "default",
+               resource_key: str = ""):
     """Insert chunk into SQLite + FAISS.
 
     vector=None means the embed failed — the chunk is STORED in SQLite with
@@ -5033,14 +5176,14 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             INSERT OR REPLACE INTO chunks
             (chunk_id, topic_label, messages, thinking, strategy, vector, grade,
              consensus, outcome, problem_type, source, cycle, created_at, session_id,
-             indexable, superseded_by, pending_embed, embed_model, dim, trust)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             indexable, superseded_by, pending_embed, embed_model, dim, trust, resource_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (chunk_id, topic_label, msgs_json, thinking[:MAX_THINKING_STORE], strategy,
               blob, grade, consensus, outcome, problem_type,
               source, _current_cycle(), datetime.now(timezone.utc).isoformat(), session_id,
               1 if is_indexable else 0, "",
               pending, EMBED_MODEL if vector is not None else "", DIM if vector is not None else 0,
-              trust))
+              trust, resource_key))
 
     _db_write_retry(_insert_chunk)
     
@@ -5054,6 +5197,10 @@ def save_chunk(chunk_id: str, topic_label: str, messages: list,
             _save_index()
     elif pending:
         print(f"  [EMBED-PENDING] {chunk_id} stored unembedded — will retry", flush=True)
+    
+    # Tier-1 deterministic supersession: same resource_key = the resource changed.
+    if resource_key:
+        _supersede_by_resource_key(chunk_id, resource_key)
     
     # Async belief evolution: check if this chunk supersedes older ones.
     # Disabled by default (MNEME_BELIEF_EVOLUTION=1 to enable) — it fires a full
@@ -5079,7 +5226,7 @@ def load_chunk(chunk_id: str, allow_removed: bool = False) -> Optional[dict]:
     row = db.execute(
         "SELECT chunk_id, topic_label, messages, thinking, strategy, "
         "grade, consensus, outcome, problem_type, source, session_id, cycle, "
-        "COALESCE(NULLIF(removed,''),'injectable'), removed_reason "
+        "COALESCE(NULLIF(removed,''),'injectable'), removed_reason, superseded_by, superseded_at, superseded_reason "
         "FROM chunks WHERE chunk_id=?",
         (chunk_id,)
     ).fetchone()
@@ -5094,6 +5241,8 @@ def load_chunk(chunk_id: str, allow_removed: bool = False) -> Optional[dict]:
         "consensus": row[6], "outcome": row[7],
         "problem_type": row[8], "source": row[9], "session_id": row[10], "cycle": row[11],
         "removed": row[12], "removed_reason": row[13] or "",
+        "superseded_by": row[14] or "", "superseded_at": row[15] or "",
+        "superseded_reason": row[16] or "",
     }
 
 # ─── Classification ────────────────────────────────────────────
@@ -5469,9 +5618,9 @@ def get_siblings(chunk_id: str) -> List[str]:
 
 def get_siblings_batch(chunk_ids: List[str]) -> Dict[str, List[str]]:
     """Batch sibling fetch: one query per topic, not per chunk.
-    
-    Returns {chunk_id: [sibling_ids...]} — each chunk maps to its full sibling list.
-    """
+
+    Returns {chunk_id: [sibling_ids...]} — each chunk maps to its full sibling
+    list (all ACTIVE same-topic chunks, newest first)."""
     if not chunk_ids:
         return {}
     placeholders = ",".join("?" for _ in chunk_ids)
@@ -5479,14 +5628,27 @@ def get_siblings_batch(chunk_ids: List[str]) -> Dict[str, List[str]]:
         f"SELECT chunk_id, topic_label FROM chunks WHERE chunk_id IN ({placeholders})",
         chunk_ids
     ).fetchall()
-    # Map topic -> chunks
-    topics = {}
-    for cid, topic in rows:
-        topics.setdefault(topic, []).append(cid)
-    # Inflate each chunk to its full sibling list (same topic)
+    if not rows:
+        return {}
+    topics = sorted({t for _, t in rows})
+    tph = ",".join("?" for _ in topics)
+    # Fetch the FULL sibling set from the DB — not just the already-retrieved
+    # chunks. (Previously this re-grouped the input set only, so sibling expansion
+    # was a silent no-op that never pulled in other same-topic chunks.) Exclude
+    # superseded and removed chunks; newest first.
+    sib_rows = db.execute(
+        f"SELECT chunk_id, topic_label FROM chunks WHERE topic_label IN ({tph}) "
+        f"AND (superseded_by = '' OR superseded_by IS NULL) "
+        f"AND (removed IS NULL OR removed IN ('', 'injectable')) "
+        f"ORDER BY created_at DESC",
+        topics
+    ).fetchall()
+    topic_sibs: Dict[str, List[str]] = {}
+    for cid, topic in sib_rows:
+        topic_sibs.setdefault(topic, []).append(cid)
     result = {}
     for cid, topic in rows:
-        result[cid] = topics[topic]
+        result[cid] = topic_sibs.get(topic, [cid])
     return result
 
 def get_strategies(problem_type=None, limit=3):
@@ -5923,7 +6085,7 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
             f"SELECT chunk_id, topic_label, messages, thinking, strategy, "
             f"grade, consensus, outcome, problem_type, source, trust, session_id, created_at, "
             f"assert_count, independent_sources, retracted, retracted_by, retracted_reason, "
-            f"self_confirm, proposed_retract, proposed_reason "
+            f"self_confirm, proposed_retract, proposed_reason, superseded_by, superseded_at, superseded_reason "
             f"FROM chunks WHERE chunk_id IN ({placeholders})",
             ordered
         ).fetchall()
@@ -5946,6 +6108,9 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
                 # must announce that it is flagged.
                 "proposed_retract": row[19] or "",
                 "proposed_reason": row[20] or "",
+                "superseded_by": row[21] or "",
+                "superseded_at": row[22] or "",
+                "superseded_reason": row[23] or "",
             }
     
     # Per-topic cap: no single topic may dominate the injected set (see _cap_per_topic).
@@ -6039,6 +6204,9 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
             _curationtag += curation.bad_chunk_label(chunk)
         if RECURRENCE_LABELING:
             _curationtag += curation.self_confirm_label(chunk)
+        # A superseded chunk (a fact that has since changed) must point at the
+        # latest version whenever it is shown — not silently present a stale fact.
+        _curationtag += curation.superseded_label(chunk)
         _retr_note = ""
         if chunk.get("retracted_reason"):
             _retr_note = f" (reason: {str(chunk['retracted_reason'])[:160]})"
@@ -7669,7 +7837,7 @@ def _execute_search_tool_calls(search_calls):
             if not _cid:
                 result_texts.append("read_chunk requires a chunk_id (the id shown in search_memory results).")
                 continue
-            _row = db.execute("SELECT topic_label, grade, messages, created_at FROM chunks WHERE chunk_id=?", (_cid,)).fetchone()
+            _row = db.execute("SELECT topic_label, grade, messages, created_at, superseded_by, superseded_at, superseded_reason FROM chunks WHERE chunk_id=?", (_cid,)).fetchone()
             if not _row:
                 result_texts.append(f"No chunk with id '{_cid}'.")
                 continue
@@ -7679,6 +7847,10 @@ def _execute_search_tool_calls(search_calls):
             except Exception:
                 _msgs = [{"role": "raw", "content": str(_msgs_json)[:2000]}]
             _lines = [f"Chunk {_cid} | label: {_label} | grade: {_grd} | created: {_created}"]
+            _sup = curation.superseded_label({"superseded_by": _row[4], "superseded_at": _row[5],
+                                              "superseded_reason": _row[6]})
+            if _sup:
+                _lines.append(_sup)
             for _m in _msgs:
                 if isinstance(_m, dict):
                     _lines.append(f"{_m.get('role', '?')}: {_m.get('content', '')}")
@@ -7929,19 +8101,34 @@ def _recent_window(messages: list, recent_turns: int, max_tokens: int = None) ->
     return window
 
 
+def _mask_tool_result(m: dict) -> dict:
+    """Stub out a tool RESULT body to a one-line placeholder, preserving the
+    trajectory (what was called) while slashing tokens (what it returned). The
+    model keeps the assistant tool_calls intact, so it still knows it already read
+    file X / ran command Y — it just can't re-read the dropped output from context."""
+    if not isinstance(m, dict) or m.get("role") != "tool":
+        return m
+    content = m.get("content", "")
+    if not isinstance(content, str) or len(content) <= 200:
+        return m
+    first = content.split("\n", 1)[0][:120]
+    return {**m, "content": f"[tool result omitted: {len(content)} chars — re-run or re-read if needed] {first}"}
+
+
 def _compact_followup(followup: list, max_tokens: int, head_len: int) -> list:
     """Bound the tool-loop followup to `max_tokens` (estimated).
 
     `head_len` is the number of leading messages that form the conversation
     prefix (system + recent turns); everything after is the current turn's
     tool-loop entries (native/registry/search results appended each round).
-    Keeps the prefix + the most recent tool entries, dropping the oldest so the
-    total fits under `max_tokens`. If the prefix alone exceeds the budget, the
-    prefix's oldest turns are trimmed too. Dropped results are recoverable — their
-    full text is staged in memory (search_memory) or re-fetchable — so this is
-    truncation, not summarization. Orphaned tool-result messages (whose assistant
-    tool call was dropped) are also removed so the model never sees a result with
-    no call.
+    Keeps the prefix + the most recent tool entries. Older tool RESULTS are
+    masked to one-line stubs (observation masking) rather than dropped outright,
+    so the model keeps its trajectory memory (which files it already read, which
+    commands it already ran) while the bulky outputs are cut. Only when a masked
+    stub still doesn't fit is the entry (and everything older) dropped. Dropped
+    results are recoverable — their full text is staged in memory (search_memory)
+    or re-fetchable. Orphaned tool-result messages (whose assistant tool call was
+    dropped) are removed so the model never sees a result with no call.
     """
     if max_tokens <= 0:
         return followup
@@ -7956,10 +8143,18 @@ def _compact_followup(followup: list, max_tokens: int, head_len: int) -> list:
     tokens = head_tokens
     for m in reversed(tool):
         mt = _msg_tokens(m)
-        if tokens + mt > max_tokens and kept:
-            break
-        kept.insert(0, m)
-        tokens += mt
+        if tokens + mt <= max_tokens:
+            kept.insert(0, m)
+            tokens += mt
+            continue
+        # Doesn't fit whole — try masking the result body to keep the trajectory.
+        mm = _mask_tool_result(m)
+        if tokens + _msg_tokens(mm) <= max_tokens:
+            kept.insert(0, mm)
+            tokens += _msg_tokens(mm)
+            continue
+        # Still doesn't fit even masked — drop it and everything older.
+        break
     # Drop orphaned tool-result messages left at the front of the kept tail.
     while kept and kept[0].get("role") == "tool":
         kept = kept[1:]
@@ -8385,19 +8580,31 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
             _rk = _bash_resource_key(str(args.get("command", "")) if isinstance(args, dict) else "")
             _bash_resources.setdefault(_rk, set()).add(_sig)
 
-    def _trace(tool, args, res, t0, blocked=False):
-        """Compact entry for the tool trace (truncate long args/results)."""
+    def _trace(tool, args, res, t0, blocked=False, elapsed_ms=None):
+        """Compact entry for the tool trace (truncate long args/results, redact
+        secrets, tag glyph/verb). Also emits the tool_end live event — it already
+        holds name/args/result/elapsed, so this is the single choke point."""
         a = {}
-        for k, v in (args or {}).items():
+        for k, v in (_sanitize_args(args) or {}).items():
             if isinstance(v, str) and len(v) > 160:
                 a[k] = v[:160] + f"... ({len(v)} chars)"
             else:
                 a[k] = v
+        if elapsed_ms is None:
+            elapsed_ms = int((time.time() - t0) * 1000)
+        glyph, verb = _tool_glyph(tool)
+        truncated = ("" if res is None else (res if isinstance(res, str) else str(res)))[:600]
+        _emit_tool_event("end", {
+            "name": tool, "glyph": glyph, "verb": verb,
+            "args": a, "duration_ms": elapsed_ms, "truncated_result": truncated,
+        })
         return {
             "tool": tool,
+            "glyph": glyph,
+            "verb": verb,
             "args": a,
-            "result": ("" if res is None else (res if isinstance(res, str) else str(res)))[:600],
-            "elapsed_ms": int((time.time() - t0) * 1000),
+            "result": truncated,
+            "elapsed_ms": elapsed_ms,
             "blocked": bool(blocked),
         }
 
@@ -8426,6 +8633,13 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         mcp_calls = [tc for tc in tcs if tc.get("function", {}).get("name") in _mcp_names]
         other_calls = [tc for tc in tcs if tc.get("function", {}).get("name") not in _server_names]
         passthrough_calls.extend(other_calls)
+
+        # Live tool visibility: announce every committed tool call the instant it
+        # is parsed (before execution) so the UI can show a live timer. tool_end
+        # is emitted per-tool from _trace() as each result lands.
+        for _tc in (search_calls + registry_calls + native_calls + mcp_calls):
+            _emit_tool_start(_tc["function"]["name"],
+                             _tc["function"].get("arguments", {}) or {})
 
         # Redundancy stop: if the model repeats the IDENTICAL tool call(s) — same
         # names + same arguments — REDUNDANCY_LIMIT rounds in a row, it is stuck in
@@ -8602,12 +8816,15 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         # staging/tracing/followup below stays sequential and in call order, so
         # there's no race on the memory buffer or the message list.
         _rres = [None] * len(registry_calls)
+        _rdur = [0] * len(registry_calls)
         def _run_reg(i, tc):
+            _rt0 = time.time()
             try:
                 _rres[i] = mntools.execute_readonly_tool(tc["function"]["name"],
                                                          tc["function"].get("arguments", {}) or {})
             except Exception as _e:
                 _rres[i] = f"[tool error: {type(_e).__name__}: {_e}]"
+            _rdur[i] = int((time.time() - _rt0) * 1000)
         # Only the side-effect-free tools run concurrently. Curation (flag/clear/
         # remove memory) and save_tool mutate state, so they run sequentially in
         # this thread first — their writes stay serialized. Results are collected
@@ -8660,7 +8877,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
                 _stage_page_content(res, (args or {}).get("url", ""))
             else:
                 _stage_tool_result(res, nm, args)
-            _tool_trace.append(_trace(nm, args, res, _t0))
+            _tool_trace.append(_trace(nm, args, res, _t0, elapsed_ms=_rdur[i]))
             _label = "WEB-SEARCH" if nm == "web_search" else "TOOL-REGISTRY"
             print(f"  [{_label}] {nm} -> {res[:90]!r}", flush=True)
             followup.append(_tool_feedback_msg(_fb_role, nm, tc, res))
@@ -10372,7 +10589,7 @@ if FLASK_OK:
         os.environ["MNEME_YOLO"] = "1" if enabled else "0"
         _fs_ = CONFIG_DATA.get("filesystem") or {}
         mntools.set_scope(model_scope=("/" if enabled else _fs_.get("model_scope")),
-                          browser_root=_fs_.get("browser_root"))
+                          browser_root=("/" if enabled else _fs_.get("browser_root")))
         _persist_yolo(enabled)
         print(f"  [YOLO] {'ON' if enabled else 'OFF'} — auth off, full filesystem, all tools", flush=True)
         return _cors_response({"ok": True, "yolo": enabled})
@@ -11638,6 +11855,7 @@ if FLASK_OK:
             # Install the token sink in THIS thread (the one running process_chat)
             # so the provider streaming loop emits each piece as it arrives.
             _stream_local.sink = lambda k, t: q.put(("token", k, t))
+            _stream_local.tool_sink = lambda e, p: q.put(("tool_event", e, p))
             turn_messages = list(messages)  # snapshot before process_chat may consume it
             try:
                 r = process_chat(messages, tools=tools, session_id=session_id,
@@ -11647,6 +11865,7 @@ if FLASK_OK:
                      "done_reason": "error", "error": str(e)}
             finally:
                 _stream_local.sink = None
+                _stream_local.tool_sink = None
             # Persist the turn server-side so the reply survives client navigation /
             # refresh / tab-close. (The client still saves as a fast path; this is the
             # durable one that runs even when the client is gone.)
@@ -11691,6 +11910,9 @@ if FLASK_OK:
                     else:
                         streamed_content += text
                         yield _chunk({"content": text})
+                elif item[0] == "tool_event":
+                    _, etype, payload = item
+                    yield _chunk({"tool_event": {"type": etype, **payload}})
                 else:
                     break
             result = result_holder.get("r") or {}
@@ -11700,6 +11922,11 @@ if FLASK_OK:
             final_content = result.get("content") or ""
             if final_content and not streamed_content:
                 yield _chunk({"content": final_content})
+            # Post-hoc tool log (Stage 1): the full trace, already sanitized +
+            # glyph/verb-tagged server-side, so the client renders it in one pass.
+            trace = result.get("tool_trace") or []
+            if trace:
+                yield _chunk({"tool_trace": trace})
             tool_calls = result.get("tool_calls") or []
             if tool_calls:
                 for i, tc in enumerate(tool_calls):

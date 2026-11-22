@@ -34,10 +34,13 @@ CHECK_TYPES = {
 }
 _DEFAULT_TIMEOUT = 60
 _DETAIL = 500
-# Shell parse errors — a malformed command (unquoted parens/operators) errors out
-# before it can verify anything. These are NOT evidence the work failed, so they
-# must not fail a task (see run_check for the "command" branch).
-_SHELL_ERROR = re.compile(r"syntax error|unexpected", re.I)
+# Shell PARSE errors only — a malformed command (unquoted parens/operators) that
+# the shell rejected BEFORE running anything, e.g. "/bin/sh: 1: Syntax error:".
+# That is NOT evidence the work failed, so it must not fail a task. This MUST NOT
+# match a language-level error (Python "SyntaxError: invalid syntax", JS
+# "SyntaxError: Unexpected ...") — those exit 1 with no shell prefix and are the
+# agent's CODE failing, which has to FAIL the check, not pass it.
+_SHELL_ERROR = re.compile(r"(?:^|\n)\s*(?:/\S+)?(?:ba|da)?sh:\s+(?:line\s+)?\d+:", re.I)
 
 
 class VerifySpecError(ValueError):
@@ -114,11 +117,13 @@ def run_check(check: dict, output: str, base_dir: str, judge=None, evidence: str
             detail = f"exit {p.returncode} (want {want})"
             if tail:
                 detail += ": " + tail[-_DETAIL:]
-            # A shell parse error means the COMMAND was malformed, not that the
-            # work failed — it never got a chance to check anything. Treat it as
-            # inconclusive so a bad grep (unquoted parens etc.) can't turn a
-            # successful write into a false failure + replan cascade.
-            if _SHELL_ERROR.search(tail):
+            # A shell PARSE error (exit 2 + a "/bin/sh: N:" prefix) means the
+            # COMMAND was malformed, not that the work failed — it never got a
+            # chance to check anything. Treat it as inconclusive so a bad grep
+            # (unquoted parens etc.) can't turn a successful write into a false
+            # failure + replan cascade. A language-level SyntaxError (Python/JS)
+            # exits 1 and does NOT match, so broken code still FAILS the check.
+            if p.returncode == 2 and _SHELL_ERROR.search(tail):
                 return True, "skipped (malformed shell command): " + tail[-_DETAIL:]
             return False, detail
         if kind == "file_exists":

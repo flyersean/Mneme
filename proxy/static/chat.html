@@ -307,6 +307,32 @@
     word-break: break-word;
     color: var(--text);
   }
+  /* compact tool line (burst-aggregated) */
+  .toolcall-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    background: var(--tool-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .toolcall-line.blocked { border-left-color: var(--red); }
+  .toolcall-line .tname {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 1px 7px;
+    border-radius: 5px;
+    flex: 0 0 auto;
+  }
+  .toolcall-line .targs { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toolcall-line .tburst { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+  .toolcall-line .ttime { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 
   footer {
     background: var(--panel);
@@ -565,7 +591,13 @@ header .model:hover { color: var(--accent); }
 <div id="settings">
   <div class="heading">Display</div>
   <label><input type="checkbox" id="opt-thinking" checked> Show thinking (reasoning)</label>
-  <label><input type="checkbox" id="opt-tools" checked> Show tool calls</label>
+  <label>Tool calls
+     <select id="opt-tools" title="How to display tool activity">
+       <option value="off">Off</option>
+       <option value="compact">Compact</option>
+       <option value="verbose">Verbose</option>
+     </select>
+   </label>
 </div>
 
 <div id="convs-panel">
@@ -678,9 +710,23 @@ function loadSetting(key, def) {
 }
 function saveSetting(key, val) { try { localStorage.setItem(key, val ? "1" : "0"); } catch (e) {} }
 optThinking.checked = loadSetting("mneme.showThinking", true);
-optTools.checked = loadSetting("mneme.showTools", true);
 optThinking.addEventListener("change", () => saveSetting("mneme.showThinking", optThinking.checked));
-optTools.addEventListener("change", () => saveSetting("mneme.showTools", optTools.checked));
+
+// tool visibility: off / compact / verbose (3-tier, default compact).
+// The old key held a boolean ("1"/"0"); "1"/"true" maps to "compact".
+function loadToolSetting() {
+  try {
+    const v = localStorage.getItem("mneme.showTools");
+    if (v === null) return "compact";
+    if (v === "0" || v === "false") return "off";
+    if (v === "off" || v === "compact" || v === "verbose") return v;
+    return "compact";
+  } catch (e) { return "compact"; }
+}
+optTools.value = loadToolSetting();
+optTools.addEventListener("change", () => {
+  try { localStorage.setItem("mneme.showTools", optTools.value); } catch (e) {}
+});
 
 // ── helpers ──────────────────────────────────────────────────────
 function scrollDown() { chat.scrollTop = chat.scrollHeight; }
@@ -721,6 +767,12 @@ function argsSummary(args) {
   return parts.join("  ");
 }
 
+function fmtTime(ms) {
+  if (ms == null || isNaN(ms)) return "";
+  if (ms < 1000) return ms + "ms";
+  return (ms / 1000).toFixed(1) + "s";
+}
+
 function appendMessage(role, content, reasoning) {
   const row = el("div", "row " + role);
   const bubble = el("div", "bubble");
@@ -742,22 +794,84 @@ function appendMessage(role, content, reasoning) {
   scrollDown();
 }
 
-function appendToolCalls(trace) {
-  if (!optTools.checked || !trace || !trace.length) return;
+function renderToolTrace(trace) {
+  const mode = optTools.value;
+  if (mode === "off" || !trace || !trace.length) return;
   const wrap = el("div", "toolcalls");
-  for (const t of trace) {
-    const det = el("details", "toolcall" + (t.blocked ? " blocked" : ""));
-    const sum = el("summary");
-    sum.appendChild(el("span", "tname", t.tool));
-    const targs = el("span", "targs", argsSummary(t.args));
-    sum.appendChild(targs);
-    sum.appendChild(el("span", "ttime", (t.elapsed_ms || 0) + "ms"));
-    det.appendChild(sum);
-    det.appendChild(el("div", "tbody", (t.result || "(no output)").trim()));
-    wrap.appendChild(det);
+
+  if (mode === "verbose") {
+    for (const t of trace) {
+      const det = el("details", "toolcall" + (t.blocked ? " blocked" : ""));
+      const sum = el("summary");
+      sum.appendChild(el("span", "tglyph", t.glyph || "🔧"));
+      sum.appendChild(el("span", "tname", t.verb || t.tool));
+      sum.appendChild(el("span", "targs", argsSummary(t.args)));
+      sum.appendChild(el("span", "ttime", fmtTime(t.elapsed_ms)));
+      det.appendChild(sum);
+      det.appendChild(el("div", "tbody", (t.result || "(no output)").trim()));
+      wrap.appendChild(det);
+    }
+  } else {
+    // compact (default): one line per tool, burst-aggregated by tool name so a
+    // long tool-loop turn stays a handful of lines instead of a wall.
+    let i = 0;
+    while (i < trace.length) {
+      const t = trace[i];
+      let j = i + 1;
+      while (j < trace.length && trace[j].tool === t.tool) j++;
+      const n = j - i;
+      const total = trace.slice(i, j).reduce((s, x) => s + (x.elapsed_ms || 0), 0);
+      const line = el("div", "toolcall-line" + (t.blocked ? " blocked" : ""));
+      line.appendChild(el("span", "tglyph", t.glyph || "🔧"));
+      line.appendChild(el("span", "tname", t.verb || t.tool));
+      line.appendChild(el("span", "targs", argsSummary(t.args)));
+      if (n > 1) line.appendChild(el("span", "tburst", "+ " + (n - 1) + " more"));
+      line.appendChild(el("span", "ttime", fmtTime(total)));
+      wrap.appendChild(line);
+      i = j;
+    }
   }
+
   thread.appendChild(wrap);
   scrollDown();
+}
+
+// ── live tool activity (Stage 2) ─────────────────────────────────
+// One transient line showing the current running tool with a live timer; the
+// post-hoc renderToolTrace() log replaces it when the turn ends.
+let liveTool = null;   // { el, startTs, timer }
+
+function clearLiveTool() {
+  if (liveTool) {
+    if (liveTool.timer) clearInterval(liveTool.timer);
+    if (liveTool.el && liveTool.el.parentNode) liveTool.el.parentNode.removeChild(liveTool.el);
+    liveTool = null;
+  }
+}
+
+function handleToolEvent(evt) {
+  if (!evt || !evt.type || optTools.value === "off") return;
+  if (evt.type === "start") {
+    clearLiveTool();
+    liveTool = { el: el("div", "toolcall-line live"), startTs: evt.ts || Date.now() };
+    const ln = liveTool.el;
+    ln.appendChild(el("span", "tglyph", evt.glyph || "🔧"));
+    ln.appendChild(el("span", "tname", evt.verb || evt.name));
+    ln.appendChild(el("span", "targs", argsSummary(evt.args)));
+    ln.appendChild(el("span", "ttime live-time", "0ms"));
+    thread.appendChild(ln);
+    scrollDown();
+    liveTool.timer = setInterval(() => {
+      const t = ln.querySelector(".live-time");
+      if (t) t.textContent = fmtTime(Date.now() - liveTool.startTs);
+    }, 100);
+  } else if (evt.type === "end" && liveTool) {
+    if (liveTool.timer) clearInterval(liveTool.timer);
+    liveTool.timer = null;
+    const t = liveTool.el.querySelector(".live-time");
+    if (t) t.textContent = fmtTime(evt.duration_ms);
+    liveTool.el.classList.remove("live");
+  }
 }
 
 // ── send / stop ──────────────────────────────────────────────────
@@ -1042,6 +1156,8 @@ async function send() {
             bubble.textContent = content;   // plain text while streaming (no markdown flicker)
             scrollDown();
           }
+          if (d.tool_event) handleToolEvent(d.tool_event);
+          if (d.tool_trace) { clearLiveTool(); renderToolTrace(d.tool_trace); }
         }
       }
     }
@@ -1073,6 +1189,7 @@ async function send() {
   } finally {
     busy = false;
     controller = null;
+    clearLiveTool();   // drop any dangling live tool line (error/abort path)
     // Capture any held message BEFORE setBusyUI(false) clears it, so we can
     // release it as the next turn now that this one has ended.
     const release = pendingMsg ? pendingMsg.text : null;

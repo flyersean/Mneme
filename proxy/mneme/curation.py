@@ -115,6 +115,14 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "ALTER TABLE chunks ADD COLUMN removed_by TEXT DEFAULT ''",
         "ALTER TABLE chunks ADD COLUMN removed_reason TEXT DEFAULT ''",
         "ALTER TABLE chunks ADD COLUMN removed_at TEXT DEFAULT ''",
+        # Supersession — a fact that changed. superseded_by (added in
+        # mneme_proxy.py) holds the newer chunk_id; these carry the when/why for
+        # the [SUPERSEDED] banner. resource_key is the deterministic identity
+        # (file:/path, url:..., pref:name, cmd:...) used by Tier-1 zero-LLM
+        # supersession: a new chunk with the same key supersedes the old one.
+        "ALTER TABLE chunks ADD COLUMN superseded_at TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN superseded_reason TEXT DEFAULT ''",
+        "ALTER TABLE chunks ADD COLUMN resource_key TEXT DEFAULT ''",
     )
     for m in migrations:
         try:
@@ -135,6 +143,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     """)
     db.execute("CREATE INDEX IF NOT EXISTS idx_curation_chunk ON curation_log(chunk_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_curation_action ON curation_log(action)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_resource ON chunks(resource_key)")
     db.commit()
 
 
@@ -747,6 +756,29 @@ def self_confirm_label(chunk: dict) -> str:
     if chunk.get("self_confirm"):
         return "[SELF-CONFIRMED — support traces back to model's own output]"
     return ""
+
+
+def superseded_label(chunk: dict) -> str:
+    """The injection tag for a SUPERSEDED chunk (a fact that has since changed).
+
+    A superseded chunk is not the current truth, but it stays in the table so
+    history stays walkable. When it IS shown (an explicit history query, or a
+    read_chunk on an old id), this banner points the model at the latest version
+    instead of leaving it to trust a stale fact silently. Absence is dangerous:
+    without the pointer the model would treat the stale fact as current.
+    """
+    sid = (chunk.get("superseded_by") or "").strip()
+    if not sid:
+        return ""
+    when = (chunk.get("superseded_at") or "").strip()
+    reason = (chunk.get("superseded_reason") or "").strip()
+    head = "[SUPERSEDED"
+    if when:
+        head += f" {when}"
+    head += f" by {sid}"
+    if reason:
+        head += f" — changed: {reason}"
+    return head + f". Use read_chunk('{sid}') for the latest.]"
 
 
 def resolved_label(chunk: dict) -> str:

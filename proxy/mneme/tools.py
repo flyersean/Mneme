@@ -486,6 +486,24 @@ NATIVE_WRITE_TOOL = {
     },
 }
 
+EDIT_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        "description": "Make a surgical edit to an existing file: replace old_string with new_string. Fails loudly if old_string matches 0 times or more than expected_replacements times, so you can never silently corrupt the file. Prefer this over `write` for a small change to a large existing file — `write` overwrites the WHOLE file and risks truncation. Returns a short diff of what changed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Path to edit. Relative paths go in the tools directory; absolute paths inside your writable scope go exactly there."},
+                "old_string": {"type": "string", "description": "The exact text to replace, copied verbatim from the file (including whitespace). Include enough surrounding context to make it unique."},
+                "new_string": {"type": "string", "description": "The replacement text."},
+                "expected_replacements": {"type": "integer", "description": "How many times old_string must appear (default 1). The edit fails if the actual count differs."},
+            },
+            "required": ["file_path", "old_string", "new_string"],
+        },
+    },
+}
+
 GET_TIME_TOOL = {
     "type": "function",
     "function": {
@@ -953,17 +971,19 @@ def native_exec_names(client_tools):
     out = set()
     out.add("get_time")  # authoritative live clock - always native
     if os.environ.get("MNEME_YOLO", "0") == "1":
-        out.update({"bash", "write", "start_run", "resume_run", "replan_run", "note_run",
+        out.update({"bash", "write", "edit_file", "start_run", "resume_run", "replan_run", "note_run",
                     "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"})
         return out
     if NATIVE_TOOLS_MODE == "on":
-        out.update({"bash", "write"})
+        out.update({"bash", "write", "edit_file"})
     elif NATIVE_TOOLS_MODE != "off":
         client_names = {_tool_name(t) for t in (client_tools or [])}
         if "bash" not in client_names:
             out.add("bash")
         if "write" not in client_names:
             out.add("write")
+        if "edit_file" not in client_names:
+            out.add("edit_file")
     if os.environ.get("MNEME_TOOL_START_RUN", "1") == "1":
         out.update({"start_run", "resume_run", "replan_run", "note_run",
                     "pause_run", "cancel_run", "retry_run"})
@@ -993,11 +1013,11 @@ def assemble_tools(client_tools):
 
     for t in enabled_readonly_tools():
         add(t)
-    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "get_time": GET_TIME_TOOL, "start_run": START_RUN_TOOL,
+    _native_defs = {"bash": NATIVE_BASH_TOOL, "write": NATIVE_WRITE_TOOL, "edit_file": EDIT_FILE_TOOL, "get_time": GET_TIME_TOOL, "start_run": START_RUN_TOOL,
                     "resume_run": RESUME_RUN_TOOL, "replan_run": REPLAN_RUN_TOOL, "note_run": NOTE_RUN_TOOL,
                     "pause_run": PAUSE_RUN_TOOL, "cancel_run": CANCEL_RUN_TOOL, "retry_run": RETRY_RUN_TOOL,
                     "schedule_job": SCHEDULE_JOB_TOOL, "delete_runs": DELETE_RUNS_TOOL, "delete_proxy": DELETE_PROXY_TOOL}
-    for n in ("bash", "write", "get_time", "start_run", "resume_run", "replan_run", "note_run",
+    for n in ("bash", "write", "edit_file", "get_time", "start_run", "resume_run", "replan_run", "note_run",
               "pause_run", "cancel_run", "retry_run", "schedule_job", "delete_runs", "delete_proxy"):
         if n in native_exec_names(client_tools):
             add(_native_defs[n])
@@ -1163,6 +1183,56 @@ def _exec_write(file_path, content):
         return f"[write error: {type(e).__name__}: {e}]"
 
 
+def _exec_edit_file(file_path, old_string, new_string, expected_replacements=1):
+    """Surgical edit: replace old_string with new_string in a file. Fails loudly if
+    old_string matches 0 times or more than expected_replacements times, so a
+    non-unique anchor can never silently corrupt the file. Writes atomically
+    (temp file + os.replace) and returns a short unified diff on success."""
+    try:
+        os.makedirs(TOOLS_DIR, exist_ok=True)
+        full = file_path if os.path.isabs(file_path) else os.path.join(TOOLS_DIR, file_path)
+        if not _writable(full):
+            record_blocked_write(full)
+            return (f"[edit_file blocked: {full} is outside the model write scope "
+                    f"({MODEL_SCOPE}, {TOOLS_DIR}). Edit inside that scope instead.]")
+        if not os.path.isfile(full):
+            return f"[edit_file: no such file: {file_path}]"
+        with open(full, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        count = text.count(old_string)
+        if count == 0:
+            return (f"[edit_file: old_string matched 0 times in {full} — the file may "
+                    f"have changed or the anchor has a whitespace mismatch. Re-read the "
+                    f"file and copy the exact current text.]")
+        if count > expected_replacements:
+            return (f"[edit_file: old_string matched {count} times (expected "
+                    f"{expected_replacements}) — the anchor is not unique. Include more "
+                    f"surrounding context to make it a single match.]")
+        new_text = text.replace(old_string, new_string, expected_replacements)
+        import difflib
+        diff = "\n".join(list(difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=full, tofile=full, lineterm="", n=2))[:80])
+        # Atomic write: temp file + os.replace so a crash mid-write can't truncate.
+        tmp = full + ".mneme-edit-tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            os.replace(tmp, full)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        return (f"[edit_file: replaced {expected_replacements} occurrence(s) in {full}]\n{diff}"
+                if diff else f"[edit_file: replaced {expected_replacements} occurrence(s) in {full}]")
+    except FileNotFoundError:
+        return f"[edit_file: no such file: {file_path}]"
+    except Exception as e:
+        return f"[edit_file error: {type(e).__name__}: {e}]"
+
+
 def execute_native_tool(name, args):
     """Dispatch a native bash/write/start_run call server-side. Returns a result string."""
     if name == "get_time":
@@ -1187,6 +1257,16 @@ def execute_native_tool(name, args):
         if not _fp:
             return "[malformed call: write needs a file_path argument - you sent %r. Re-read the tool schema and retry.]" % (args,)
         return _exec_write(_fp, args.get("content", ""))
+    if name == "edit_file":
+        _fp = args.get("file_path")
+        _old = args.get("old_string")
+        if not _fp or _old is None:
+            return "[malformed call: edit_file needs file_path and old_string arguments - you sent %r. Re-read the tool schema and retry.]" % (args,)
+        try:
+            _n = int(args.get("expected_replacements", 1) or 1)
+        except (TypeError, ValueError):
+            _n = 1
+        return _exec_edit_file(_fp, _old, args.get("new_string", ""), _n)
     if name == "start_run":
         return _exec_start_run(args)
     if name == "resume_run":
@@ -1406,7 +1486,8 @@ def _exec_web_search(query):
 
 def _exec_read_file(path, start=None, end=None):
     """Read a file (optionally a line range), capped at 12000 chars, scoped to
-    the browser root (the user's view)."""
+    the browser root (the user's view). Every line is prefixed with its 1-based
+    line number so the model can reference exact locations for a later edit."""
     try:
         path = os.path.expanduser(path or "")
         full = os.path.realpath(path)
@@ -1417,12 +1498,18 @@ def _exec_read_file(path, start=None, end=None):
         total = len(lines)
         s = max(1, int(start) if start else 1)
         e = min(total, int(end) if end else total)
-        text = "".join(lines[s - 1:e])
+        if s > e:
+            return f"[read_file: empty range (start {s} > end {e} of {total})]"
+        body = "".join(f"{i:5d} | {lines[i - 1]}" for i in range(s, e + 1))
+        if not body.strip():
+            return f"[read_file: empty range (lines {s}-{e} of {total})]"
+        header = f"[{full} | lines {s}-{e} of {total}]\n"
+        text = header + body
         if len(text) > 12000:
-            text = (text[:9000]
+            text = (text[:8000]
                     + f"\n\n[... truncated: {len(text)} chars in lines {s}-{e} of {total}. Read a narrower range for the middle.]\n\n"
-                    + text[-3000:])
-        return text if text.strip() else f"[read_file: empty range (lines {s}-{e} of {total})]"
+                    + text[-4000:])
+        return text
     except FileNotFoundError:
         return f"[read_file: no such file: {path}]"
     except Exception as e:
