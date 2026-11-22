@@ -2173,11 +2173,26 @@ _chunk_seq_lock = threading.Lock()
 # (recovery / DON'T-DO / novel — the turn's chunk is archived asynchronously
 # AFTER the save is enqueued) are queued here and linked to the next archived
 # chunk in _archive_single_chunk.
-_pending_strategy_links = []
+_pending_strategy_links_local = threading.local()
+
+
+def _pending_strategy_list() -> list:
+    if not hasattr(_pending_strategy_links_local, "links"):
+        _pending_strategy_links_local.links = []
+    return _pending_strategy_links_local.links
 # Chunk ids that went into the current turn's injected context (set by
-# build_context, read by the archive path to stamp injected_chunk_ids). Same
-# turn-scoped-global pattern as _pending_strategy_links above.
-_last_injected_ids = []
+# build_context, read by the archive path to stamp injected_chunk_ids).
+# Thread-local so concurrent turns can't overwrite each other's injected set
+# (the same per-thread isolation pattern as _cancel_local/_stream_local).
+_last_injected_local = threading.local()
+
+
+def _set_last_injected(ids) -> None:
+    _last_injected_local.ids = list(ids or [])
+
+
+def _get_last_injected() -> list:
+    return list(getattr(_last_injected_local, "ids", []))
 _pending_links_lock = threading.Lock()
 # Single sqlite connection shared by the main thread + 2 background workers
 # (check_same_thread=False). Writes must be serialized: an unguarded commit()
@@ -6283,11 +6298,10 @@ def build_context(query: str, session_id: str = "default") -> Tuple[str, str]:
     # "what was in view when this was written" signal, used to trace contamination
     # from a later-discovered bad memory. The proxy knows this set because it chose
     # it, so unlike a citation it does not depend on the model naming its sources.
-    global _last_injected_ids
     try:
-        _last_injected_ids = sorted({c.get("chunk_id") for c in trimmed if c.get("chunk_id")})
+        _set_last_injected(sorted({c.get("chunk_id") for c in trimmed if c.get("chunk_id")}))
     except Exception:
-        _last_injected_ids = []
+        _set_last_injected([])
 
     # Log the full injected context for debugging recall failures
     try:
@@ -6705,8 +6719,8 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
 
     # Link pending strategies (saved this turn with no source_chunk) to this chunk.
     with _pending_links_lock:
-        pending = _pending_strategy_links[:]
-        _pending_strategy_links.clear()
+        pending = _pending_strategy_list()[:]
+        _pending_strategy_list().clear()
     if pending:
         with _db_lock:
             for _psid in pending:
@@ -6934,7 +6948,7 @@ def _stage_content(content: str, source: str, prefix: str = None, resource_key: 
         n += 1
     print(f"  [STAGE] {source} {len(content)} chars -> {n} chunks", flush=True)
     if staging.should_flush():
-        _enqueue(archive_staging, list(_last_injected_ids))
+        _enqueue(archive_staging, _get_last_injected())
     return n
 
 
@@ -8298,7 +8312,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
         if not user_msg:
             user_msg = "Memory save triggered."
         messages[-1]["content"] = user_msg
-        _enqueue(archive_staging, list(_last_injected_ids))
+        _enqueue(archive_staging, _get_last_injected())
         print("  [SAVE] Triggered by user — archiving in background", flush=True)
 
     # ── Learn trigger: <<LEARN problem:...>> runs learning mode (disabled in memory-only) ──
@@ -8360,7 +8374,7 @@ def process_chat(messages: list, session_id: str = "default", tools: list = None
     # Synchronous now so the retrieval below sees the freshly-archived chunks.
     if staging.should_flush():
         try:
-            archive_staging(list(_last_injected_ids))
+            archive_staging(_get_last_injected())
         except Exception as e:
             _log_error("process_chat:pre_context_flush", e)
 
@@ -9379,7 +9393,7 @@ def _save_strategy(text, grade, existing_id="", problem_type="other", cost=0, ab
     # links it to the chunk that gets created for this turn.
     if not source_chunk:
         with _pending_links_lock:
-            _pending_strategy_links.append(sid)
+            _pending_strategy_list().append(sid)
     try:
         svec = embed(text.strip())
         if svec is not None and FAISS_OK:
@@ -9535,7 +9549,7 @@ def _reset_memory():
         _save_index()
     staging.flush()  # discard staged-but-unarchived messages
     with _pending_links_lock:
-        _pending_strategy_links.clear()
+        _pending_strategy_list().clear()
     print("  [RESET] memory wiped (chunks/strategies/tools/edges/faiss/staging)", flush=True)
 
 
