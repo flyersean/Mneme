@@ -6319,7 +6319,7 @@ class StagingBuffer:
         self.last_activity = time.time()
         self.lock = threading.Lock()
     
-    def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C", images=None):
+    def add(self, role: str, content: str, source: str = "unknown", session: str = "default", grade: str = "C", images=None, resource_key: str = ""):
         if not MEMORY_ENABLED:
             return  # memory disabled — skip staging/archiving
         with self.lock:
@@ -6329,6 +6329,8 @@ class StagingBuffer:
                 if any(p in content for p in noise):
                     content = "[filtered: system instruction artifact]"
             entry = {"role": role, "content": content, "source": source, "session": session, "grade": grade}
+            if resource_key:
+                entry["resource_key"] = resource_key
             if images:
                 entry["images"] = images
             self.messages.append(entry)
@@ -6475,6 +6477,15 @@ def _archive_group(topic_label: str, msgs: list, injected_ids=None) -> int:
     if source == "unknown":
         source = _infer_source(msgs)
     
+    # Determine resource_key from messages (same first-non-empty pattern as source).
+    # A chunk carries the deterministic identity of the resource it snapshots
+    # (url:..., file:...) so Tier-1 supersession can fire when that resource changes.
+    resource_key = ""
+    for m in msgs:
+        if m.get("resource_key"):
+            resource_key = m["resource_key"]
+            break
+    
     # Page-source chunks stay fine-grained so a specific sub-topic keeps a focused
     # embedding; everything else merges up to the general MAX_CHUNK_SIZE.
     max_size = PAGE_MAX_CHUNK_SIZE if source.startswith("page:") else MAX_CHUNK_SIZE
@@ -6482,7 +6493,7 @@ def _archive_group(topic_label: str, msgs: list, injected_ids=None) -> int:
     # If group is small enough, archive as single chunk
     if len(user_text) <= max_size:
         descriptive = _llm_topic_label(user_text) if not topic_label or topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label
-        return _archive_single_chunk(msgs, user_text, descriptive, source=source, injected_ids=_inj)
+        return _archive_single_chunk(msgs, user_text, descriptive, source=source, injected_ids=_inj, resource_key=resource_key)
     
     # Split into sibling chunks by max_size
     total = 0
@@ -6506,7 +6517,7 @@ def _archive_group(topic_label: str, msgs: list, injected_ids=None) -> int:
             # Archive current batch
             descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
             label = f"{descriptive[:30]}_p{seq_base}"
-            _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj)
+            _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj, resource_key=resource_key)
             total += 1
             seq_base += 1
             current = []
@@ -6519,7 +6530,7 @@ def _archive_group(topic_label: str, msgs: list, injected_ids=None) -> int:
     if current:
         descriptive = _llm_topic_label(current_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label[:20]
         label = f"{descriptive[:30]}_p{seq_base}" if total > 0 else (_llm_topic_label(user_text) if topic_label.startswith("web_content") or topic_label.startswith("other") else topic_label)
-        _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj)
+        _archive_single_chunk(current, current_text, label, source=source, injected_ids=_inj, resource_key=resource_key)
         total += 1
     
     return total
@@ -6569,7 +6580,7 @@ def _infer_source(msgs: list) -> str:
     return "unknown"
 
 
-def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: str = "unknown", injected_ids=None) -> int:
+def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: str = "unknown", injected_ids=None, resource_key: str = "") -> int:
     """Archive one chunk. Returns 1 on success."""
     # Determine outcome and problem type heuristically
     full_text = " ".join(m["content"][:200] for m in msgs if m["role"] in ("user", "assistant"))
@@ -6631,7 +6642,7 @@ def _archive_single_chunk(msgs: list, user_text: str, topic_label: str, source: 
     
     # Pass generated sequential chunk_id through to save_chunk
     save_chunk(chunk_id, topic_label, msgs, vec, strategy=strategy, session_id=session_id, grade=chunk_grade,
-               outcome=outcome, problem_type=ptype, source=source)
+               outcome=outcome, problem_type=ptype, source=source, resource_key=resource_key)
 
     # ── Provenance stamping ──────────────────────────────────────────────
     # Two signals, recorded now that the chunk id exists:
@@ -6890,7 +6901,7 @@ def _paragraph_chunks(text: str, target: int) -> list:
     return chunks
 
 
-def _stage_content(content: str, source: str, prefix: str = None) -> int:
+def _stage_content(content: str, source: str, prefix: str = None, resource_key: str = "") -> int:
     """Chunk and stage a large piece of content into memory — the single staging
     path for pages, server-side tool results, and echoed tool outputs.
 
@@ -6919,7 +6930,7 @@ def _stage_content(content: str, source: str, prefix: str = None) -> int:
     _stage_content._seen = seen
     n = 0
     for piece in _paragraph_chunks(body, CHUNK_SIZE):
-        staging.add("assistant", piece, source=source)
+        staging.add("assistant", piece, source=source, resource_key=resource_key)
         n += 1
     print(f"  [STAGE] {source} {len(content)} chars -> {n} chunks", flush=True)
     if staging.should_flush():
@@ -6938,7 +6949,7 @@ def _stage_page_content(content: str, url: str = "") -> int:
     m = re.match(r"https?://(?:www\.)?([^/\s]+)", (url or ""))
     if m:
         domain = m.group(1)
-    return _stage_content(content, f"page:{domain}")
+    return _stage_content(content, f"page:{domain}", resource_key=(f"url:{url}" if url else ""))
 
 
 def _stage_tool_result(content: str, tool_name: str, args: dict = None) -> int:
@@ -6946,11 +6957,15 @@ def _stage_tool_result(content: str, tool_name: str, args: dict = None) -> int:
     full text survives followup compaction. A compact command/path/query context
     prefix is prepended so the chunk stays matchable via search_memory."""
     ctx = ""
+    rk = ""
     if isinstance(args, dict):
         ctx = str(args.get("command") or args.get("path") or args.get("query")
                   or args.get("name") or args.get("url") or "").strip()
+        # Deterministic resource identity for file snapshots — Tier-1 supersession.
+        if tool_name == "read_file" and args.get("path"):
+            rk = f"file:{args.get('path')}"
     prefix = f"[{tool_name}] {ctx}" if ctx else None
-    return _stage_content(content, f"tool:{tool_name}", prefix=prefix)
+    return _stage_content(content, f"tool:{tool_name}", prefix=prefix, resource_key=rk)
 
 
 def compress_large_tool_results(messages: list) -> list:
