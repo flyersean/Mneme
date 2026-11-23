@@ -5505,10 +5505,22 @@ def generate_strategy(messages: list, outcome: str) -> str:
     """Generate strategy heuristically — no model call needed for simple cases."""
     if outcome not in ("FAILURE", "TRUNCATED"):
         return ""
-    text = " ".join(m["content"][:CHUNK_SIZE] for m in messages[:] if m["role"] in ("user", "assistant"))
-    # Return structured strategy note for the model to learn from
     if outcome == "FAILURE":
-        return f"Do NOT repeat what failed here: {text[:180]}. Instead, try a different approach."
+        # Capture the model's FAILED output (assistant messages) only. Including
+        # the USER's message in "do NOT repeat" flips a good directive — "do NOT
+        # repeat 'execute without asking'" becomes "ask instead". The failure the
+        # model must not repeat is its OWN output, not the instruction it was given.
+        failed = " ".join(
+            str(m.get("content", ""))[:CHUNK_SIZE]
+            for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
+        )
+        if not failed.strip():
+            return ""  # no assistant output to learn a failure from — don't fabricate one
+        return f"Do NOT repeat what failed here: {failed[:180]}. Instead, try a different approach."
+    text = " ".join(
+        str(m.get("content", ""))[:CHUNK_SIZE]
+        for m in messages if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+    )
     return f"TRUNCATED on: {text[:200]}. Content too large — use chunked reading."
 
 # ─── Routing ───────────────────────────────────────────────────
@@ -9554,7 +9566,15 @@ def _strategy_lifecycle(grade, messages, infra_failure=False):
                         if _is_junk_directive(directive):
                             print(f"  [STRATEGY-DIRECTIVE][REJECT] {directive[:80]}...", flush=True)
                         else:
-                            _save_strategy(directive, grade)
+                            # The extracted rule is a CORRECTIVE — what would have
+                            # PREVENTED the failure ("ALWAYS verify", "execute
+                            # without asking"). It is a rule to FOLLOW, so save it
+                            # as SUCCESS. Saving it with the turn's D/F grade marked
+                            # it FAILURE and injected it as "do the OPPOSITE of
+                            # verify/execute" — the bug that taught the model to
+                            # skip verification and ask for permission instead of
+                            # acting. grade "B" -> outcome=SUCCESS.
+                            _save_strategy(directive, "B")
                             print(f"  [STRATEGY-DIRECTIVE] {directive[:80]}...", flush=True)
             except Exception as e:
                 print(f"  [STRATEGY-DIRECTIVE][ERR] {str(e)[:100]}", flush=True)
