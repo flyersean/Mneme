@@ -273,6 +273,7 @@ _CONFIG_ENV_MAP = {
     "caps.tool_followup_tokens": "MNEME_TOOL_FOLLOWUP_TOKENS",
     "caps.max_server_rounds": "MNEME_MAX_SERVER_ROUNDS",
     "caps.chunk_size": "MNEME_CHUNK_SIZE",
+    "caps.build_max_iterations": "MNEME_BUILD_MAX_ITERATIONS",
     "tools.native": "MNEME_NATIVE_TOOLS",
     "tools.dir": "MNEME_TOOLS_DIR",
     "tools.bash_timeout": "MNEME_TOOLS_BASH_TIMEOUT",
@@ -725,6 +726,10 @@ def _apply_thinking_log():
 
 load_config()
 mntools.reload_config()  # tools.py is imported before load_config(); refresh its env-derived knobs
+# overcome.py read BUILD_MAX_ITERATIONS at import (module top, before load_config
+# set MNEME_BUILD_MAX_ITERATIONS from caps.build_max_iterations) — re-read it so
+# the config value actually takes effect instead of the stale default of 3.
+BUILD_MAX_ITERATIONS = int(os.environ.get("MNEME_BUILD_MAX_ITERATIONS", "3"))
 # Apply the filesystem scope to the native tools (bash/write/read_file) from
 # config filesystem.model_scope / filesystem.browser_root.
 _fs = CONFIG_DATA.get("filesystem") or {}
