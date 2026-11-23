@@ -297,6 +297,13 @@ _CONFIG_ENV_MAP = {
     "harness.auto_apply_level": "MNEME_HARNESS_AUTO_APPLY_LEVEL",
     "harness.scheduler": "MNEME_HARNESS_SCHEDULER",
     "harness.scheduler_tick": "MNEME_HARNESS_SCHEDULER_TICK",
+    # Run budgets (see mneme/harness/engine.py DEFAULT_BUDGET). max_turns is the
+    # free-form goal-session turn cap (the one that was stopping long agent runs
+    # at 20 turns with "budget exceeded").
+    "harness.max_steps": "MNEME_HARNESS_MAX_STEPS",
+    "harness.max_turns": "MNEME_HARNESS_FREE_FORM_MAX_TURNS",
+    "harness.max_failures": "MNEME_HARNESS_MAX_FAILURES",
+    "harness.max_replans": "MNEME_HARNESS_MAX_REPLANS",
     "logging.max_entries": "MNEME_MAX_LOG_ENTRIES",
     # top-level backward-compat keys (old flat env-var names)
     "model": "MNEME_MODEL",

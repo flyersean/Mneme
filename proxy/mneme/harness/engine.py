@@ -24,6 +24,7 @@ task; ``ok=False`` counts as a failure and the task is re-attempted until the
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import traceback
@@ -39,16 +40,47 @@ from mneme.harness import verify as _verify
 from mneme.harness.planning import PlanResult
 from mneme.harness.failures import classify as _classify_failure
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int_or_none(name: str) -> Optional[int]:
+    v = os.environ.get(name)
+    if v in (None, ""):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _env_float_or_none(name: str) -> Optional[float]:
+    v = os.environ.get(name)
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 DEFAULT_BUDGET = {
-    "max_steps": 100,        # hard safety cap on steps per run
-    "max_turns": None,       # free-form goal sessions: model turns before giving up
-    "max_failures": 3,       # failed steps before the run fails
-    "max_model_calls": None,
-    "max_tool_calls": None,
-    "max_replans": 2,        # planner re-entries after a dead end (needs a planner)
-    "max_runtime": None,     # seconds of execution, summed across resumes
-    "max_cost": None,        # executor-reported cost units
+    "max_steps": _env_int("MNEME_HARNESS_MAX_STEPS", 100),     # hard safety cap on steps per run
+    "max_turns": _env_int_or_none("MNEME_HARNESS_MAX_TURNS"),  # free-form goal sessions: model turns before giving up
+    "max_failures": _env_int("MNEME_HARNESS_MAX_FAILURES", 3),  # failed steps before the run fails
+    "max_model_calls": _env_int_or_none("MNEME_HARNESS_MAX_MODEL_CALLS"),
+    "max_tool_calls": _env_int_or_none("MNEME_HARNESS_MAX_TOOL_CALLS"),
+    "max_replans": _env_int("MNEME_HARNESS_MAX_REPLANS", 2),   # planner re-entries after a dead end (needs a planner)
+    "max_runtime": _env_float_or_none("MNEME_HARNESS_MAX_RUNTIME"),  # seconds of execution, summed across resumes
+    "max_cost": _env_float_or_none("MNEME_HARNESS_MAX_COST"),  # executor-reported cost units
 }
+# Free-form goal sessions (no task list) get their own turn cap, separate from the
+# task-based max_steps. Default 20 was tight enough that a long free-form agent run
+# would stop at 20 turns claiming "budget exceeded". Tunable via env/config.
+FREE_FORM_MAX_TURNS = _env_int("MNEME_HARNESS_FREE_FORM_MAX_TURNS", 20)
 BUDGET_KEYS = tuple(DEFAULT_BUDGET)
 _USAGE_ZERO = {"steps": 0, "model_calls": 0, "tool_calls": 0, "failures": 0,
                "replans": 0, "runtime_s": 0.0, "cost": 0.0}
@@ -217,7 +249,7 @@ class RunEngine:
         if free_form:
             plan = False
             kw["meta"] = {**(kw.get("meta") or {}), "free_form": True}
-            budget = {**(budget or {}), "max_turns": (budget or {}).get("max_turns", 20)}
+            budget = {**(budget or {}), "max_turns": (budget or {}).get("max_turns") or FREE_FORM_MAX_TURNS}
         defer = (not tasks and self.planner is not None) if plan is None else bool(plan)
         if defer and self.planner is None:
             raise LedgerError("plan requested but this engine has no planner")
@@ -408,7 +440,7 @@ class RunEngine:
             plan_text = (plan.get("raw") or "").strip()
 
             budget = run.get("budget") or {}
-            max_turns = budget.get("max_turns") or 20
+            max_turns = budget.get("max_turns") or FREE_FORM_MAX_TURNS
             prior = [s for s in self.ledger.list_steps(run_id) if s.get("kind") == "freeform"]
             turn = len(prior) + 1
             if turn > max_turns:
