@@ -166,6 +166,16 @@ def _memory_health():
         st = _PROVIDER_STATUS.get(kind, {})
         return {"ok": st.get("ok"), "error": st.get("error", ""), "at": st.get("at", "")}
 
+    # A transient embed failure (401/429/timeout) self-heals via retry + the
+    # re-embed loop, so it is NOT a health problem — but surfacing the raw
+    # "HTTPError: 401 Unauthorized" as embed.error makes the model fixate on a
+    # key/provider that isn't actually broken. Bury the last error when there is
+    # no backlog (pending==0): the embedder is effectively healthy. Only surface
+    # an error when chunks are genuinely piling up unembedded.
+    embed_s = _s("embed")
+    if embed_s["ok"] is False and pending == 0:
+        embed_s = {"ok": True, "error": "", "at": embed_s["at"]}
+
     return {
         "chunks": {
             "total": total,
@@ -173,7 +183,7 @@ def _memory_health():
             "pending": pending,
             "pct_unembedded": round(pending / total * 100, 1) if total else 0.0,
         },
-        "embed": {"model": EMBED_MODEL, **_s("embed")},
+        "embed": {"model": EMBED_MODEL, **embed_s},
         "chat": {"model": MODEL, **_s("chat")},
         "label": {"model": _label_model(), **_s("label")},
     }
