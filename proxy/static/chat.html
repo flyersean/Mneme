@@ -729,7 +729,13 @@ optTools.addEventListener("change", () => {
 });
 
 // ── helpers ──────────────────────────────────────────────────────
-function scrollDown() { chat.scrollTop = chat.scrollHeight; }
+// Only auto-scroll when the user is already near the bottom. If they've scrolled
+// up to review a long output, don't yank them back down on every streaming token
+// or poll update — stay put until they scroll back to the bottom themselves.
+function scrollDown() {
+  const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+  if (nearBottom) chat.scrollTop = chat.scrollHeight;
+}
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
