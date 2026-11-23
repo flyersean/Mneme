@@ -4199,14 +4199,19 @@ def _query_openrouter(msgs, opts, tools=None, format_schema=None,
     if int(_mt) > 0:
         payload["max_tokens"] = int(_mt)
     if _transport["param"] == "thinking":
-        # Thinking providers (DeepSeek / Z.AI direct): forced thinking + preserved
-        # thinking (clear_thinking:false for Z.AI), exactly what OpenCode/Hermes
-        # send. Never `reasoning:{enabled:false}`. Effort (when requested) is sent
-        # as TOP-LEVEL `reasoning_effort`, mapped per provider (GLM-5.2 clamps to
-        # high/max; DeepSeek maps xhigh/ultra -> max).
-        _th = {"type": "enabled"}
-        if _transport["clear_thinking"] is not None:
-            _th["clear_thinking"] = bool(_transport["clear_thinking"])
+        # Thinking providers (DeepSeek / Z.AI direct). DeepSeek's `thinking` wire
+        # uses {type: enabled|disabled}; there is NO `reasoning:{enabled:false}`
+        # (it is silently ignored — verified live: it still emits reasoning).
+        # Previously this always forced {type: enabled}, which ignored
+        # reasoning_enabled:0 and made a 'flash' model burn thousands of reasoning
+        # tokens per turn (slow, over-reasoned "short turns"). Now respect an
+        # explicit off for non-mandatory models by sending {type: disabled}.
+        if _explicit_off and not _mandatory:
+            _th = {"type": "disabled"}
+        else:
+            _th = {"type": "enabled"}
+            if _transport["clear_thinking"] is not None:
+                _th["clear_thinking"] = bool(_transport["clear_thinking"])
         payload["thinking"] = _th
         if _reffort and not no_reasoning:
             _eff = (_EFFORT_MAP or {}).get(_reffort.strip().lower(), _reffort)
