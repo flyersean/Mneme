@@ -3051,11 +3051,11 @@ def _embed_single(text: str) -> np.ndarray:
     chat backend as a fallback) — so the embed model can live on a different
     provider than the chat model. Raises on failure.
 
-    Retries transient failures (401/429/5xx, connection errors). A 401 from
-    OpenRouter is usually a transient DOWNSTREAM-provider failure — the embed
-    model is multi-hosted and dynamically routed, so a flaky route returns 401
-    even though the key is valid. A retry lands on a different provider and
-    succeeds; `allow_fallbacks: true` also asks OpenRouter to re-route inline.
+    Retries transient failures (401/429/5xx, connection errors) with exponential
+    backoff. A 401 from OpenRouter is usually a transient downstream-provider
+    routing failure, not a bad key (the batch embedder, which omits
+    `allow_fallbacks`, embeds the same model reliably). The retry below — not
+    OpenRouter's `allow_fallbacks` re-routing — is what recovers.
     """
     conn = _aux_conn("embed")
     if conn["kind"] == "openai":
@@ -3064,8 +3064,14 @@ def _embed_single(text: str) -> np.ndarray:
             _h["Authorization"] = f"Bearer {conn['key']}"
         _h.update(conn["headers"])
         _url = f"{conn['base_url']}/embeddings"
-        _payload = {"model": EMBED_MODEL, "input": text, "dimensions": DIM,
-                    "provider": {"allow_fallbacks": True}}
+        # NOTE: deliberately NO `provider: {"allow_fallbacks": ...}` here. The
+        # batch embedder (_embed_batch) omits it and embeds reliably; adding
+        # allow_fallbacks to this single-embed path caused OpenRouter to route
+        # through fallback providers that intermittently returned 401 — the
+        # recurring "embedder 401" that never actually meant the key was bad.
+        # Match _embed_batch: send the model + dimensions only, and rely on the
+        # retry below (not OpenRouter's fallback routing) for resilience.
+        _payload = {"model": EMBED_MODEL, "input": text, "dimensions": DIM}
         _is_openai = True
     else:
         _url = f"{conn['base_url']}/api/embeddings"
@@ -3074,7 +3080,7 @@ def _embed_single(text: str) -> np.ndarray:
         _is_openai = False
     v = None
     last_err = None
-    for _attempt in range(3):
+    for _attempt in range(5):
         try:
             r = requests.post(_url, headers=_h, json=_payload, timeout=EMBED_TIMEOUT)
             r.raise_for_status()
@@ -3086,9 +3092,20 @@ def _embed_single(text: str) -> np.ndarray:
             if code not in (401, 429, 500, 502, 503, 504):
                 raise
             last_err = e
+            if code == 401:
+                # Log WHY OpenRouter rejected the embed (body carries the reason:
+                # bad key, insufficient credits, provider routing, etc.) so a
+                # persistent 401 is diagnosable instead of an anonymous "Unauthorized".
+                try:
+                    _body = (getattr(e, "response", None).text or "")[:300]
+                except Exception:
+                    _body = ""
+                _kp = (conn.get("key") or "")[:10]
+                print(f"  [EMBED-401] key_prefix={_kp!r} base={conn.get('base_url')} "
+                      f"model={EMBED_MODEL} body={_body!r}", flush=True)
         except requests.exceptions.RequestException as e:
             last_err = e
-        time.sleep(0.5 * (_attempt + 1))
+        time.sleep(0.5 * (2 ** _attempt))
     if v is None:
         raise last_err
     # MRL truncation safety net: if the provider ignores `dimensions` and returns
