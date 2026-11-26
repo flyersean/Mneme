@@ -765,12 +765,18 @@ def _aux_key(ke: str) -> str:
     """Resolve an auxiliary model's API key from its provider's key_env.
 
     When the aux provider is OpenRouter but the CHAT provider is a different
-    vendor, OPENROUTER_API_KEY has been repointed at the chat key — so we return
-    the preserved OpenRouter key instead. Otherwise read the env var directly."""
+    vendor, OPENROUTER_API_KEY has been repointed at the chat key. The STABLE
+    OpenRouter key lives in the env file (never repointed), so read it there
+    first; _AUX_OR_KEY is only a fallback (it can be polluted by a self-restart
+    that inherited the repointed os.environ). Otherwise read the env var."""
     if not ke:
         return ""
-    if ke == "OPENROUTER_API_KEY" and _AUX_OR_KEY:
-        return _AUX_OR_KEY
+    if ke == "OPENROUTER_API_KEY":
+        k = _env_file_key("OPENROUTER_API_KEY")
+        if k:
+            return k
+        if _AUX_OR_KEY:
+            return _AUX_OR_KEY
     return os.environ.get(ke, "")
 
 
@@ -1537,6 +1543,27 @@ def _env_file_path() -> str:
     """Path to the env file the start script sources (provider keys live there,
     never in the config). Shared across instances at <mneme-root>/env."""
     return os.environ.get("MNEME_ENV_FILE") or os.path.expanduser("~/mneme/env")
+
+
+def _env_file_key(name: str) -> str:
+    """Read `NAME=value` from the env file (the stable source of provider keys).
+    Handles `export NAME=...` prefixes; returns "" if absent. The env file is
+    NOT repointed by _resolve_provider, so it always holds the real OpenRouter
+    key even after the chat carrier is repointed."""
+    p = _env_file_path()
+    try:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    m = re.match(r"^(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*)$", line)
+                    if m and m.group(1) == name:
+                        return m.group(2).strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _persist_env_key(env_file: str, key_name: str, key_value: str) -> bool:
